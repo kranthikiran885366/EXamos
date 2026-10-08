@@ -1,0 +1,75 @@
+name: ExamOS P0
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  p0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install required packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools \
+            tpm2-tools sbsigntool efitools cryptsetup-bin \
+            squashfs-tools mkosi debootstrap uidmap systemd-container \
+            python3 ca-certificates openssl
+
+      - name: Validate host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -m
+          test "$(uname -m)" = "x86_64"
+          test -e /dev/kvm
+          command -v qemu-system-x86_64
+          command -v mkosi
+          command -v swtpm
+
+      - name: Build ExamOS image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd image
+          mkosi -f
+
+      - name: Collect build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/p0
+          {
+            echo "=== ExamOS P0 Build Information ==="
+            date -Is
+            echo
+            echo "=== Host ==="
+            uname -a
+            cat /etc/os-release
+            echo
+            echo "=== Tools ==="
+            git --version
+            mkosi --version
+            qemu-system-x86_64 --version | head -n 1
+            swtpm --version
+            tpm2_pcrread --version
+          } > artifacts/p0/build-info.txt
+
+      - name: Upload P0 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: examos-p0-artifacts
+          path: |
+            artifacts/p0/
+            image/
+          if-no-files-found: warn

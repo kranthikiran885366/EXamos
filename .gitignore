@@ -1,0 +1,32 @@
+build/
+out/
+output/
+artifacts/
+cache/
+logs/
+
+*.raw
+*.img
+*.iso
+*.qcow2
+*.efi
+*.uki
+
+*.log
+
+.env
+.env.*
+secrets/
+keys/
+private/
+
+# Keep source directories, but ignore generated build products.
+image/*.raw
+image/*.img
+image/*.qcow2
+image/*.iso
+
+# Local editor state
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+product: ExamOS
+version: 0.1.0
+phase: P0
+status: development
+architecture: x86_64
+boot: UEFI
+image_builder: mkosi
+target_distribution: debian
