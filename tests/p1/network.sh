@@ -5,6 +5,9 @@ WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
 ARTIFACT_DIR="$WORKSPACE/artifacts/p1"
 mkdir -p "$ARTIFACT_DIR"
 
+LOG_FILE="$ARTIFACT_DIR/network.log"
+exec > >(tee "$LOG_FILE") 2>&1
+
 echo "=== [P1-NETWORK] Static Network Security & Firewall Verification ==="
 
 NFT_CONF="$WORKSPACE/image/overlay/etc/nftables.conf"

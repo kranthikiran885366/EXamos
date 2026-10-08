@@ -5,6 +5,9 @@ WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
 ARTIFACT_DIR="$WORKSPACE/artifacts/p1"
 mkdir -p "$ARTIFACT_DIR"
 
+LOG_FILE="$ARTIFACT_DIR/kiosk.log"
+exec > >(tee "$LOG_FILE") 2>&1
+
 echo "=== [P1-KIOSK] Static Verification of Kiosk Configuration ==="
 
 # Check service user
@@ -45,6 +48,14 @@ if [ -f "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ]; then
     echo "[KIOSK-CHECK] PASS: Chromium AppArmor security profile exists"
 else
     echo "[KIOSK-CHECK] FAIL: Chromium AppArmor profile missing"
+    exit 1
+fi
+
+# Check Chromium Enterprise Managed Policy
+if [ -f "$WORKSPACE/image/overlay/etc/chromium/policies/managed/examos_policies.json" ]; then
+    echo "[KIOSK-CHECK] PASS: Chromium enterprise managed policies configured"
+else
+    echo "[KIOSK-CHECK] FAIL: Chromium managed policies missing"
     exit 1
 fi
 

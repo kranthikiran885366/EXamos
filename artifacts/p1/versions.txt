@@ -1,6 +1,7 @@
 === ExamOS P1 Tool Versions ===
-mkosi 26
-QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
-g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
-TPM emulator version 0.10.1, Copyright (c) 2014-2022 IBM Corp. and others
+Timestamp: 2026-10-08T16:25:24Z
+mkosi: mkosi 26
+qemu: QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+gcc: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+g++: g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+swtpm: TPM emulator version 0.10.1, Copyright (c) 2014-2022 IBM Corp. and others
