@@ -1,0 +1,38 @@
+Host discovery results (actual environment):
+
+uname -a:
+MINGW64_NT-10.0-26200 MALLELAKRANTHI 3.6.5-22c95533.x86_64 2025-10-10 12:02 UTC x86_64 Msys
+
+uname -m:
+x86_64
+
+/etc/os-release:
+missing
+
+nproc:
+8
+
+free -h:
+free unavailable under this MSYS shell
+
+df -h "$HOME":
+Filesystem      Size  Used Avail Use% Mounted on
+C:              217G  212G  4.7G  98% /c
+
+df -h /:
+Filesystem            Size  Used Avail Use% Mounted on
+C:/Program Files/Git  217G  212G  4.7G  98% /
+
+egrep -c '(vmx|svm)' /proc/cpuinfo:
+0
+
+ls -ld /dev/kvm:
+/dev/kvm missing
+
+whoami/id/groups:
+krant
+uid=197609(krant) gid=197609 groups=197609
+197609
+
+test -d /sys/firmware/efi:
+UEFI=no

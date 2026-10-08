@@ -1,32 +1,43 @@
+# Build and generated outputs
 build/
-out/
 output/
-artifacts/
 cache/
-logs/
+artifacts/tmp/
 
+# Binary disk images and kernel images
 *.raw
 *.img
 *.iso
 *.qcow2
 *.efi
 *.uki
+*.vmlinuz
+*.initrd
+initrd*
+*.cpio*
+*.o
+*.a
+*.so
 
+# Executable binaries
+examos-kiosk-launcher
+examos-agent
+examos-proctor
+examos-server
+
+# Log files (except structured validation logs in artifacts/)
 *.log
+!artifacts/p0/*.log
 
+# Environment and secrets
 .env
 .env.*
-secrets/
 keys/
+secrets/
 private/
 
-# Keep source directories, but ignore generated build products.
-image/*.raw
-image/*.img
-image/*.qcow2
-image/*.iso
-
-# Local editor state
+# Local editor and OS files
 .vscode/
+.idea/
 .DS_Store
 Thumbs.db

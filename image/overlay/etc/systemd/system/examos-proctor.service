@@ -1,0 +1,22 @@
+[Unit]
+Description=ExamOS Native C++ Proctoring and Anomaly Detection Engine
+After=network.target sound.target examos-kiosk.service
+PartOf=examos-kiosk.service
+
+[Service]
+Type=simple
+User=examos
+Group=video
+SupplementaryGroups=audio
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/usr/local/bin/examos-proctor
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing
+ProtectSystem=strict
+ReadWritePaths=/run/user/1000 /tmp
+PrivateTmp=yes

@@ -1,0 +1,4 @@
+=== ExamOS P1 Performance Metrics ===
+Timestamp: 2026-10-08T16:05:32Z
+Image Path: /mnt/d/SEB BRO/image/examos.raw.raw
+Image Size: 2.2G (2307629056 bytes)

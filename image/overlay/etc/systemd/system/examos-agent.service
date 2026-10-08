@@ -1,0 +1,21 @@
+[Unit]
+Description=ExamOS Security Attestation and Hardware Guard Agent
+Documentation=https://examos.example.edu/docs/agent
+After=network.target dbus.service examos-server.service
+Wants=examos-server.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/examos-agent http://127.0.0.1:8000/api/v1/heartbeat examos-device-01
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

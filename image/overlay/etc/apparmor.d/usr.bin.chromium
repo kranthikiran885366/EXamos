@@ -1,0 +1,52 @@
+# AppArmor profile for Chromium in ExamOS kiosk mode
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/usr/bin/chromium flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/ssl_certs>
+  include <abstractions/wayland>
+  include <abstractions/fonts>
+
+  # Executable
+  /usr/bin/chromium mr,
+  /usr/lib/chromium/** mr,
+
+  # Process & IPC
+  /proc/ r,
+  /proc/sys/kernel/yama/ptrace_scope r,
+  /proc/sys/kernel/random/boot_id r,
+  /proc/cpuinfo r,
+  /proc/meminfo r,
+  /proc/stat r,
+  /proc/self/** rw,
+  /proc/[0-9]*/** rw,
+  /sys/devices/** r,
+  /sys/bus/pci/devices/ r,
+
+  # Graphics & GPU
+  /dev/dri/** rw,
+  /dev/video* rw,
+  /dev/snd/** rw,
+  /dev/urandom r,
+  /dev/null rw,
+
+  # Ephemeral Profile in RAM
+  /tmp/examos_kiosk_*/** rwkl,
+  /run/user/[0-9]*/wayland-* rw,
+  /run/user/[0-9]*/examos_kiosk_*/** rwkl,
+
+  # Configuration
+  /etc/examos/exam.conf r,
+  /etc/chromium/** r,
+  /etc/opt/chrome/** r,
+
+  # Deny critical system paths
+  deny /etc/shadow rwx,
+  deny /etc/passwd w,
+  deny /root/** rwx,
+  deny /home/** rwx,
+  deny /boot/** rwx,
+}

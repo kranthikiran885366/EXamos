@@ -1,0 +1,19 @@
+{
+  "phase": "P0",
+  "status": "PASS",
+  "checks": {
+    "host": true,
+    "architecture": true,
+    "kvm": true,
+    "qemu": true,
+    "ovmf": true,
+    "swtpm": true,
+    "mkosi": true,
+    "repository": true,
+    "api": true,
+    "build": true,
+    "boot": true
+  },
+  "gate": "PASS",
+  "reason": "P0 host checks, native compilation, API smoke test, mkosi image validation, and QEMU/OVMF serial-login/server startup test succeeded. Kiosk operation and enterprise readiness are not established."
+}

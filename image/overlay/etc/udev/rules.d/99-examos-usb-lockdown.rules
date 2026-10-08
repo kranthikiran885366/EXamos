@@ -1,0 +1,21 @@
+# ExamOS USB Port Lockdown & Hardware Guard Rules
+
+# Block all USB Mass Storage devices (Class 08h)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="08", ATTR{authorized}="0", RUN+="/usr/bin/logger -t [ExamOS-USB-Security] 'Blocked USB Mass Storage device'"
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", RUN+="/bin/sh -c 'echo 0 > /sys$DEVPATH/device/authorized 2>/dev/null || true'"
+
+# Block unauthorized USB Network adapters (Class 02h CDC, 0Eh AV, E0h Wireless)
+ACTION=="add", SUBSYSTEM=="net", ENV{ID_BUS}=="usb", RUN+="/bin/sh -c 'ip link set $name down 2>/dev/null || true'"
+
+# Allow standard HID Class devices (keyboards, mice, touchscreens)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{authorized}="1"
+
+# Allow USB Hubs (needed to enumerate allowed devices)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="09", ATTR{authorized}="1"
+
+# Allow Audio Class (Microphones for proctoring)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="01", ATTR{authorized}="1"
+
+# Allow Video Class (Webcams for proctoring)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="0e", ATTR{authorized}="1"
+ACTION=="add", SUBSYSTEM=="video4linux", GROUP="video", MODE="0660"

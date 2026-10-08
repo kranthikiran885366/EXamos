@@ -1,0 +1,26 @@
+[Unit]
+Description=ExamOS Examination Control Server (Admin Dashboard + Candidate Login)
+Documentation=https://examos.example.edu/docs/server
+After=network.target
+Before=examos-kiosk.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/examos-server
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+Environment=EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
+Environment=EXAMOS_SERVER_PORT=8000
+
+# Hardening
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/examos/admin.conf
+ReadWritePaths=/var/log/examos /etc/examos/exam.conf
+
+[Install]
+WantedBy=multi-user.target

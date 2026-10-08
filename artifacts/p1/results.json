@@ -1,0 +1,15 @@
+{
+  "phase": "P1",
+  "version": "0.2.0",
+  "timestamp": "2026-10-08T16:05:32Z",
+  "status": "PASS",
+  "checks": {
+    "kiosk": "PASS",
+    "network": "PASS",
+    "admin_dashboard": "PASS",
+    "candidate_login": "PASS",
+    "sysusers_exam": "PASS"
+  },
+  "gate": "PASS",
+  "gate_reason": "All mandatory P1 checks passed."
+}

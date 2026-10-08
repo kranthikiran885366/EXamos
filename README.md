@@ -1,60 +1,88 @@
-# ExamOS
+# ExamOS — Prevention-First Secure Operating System
 
-Prevention-first secure operating system and enterprise examination platform.
+ExamOS is a Linux examination-appliance development prototype, primarily implemented in **native C and C++**.
 
-## Current status
+> **Status: development prototype, not enterprise-ready.** The image has been
+> built and booted to a serial login under QEMU/OVMF. The current server does
+> not authenticate devices or verify TPM quotes, the exam/session backend is
+> not implemented, and the proctoring code does not perform face/gaze/audio
+> recognition. Do not use this build for live examinations or treat its
+> telemetry as trusted.
 
-P0 is not complete in this environment. The host currently being used here is a Windows/MSYS environment, not a Linux build host, and it does not provide /dev/kvm, UEFI firmware, or the required QEMU/mkosi toolchain. The repository therefore documents the intended P0 workflow and uses fail-closed validation rather than fabricating a pass.
+---
 
-## Development stages
-
-- P0 Foundation
-- P1 Minimal kiosk
-- P2 Endpoint lockdown
-- P3 Trusted boot and TPM attestation
-- P4 Proctoring and evidence
-- P5 Behaviour, variants and viva
-- P6 Hardware validation and red team
-- E1 Environment intelligence
-- E2 Enterprise control plane
-- E3 Device fleet
-- E4 Release management
-- E5 High availability
-- E6 Buildroot production optimization
-
-## Current phase
-
-P0
-
-## Repository layout
-
-The project is intentionally organized so that the P0 build/test foundation is independent from later feature work.
+## Architecture Overview
 
 ```text
-examos/
-├── image/
-│   ├── mkosi.conf
-│   ├── examos-build.conf
-│   ├── dev.conf
-│   ├── release.conf
-│   ├── overlay/
-│   ├── config/
-│   └── scripts/
-├── kiosk/
-├── agent/
-├── proctoring/
-├── server/
-├── tests/
-├── docs/
-├── scripts/
-├── artifacts/
-├── cache/
-├── .github/
-├── .gitignore
-├── README.md
-└── docs/releases/version.yaml
+                  +------------------------------------------------+
+                  |          ExamOS Linux Base Image               |
+                  |   (lockdown=confidentiality, sysctl, udev)    |
+                  +------------------------------------------------+
+                                          |
+          +-------------------------------+-------------------------------+
+          |                               |                               |
++-------------------+           +-------------------+           +-------------------+
+|  Cage / Wayland   |           |  Security Agent   |           | Proctoring Engine |
+|  Kiosk Supervisor |           |   (Native C)      |           |   (Native C++)    |
+|   (Native C)      |           |                   |           |                   |
+| - Ephemeral RAM   |           | - PCR snapshot    |           | - Capture stub    |
+|   browser profile |           | - Hardware Guard  |           | - Anomaly Engine  |
+| - Chromium kiosk  |           | - Local Telemetry |           | - No CV pipeline  |
+| - Draft policies  |           | - Wi-Fi/BLE scans |           | - No recognition  |
++-------------------+           +-------------------+           +-------------------+
+          |                               |                               |
+          +-------------------------------+-------------------------------+
+                                          |
+                                          v
+                  +------------------------------------------------+
+                  |            ExamOS Server Platform              |
+                  |                  (Native C)                    |
+                  | - Local Hash-Chain Prototype                  |
+                  | - No trusted risk decisions                    |
+                  | - No authenticated exam sessions               |
+                  +------------------------------------------------+
 ```
 
-## P0 objective
+---
 
-P0 proves that the build environment, repository layout, mkosi image pipeline, host validation, QEMU/OVMF boot testing, artifact collection, and CI foundation are all reproducible and working before feature work begins.
+## Subsystems (Native C / C++)
+
+1. **Kiosk Launcher (`kiosk/launcher/`)**: Native C prototype for launching Chromium under Cage Wayland with an ephemeral profile and kiosk flags. Boot-to-kiosk operation has not been validated.
+2. **Kiosk Policies (`kiosk/policies/`)**: Draft Chromium policy configuration; effective policy enforcement in the built image has not been validated.
+3. **Security Agent (`agent/`)**: Native C prototype for reading TPM PCRs and collecting device telemetry. It does not create a TPM-signed quote or authenticated heartbeat, and hardware observations are not enforcement.
+4. **Proctoring Engine (`proctoring/`)**: Native C++ prototype only. It does not currently acquire/process real camera frames or perform face, gaze, or speech recognition.
+5. **Server Platform (`server/`)**: Local development HTTP service with an in-process session manager and hash-chain ledger prototype. Authenticated exam workflows, remote TLS/API security, durable ledger guarantees, and TPM quote verification are not implemented.
+
+---
+
+## Building Native Subsystems
+
+Compile all C and C++ modules directly using `make`:
+
+```bash
+# Build all native binaries
+make all
+
+# Clean build artifacts
+make clean
+```
+
+---
+
+## P0 Foundation & OS Image Generation
+
+The P0 foundation synthesizes a minimal Debian Trixie disk image using `mkosi`:
+
+```bash
+# Verify host readiness
+./scripts/examos-doctor.sh
+
+# Run end-to-end P0 test suite
+./scripts/p0.sh
+
+# Build disk image
+./scripts/build-image.sh
+
+# Launch image in QEMU with UEFI (OVMF)
+./scripts/run-qemu.sh
+```

@@ -1,0 +1,39 @@
+=== ExamOS P0 Build Information ===
+2026-10-08T15:42:37+00:00
+
+=== Git ===
+commit: 80b2f738edf3df3a3ae4073612a30c95ff8ed84b
+author: ExamOS Developer
+date:   Thu Oct 8 17:43:32 2026 +0530
+subject: Record blocked P0 gate state
+
+=== Host Environment ===
+Linux MALLELAKRANTHI 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 26.04.1 LTS"
+NAME="Ubuntu"
+VERSION_ID="26.04"
+VERSION="26.04.1 LTS (Resolute Raccoon)"
+VERSION_CODENAME=resolute
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=resolute
+LOGO=ubuntu-logo
+
+=== CPU & Virtualization ===
+x86_64
+8
+KVM_PRESENT=true
+
+=== Tools & Compilers ===
+git version 2.53.0
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+GNU Make 4.4.1
+mkosi 26
+QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+TPM emulator version 0.10.1, Copyright (c) 2014-2022 IBM Corp. and others
+tool="tpm2_pcrread" version="5.7" tctis="libtss2-tctildr" tcti-default=tcti-device

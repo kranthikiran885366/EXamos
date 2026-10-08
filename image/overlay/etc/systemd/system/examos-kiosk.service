@@ -1,0 +1,36 @@
+[Unit]
+Description=ExamOS Secure Examination Kiosk Session (Cage + Chromium)
+Documentation=https://examos.example.edu/docs/kiosk
+After=network.target sound.target systemd-user-sessions.service examos-server.service nftables.service
+Wants=examos-server.service
+
+[Service]
+Type=simple
+User=exam
+Group=exam
+SupplementaryGroups=video audio input render
+
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_RENDERER=auto
+Environment=GDK_BACKEND=wayland
+Environment=QT_QPA_PLATFORM=wayland
+
+ExecStartPre=/usr/bin/mkdir -p /run/user/1000
+ExecStartPre=+/usr/bin/chown exam:exam /run/user/1000
+ExecStartPre=+/usr/bin/chmod 0700 /run/user/1000
+ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+# Sandboxing
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/user/1000 /tmp
+PrivateTmp=yes
+CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
+
+[Install]
+WantedBy=graphical.target

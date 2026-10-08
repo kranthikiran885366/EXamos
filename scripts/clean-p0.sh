@@ -3,16 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for path in \
-  "$ROOT/artifacts/p0" \
-  "$ROOT/cache" \
-  "$ROOT/output" \
-  "$ROOT/build" \
-  "$ROOT/image/output"; do
-  if [[ -e "$path" ]]; then
-    rm -rf "$path"
-  fi
-done
+echo "=== Cleaning ExamOS P0 Build Artifacts ==="
 
-mkdir -p "$ROOT/artifacts/p0" "$ROOT/cache/packages" "$ROOT/cache/mkosi" "$ROOT/cache/qemu"
-printf '%s\n' "[clean-p0] Generated P0 artifacts and caches cleaned."
+# Clean compiled native binaries
+make -C "$ROOT" clean 2>/dev/null || true
+
+# Clean temporary build and output directories
+rm -rf "$ROOT/artifacts/p0"/*
+rm -rf "$ROOT/output"/*
+rm -rf "$ROOT/cache"/*
+rm -rf "$ROOT/image"/*.raw "$ROOT/image"/*.img "$ROOT/image"/*.vmlinuz "$ROOT/image"/initrd*
+rm -rf "$ROOT/image/overlay/usr/local/bin"/*
+
+touch "$ROOT/artifacts/p0/.gitkeep"
+touch "$ROOT/output/.gitkeep"
+touch "$ROOT/cache/.gitkeep"
+
+echo "=== Clean Complete ==="

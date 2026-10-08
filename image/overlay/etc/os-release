@@ -1,0 +1,9 @@
+NAME="ExamOS"
+PRETTY_NAME="ExamOS 0.1.0 Enterprise Security Edition"
+ID=examos
+ID_LIKE=debian
+VERSION="0.1.0"
+VERSION_ID="0.1.0"
+HOME_URL="https://examos.security"
+SUPPORT_URL="https://examos.security/support"
+BUG_REPORT_URL="https://examos.security/bugs"

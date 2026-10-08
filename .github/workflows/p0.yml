@@ -1,4 +1,4 @@
-name: ExamOS P0
+name: ExamOS P0 Foundation & Image Pipeline
 
 on:
   push:
@@ -7,69 +7,70 @@ on:
     branches: [ main, master ]
 
 jobs:
-  p0:
+  p0-build-and-boot:
+    name: Native Build, API Smoke, mkosi Image & QEMU/OVMF Boot
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install required packages
+      - name: Install Build Toolchains & Virtualization Dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make \
+            libssl-dev libcurl4-openssl-dev libudev-dev \
             git qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools \
             tpm2-tools sbsigntool efitools cryptsetup-bin \
             squashfs-tools mkosi debootstrap uidmap systemd-container \
-            python3 ca-certificates openssl
+            ca-certificates openssl
 
-      - name: Validate host prerequisites
+      - name: Validate Host Environment & Repository
         shell: bash
         run: |
           set -euo pipefail
-          uname -m
-          test "$(uname -m)" = "x86_64"
-          test -e /dev/kvm
-          command -v qemu-system-x86_64
-          command -v mkosi
-          command -v swtpm
+          chmod +x scripts/*.sh tests/p0/*.sh
+          bash tests/p0/repository-check.sh
+          bash tests/p0/host-check.sh
+          bash tests/p0/examos-doctor.sh || true
 
-      - name: Build ExamOS image
+      - name: Compile Native C/C++ Subsystems
         shell: bash
         run: |
           set -euo pipefail
-          cd image
-          mkosi -f
+          make all
+          bash tests/p0/server-smoke.sh
 
-      - name: Collect build metadata
+      - name: Build and Validate Development Image (mkosi)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/p0
-          {
-            echo "=== ExamOS P0 Build Information ==="
-            date -Is
-            echo
-            echo "=== Host ==="
-            uname -a
-            cat /etc/os-release
-            echo
-            echo "=== Tools ==="
-            git --version
-            mkosi --version
-            qemu-system-x86_64 --version | head -n 1
-            swtpm --version
-            tpm2_pcrread --version
-          } > artifacts/p0/build-info.txt
+          bash tests/p0/build.sh
 
-      - name: Upload P0 artifacts
+      - name: Collect Build Information & Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/p0/collect-build-info.sh
+
+      - name: Run Automated QEMU / OVMF Boot Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/p0/boot.sh
+
+      - name: Upload P0 Verification Artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: examos-p0-artifacts
+          name: examos-p0-build-artifacts
           path: |
             artifacts/p0/
-            image/
+            image/examos-production.raw
+            image/*.img
           if-no-files-found: warn

@@ -6,53 +6,88 @@ fail() {
   exit 1
 }
 
+echo "=== ExamOS P0 Host Check ==="
+
+echo "[1/10] Checking Host OS..."
 uname_out="$(uname -s 2>/dev/null || echo unknown)"
-arch_out="$(uname -m 2>/dev/null || echo unknown)"
-
-echo "[P0] Checking host OS..."
 [[ "$uname_out" == "Linux" ]] || fail "Linux host required; found: ${uname_out}"
+echo "       Host OS: ${uname_out} (PASS)"
 
-echo "[P0] Checking architecture..."
+echo "[2/10] Checking Architecture..."
+arch_out="$(uname -m 2>/dev/null || echo unknown)"
 [[ "$arch_out" == "x86_64" ]] || fail "x86-64 host required; found: ${arch_out}"
+echo "       Architecture: ${arch_out} (PASS)"
 
-echo "[P0] Checking virtualization support..."
+echo "[3/10] Checking CPU Virtualization Extensions..."
 if [[ -e /proc/cpuinfo ]]; then
-  if egrep -q '(vmx|svm)' /proc/cpuinfo; then
-    echo "[P0] Virtualization support detected"
+  if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
+    echo "       Virtualization: Hardware vmx/svm detected (PASS)"
   else
-    fail "Hardware virtualization extensions not detected"
+    fail "Hardware virtualization extensions (vmx/svm) not detected in /proc/cpuinfo"
   fi
 else
   fail "/proc/cpuinfo not available"
 fi
 
-echo "[P0] Checking /dev/kvm..."
-[[ -e /dev/kvm ]] || fail "/dev/kvm not available"
-
-echo "[P0] Checking QEMU..."
-command -v qemu-system-x86_64 >/dev/null || fail "QEMU missing"
-
-echo "[P0] Checking OVMF..."
-if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]] || [[ -f /usr/share/edk2/ovmf/OVMF_CODE_4M.fd ]]; then
-  echo "[P0] OVMF firmware found"
+echo "[4/10] Checking /dev/kvm Access..."
+if [[ -e /dev/kvm ]]; then
+  if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+    echo "       /dev/kvm: Available and accessible (PASS)"
+  else
+    fail "/dev/kvm exists but is not read/writable by current user ($(whoami))"
+  fi
 else
-  fail "OVMF firmware not found"
+  fail "/dev/kvm device node missing"
 fi
 
-echo "[P0] Checking swtpm..."
-command -v swtpm >/dev/null || fail "swtpm missing"
+echo "[5/10] Checking QEMU System Emulator..."
+command -v qemu-system-x86_64 >/dev/null || fail "qemu-system-x86_64 missing from PATH"
+echo "       QEMU: $(qemu-system-x86_64 --version | head -n 1) (PASS)"
 
-echo "[P0] Checking mkosi..."
-command -v mkosi >/dev/null || fail "mkosi missing"
+echo "[6/10] Checking OVMF UEFI Firmware..."
+OVMF_CODE=""
+for candidate in \
+  /usr/share/OVMF/OVMF_CODE_4M.fd \
+  /usr/share/OVMF/OVMF_CODE.fd \
+  /usr/share/edk2/ovmf/OVMF_CODE_4M.fd \
+  /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+  /usr/share/qemu/OVMF.fd; do
+  if [[ -f "$candidate" ]]; then
+    OVMF_CODE="$candidate"
+    break
+  fi
+done
+if [[ -n "$OVMF_CODE" ]]; then
+  echo "       OVMF Firmware: $OVMF_CODE (PASS)"
+else
+  fail "No OVMF firmware image found in standard system locations"
+fi
 
-echo "[P0] Checking TPM tools..."
-command -v tpm2_pcrread >/dev/null || fail "tpm2-tools missing"
+echo "[7/10] Checking Virtual TPM (swtpm)..."
+command -v swtpm >/dev/null || fail "swtpm missing from PATH"
+echo "       swtpm: $(swtpm --version | head -n 1) (PASS)"
 
-echo "[P0] Checking disk capacity..."
+echo "[8/10] Checking TPM 2.0 Tools..."
+command -v tpm2_pcrread >/dev/null || fail "tpm2_pcrread (tpm2-tools) missing from PATH"
+echo "       TPM Tools: tpm2-tools present (PASS)"
+
+echo "[9/10] Checking mkosi Image Builder..."
+command -v mkosi >/dev/null || fail "mkosi missing from PATH"
+echo "       mkosi: $(mkosi --version | head -n 1) (PASS)"
+
+echo "[10/10] Checking Build Storage Capacity (Minimum 50 GB)..."
 if command -v df >/dev/null; then
-  df -h "$HOME" 2>/dev/null | tail -n +2 | awk '{print $4}' | head -n 1 | grep -Eq '[1-9][0-9]+G|[5-9][0-9]+G|[0-9]+T' || fail "Insufficient free disk space in the build filesystem"
+  avail_kb="$(df -k "$HOME" | tail -n 1 | awk '{print $4}')"
+  avail_gb=$((avail_kb / 1024 / 1024))
+  if [[ "$avail_gb" -ge 50 ]]; then
+    echo "       Disk Space: ${avail_gb} GB available on build filesystem (PASS)"
+  else
+    fail "Insufficient free storage: ${avail_gb} GB available, at least 50 GB required"
+  fi
 else
-  fail "df not available"
+  fail "df command unavailable"
 fi
 
-echo "[P0] HOST CHECK PASS"
+echo "=========================================="
+echo "HOST CHECK RESULT: PASS"
+echo "=========================================="

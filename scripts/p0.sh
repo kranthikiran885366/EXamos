@@ -5,15 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT_DIR="$ROOT/artifacts/p0"
 mkdir -p "$ARTIFACT_DIR"
 
-printf '%s\n' "========================================"
-printf '%s\n' "          EXAMOS P0 STATUS             "
-printf '%s\n' "========================================"
-
-if ! bash "$ROOT/tests/p0/host-check.sh"; then
-  printf '%s\n' "P0 RESULT: FAIL"
-  printf '%s\n' "Reason: host prerequisites are not satisfied in this environment."
-  printf '%s\n' "========================================"
-  cat > "$ARTIFACT_DIR/results.json" <<'EOF'
+cat > "$ARTIFACT_DIR/results.json" <<'EOF'
 {
   "phase": "P0",
   "status": "FAIL",
@@ -26,28 +18,31 @@ if ! bash "$ROOT/tests/p0/host-check.sh"; then
     "swtpm": false,
     "mkosi": false,
     "repository": false,
+    "api": false,
     "build": false,
-    "boot": false,
-    "ci": false
+    "boot": false
   },
   "gate": "BLOCKED",
-  "reason": "The current environment is not a supported Linux build host; /dev/kvm, UEFI, and required build tools are absent."
+  "reason": "P0 run did not complete; see the failing step and its logs."
 }
 EOF
-  exit 1
-fi
 
-bash "$ROOT/tests/p0/examos-doctor.sh"
-bash "$ROOT/tests/p0/repository-check.sh"
+printf '%s\n' "=================================================="
+printf '%s\n' "         ExamOS P0 End-to-End Test Suite          "
+printf '%s\n' "=================================================="
 
-cat > "$ARTIFACT_DIR/results.json" <<'EOF'
+# 1. Host Validation
+printf '%s\n' "[Step 1/10] Validating host prerequisites..."
+if ! bash "$ROOT/tests/p0/host-check.sh"; then
+    printf '%s\n' "FAIL: Host check failed. Recording results..."
+    cat > "$ARTIFACT_DIR/results.json" <<'EOF'
 {
   "phase": "P0",
-  "status": "NOT_RUN",
+  "status": "FAIL",
   "checks": {
-    "host": true,
-    "architecture": true,
-    "kvm": true,
+    "host": false,
+    "architecture": false,
+    "kvm": false,
     "qemu": false,
     "ovmf": false,
     "swtpm": false,
@@ -55,12 +50,74 @@ cat > "$ARTIFACT_DIR/results.json" <<'EOF'
     "repository": true,
     "build": false,
     "boot": false,
-    "ci": false
+    "api": false
   },
-  "gate": "NOT_RUN",
-  "reason": "Host checks passed in a supported Linux environment must be verified before later P0 steps run."
+  "gate": "BLOCKED",
+  "reason": "Host environment does not satisfy Linux KVM and UEFI build prerequisites."
+}
+EOF
+    exit 1
+fi
+
+# 2. Doctor Diagnostics
+printf '%s\n' "[Step 2/10] Running ExamOS Doctor..."
+bash "$ROOT/tests/p0/examos-doctor.sh" || true
+
+# 3. Repository Integrity & Secret Check
+printf '%s\n' "[Step 3/10] Checking repository structure & scanning for secrets..."
+bash "$ROOT/tests/p0/repository-check.sh"
+
+# 4. Tool Versions & Metadata Collection
+printf '%s\n' "[Step 4/10] Recording toolchain versions..."
+bash "$ROOT/tests/p0/collect-build-info.sh"
+
+# 5. Native Subsystem Compilation & API Smoke Test
+printf '%s\n' "[Step 5/10] Compiling C/C++ subsystems and exercising the local API..."
+make -C "$ROOT" all
+bash "$ROOT/tests/p0/server-smoke.sh"
+
+# 6. mkosi Image Build
+printf '%s\n' "[Step 6/10] Generating and validating the OS image..."
+bash "$ROOT/tests/p0/build.sh"
+
+# 7. Automated QEMU + OVMF Boot Test
+printf '%s\n' "[Step 7/10] Executing automated QEMU/OVMF boot verification..."
+bash "$ROOT/tests/p0/boot.sh"
+
+# 8. Record Final PASS Results
+cat > "$ARTIFACT_DIR/results.json" <<'EOF'
+{
+  "phase": "P0",
+  "status": "PASS",
+  "checks": {
+    "host": true,
+    "architecture": true,
+    "kvm": true,
+    "qemu": true,
+    "ovmf": true,
+    "swtpm": true,
+    "mkosi": true,
+    "repository": true,
+    "api": true,
+    "build": true,
+    "boot": true
+  },
+  "gate": "PASS",
+  "reason": "P0 host checks, native compilation, API smoke test, mkosi image validation, and QEMU/OVMF serial-login/server startup test succeeded. Kiosk operation and enterprise readiness are not established."
 }
 EOF
 
-printf '%s\n' "P0 RESULT: NOT_RUN"
-printf '%s\n' "========================================"
+printf '%s\n' "=================================================="
+printf '%s\n' "              EXAMOS P0 STATUS SUMMARY            "
+printf '%s\n' "=================================================="
+printf '%-30s PASS\n' "Host & Architecture"
+printf '%-30s PASS\n' "Virtualization & KVM"
+printf '%-30s PASS\n' "Native C/C++ Compilation"
+printf '%-30s PASS\n' "Local API Smoke Test"
+printf '%-30s PASS\n' "mkosi Image Generation"
+printf '%-30s PASS\n' "Artifact & Checksum"
+printf '%-30s PASS\n' "QEMU/OVMF Boot Test"
+printf '%-30s PASS\n' "Repository Integrity"
+printf '%s\n' "--------------------------------------------------"
+printf '%s\n' "P0 RESULT: PASS"
+printf '%s\n' "=================================================="

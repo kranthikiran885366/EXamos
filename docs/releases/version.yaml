@@ -6,3 +6,4 @@ architecture: x86_64
 boot: UEFI
 image_builder: mkosi
 target_distribution: debian
+target_release: trixie

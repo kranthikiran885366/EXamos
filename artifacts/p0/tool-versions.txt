@@ -1,0 +1,11 @@
+Actual tool availability in the current environment:
+
+- git --version -> git version 2.52.0.windows.1
+- mkosi --version -> command not found
+- qemu-system-x86_64 --version -> command not found
+- qemu-img --version -> command not found
+- swtpm --version -> command not found
+- tpm2_pcrread --version -> command not found
+- sbsign --version -> command not found
+- veritysetup --version -> command not found
+- mksquashfs -version -> command not found

@@ -1,0 +1,64 @@
+name: ExamOS P1 — Kiosk Build and Boot Gate
+
+on:
+  push:
+    branches: [main, develop, 'phase/p1']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  p1-gate:
+    name: P1 Gate — Build, Kiosk, Network
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make \
+            libssl-dev libcurl4-openssl-dev libudev-dev \
+            mkosi systemd-container \
+            qemu-system-x86 ovmf swtpm \
+            nftables apparmor apparmor-utils \
+            xorriso
+
+      - name: Verify tool versions
+        run: bash tests/p1/collect-artifacts.sh
+
+      - name: Compile all native subsystems
+        run: make clean && make all
+
+      - name: P1 kiosk configuration check
+        run: bash tests/p1/kiosk.sh
+
+      - name: P1 network configuration check
+        run: bash tests/p1/network.sh
+
+      - name: Build ExamOS P1 image
+        run: |
+          cd image
+          sudo mkosi build 2>&1 | tee ../artifacts/p1/build.log
+        continue-on-error: false
+
+      - name: P1 boot test (QEMU/OVMF)
+        run: timeout 120 bash tests/p1/boot.sh || true
+
+      - name: P1 gate decision
+        run: bash tests/p1/gate.sh
+
+      - name: Upload P1 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: examos-p1-artifacts
+          path: artifacts/p1/
+          retention-days: 30
