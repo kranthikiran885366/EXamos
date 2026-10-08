@@ -6,16 +6,59 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
+
+static const char *g_blacklisted_processes[] = {
+    "gdb", "strace", "ltrace", "wireshark", "tshark", "tcpdump",
+    "obs", "ffmpeg", "vlc", "nc", "netcat", "ncat", "socat",
+    "anydesk", "teamviewer", "rustdesk", "vncserver", NULL
+};
 
 int hardware_guard_init(void) {
     return 0;
+}
+
+static int scan_and_terminate_prohibited_processes(void) {
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) return 0;
+
+    int violation_found = 0;
+    struct dirent *entry;
+    while ((entry = readdir(proc_dir)) != NULL) {
+        if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
+            int pid = atoi(entry->d_name);
+            if (pid <= 1 || pid == getpid()) continue;
+
+            char comm_path[256];
+            snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", entry->d_name);
+            FILE *f = fopen(comm_path, "r");
+            if (f) {
+                char comm[64] = {0};
+                if (fgets(comm, sizeof(comm), f)) {
+                    char *nl = strchr(comm, '\n');
+                    if (nl) *nl = '\0';
+
+                    for (int i = 0; g_blacklisted_processes[i] != NULL; i++) {
+                        if (strcasecmp(comm, g_blacklisted_processes[i]) == 0) {
+                            violation_found = 1;
+                            kill(pid, SIGKILL);
+                            break;
+                        }
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    closedir(proc_dir);
+    return violation_found;
 }
 
 static int count_active_displays(int *out_external) {
     int connected_count = 0;
     int external_count = 0;
     DIR *dir = opendir("/sys/class/drm");
-    if (!dir) return 1; // Default assume 1 primary display if sysfs inaccessible
+    if (!dir) return 1;
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
@@ -28,7 +71,6 @@ static int count_active_displays(int *out_external) {
                 if (fgets(status, sizeof(status), f)) {
                     if (strncmp(status, "connected", 9) == 0) {
                         connected_count++;
-                        // Check if it is an external display (HDMI, DP, VGA, DVI) vs internal eDP/LVDS
                         if (strstr(entry->d_name, "HDMI") || strstr(entry->d_name, "DP") ||
                             strstr(entry->d_name, "VGA") || strstr(entry->d_name, "DVI")) {
                             external_count++;
@@ -60,7 +102,6 @@ static int check_usb_mass_storage(void) {
         if (f) {
             char class_code[16] = {0};
             if (fgets(class_code, sizeof(class_code), f)) {
-                // Class 08 = Mass Storage
                 if (strncmp(class_code, "08", 2) == 0) {
                     storage_found = 1;
                 }
@@ -80,11 +121,13 @@ int hardware_guard_scan(hardware_state_t *state) {
     state->display_count = count_active_displays(&external_flag);
     state->external_display_detected = external_flag;
     state->usb_storage_detected = check_usb_mass_storage();
+    state->process_violation_detected = scan_and_terminate_prohibited_processes();
     state->audio_input_available = (access("/dev/snd/pcmC0D0c", F_OK) == 0 || access("/dev/snd", F_OK) == 0);
     state->audio_output_available = (access("/dev/snd/pcmC0D0p", F_OK) == 0 || access("/dev/snd", F_OK) == 0);
 
-    // Flag security violation if unauthorized multi-display or USB storage is detected
-    state->unauthorized_device_flag = (state->external_display_detected || state->usb_storage_detected);
+    state->unauthorized_device_flag = (state->external_display_detected ||
+                                       state->usb_storage_detected ||
+                                       state->process_violation_detected);
 
     return 0;
 }
@@ -97,6 +140,7 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              "\"displays\":%d,"
              "\"external_display_violation\":%s,"
              "\"usb_storage_violation\":%s,"
+             "\"process_violation\":%s,"
              "\"audio_in\":%s,"
              "\"audio_out\":%s,"
              "\"unauthorized_hardware\":%s"
@@ -104,6 +148,7 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              state->display_count,
              state->external_display_detected ? "true" : "false",
              state->usb_storage_detected ? "true" : "false",
+             state->process_violation_detected ? "true" : "false",
              state->audio_input_available ? "true" : "false",
              state->audio_output_available ? "true" : "false",
              state->unauthorized_device_flag ? "true" : "false");

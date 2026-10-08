@@ -11,6 +11,7 @@ typedef struct {
     int display_count;
     int external_display_detected;
     int usb_storage_detected;
+    int process_violation_detected;
     int audio_input_available;
     int audio_output_available;
     int unauthorized_device_flag;

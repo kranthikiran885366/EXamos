@@ -1,4 +1,6 @@
 === ExamOS P1 Performance Metrics ===
-Timestamp: 2026-10-08T16:05:32Z
+Timestamp: 2026-10-08T16:20:13Z
 Image Path: /mnt/d/SEB BRO/image/examos.raw.raw
 Image Size: 2.2G (2307629056 bytes)
+Boot Log Lines: 8
+Boot Measurement: Completed within timeout (<60s target)
