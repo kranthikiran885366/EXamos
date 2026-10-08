@@ -20,6 +20,7 @@ These entries are actual outputs from the current environment and show that the 
 ## 3. Tool versions
 
 - git: 2.52.0.windows.1
+- Git commit for the current repository state: 4256a1f
 - mkosi: command not found
 - qemu-system-x86_64: command not found
 - swtpm: command not found
