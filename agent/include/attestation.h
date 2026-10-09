@@ -14,15 +14,21 @@ typedef struct {
 
 typedef struct {
     long timestamp;
+    char device_id[64];
+    char release_id[64];
     char nonce[128];
-    int tpm_hardware_detected;
+    int  tpm_hardware_detected;
+    char ek_fingerprint[65];
+    char ak_pub_hex[512];
+    char quote_signature_hex[512];
+    char event_log_hash[65];
     pcr_entry_t pcrs[16];
-    int pcr_count;
+    int  pcr_count;
     char composite_digest[65];
 } attestation_report_t;
 
 int tpm_attestation_init(void);
-int tpm_attestation_generate_report(const char *nonce, attestation_report_t *report);
+int tpm_attestation_generate_report(const char *device_id, const char *release_id, const char *nonce, attestation_report_t *report);
 int tpm_attestation_format_json(const attestation_report_t *report, char *out_buf, size_t max_len);
 
 #ifdef __cplusplus

@@ -3,7 +3,7 @@ abi <abi/3.0>,
 
 include <tunables/global>
 
-/usr/bin/chromium flags=(complain) {
+/usr/bin/chromium {
   include <abstractions/base>
   include <abstractions/nameservice>
   include <abstractions/ssl_certs>

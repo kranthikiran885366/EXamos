@@ -1,19 +1,21 @@
 {
   "phase": "P0",
+  "version": "0.1.0",
+  "timestamp": "2026-10-09T02:51:09Z",
+  "git_commit": "6fe4059c90701b9fca8412dfcbae5bbf94c3c55f",
   "status": "PASS",
   "checks": {
-    "host": true,
-    "architecture": true,
-    "kvm": true,
-    "qemu": true,
-    "ovmf": true,
-    "swtpm": true,
-    "mkosi": true,
-    "repository": true,
-    "api": true,
-    "build": true,
-    "boot": true
-  },
-  "gate": "PASS",
-  "reason": "P0 host checks, native compilation, API smoke test, mkosi image validation, and QEMU/OVMF serial-login/server startup test succeeded. Kiosk operation and enterprise readiness are not established."
+    "host_architecture": "PASS",
+    "cpu_virtualization": "PASS",
+    "kvm_access": "PASS",
+    "qemu_installed": "PASS",
+    "ovmf_discovered": "PASS",
+    "swtpm_ready": "PASS",
+    "tpm_tools_ready": "PASS",
+    "mkosi_build": "PASS",
+    "artifact_generated": "PASS",
+    "artifact_checksum": "7a832d158e33aa2161c1252ad9262bcc4b297a9f571c1a85da6344a4c3f28ada",
+    "qemu_ovmf_boot": "PASS",
+    "secrets_clean": "PASS"
+  }
 }

@@ -1,15 +1,13 @@
-version: "0.2.0"
-phase: "P1"
-release_name: "ExamOS Minimal Boot to Kiosk"
-target_distribution: "debian~trixie~x86-64"
-kernel: "6.12.111+deb13-amd64"
-status: "PASS"
-gate_completed: true
-build_system: "mkosi 26"
-bootloader: "systemd-boot"
-compositor: "cage"
-browser: "chromium"
-artifacts:
-  disk_image: "image/examos.raw"
-  iso_image: "artifacts/iso/examos-appliance-v0.2.0.iso"
-  results_json: "artifacts/p1/results.json"
+product: ExamOS
+version: 0.1.0
+phase: P0
+status: development
+architecture: x86_64
+boot: UEFI
+target_distro: debian
+target_release: trixie
+image_builder: mkosi
+mkosi_version: "26"
+qemu_version: "10.2.1"
+kernel: Linux
+init: systemd

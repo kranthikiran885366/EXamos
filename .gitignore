@@ -1,43 +1,33 @@
-# Build and generated outputs
+# ExamOS .gitignore
 build/
 output/
 cache/
 artifacts/tmp/
-
-# Binary disk images and kernel images
 *.raw
+*.raw.raw
 *.img
 *.iso
 *.qcow2
 *.efi
 *.uki
-*.vmlinuz
-*.initrd
-initrd*
-*.cpio*
+*.log
 *.o
 *.a
 *.so
 
-# Executable binaries
-examos-kiosk-launcher
-examos-agent
-examos-proctor
-examos-server
-
-# Log files (except structured validation logs in artifacts/)
-*.log
-!artifacts/p0/*.log
-
-# Environment and secrets
+# Secrets and credentials
 .env
 .env.*
 keys/
 secrets/
 private/
+*.key
+*.pem
+*.pfx
+*.p12
 
-# Local editor and OS files
-.vscode/
-.idea/
+# OS / Editor artifacts
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

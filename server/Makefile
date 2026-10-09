@@ -4,11 +4,15 @@ LDFLAGS ?= -lssl -lcrypto -lpthread
 
 SRCS = main.c \
        events/ledger.c \
+       events/event_chain.c \
        risk/risk_engine.c \
        exam/exam_service.c \
        admin/config_manager.c \
        login/candidate_login.c \
-       admin/admin_dashboard.c
+       admin/admin_dashboard.c \
+       attestation/attestation_service.c \
+       gateway/key_release.c \
+       proctoring/second_camera.c
 
 OBJS = $(SRCS:.c=.o)
 TARGET = examos-server

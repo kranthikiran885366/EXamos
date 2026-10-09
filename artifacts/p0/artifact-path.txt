@@ -1,0 +1,1 @@
+/root/.local/share/examos/images/p0/examos-p0.raw.raw

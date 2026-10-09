@@ -5,9 +5,10 @@ PartOf=examos-kiosk.service
 
 [Service]
 Type=simple
-User=examos
-Group=video
+User=exam
+Group=exam
 SupplementaryGroups=audio
+EnvironmentFile=/etc/examos/proctor.env
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 ExecStart=/usr/local/bin/examos-proctor
@@ -20,3 +21,13 @@ StandardError=journal
 ProtectSystem=strict
 ReadWritePaths=/run/user/1000 /tmp
 PrivateTmp=yes
+NoNewPrivileges=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

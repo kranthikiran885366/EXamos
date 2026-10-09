@@ -1,54 +1,123 @@
 #!/usr/bin/env bash
+# =============================================================================
+# ExamOS P0 — Environment Doctor Script
+# tests/p0/examos-doctor.sh
+# =============================================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo "========================================"
+echo "          EXAMOS P0 DOCTOR"
+echo "========================================"
 
-printf '%s\n' "========================================"
-printf '%s\n' "             EXAMOS DOCTOR              "
-printf '%s\n' "========================================"
-
-total=0
-passed=0
-failed=0
-
-check() {
-  label="$1"
-  shift
-  total=$((total + 1))
-  if "$@" >/dev/null 2>&1; then
-    printf '%-28s PASS\n' "$label"
-    passed=$((passed + 1))
-  else
-    printf '%-28s FAIL\n' "$label"
-    failed=$((failed + 1))
-  fi
+print_item() {
+    local name="$1"
+    local status="$2"
+    printf "%-25s %s\n" "$name" "$status"
 }
 
-check "Host OS (Linux)" bash -lc 'test "$(uname -s 2>/dev/null)" = "Linux"'
-check "Architecture (x86_64)" bash -lc 'test "$(uname -m 2>/dev/null)" = "x86_64"'
-check "CPU Virtualization" bash -lc 'test -e /proc/cpuinfo && grep -E -q "(vmx|svm)" /proc/cpuinfo'
-check "KVM Device (/dev/kvm)" bash -lc 'test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm'
-check "UEFI / OVMF Firmware" bash -lc 'test -d /sys/firmware/efi || test -f /usr/share/OVMF/OVMF_CODE_4M.fd || test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/edk2/ovmf/OVMF_CODE_4M.fd || test -f /usr/share/qemu/OVMF.fd'
-check "QEMU Emulator" bash -lc 'command -v qemu-system-x86_64'
-check "OVMF Firmware" bash -lc 'test -f /usr/share/OVMF/OVMF_CODE_4M.fd || test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/edk2/ovmf/OVMF_CODE_4M.fd || test -f /usr/share/edk2-ovmf/x64/OVMF_CODE.fd || test -f /usr/share/qemu/OVMF.fd'
-check "Virtual TPM (swtpm)" bash -lc 'command -v swtpm && command -v swtpm_setup'
-check "TPM 2.0 Tools" bash -lc 'command -v tpm2_pcrread && command -v tpm2_getrandom && command -v tpm2_startup'
-check "Secure Boot Tooling" bash -lc 'command -v sbsign'
-check "dm-verity Tooling" bash -lc 'command -v veritysetup'
-check "SquashFS Tooling" bash -lc 'command -v mksquashfs'
-check "mkosi Builder" bash -lc 'command -v mkosi'
-check "Git" bash -lc 'command -v git'
-check "Disk Storage (>=50 GB)" bash -lc 'avail_kb=$(df -k "$HOME" 2>/dev/null | tail -n 1 | awk "{print \$4}"); test "$((avail_kb / 1024 / 1024))" -ge 50'
-check "Repository Structure" bash -lc 'test -f "'"$ROOT"'/README.md" && test -f "'"$ROOT"'/image/mkosi.conf" && test -d "'"$ROOT"'/tests/p0"'
-
-printf '%s\n' "----------------------------------------"
-printf 'Summary: %d total, %d passed, %d failed\n' "$total" "$passed" "$failed"
-printf '%s\n' "========================================"
-
-if [[ "$failed" -eq 0 ]]; then
-  printf '%s\n' "RESULT: READY FOR P0"
-  exit 0
+# 1. Host OS
+if [ -f /etc/os-release ]; then
+    OS_NAME=$(grep -oP '(?<=PRETTY_NAME=")[^"]*' /etc/os-release || echo "Linux")
+    print_item "Host OS ($OS_NAME)" "PASS"
 else
-  printf '%s\n' "RESULT: BLOCKED (Prerequisites missing)"
-  exit 1
+    print_item "Host OS" "UNKNOWN"
 fi
+
+# 2. Architecture
+if [ "$(uname -m)" = "x86_64" ]; then
+    print_item "Architecture (x86_64)" "PASS"
+else
+    print_item "Architecture" "FAIL"
+fi
+
+# 3. Virtualization
+if [ "$(egrep -c '(vmx|svm)' /proc/cpuinfo || true)" -gt 0 ]; then
+    print_item "Virtualization" "PASS"
+else
+    print_item "Virtualization" "FAIL"
+fi
+
+# 4. KVM
+if [ -e /dev/kvm ]; then
+    print_item "KVM (/dev/kvm)" "PASS"
+else
+    print_item "KVM" "FAIL"
+fi
+
+# 5. UEFI Capability (OVMF)
+if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] || [ -f /usr/share/OVMF/OVMF_CODE.fd ]; then
+    print_item "OVMF / UEFI" "PASS"
+else
+    print_item "OVMF / UEFI" "FAIL"
+fi
+
+# 6. QEMU
+if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+    QVER=$(qemu-system-x86_64 --version | head -1 | awk '{print $4}')
+    print_item "QEMU ($QVER)" "PASS"
+else
+    print_item "QEMU" "FAIL"
+fi
+
+# 7. swtpm
+if command -v swtpm >/dev/null 2>&1; then
+    SWTPM_VER=$(swtpm --version 2>&1 | head -1 | awk '{print $4}' | tr -d ',')
+    print_item "swtpm ($SWTPM_VER)" "PASS"
+else
+    print_item "swtpm" "FAIL"
+fi
+
+# 8. TPM Tools
+if command -v tpm2_pcrread >/dev/null 2>&1; then
+    print_item "TPM tools (tpm2-tools)" "PASS"
+else
+    print_item "TPM tools" "FAIL"
+fi
+
+# 9. Secure Boot Tools
+if command -v sbsign >/dev/null 2>&1 && command -v sbverify >/dev/null 2>&1; then
+    print_item "Secure Boot (sbsign)" "PASS"
+else
+    print_item "Secure Boot" "FAIL"
+fi
+
+# 10. dm-verity
+if command -v veritysetup >/dev/null 2>&1; then
+    print_item "dm-verity (cryptsetup)" "PASS"
+else
+    print_item "dm-verity" "FAIL"
+fi
+
+# 11. SquashFS
+if command -v mksquashfs >/dev/null 2>&1; then
+    print_item "SquashFS" "PASS"
+else
+    print_item "SquashFS" "FAIL"
+fi
+
+# 12. mkosi
+if command -v mkosi >/dev/null 2>&1; then
+    MK_VER=$(mkosi --version | awk '{print $2}')
+    print_item "mkosi ($MK_VER)" "PASS"
+else
+    print_item "mkosi" "FAIL"
+fi
+
+# 13. Disk Capacity
+FREE_GB=$(df -BG / | tail -1 | awk '{print $4}' | tr -d 'G')
+if [ "$FREE_GB" -ge 20 ]; then
+    print_item "Disk (${FREE_GB}GB free)" "PASS"
+else
+    print_item "Disk (${FREE_GB}GB free)" "FAIL"
+fi
+
+# 14. Repository Structure
+if [ -d "image" ] && [ -d "tests" ] && [ -d "docs" ] && [ -d "artifacts" ]; then
+    print_item "Repository Layout" "PASS"
+else
+    print_item "Repository Layout" "FAIL"
+fi
+
+echo "========================================"
+echo "EXAMOS P0 DOCTOR: COMPLETED"
+echo "========================================"

@@ -1,27 +1,25 @@
-# P0 build process
+# ExamOS Phase 0 (P0) — Image Build Guide
 
-The build process is intentionally minimal and must not include kiosk, attestation, or lockdown features.
+## 1. Minimal Target Build
+The P0 build compiles a minimal, reproducible Debian Linux disk image using `mkosi`.
 
-## Build directory
-
+### Manual Build:
 ```bash
-cd ~/examos/image
+cd image
+mkosi build
 ```
 
-## Build the minimal ExamOS image
-
+### Automated Build with Metadata Collection:
 ```bash
-mkosi -f
+bash tests/p0/build.sh
 ```
 
-## Artifact discovery
+## 2. Artifact Output
+The build produces:
+- `image/examos.raw` (or `examos.raw.raw` depending on mkosi version)
+- `artifacts/p0/build.log`
+- `artifacts/p0/image.sha256`
+- `artifacts/p0/image-size.txt`
 
-```bash
-find . -maxdepth 2 -type f | sort
-```
-
-## Required evidence
-
-P0 requires real build logs, artifact discovery, SHA-256 calculation, and a QEMU/OVMF boot result.
-
-This environment does not satisfy those prerequisites, so the build is intentionally blocked and reported as such.
+## 3. Strict Non-Fabrication Rule
+Build artifacts and hashes must always be derived directly from actual tool execution. Never invent or manually write hash values.

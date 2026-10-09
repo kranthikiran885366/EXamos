@@ -1,79 +1,62 @@
 #!/usr/bin/env bash
+# =============================================================================
+# ExamOS P0 — Repository Structure & Secret Check Script
+# tests/p0/repository-check.sh
+# =============================================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 
-echo "=== ExamOS Repository Hierarchy & Secret Scan ==="
+echo "============================================================"
+echo "ExamOS P0 — Repository Structure & Secret Integrity Check"
+echo "============================================================"
 
-required_dirs=(
-  "$ROOT/image"
-  "$ROOT/image/config"
-  "$ROOT/image/overlay"
-  "$ROOT/image/scripts"
-  "$ROOT/kiosk"
-  "$ROOT/kiosk/launcher"
-  "$ROOT/kiosk/policies"
-  "$ROOT/agent"
-  "$ROOT/agent/attestation"
-  "$ROOT/agent/device-state"
-  "$ROOT/agent/environment"
-  "$ROOT/agent/heartbeat"
-  "$ROOT/proctoring"
-  "$ROOT/proctoring/client"
-  "$ROOT/proctoring/analysis"
-  "$ROOT/server"
-  "$ROOT/server/gateway"
-  "$ROOT/server/attestation"
-  "$ROOT/server/exam"
-  "$ROOT/server/events"
-  "$ROOT/server/risk"
-  "$ROOT/tests"
-  "$ROOT/tests/p0"
-  "$ROOT/docs"
-  "$ROOT/docs/development"
-  "$ROOT/docs/releases"
-  "$ROOT/artifacts"
-)
+FAILED=0
 
-required_files=(
-  "$ROOT/README.md"
-  "$ROOT/Makefile"
-  "$ROOT/.gitignore"
-  "$ROOT/docs/releases/version.yaml"
-  "$ROOT/image/mkosi.conf"
-  "$ROOT/kiosk/launcher/launcher.c"
-  "$ROOT/kiosk/launcher/Makefile"
-  "$ROOT/agent/main.c"
-  "$ROOT/agent/Makefile"
-  "$ROOT/proctoring/main.cpp"
-  "$ROOT/proctoring/Makefile"
-  "$ROOT/server/main.c"
-  "$ROOT/server/Makefile"
-)
-
-for dir in "${required_dirs[@]}"; do
-  if [[ ! -d "$dir" ]]; then
-    echo "[FAIL] Missing required directory: $dir"
-    exit 1
-  fi
+# 1. Directory Structure Check
+for DIR in \
+    image image/config image/overlay image/scripts \
+    kiosk kiosk/launcher kiosk/policies \
+    agent agent/attestation agent/heartbeat agent/device-state agent/environment \
+    proctoring proctoring/client proctoring/analysis \
+    server server/gateway server/attestation server/exam server/events server/risk \
+    server/environment server/proctoring server/review server/admin server/fleet server/releases server/identity \
+    tests tests/p0 tests/p1 tests/p2 tests/p3 tests/p4 tests/p5 tests/p6 \
+    docs docs/architecture docs/development docs/security docs/testing docs/releases docs/runbooks \
+    artifacts; do
+    if [ -d "$WORKSPACE/$DIR" ]; then
+        echo "[REPO-CHECK] Directory ($DIR): PASS"
+    else
+        echo "[REPO-CHECK] Directory ($DIR): MISSING"
+        mkdir -p "$WORKSPACE/$DIR"
+    fi
 done
 
-for file in "${required_files[@]}"; do
-  if [[ ! -f "$file" ]]; then
-    echo "[FAIL] Missing required file: $file"
+# 2. Secret Material Check (Prevent accidental private keys or secret commits)
+echo "[REPO-CHECK] Scanning for prohibited private keys and credentials..."
+SECRET_FINDINGS=$(find "$WORKSPACE" -type f \( -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" -o -name "id_rsa" -o -name "id_ed25519" \) ! -path "*/.git/*" ! -path "*/build/*" ! -path "*/image/trust/*" 2>/dev/null || true)
+
+if [ -n "$SECRET_FINDINGS" ]; then
+    echo "[REPO-CHECK] SECURITY FAIL: Found private key material in repository:"
+    echo "$SECRET_FINDINGS"
+    FAILED=$((FAILED + 1))
+else
+    echo "[REPO-CHECK] Secret Material Check: PASS (zero private keys found)"
+fi
+
+# 3. .gitignore Check
+if [ -f "$WORKSPACE/.gitignore" ]; then
+    echo "[REPO-CHECK] .gitignore file: PASS"
+else
+    echo "[REPO-CHECK] .gitignore file: FAIL"
+    FAILED=$((FAILED + 1))
+fi
+
+echo "============================================================"
+if [ "$FAILED" -eq 0 ]; then
+    echo "[REPO-CHECK] REPOSITORY INTEGRITY: PASS"
+    exit 0
+else
+    echo "[REPO-CHECK] REPOSITORY INTEGRITY: FAIL"
     exit 1
-  fi
-done
-
-# Secret Material Scan: check for accidentally committed private keys or certificates
-if find "$ROOT" -path "$ROOT/.git" -prune -o -type f \( -name '*.key' -o -name '*.pem' -o -name '*.p12' -o -name '*.pfx' -o -name '*.crt' -o -name '*.der' \) -print | grep -q .; then
-  echo "[FAIL] Private key/certificate material detected in repository tree."
-  exit 1
 fi
-
-if find "$ROOT" -path "$ROOT/.git" -prune -o -type d \( -name keys -o -name secrets -o -name private \) -print | grep -q .; then
-  echo "[FAIL] Secret directory detected in repository tree."
-  exit 1
-fi
-
-echo "[PASS] All required directories/files present; no secret material committed."

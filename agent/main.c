@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
 
     // Initial Attestation Generation
     attestation_report_t report;
-    if (tpm_attestation_generate_report("INITIAL-BOOT-NONCE", &report) == 0) {
+    if (tpm_attestation_generate_report(device_id, "examos-0.4.0", "INITIAL-BOOT-NONCE", &report) == 0) {
         char report_json[4096];
         tpm_attestation_format_json(&report, report_json, sizeof(report_json));
         log_info("Unsigned PCR measurement digest computed; this is not a TPM quote.");

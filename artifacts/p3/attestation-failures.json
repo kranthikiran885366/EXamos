@@ -1,0 +1,41 @@
+{
+  "phase": "P3",
+  "evaluated_failure_modes": [
+    {
+      "code": "P3_PCR_MISMATCH",
+      "cause": "PCR 0, 4, 7, or 11 diverged from enrolled release values",
+      "security_impact": "Firmware tampering, unauthorized UKI boot, or disabled Secure Boot detected",
+      "mitigation": "Quarantine node, abort session, reject exam key release"
+    },
+    {
+      "code": "P3_NONCE_REPLAY",
+      "cause": "Quote submitted with expired or previously verified nonce",
+      "security_impact": "Replay attack detected; prevents pre-recorded legitimate TPM evidence reuse",
+      "mitigation": "Invalidate session, alert SIEM"
+    },
+    {
+      "code": "P3_UNKNOWN_DEVICE",
+      "cause": "Device ID or EK certificate/fingerprint not in enrolled hardware inventory",
+      "security_impact": "Unapproved physical hardware or software TPM emulator attempting admission",
+      "mitigation": "Drop session, reject challenge"
+    },
+    {
+      "code": "P3_SESSION_BINDING_FAIL",
+      "cause": "Session token presented with mismatched device ID",
+      "security_impact": "Session hijacking or relay attack between candidate machines",
+      "mitigation": "Terminate session immediately"
+    },
+    {
+      "code": "P3_REVOKED_RELEASE",
+      "cause": "ExamOS release ID flagged as vulnerable or obsolete",
+      "security_impact": "Prevents boot of retired or compromised appliance versions",
+      "mitigation": "Enforce USB reflash of latest authenticated release"
+    },
+    {
+      "code": "P3_INVALID_SIGNATURE",
+      "cause": "TPM Quote signature could not be mathematically validated against enrolled AK",
+      "security_impact": "Forged evidence or corrupted TPM quote transmission",
+      "mitigation": "Reject session, mark hardware untrusted"
+    }
+  ]
+}

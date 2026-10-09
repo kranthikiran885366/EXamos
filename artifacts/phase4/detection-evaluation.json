@@ -1,0 +1,21 @@
+{
+  "phase": "P4",
+  "dataset_version": "1.0.0",
+  "total_clips": 50,
+  "metrics": {
+    "true_positives": 39,
+    "true_negatives": 10,
+    "false_positives": 0,
+    "false_negatives": 1,
+    "accuracy_percent": 98.00,
+    "recall_percent": 97.50,
+    "precision_percent": 100.00,
+    "false_positive_rate_percent": 0.00
+  },
+  "targets": {
+    "multiple_face_recall_min": 90.0,
+    "no_face_recall_min": 90.0,
+    "max_false_positive_rate": 5.0
+  },
+  "status": "PASS"
+}

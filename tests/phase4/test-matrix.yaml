@@ -1,0 +1,114 @@
+# ExamOS Phase 4 — Test Matrix
+# Proctoring, Multi-Source Video, Detection Events, and Tamper-Evident Evidence
+
+version: "1.0.0"
+phase: "P4"
+
+tests:
+  - id: P4-001
+    name: "Consent Flow & Media Permission"
+    type: "CONSENT"
+    expected: "PASS"
+    description: "Candidate consent recorded prior to camera/mic streaming"
+
+  - id: P4-002
+    name: "Primary Camera Capture & Frame Sampling"
+    type: "CAPTURE"
+    expected: "PASS"
+    description: "Primary video stream sampled at configured frame interval"
+
+  - id: P4-003
+    name: "Face Detection & Face Present Event"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Single face in frame emits FACE_PRESENT with bounding box"
+
+  - id: P4-004
+    name: "Multiple Face Detection Event"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Multiple candidates in frame emit MULTIPLE_FACES event"
+
+  - id: P4-005
+    name: "No-Face Absence Event"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Absence of candidate face emits NO_FACE event"
+
+  - id: P4-006
+    name: "Head-Pose Estimation Angles"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Yaw, pitch, roll angles and confidence calculated and emitted"
+
+  - id: P4-007
+    name: "Phone Object Detection Event"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Mobile device presence emits PHONE_DETECTED event"
+
+  - id: P4-008
+    name: "Book Object Detection Event"
+    type: "DETECTION"
+    expected: "PASS"
+    description: "Book presence emits BOOK_DETECTED event"
+
+  - id: P4-009
+    name: "Deterministic Event Canonicalization"
+    type: "TAMPER_EVIDENCE"
+    expected: "PASS"
+    description: "Canonical JSON serializer produces deterministic byte stream"
+
+  - id: P4-010
+    name: "SHA-256 Hash Chaining Continuity"
+    type: "TAMPER_EVIDENCE"
+    expected: "PASS"
+    description: "Every event hash is SHA256(previousHash || canonicalEvent)"
+
+  - id: P4-011
+    name: "Tamper Test T1: Payload Modification"
+    type: "TAMPER_EVIDENCE"
+    expected: "FAIL"
+    description: "Modifying stored event payload fails verifier"
+
+  - id: P4-012
+    name: "Tamper Test T4: Event Deletion"
+    type: "TAMPER_EVIDENCE"
+    expected: "FAIL"
+    description: "Deleting an event creates sequence gap caught by verifier"
+
+  - id: P4-013
+    name: "Tamper Test T5: Event Reordering"
+    type: "TAMPER_EVIDENCE"
+    expected: "FAIL"
+    description: "Swapping two events breaks hash continuity"
+
+  - id: P4-014
+    name: "Cryptographic Checkpoint Signature"
+    type: "CHECKPOINT"
+    expected: "PASS"
+    description: "Server generates verifiable signature over latest event hash"
+
+  - id: P4-015
+    name: "Second Camera QR Pairing Flow"
+    type: "SECOND_CAMERA"
+    expected: "PASS"
+    description: "Mobile phone pairs via short-lived QR token"
+
+  - id: P4-016
+    name: "Second Camera Wrong Session Rejection"
+    type: "SECOND_CAMERA"
+    expected: "FAIL"
+    description: "QR token from Session A rejected on Session B"
+
+  - id: P4-017
+    name: "50-Session Concurrency Load Test"
+    type: "CONCURRENCY"
+    expected: "PASS"
+    description: "50 concurrent proctoring streams with zero dropped events"
+
+  - id: P4-018
+    name: "50-Clip Labelled Dataset Evaluation"
+    type: "EVALUATION"
+    expected: "PASS"
+    description: "Recall >= 90% and FPR < 5% on benchmark evaluation set"

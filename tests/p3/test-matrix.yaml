@@ -1,0 +1,133 @@
+version: "1.0"
+phase: "P3"
+title: "ExamOS Phase 3 Attestation & Trusted Boot Test Matrix"
+description: "Comprehensive 16-case test suite for TPM 2.0 remote attestation, Golden PCR verification, and secure exam-key release."
+
+cases:
+  - id: "P3-001"
+    name: "Valid Attestation & Key Release"
+    description: "Registered device presents fresh nonce, valid AK quote, matching Golden PCRs (0,4,7,11), and valid event log."
+    expected_result: "PASS"
+    expected_error_code: "NONE"
+    expected_session_state: "TRUSTED"
+    key_release_expected: true
+
+  - id: "P3-002"
+    name: "Modified UKI Measurement (PCR 4 Mismatch)"
+    description: "Device presents PCR 4 value reflecting modified unified kernel image binary."
+    expected_result: "FAIL"
+    expected_error_code: "P3_PCR_MISMATCH"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-003"
+    name: "Secure Boot Violation (PCR 7 Mismatch)"
+    description: "Device presents PCR 7 value indicating Secure Boot disabled or unauthorized PK/KEK/db state."
+    expected_result: "FAIL"
+    expected_error_code: "P3_PCR_MISMATCH"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-004"
+    name: "Replay Attack Detection"
+    description: "Attacker attempts to reuse an earlier valid quote with an already consumed nonce."
+    expected_result: "FAIL"
+    expected_error_code: "P3_NONCE_REPLAY"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-005"
+    name: "Unregistered EK / Software TPM"
+    description: "Unenrolled device or rogue swtpm instance with unrecognized EK fingerprint."
+    expected_result: "FAIL"
+    expected_error_code: "P3_UNKNOWN_DEVICE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-006"
+    name: "Device/Session Binding Mismatch"
+    description: "Device A attempts to fulfill an attestation session initiated by Device B."
+    expected_result: "FAIL"
+    expected_error_code: "P3_SESSION_BINDING_FAIL"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-007"
+    name: "Revoked ExamOS Release"
+    description: "Device runs an ExamOS release image that has been revoked due to vulnerability."
+    expected_result: "FAIL"
+    expected_error_code: "P3_REVOKED_RELEASE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-008"
+    name: "Forged TPM Quote Signature"
+    description: "Quote signature does not match enrolled AK public key or signature bytes are corrupted."
+    expected_result: "FAIL"
+    expected_error_code: "P3_INVALID_SIGNATURE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-009"
+    name: "Stale / Unknown Nonce"
+    description: "Evidence submitted with a nonce never issued by server challenge."
+    expected_result: "FAIL"
+    expected_error_code: "P3_INVALID_NONCE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-010"
+    name: "Firmware Tampering (PCR 0 Mismatch)"
+    description: "Device presents altered BIOS/UEFI firmware measurement in PCR 0."
+    expected_result: "FAIL"
+    expected_error_code: "P3_PCR_MISMATCH"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-011"
+    name: "Unknown Device ID"
+    description: "Device ID not present in enrolled enterprise device registry."
+    expected_result: "FAIL"
+    expected_error_code: "P3_UNKNOWN_DEVICE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-012"
+    name: "Unknown Release ID"
+    description: "Release ID not present in Golden release registry."
+    expected_result: "FAIL"
+    expected_error_code: "P3_UNKNOWN_RELEASE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-013"
+    name: "Key Release on Unverified Session"
+    description: "Client requests exam key with nonexistent or unverified attestation session token."
+    expected_result: "FAIL"
+    expected_error_code: "P3_SESSION_INVALID"
+    expected_session_state: "NONE"
+    key_release_expected: false
+
+  - id: "P3-014"
+    name: "Event Log Hash Mismatch"
+    description: "Report contains an event log digest that does not correspond to the composite PCR digest."
+    expected_result: "FAIL"
+    expected_error_code: "P3_EVENTLOG_INVALID"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false
+
+  - id: "P3-015"
+    name: "Periodic Re-attestation"
+    description: "Active session receives new challenge nonce and successfully re-attests before expiration."
+    expected_result: "PASS"
+    expected_error_code: "NONE"
+    expected_session_state: "TRUSTED"
+    key_release_expected: true
+
+  - id: "P3-016"
+    name: "Revoked Device"
+    description: "Device enrolled previously is revoked in enterprise registry prior to attestation."
+    expected_result: "FAIL"
+    expected_error_code: "P3_REVOKED_DEVICE"
+    expected_session_state: "UNTRUSTED"
+    key_release_expected: false

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstddef>
 
 namespace examos {
 namespace proctoring {
@@ -44,12 +45,21 @@ public:
     ~MediaCapture();
     bool initialize(const std::string &video_dev = "/dev/video0");
     bool capture_frame(FrameStats &stats);
+    const uint8_t *frame_data() const;
+    size_t frame_size() const;
+    uint32_t frame_stride() const;
+    uint32_t frame_channels() const;
     bool capture_audio(AudioStats &stats);
     void close_devices();
 
 private:
     int m_video_fd;
     bool m_initialized;
+    void *m_mmap_start;
+    size_t m_mmap_length;
+    std::vector<uint8_t> m_rgb_frame;
+    uint32_t m_width;
+    uint32_t m_height;
 };
 
 class AnomalyDetector {

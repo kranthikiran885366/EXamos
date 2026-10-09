@@ -1,44 +1,38 @@
-# P0 installation
+# ExamOS Phase 0 (P0) — Tool Installation Guide
 
-## Supported host
-
-Use a real Ubuntu/Debian Linux build host with KVM and UEFI support.
-
-## Install dependencies
+## 1. Package Installation
+On Ubuntu 26.04 or Debian Linux build hosts, execute:
 
 ```bash
-sudo apt update
-sudo apt install -y \
-  git \
-  qemu-system-x86 \
-  qemu-utils \
-  ovmf \
-  swtpm \
-  swtpm-tools \
-  tpm2-tools \
-  sbsigntool \
-  efitools \
-  cryptsetup-bin \
-  squashfs-tools \
-  mkosi \
-  debootstrap \
-  uidmap \
-  systemd-container \
-  python3 \
-  ca-certificates \
-  openssl
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+    git \
+    qemu-system-x86 \
+    ovmf \
+    swtpm \
+    swtpm-tools \
+    tpm2-tools \
+    sbsigntool \
+    efitools \
+    cryptsetup-bin \
+    squashfs-tools \
+    mkosi \
+    systemd-container \
+    debian-archive-keyring
 ```
 
-## Verify after install
+## 2. KVM Permission Setup
+Ensure the current developer user has read/write permissions to `/dev/kvm`:
 
 ```bash
-uname -s
-uname -m
-ls -l /dev/kvm
-mkosi --version
-qemu-system-x86_64 --version
-swtpm --version
-tpm2_pcrread --version
+sudo usermod -aG kvm "$USER"
 ```
 
-This document reflects the intended environment; it is not claiming the current Windows workspace satisfies it.
+*Note: Group membership updates require logging out and logging back in.*
+
+## 3. Environment Verification
+Run the ExamOS doctor diagnostic to verify all tools and firmware paths:
+
+```bash
+bash tests/p0/examos-doctor.sh
+```

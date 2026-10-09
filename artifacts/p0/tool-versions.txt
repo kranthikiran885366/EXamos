@@ -1,11 +1,9 @@
-Actual tool availability in the current environment:
-
-- git --version -> git version 2.52.0.windows.1
-- mkosi --version -> command not found
-- qemu-system-x86_64 --version -> command not found
-- qemu-img --version -> command not found
-- swtpm --version -> command not found
-- tpm2_pcrread --version -> command not found
-- sbsign --version -> command not found
-- veritysetup --version -> command not found
-- mksquashfs -version -> command not found
+git version 2.53.0
+mkosi 26
+QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+qemu-img version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+TPM emulator version 0.10.1, Copyright (c) 2014-2022 IBM Corp. and others
+tool="tpm2_pcrread" version="5.7" tctis="libtss2-tctildr" tcti-default=tcti-device
+sbsign 0.9.4
+veritysetup 2.8.4 flags: UDEV BLKID KEYRING FIPS KERNEL_CAPI HW_OPAL 
+mksquashfs version 4.7.5 (2026/03/01)

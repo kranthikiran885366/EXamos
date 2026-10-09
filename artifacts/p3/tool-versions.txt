@@ -1,0 +1,12 @@
+ExamOS Phase 3 Toolchain and Dependencies
+=========================================
+OS Kernel: Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+GCC Version: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+G++ Version: g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Go Version: go version go1.26.0 linux/amd64
+OpenSSL Version: OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)
+QEMU Version: QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+SWTPM Version: TPM emulator version 0.10.1, Copyright (c) 2014-2022 IBM Corp. and others
+MKOSI Version: mkosi 26
+Git Commit: 6fe4059c90701b9fca8412dfcbae5bbf94c3c55f ExamOS Developer 2026-10-08 16:26:45 +0000 Record complete P1 artifacts, tool versions, and verified gate logs
+Collection Timestamp: 2026-10-08T16:52:22Z

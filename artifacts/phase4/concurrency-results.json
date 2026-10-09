@@ -1,0 +1,11 @@
+{
+  "phase": "P4",
+  "concurrency_target_sessions": 50,
+  "events_per_session": 10,
+  "total_events_sent": 500,
+  "total_events_ingested": 500,
+  "total_events_dropped": 0,
+  "duration_ms": 15455,
+  "throughput_events_per_second": 32.35,
+  "status": "PASS"
+}

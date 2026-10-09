@@ -1,76 +1,49 @@
-name: ExamOS P0 Foundation & Image Pipeline
+name: ExamOS P0 — Foundation Build and Boot Gate
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, develop, 'phase/p0']
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEBIAN_FRONTEND: noninteractive
 
 jobs:
-  p0-build-and-boot:
-    name: Native Build, API Smoke, mkosi Image & QEMU/OVMF Boot
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+  p0-gate:
+    name: P0 Gate — Build & OVMF Boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Build Toolchains & Virtualization Dependencies
-        shell: bash
+      - name: Install P0 Build Tools & Firmware
         run: |
-          set -euo pipefail
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc g++ make \
-            libssl-dev libcurl4-openssl-dev libudev-dev \
-            git qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools \
-            tpm2-tools sbsigntool efitools cryptsetup-bin \
-            squashfs-tools mkosi debootstrap uidmap systemd-container \
-            ca-certificates openssl
+            git qemu-system-x86 ovmf swtpm swtpm-tools tpm2-tools \
+            sbsigntool efitools cryptsetup-bin squashfs-tools mkosi \
+            systemd-container debian-archive-keyring
 
-      - name: Validate Host Environment & Repository
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/*.sh tests/p0/*.sh
-          bash tests/p0/repository-check.sh
-          bash tests/p0/host-check.sh
-          bash tests/p0/examos-doctor.sh || true
+      - name: Run Host & Environment Check
+        run: bash tests/p0/host-check.sh
 
-      - name: Compile Native C/C++ Subsystems
-        shell: bash
-        run: |
-          set -euo pipefail
-          make all
-          bash tests/p0/server-smoke.sh
+      - name: Run Doctor Diagnostics
+        run: bash tests/p0/examos-doctor.sh
 
-      - name: Build and Validate Development Image (mkosi)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/p0
-          bash tests/p0/build.sh
+      - name: Check Repository Structure & Secrets
+        run: bash tests/p0/repository-check.sh
 
-      - name: Collect Build Information & Checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash tests/p0/collect-build-info.sh
+      - name: Execute Full P0 Build and Boot Pipeline
+        run: bash scripts/p0.sh
 
-      - name: Run Automated QEMU / OVMF Boot Test
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash tests/p0/boot.sh
-
-      - name: Upload P0 Verification Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload P0 Artifacts
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: examos-p0-build-artifacts
-          path: |
-            artifacts/p0/
-            image/examos-production.raw
-            image/*.img
-          if-no-files-found: warn
+          name: examos-p0-artifacts
+          path: artifacts/p0/
+          retention-days: 30

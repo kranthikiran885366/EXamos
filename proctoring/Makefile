@@ -1,10 +1,11 @@
 CXX ?= g++
 CXXFLAGS ?= -Wall -Wextra -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong
-LDFLAGS ?= -lpthread -lm
+LDFLAGS ?= -lcurl -lpthread -lm
 
 SRCS = main.cpp \
        client/media_capture.cpp \
-       analysis/anomaly_detector.cpp
+       analysis/anomaly_detector.cpp \
+       analysis/vision_engine.cpp
 
 OBJS = $(SRCS:.cpp=.o)
 TARGET = examos-proctor

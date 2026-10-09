@@ -1,1 +1,1 @@
-size_bytes=2307825664
+-rwxrwxrwx 1 root root 2.2G Oct  9 02:47 /mnt/d/SEB BRO/image/examos.raw

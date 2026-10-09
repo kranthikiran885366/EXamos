@@ -110,6 +110,15 @@ int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    const char *api_token = getenv("EXAMOS_AGENT_API_TOKEN");
+    if (!api_token || strlen(api_token) < 32) {
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        return -1;
+    }
+    char authorization[512];
+    snprintf(authorization, sizeof(authorization), "Authorization: Bearer %s", api_token);
+    headers = curl_slist_append(headers, authorization);
     if (!headers) {
         curl_easy_cleanup(curl);
         return -1;

@@ -12,10 +12,18 @@ Restart=always
 RestartSec=3
 StandardOutput=journal
 StandardError=journal
+EnvironmentFile=/etc/examos/proctor.env
 
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
