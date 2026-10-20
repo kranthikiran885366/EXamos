@@ -104,6 +104,7 @@ OVMF_CODE="$(source "$WORKSPACE/scripts/examos-lib.sh"; examos_find_ovmf_code)" 
     fail "OVMF code firmware was not found"
 OVMF_VARS_TMPL="$(source "$WORKSPACE/scripts/examos-lib.sh"; examos_find_ovmf_vars || true)"
 TMP_DIR="$(mktemp -d)"
+NORMALIZED_LOG="$TMP_DIR/iso-boot.normalized.log"
 QEMU_PID=""
 cleanup() {
     if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -156,11 +157,12 @@ qemu-system-x86_64 \
 QEMU_PID=$!
 
 iso_boot_ready() {
-    grep -qE "Linux version [0-9]" "$BOOT_LOG" &&
-        grep -qE "systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]" "$BOOT_LOG" &&
-        grep -qiE "Reached target.*(Multi-User System|multi-user\.target)" "$BOOT_LOG" &&
-        grep -qE "^[[:alnum:]_.-]+ login:" "$BOOT_LOG" &&
-        grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only with volatile overlay" "$BOOT_LOG"
+    examos_normalize_serial_log "$BOOT_LOG" "$NORMALIZED_LOG" || return 1
+    grep -qE "Linux version [0-9]" "$NORMALIZED_LOG" &&
+        grep -qE "systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]" "$NORMALIZED_LOG" &&
+        grep -qiE "Reached target.*(Multi-User System|multi-user\.target)" "$NORMALIZED_LOG" &&
+        grep -qE "^[[:alnum:]_.-]+ login:" "$NORMALIZED_LOG" &&
+        grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only with volatile overlay" "$NORMALIZED_LOG"
 }
 
 QEMU_START=$SECONDS
@@ -202,9 +204,8 @@ POST_BOOT_HASH="$(sha256sum "$ISO_FILE" | cut -d' ' -f1)"
 ISO_UNCHANGED=false
 [ "$POST_BOOT_HASH" = "$ISO_HASH" ] && ISO_UNCHANGED=true
 
-NORMALIZED_LOG="$TMP_DIR/iso-boot.normalized.log"
-LC_ALL=C tr -d '\033' < "$BOOT_LOG" |
-    LC_ALL=C tr '\r' '\n' > "$NORMALIZED_LOG"
+examos_normalize_serial_log "$BOOT_LOG" "$NORMALIZED_LOG" ||
+    fail "Unable to normalize the optical guest serial log"
 
 KERNEL=false
 SYSTEMD=false

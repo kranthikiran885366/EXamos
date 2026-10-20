@@ -117,6 +117,7 @@ boot_cleanup() {
 }
 trap boot_cleanup EXIT
 TMP_VARS="$TMP_DIR/OVMF_VARS.fd"
+NORMALIZED_LOG="$TMP_DIR/boot.normalized.log"
 if [ -n "$OVMF_VARS_TEMPLATE" ]; then
     cp -- "$OVMF_VARS_TEMPLATE" "$TMP_VARS" || fail "Unable to create ephemeral OVMF variables."
 else
@@ -147,10 +148,11 @@ qemu-system-x86_64 -M q35 $QEMU_ACCEL \
 QEMU_PID=$!
 
 disk_boot_ready() {
-    grep -qE 'Linux version [0-9]' "$BOOT_LOG" &&
-        grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$BOOT_LOG" &&
-        grep -qiE 'Reached target.*(Multi-User System|multi-user\.target)' "$BOOT_LOG" &&
-        grep -qE '^[[:alnum:]_.-]+ login:' "$BOOT_LOG"
+    examos_normalize_serial_log "$BOOT_LOG" "$NORMALIZED_LOG" || return 1
+    grep -qE 'Linux version [0-9]' "$NORMALIZED_LOG" &&
+        grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$NORMALIZED_LOG" &&
+        grep -qiE 'Reached target.*(Multi-User System|multi-user\.target)' "$NORMALIZED_LOG" &&
+        grep -qE '^[[:alnum:]_.-]+ login:' "$NORMALIZED_LOG"
 }
 
 BOOT_START=$SECONDS
@@ -193,10 +195,11 @@ KERNEL=false
 SYSTEMD=false
 MULTIUSER=false
 LOGIN_PROMPT=false
-grep -qE 'Linux version [0-9]' "$BOOT_LOG" && KERNEL=true
-grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$BOOT_LOG" && SYSTEMD=true
-grep -qiE 'Reached target (Multi-User System|multi-user\.target)([[:space:].]|$)' "$BOOT_LOG" && MULTIUSER=true
-grep -qE '^[[:alnum:]_.-]+ login:' "$BOOT_LOG" && LOGIN_PROMPT=true
+examos_normalize_serial_log "$BOOT_LOG" "$NORMALIZED_LOG" || fail "Unable to normalize the guest serial log."
+grep -qE 'Linux version [0-9]' "$NORMALIZED_LOG" && KERNEL=true
+grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$NORMALIZED_LOG" && SYSTEMD=true
+grep -qiE 'Reached target (Multi-User System|multi-user\.target)([[:space:].]|$)' "$NORMALIZED_LOG" && MULTIUSER=true
+grep -qE '^[[:alnum:]_.-]+ login:' "$NORMALIZED_LOG" && LOGIN_PROMPT=true
 STATUS="FAIL"
 if [ "$BOOT_READY" = true ] && [ "$KERNEL" = true ] && [ "$SYSTEMD" = true ] && \
     [ "$MULTIUSER" = true ] && [ "$LOGIN_PROMPT" = true ] && [ "$IMAGE_UNCHANGED" = true ]; then

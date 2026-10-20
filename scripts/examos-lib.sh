@@ -38,6 +38,15 @@ examos_p0_source_status() {
     python3 "$root/scripts/source-state.py" "$root" --format porcelain
 }
 
+# Remove terminal color sequences and normalize serial carriage returns before
+# evaluating guest readiness markers. Console output can split marker text with
+# ANSI color codes even though the guest reached the target successfully.
+examos_normalize_serial_log() {
+    local input="${1:-}" output="${2:-}"
+    [ -n "$input" ] && [ -r "$input" ] && [ -n "$output" ] || return 1
+    LC_ALL=C sed -E 's/\x1B\[[0-9;?]*m//g' "$input" | LC_ALL=C tr '\r' '\n' > "$output"
+}
+
 examos_p0_validate_run_dir() {
     local root="${1:-$(pwd)}" directory="${2:-${EXAMOS_P0_ARTIFACT_DIR:-}}"
     [ -n "$directory" ] || return 1
