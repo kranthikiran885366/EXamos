@@ -25,11 +25,14 @@ def read_manifest(path: pathlib.Path) -> list[dict[str, str]]:
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
-        print("usage: validate-reproducibility.py REPORT BUILD_A BUILD_B COMMIT", file=sys.stderr)
+    if len(sys.argv) != 6:
+        print("usage: validate-reproducibility.py REPORT BUILD_A BUILD_B COMMIT SOURCE_DATE_EPOCH", file=sys.stderr)
         return 2
     report_path, build_a_path, build_b_path = map(pathlib.Path, sys.argv[1:4])
     expected_commit = sys.argv[4]
+    expected_epoch = sys.argv[5]
+    if not re.fullmatch(r"[0-9]+", expected_epoch):
+        return fail("expected source-date epoch is not an integer")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
         raw_a = build_a_path.read_bytes()
@@ -47,6 +50,8 @@ def main() -> int:
         return fail("report is not from a clean image reproducibility run")
     if report.get("source_commit") != expected_commit:
         return fail("report commit differs from the canonical P0 commit")
+    if report.get("source_date_epoch") != int(expected_epoch):
+        return fail("report source-date epoch differs from the source commit timestamp")
     if not build_a or build_a != build_b or raw_a != raw_b:
         return fail("two build manifests are empty or differ")
     if build_a != report.get("build_a") or build_b != report.get("build_b"):

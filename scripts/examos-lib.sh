@@ -52,9 +52,11 @@ examos_normalize_serial_log() {
 examos_p0_mkosi_build() {
     [ "$#" -eq 6 ] || return 2
     local workspace="$1" output_dir="$2" cache_dir="$3" build_dir="$4"
-    local extra_dir="$5" build_log="$6" mkosi_bin cxx_bin
+    local extra_dir="$5" build_log="$6" mkosi_bin cxx_bin source_date_epoch
     mkosi_bin="$(command -v mkosi)" || return 1
     cxx_bin="$(command -v g++)" || return 1
+    source_date_epoch="$(git -C "$workspace" show -s --format=%ct HEAD)" || return 1
+    [[ "$source_date_epoch" =~ ^[0-9]+$ ]] || return 1
     mkdir -p "$output_dir" "$cache_dir" "$build_dir" \
         "$extra_dir/usr/local/sbin" "$(dirname "$build_log")" || return 1
     "$cxx_bin" -std=c++17 -O2 -Wall -Wextra -Werror \
@@ -63,7 +65,10 @@ examos_p0_mkosi_build() {
         "$workspace/image/p0/dev-console-setup.cpp" \
         -o "$extra_dir/usr/local/sbin/examos-dev-console-setup" || return 1
     chmod 0755 "$extra_dir/usr/local/sbin/examos-dev-console-setup" || return 1
+    SOURCE_DATE_EPOCH="$source_date_epoch" \
+    SYSTEMD_REPART_MKFS_OPTIONS_VFAT="--invariant" \
     "$mkosi_bin" --force -C "$workspace/image/p0" \
+        --source-date-epoch "$source_date_epoch" \
         --cache-directory "$cache_dir" \
         --output-directory "$output_dir" \
         --build-directory "$build_dir" \

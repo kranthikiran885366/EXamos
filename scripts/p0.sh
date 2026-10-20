@@ -351,7 +351,8 @@ if [ -s "$REPRO_REPORT" ]; then
             if python3 "$WORKSPACE/tests/p0/validate-reproducibility.py" \
                 "$REPRO_REPORT" \
                 "$ARTIFACT_DIR/reproducibility/build-a.sha256" \
-                "$ARTIFACT_DIR/reproducibility/build-b.sha256" "$GIT_COMMIT"; then
+                "$ARTIFACT_DIR/reproducibility/build-b.sha256" "$GIT_COMMIT" \
+                "$(git -C "$WORKSPACE" show -s --format=%ct "$GIT_COMMIT")"; then
                 CHECK_REPRODUCIBLE_BUILD="PASS"
             else
                 CHECK_REPRODUCIBLE_BUILD="FAIL"

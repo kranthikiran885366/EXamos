@@ -34,6 +34,11 @@ BUILD_B_PATH="$OUT/build-b.raw"
 MANIFEST_A="$OUT/build-a.sha256"
 MANIFEST_B="$OUT/build-b.sha256"
 SOURCE_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)" || exit 2
+SOURCE_DATE_EPOCH="$(git -C "$WORKSPACE" show -s --format=%ct "$SOURCE_COMMIT")" || exit 2
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || {
+    echo "[P0-REPRO] FATAL: source commit timestamp is invalid." >&2
+    exit 2
+}
 SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")" || exit 2
 SOURCE_TREE_STATE="CLEAN"
 STATUS="PASS"
@@ -154,6 +159,7 @@ if [ "$STATUS" = PASS ]; then
 fi
 
 if python3 - "$REPORT_TMP" "$STATUS" "$REASON" "$SOURCE_COMMIT" "$SOURCE_TREE_STATE" \
+    "$SOURCE_DATE_EPOCH" \
     "$BUILD_A_HASH" "$BUILD_B_HASH" "$BUILD_A_SIZE" "$BUILD_B_SIZE" \
     "$BUILD_A_MANIFEST_HASH" "$BUILD_B_MANIFEST_HASH" <<'PY'
 import datetime
@@ -161,7 +167,7 @@ import json
 import pathlib
 import sys
 
-(output, status, reason, commit, tree, hash_a, hash_b, size_a, size_b,
+(output, status, reason, commit, tree, source_date_epoch, hash_a, hash_b, size_a, size_b,
  manifest_hash_a, manifest_hash_b) = sys.argv[1:]
 root = pathlib.Path(output).parent
 entries_a = [{"sha256": hash_a, "label": "p0-disk"}] if hash_a else []
@@ -175,6 +181,7 @@ report = {
     "schema": "examos.p0.reproducibility.v1",
     "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "source_commit": commit,
+    "source_date_epoch": int(source_date_epoch),
     "source_tree_state": tree,
     "mode": "image",
     "result": result,

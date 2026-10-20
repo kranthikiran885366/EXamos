@@ -29,6 +29,11 @@ for output in "$BUILD_RESULT" "$BUILD_RESULT_TMP" "$ARTIFACT_DIR/examos-p0.raw" 
     }
 done
 SOURCE_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)" || exit 2
+SOURCE_DATE_EPOCH="$(git -C "$WORKSPACE" show -s --format=%ct "$SOURCE_COMMIT")" || exit 2
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || {
+    echo "[P0-BUILD] FATAL: source commit timestamp is invalid." >&2
+    exit 2
+}
 SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")" || exit 2
 [ -z "$SOURCE_STATUS" ] || {
     echo "[P0-BUILD] BLOCKED: refusing to build release evidence from a dirty source tree." >&2
@@ -133,10 +138,12 @@ if [ -f "$IMAGE_ARTIFACT" ]; then
         --arg image_path "$(cat "$ARTIFACT_DIR/image-path.txt")" \
         --arg config_hash "$BUILD_CONFIG_SHA256" --arg inputs_hash "$PINNED_INPUTS_SHA256" \
         --arg mkosi_version "$MKOSI_VER" --argjson size_bytes "$(cat "$ARTIFACT_DIR/image-size.txt")" \
+        --argjson source_date_epoch "$SOURCE_DATE_EPOCH" \
         '{phase:"P0",check:"disk_build",status:"PASS",timestamp:$timestamp,
           source_commit:$commit,source_tree_state:"CLEAN",source_dirty_path_count:0,
           build_config_sha256:$config_hash,pinned_inputs_sha256:$inputs_hash,
-          mkosi_version:$mkosi_version,image_path:$image_path,image_sha256:$image_hash,
+          mkosi_version:$mkosi_version,source_date_epoch:$source_date_epoch,
+          image_path:$image_path,image_sha256:$image_hash,
           image_size_bytes:$size_bytes}' > "$BUILD_RESULT_TMP" || exit 2
     mv -- "$BUILD_RESULT_TMP" "$BUILD_RESULT" || exit 2
     BUILD_FINALIZED=1
