@@ -5,7 +5,8 @@
 # =============================================================================
 
 examos_p0_load_format() {
-    local root="${1:-$(pwd)}" file="$root/image/p0/format.conf"
+    local root="${1:-$(pwd)}"
+    local file="$root/image/p0/format.conf"
     [ -r "$file" ] || return 1
     local key value line
     declare -A format_values=()
