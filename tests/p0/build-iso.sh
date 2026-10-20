@@ -258,9 +258,13 @@ cp "$ROOT_FILE" "$ISO_TREE/examos-root.ext4" ||
     fail "Unable to include the canonical root filesystem for optical boot"
 
 EFI_BOOT_FILE="$TMP_DIR/p0-efi-boot.img"
-truncate -s 256M "$EFI_BOOT_FILE"
-# The canonical initrd makes the UKI larger than 64 MiB. Use a valid-size
-# FAT32 filesystem; tiny FAT32 El Torito images are rejected by OVMF.
+# Size the FAT32 boot image from the actual UKI payload and reserve filesystem
+# metadata/headroom. FAT32 boot media also needs to exceed the FAT16 size range.
+UKI_SIZE_BYTES="$(stat -c '%s' "$ISO_UKI")"
+case "$UKI_SIZE_BYTES" in ''|*[!0-9]*) fail "Unable to determine ISO UKI size" ;; esac
+EFI_BOOT_SIZE_MIB=$(((UKI_SIZE_BYTES + 1048575) / 1048576 + 64))
+[ "$EFI_BOOT_SIZE_MIB" -le 2048 ] || fail "ISO UKI exceeds the supported EFI boot image size"
+truncate -s "${EFI_BOOT_SIZE_MIB}M" "$EFI_BOOT_FILE"
 mkfs.vfat -F 32 "$EFI_BOOT_FILE" >/dev/null ||
     fail "Unable to format the UEFI fallback ESP"
 mmd -i "$EFI_BOOT_FILE" ::/EFI ::/EFI/BOOT ||
@@ -276,6 +280,10 @@ cmp -s "$ISO_UKI" "$TMP_DIR/verified-BOOTX64.EFI" ||
 # also appended for hybrid disk media and embedded as a file for optical boot.
 cp "$EFI_BOOT_FILE" "$ISO_TREE/efi-boot.img" ||
     fail "Unable to stage the UEFI El Torito image"
+mkdir -p "$ISO_TREE/EFI/BOOT" ||
+    fail "Unable to create the ISO filesystem fallback-loader directory"
+cp "$ISO_UKI" "$ISO_TREE/EFI/BOOT/BOOTX64.EFI" ||
+    fail "Unable to stage the UEFI fallback loader in the ISO filesystem"
 
 echo "[P0-ISO] Creating hybrid UEFI media with the source GPT root..."
 xorriso -as mkisofs \

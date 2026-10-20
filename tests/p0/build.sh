@@ -19,6 +19,47 @@ examos_p0_validate_run_dir "$WORKSPACE" "$ARTIFACT_DIR" || {
 }
 mkdir -p "$ARTIFACT_DIR"
 
+BUILD_RESULT="$ARTIFACT_DIR/build-result.json"
+BUILD_RESULT_TMP="$ARTIFACT_DIR/.build-result.json.tmp"
+for output in "$BUILD_RESULT" "$BUILD_RESULT_TMP" "$ARTIFACT_DIR/examos-p0.raw" \
+    "$ARTIFACT_DIR/image.sha256" "$ARTIFACT_DIR/image-path.txt" "$ARTIFACT_DIR/image-size.txt"; do
+    [ ! -e "$output" ] && [ ! -L "$output" ] || {
+        echo "[P0-BUILD] FATAL: build evidence output already exists; refusing to overwrite: $output" >&2
+        exit 2
+    }
+done
+SOURCE_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)" || exit 2
+SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")" || exit 2
+[ -z "$SOURCE_STATUS" ] || {
+    echo "[P0-BUILD] BLOCKED: refusing to build release evidence from a dirty source tree." >&2
+    printf '%s\n' "$SOURCE_STATUS" >&2
+    exit 2
+}
+SOURCE_DIRTY_COUNT=0
+BUILD_CONFIG_SHA256="$(sha256sum "$WORKSPACE/image/p0/mkosi.conf" | cut -d' ' -f1)" || exit 2
+PINNED_INPUTS_SHA256="$(sha256sum "$WORKSPACE/image/p0/sources.lock" | cut -d' ' -f1)" || exit 2
+BUILD_FINALIZED=0
+record_build_failure() {
+    local exit_code=$?
+    if [ "$BUILD_FINALIZED" -eq 0 ] && [ -n "${BUILD_RESULT_TMP:-}" ]; then
+        jq -n --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg commit "$SOURCE_COMMIT" --arg config_hash "$BUILD_CONFIG_SHA256" \
+            --arg inputs_hash "$PINNED_INPUTS_SHA256" --argjson exit_code "$exit_code" \
+            '{phase:"P0",check:"disk_build",status:"FAIL",timestamp:$timestamp,
+              source_commit:$commit,source_tree_state:"CLEAN",source_dirty_path_count:0,
+              build_config_sha256:$config_hash,pinned_inputs_sha256:$inputs_hash,exit_code:$exit_code}' \
+            > "$BUILD_RESULT_TMP" && mv -- "$BUILD_RESULT_TMP" "$BUILD_RESULT" || true
+    fi
+}
+trap record_build_failure EXIT
+jq -n --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg commit "$SOURCE_COMMIT" --arg config_hash "$BUILD_CONFIG_SHA256" \
+    --arg inputs_hash "$PINNED_INPUTS_SHA256" \
+    '{phase:"P0",check:"disk_build",status:"IN_PROGRESS",timestamp:$timestamp,
+      source_commit:$commit,source_tree_state:"CLEAN",source_dirty_path_count:0,
+      build_config_sha256:$config_hash,pinned_inputs_sha256:$inputs_hash}' \
+    > "$BUILD_RESULT_TMP" && mv -- "$BUILD_RESULT_TMP" "$BUILD_RESULT"
+
 echo "============================================================"
 echo "ExamOS P0 — Building Minimal Debian Target Image"
 echo "============================================================"
@@ -45,7 +86,7 @@ echo "[P0-BUILD] Invoking mkosi build..."
 BUILD_LOG="$ARTIFACT_DIR/build.log"
 : > "$BUILD_LOG"
 BUILD_WORK_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/examos-p0-build.XXXXXX")"
-trap 'rm -rf -- "$BUILD_WORK_DIR"' EXIT
+trap 'record_build_failure; rm -rf -- "$BUILD_WORK_DIR"' EXIT
 "$MKOSI_BIN" --force -C "$WORKSPACE/image/p0" \
     --cache-directory "$BUILD_WORK_DIR/cache" \
     --output-directory "$BUILD_WORK_DIR/out" \
@@ -63,7 +104,7 @@ IMAGE_ARTIFACT="${IMAGE_CANDIDATES[0]}"
 [ ! -L "$IMAGE_ARTIFACT" ] || { echo "[P0-BUILD] FATAL: mkosi output is a symlink." >&2; exit 1; }
 if [ -f "$IMAGE_ARTIFACT" ]; then
     echo "[P0-BUILD] Found generated artifact: $IMAGE_ARTIFACT"
-    cp --no-clobber -- "$IMAGE_ARTIFACT" "$ARTIFACT_DIR/examos-p0.raw"
+    cp -- "$IMAGE_ARTIFACT" "$ARTIFACT_DIR/examos-p0.raw"
     [ -s "$ARTIFACT_DIR/examos-p0.raw" ] && cmp -s -- "$IMAGE_ARTIFACT" "$ARTIFACT_DIR/examos-p0.raw" || {
         echo "[P0-BUILD] FATAL: run-bound image copy does not match mkosi output." >&2
         exit 1
@@ -77,8 +118,27 @@ if [ -f "$IMAGE_ARTIFACT" ]; then
 
     # 7. Record real Image Size Baseline
     stat -c '%s' "$ARTIFACT_DIR/examos-p0.raw" > "$ARTIFACT_DIR/image-size.txt"
-    SIZE_HUMAN=$(awk '{print $5}' "$ARTIFACT_DIR/image-size.txt")
+    SIZE_HUMAN=$(numfmt --to=iec-i --suffix=B "$(cat "$ARTIFACT_DIR/image-size.txt")")
     echo "[P0-BUILD] Artifact Size: $SIZE_HUMAN"
+
+    SOURCE_COMMIT_AFTER="$(git -C "$WORKSPACE" rev-parse HEAD)" || exit 2
+    SOURCE_STATUS_AFTER="$(examos_p0_source_status "$WORKSPACE")" || exit 2
+    [ "$SOURCE_COMMIT_AFTER" = "$SOURCE_COMMIT" ] && [ -z "$SOURCE_STATUS_AFTER" ] || {
+        echo "[P0-BUILD] FATAL: source commit or worktree changed during image build." >&2
+        exit 1
+    }
+    jq -n --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --arg commit "$SOURCE_COMMIT" --arg image_hash "$HASH_VAL" \
+        --arg image_path "$(cat "$ARTIFACT_DIR/image-path.txt")" \
+        --arg config_hash "$BUILD_CONFIG_SHA256" --arg inputs_hash "$PINNED_INPUTS_SHA256" \
+        --arg mkosi_version "$MKOSI_VER" --argjson size_bytes "$(cat "$ARTIFACT_DIR/image-size.txt")" \
+        '{phase:"P0",check:"disk_build",status:"PASS",timestamp:$timestamp,
+          source_commit:$commit,source_tree_state:"CLEAN",source_dirty_path_count:0,
+          build_config_sha256:$config_hash,pinned_inputs_sha256:$inputs_hash,
+          mkosi_version:$mkosi_version,image_path:$image_path,image_sha256:$image_hash,
+          image_size_bytes:$size_bytes}' > "$BUILD_RESULT_TMP" || exit 2
+    mv -- "$BUILD_RESULT_TMP" "$BUILD_RESULT" || exit 2
+    BUILD_FINALIZED=1
 
     echo "============================================================"
     echo "[P0-BUILD] OVERALL BUILD STATUS: PASS"

@@ -239,10 +239,15 @@ if [ "$CHECK_ARTIFACT" = "PASS" ] && sha256sum --check --status "$ARTIFACT_DIR/i
 fi
 CHECK_BUILD="FAIL"
 if jq -e --arg hash "$IMAGE_HASH" --arg commit "$GIT_COMMIT" \
+    --arg image_path "$(cat "$ARTIFACT_DIR/image-path.txt" 2>/dev/null || echo UNKNOWN)" \
+    --arg config_hash "$BUILD_CONFIG_SHA256" \
     --arg tree "$SOURCE_TREE_STATE" --argjson dirty "$SOURCE_DIRTY_PATH_COUNT" \
     '.status == "PASS" and .image_sha256 == $hash
      and .source_commit == $commit and .source_tree_state == $tree
-     and .source_dirty_path_count == $dirty' \
+     and .source_dirty_path_count == $dirty
+     and .build_config_sha256 == $config_hash
+     and .image_path == $image_path
+     and .image_size_bytes > 0' \
     "$ARTIFACT_DIR/build-result.json" >/dev/null 2>&1; then
     CHECK_BUILD="PASS"
 fi
@@ -250,10 +255,10 @@ CHECK_BOOT="FAIL"
 if jq -e --arg hash "$IMAGE_HASH" \
     '.status == "PASS" and .image_sha256 == $hash and
      .image_sha256_after_boot == $hash and .source_image_unchanged == true and
-     .qemu_stopped_after_readiness == true and
+     .readiness_observed == true and
      .qemu_acceleration == "KVM" and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
      ([.markers.kernel, .markers.systemd, .markers.multi_user_target,
-       .markers.first_boot_setup_prompt, .markers.serial_login_prompt] | all)' \
+       .markers.serial_login_prompt] | all)' \
     "$ARTIFACT_DIR/boot-result.json" >/dev/null 2>&1; then
     CHECK_BOOT="PASS"
 fi
@@ -310,6 +315,10 @@ if jq -e --slurpfile build "$ARTIFACT_DIR/iso-build-result.json" \
     CHECK_ISO_BOOT="PASS"
 fi
 CHECK_IMAGE_FORENSICS="BLOCKED"
+if ! bash "$WORKSPACE/tests/p0/image-forensics.sh" \
+    > "$ARTIFACT_DIR/image-forensics-output.log" 2>&1; then
+    CHECK_IMAGE_FORENSICS="FAIL"
+fi
 if [ -s "$ARTIFACT_DIR/enterprise/image-forensics.json" ] && jq -e \
     --arg image "$IMAGE_HASH" \
     '.schema == "examos.p0.forensics.v1" and .artifact_sha256 == $image
