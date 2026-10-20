@@ -1,0 +1,16 @@
+# ExamOS P0 pinned package sources
+# Canonical lock for Debian Trixie x86-64 image builds.
+# Do not use floating mirrors for release evidence.
+#
+# Format: key=value. tests/p0/pin-check.sh and tests/p0/reproducible-build.sh
+# require these values to match image/p0/mkosi.conf.
+
+debian_distribution=debian
+debian_release=trixie
+debian_architecture=x86-64
+debian_components=main,contrib,non-free,non-free-firmware
+debian_snapshot=20261018T000000Z
+debian_mirror=https://snapshot.debian.org/archive/debian/20261018T000000Z
+debian_security_mirror=https://snapshot.debian.org/archive/debian-security/20261018T000000Z
+snapshot_policy=fail-closed
+notes=This snapshot is a source pin, not a production certification. Two isolated builds must still match before ENG-04 is PASS.

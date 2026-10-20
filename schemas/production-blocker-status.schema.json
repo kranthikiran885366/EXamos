@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://examos.local/schemas/production-blocker-status.schema.json",
+  "title": "ExamOS production blocker status",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source_commit",
+    "source_tree_state",
+    "overall",
+    "blockers"
+  ],
+  "properties": {
+    "schema": { "const": "examos.production.blocker-status.v1" },
+    "generated_at": { "type": "string" },
+    "source_commit": { "type": "string" },
+    "source_tree_state": { "enum": ["CLEAN", "DIRTY", "UNKNOWN"] },
+    "overall": { "enum": ["PASS", "FAIL", "BLOCKED"] },
+    "blockers": {
+      "type": "array",
+      "minItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "result", "evidence_class", "reason"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "result": { "enum": ["PASS", "FAIL", "BLOCKED", "NOT_RUN"] },
+          "evidence_class": {
+            "enum": [
+              "source",
+              "software-build",
+              "qemu",
+              "vmware",
+              "physical-hardware",
+              "organization-trust",
+              "independent-assessment"
+            ]
+          },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

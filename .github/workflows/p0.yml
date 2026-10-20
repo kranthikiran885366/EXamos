@@ -13,12 +13,23 @@ env:
 jobs:
   p0-gate:
     name: P0 Gate — Build & OVMF Boot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Enforce clean source tree
+        # Gate results from dirty trees are not release evidence.
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]; then
+            echo "FATAL: Source tree is DIRTY — P0 gate refuses to run on a dirty tree." >&2
+            echo "Commit or stash all changes before running this gate." >&2
+            git status --short --untracked-files=all | head -30 >&2
+            exit 1
+          fi
+          echo "Source tree is CLEAN at commit $(git rev-parse HEAD)"
 
       - name: Install P0 Build Tools & Firmware
         run: |
@@ -26,7 +37,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             git qemu-system-x86 ovmf swtpm swtpm-tools tpm2-tools \
             sbsigntool efitools cryptsetup-bin squashfs-tools mkosi \
-            systemd-container debian-archive-keyring
+            systemd-container debian-archive-keyring xorriso fdisk mtools \
+            dosfstools grub-efi-amd64-bin grub-common \
+            binutils file jq cpio zstd systemd-ukify
 
       - name: Run Host & Environment Check
         run: bash tests/p0/host-check.sh
@@ -34,11 +47,51 @@ jobs:
       - name: Run Doctor Diagnostics
         run: bash tests/p0/examos-doctor.sh
 
-      - name: Check Repository Structure & Secrets
+      - name: Check Repository Structure
+        # Missing directories must FAIL — auto-creation is disabled.
         run: bash tests/p0/repository-check.sh
 
-      - name: Execute Full P0 Build and Boot Pipeline
+      - name: Verify pinned package sources and runner image
+        run: bash tests/p0/pin-check.sh
+
+      - name: Compile all native subsystems
+        run: |
+          make BUILD_DIR="${RUNNER_TEMP}/examos-p0-native-build" clean
+          make BUILD_DIR="${RUNNER_TEMP}/examos-p0-native-build" all
+
+      - name: Execute P0 Build and Boot Pipeline
+        # This runs: host-check, doctor, repo-check, tool versions,
+        # mkosi build (from image/p0/mkosi.conf), hybrid ISO build,
+        # QEMU disk and ISO boot tests, and results.json.
+        # Any failure propagates as a non-zero exit — no || true.
         run: bash scripts/p0.sh
+
+      # -----------------------------------------------------------------------
+      # Enterprise validation — 60+ checks across 10 domains.
+      # Exit codes from enterprise-validate.sh:
+      #   0 = PASS    (all domains passed)
+      #   1 = FAIL    (at least one domain failed)
+      #   2 = BLOCKED (no failures but some checks could not execute)
+      #
+      # BOTH exit 1 and exit 2 fail this CI step.
+      # BLOCKED is not acceptable as a gate result — it means unverified checks
+      # remain, which cannot count as passing.
+      # -----------------------------------------------------------------------
+      - name: Enterprise Certification (60+ dynamic checks)
+        run: |
+          bash tests/p0/enterprise-validate.sh
+          ENTERPRISE_RC=$?
+          if [ "$ENTERPRISE_RC" -eq 0 ]; then
+            echo "[P0-CI] Enterprise gate: PASS"
+            exit 0
+          elif [ "$ENTERPRISE_RC" -eq 2 ]; then
+            echo "[P0-CI] Enterprise gate: BLOCKED — unverified checks remain." >&2
+            echo "[P0-CI] BLOCKED is not a passing gate. Resolve blocked checks before releasing." >&2
+            exit 1
+          else
+            echo "[P0-CI] Enterprise gate: FAIL" >&2
+            exit 1
+          fi
 
       - name: Upload P0 Artifacts
         if: always()

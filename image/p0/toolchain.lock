@@ -1,0 +1,17 @@
+# ExamOS P0 toolchain family lock
+# Exact installed versions are recorded per evidence run in tool-versions.txt.
+# CI must use the pinned runner image, not ubuntu-latest.
+
+ci_runner_image=ubuntu-24.04
+actions_checkout=v4
+product_version_file=docs/releases/version.yaml
+image_builder=mkosi
+mkosi_min_major=26
+qemu_package=qemu-system-x86
+ovmf_package=ovmf
+tpm_packages=swtpm,swtpm-tools,tpm2-tools
+iso_packages=xorriso,mtools,dosfstools,grub-efi-amd64-bin
+ukify_package=systemd-ukify
+compiler=g++
+native_build=make
+evidence_hash=sha256

@@ -6,32 +6,132 @@
 set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
-ARTIFACT_DIR="$WORKSPACE/artifacts/p0"
+RUNS_DIR="$WORKSPACE/artifacts/p0/runs"
+source "$WORKSPACE/scripts/examos-lib.sh"
 
-mkdir -p "$ARTIFACT_DIR"
+GIT_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)"
+if ! SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")"; then
+    echo "[P0] FATAL: unable to determine source worktree state." >&2
+    exit 2
+fi
+SOURCE_TREE_STATE="CLEAN"
+SOURCE_DIRTY_PATH_COUNT=0
+if [ -n "$SOURCE_STATUS" ]; then
+    SOURCE_TREE_STATE="DIRTY"
+    SOURCE_DIRTY_PATH_COUNT="$(printf '%s\n' "$SOURCE_STATUS" | wc -l | tr -d ' ')"
+    echo "[P0] BLOCKED: source tree has $SOURCE_DIRTY_PATH_COUNT modified or untracked source paths." >&2
+    echo "[P0] No build, boot test, or evidence artifact was changed. Commit or preserve the current work before running the release gate." >&2
+    printf '%s\n' "$SOURCE_STATUS" >&2
+    exit 2
+fi
+P0_CONFIG="$WORKSPACE/image/p0/mkosi.conf"
+VERSION_FILE="$WORKSPACE/docs/releases/version.yaml"
+[ -s "$P0_CONFIG" ] || { echo "[P0] FATAL: P0 mkosi configuration is missing: $P0_CONFIG" >&2; exit 2; }
+[ -s "$VERSION_FILE" ] || { echo "[P0] FATAL: product version file is missing: $VERSION_FILE" >&2; exit 2; }
+BUILD_CONFIG_SHA256="$(sha256sum "$P0_CONFIG" | cut -d' ' -f1)"
+PRODUCT_VERSION="$(awk -F': *' '$1 == "version" { print $2; exit }' "$VERSION_FILE")"
+[ -n "$PRODUCT_VERSION" ] || { echo "[P0] FATAL: product version is missing." >&2; exit 2; }
+TARGET_ARCH="$(awk -F= '/^[[:space:]]*Architecture[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$P0_CONFIG")"
+mkdir -p "$RUNS_DIR"
+if [ -n "${EXAMOS_P0_ARTIFACT_DIR:-}" ]; then
+    ARTIFACT_DIR="$(realpath -m -- "$EXAMOS_P0_ARTIFACT_DIR")"
+    case "$ARTIFACT_DIR" in
+        "$RUNS_DIR"/run-*) ;;
+        *) echo "[P0] FATAL: explicit evidence directory must be a run-* directory under $RUNS_DIR." >&2; exit 2 ;;
+    esac
+    [ ! -e "$ARTIFACT_DIR" ] && [ ! -L "$ARTIFACT_DIR" ] || {
+        echo "[P0] FATAL: evidence run directory already exists; refusing to overwrite it." >&2
+        exit 2
+    }
+    mkdir -m 0750 "$ARTIFACT_DIR"
+else
+    ARTIFACT_DIR="$(mktemp -d "$RUNS_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+    chmod 0750 "$ARTIFACT_DIR"
+fi
+printf '%s\n' "${ARTIFACT_DIR##*/}" > "$ARTIFACT_DIR/.run-id"
+chmod 0640 "$ARTIFACT_DIR/.run-id"
+export EXAMOS_P0_ARTIFACT_DIR="$ARTIFACT_DIR"
+printf 'P0_EVIDENCE_DIR=%s\n' "$ARTIFACT_DIR"
+HOST_ARCH="$(uname -m)"
+HOST_OS="$(uname -s)"
+HOST_KERNEL="$(uname -r)"
+HOST_CPUS="$(nproc)"
+HOST_MEMORY_BYTES="$(awk '/^MemTotal:/ { print $2 * 1024; exit }' /proc/meminfo)"
+HOST_VIRTUALIZATION="$(systemd-detect-virt --vm 2>/dev/null || echo none)"
+EVIDENCE_ENVIRONMENT="LINUX_QEMU_OVMF"
+if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+    EVIDENCE_ENVIRONMENT="WSL2_QEMU_OVMF"
+fi
+
+RESULTS_FINALIZED=0
+CURRENT_STEP="pipeline initialization"
+write_interrupted_result() {
+    local exit_code=$?
+    if [ "$RESULTS_FINALIZED" -eq 0 ]; then
+        cat > "$ARTIFACT_DIR/results.json" <<EOF
+{
+  "phase": "P0",
+  "version": "$PRODUCT_VERSION",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "git_commit": "$GIT_COMMIT",
+  "source_tree_state": "$SOURCE_TREE_STATE",
+  "source_dirty_path_count_at_start": $SOURCE_DIRTY_PATH_COUNT,
+  "status": "FAIL",
+  "release_classification": "NOT_APPROVED",
+  "failed_stage": "$CURRENT_STEP",
+  "exit_code": $exit_code,
+  "evidence_environment": "$EVIDENCE_ENVIRONMENT",
+  "host_architecture": "$HOST_ARCH",
+  "target_architecture": "$TARGET_ARCH"
+}
+EOF
+    fi
+}
+trap write_interrupted_result EXIT
+cat > "$ARTIFACT_DIR/results.json" <<EOF
+{
+  "phase": "P0",
+  "version": "$PRODUCT_VERSION",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "git_commit": "$GIT_COMMIT",
+  "source_tree_state": "$SOURCE_TREE_STATE",
+  "source_dirty_path_count_at_start": $SOURCE_DIRTY_PATH_COUNT,
+  "status": "IN_PROGRESS",
+  "release_classification": "NOT_APPROVED",
+  "evidence_environment": "$EVIDENCE_ENVIRONMENT",
+  "host_architecture": "$HOST_ARCH",
+  "target_architecture": "$TARGET_ARCH"
+}
+EOF
 
 echo "============================================================"
 echo "          EXAMOS PHASE 0 (P0) ACCEPTANCE PIPELINE"
 echo "============================================================"
 
 # Step 1: Host Validation
+CURRENT_STEP="host prerequisite validation"
 echo ""
-echo ">>> STEP 1/7: Running Host & Environment Verification..."
+echo ">>> STEP 1/10: Running Host & Environment Verification..."
 bash "$WORKSPACE/tests/p0/host-check.sh"
 
-# Step 2: Environment Doctor
+# Step 2: Environment Docto
+CURRENT_STEP="environment doctor"
 echo ""
-echo ">>> STEP 2/7: Running Environment Doctor Diagnostics..."
+echo ">>> STEP 2/10: Running Environment Doctor Diagnostics..."
 bash "$WORKSPACE/tests/p0/examos-doctor.sh"
 
 # Step 3: Repository Layout & Secret Material Scan
+CURRENT_STEP="repository integrity and secret scan"
 echo ""
-echo ">>> STEP 3/7: Checking Repository Structure & Secret Material..."
+echo ">>> STEP 3/10: Checking Repository Structure & Secret Material..."
 bash "$WORKSPACE/tests/p0/repository-check.sh"
+bash "$WORKSPACE/tests/p0/pin-check.sh"
+bash "$WORKSPACE/tests/p0/agent-config-contract-test.sh"
 
 # Step 4: Tool Version & OVMF Firmware Discovery
+CURRENT_STEP="toolchain and firmware discovery"
 echo ""
-echo ">>> STEP 4/7: Collecting Tool Versions & Firmware Paths..."
+echo ">>> STEP 4/10: Collecting Tool Versions & Firmware Paths..."
 {
     git --version
     mkosi --version
@@ -45,37 +145,70 @@ echo ">>> STEP 4/7: Collecting Tool Versions & Firmware Paths..."
 } > "$ARTIFACT_DIR/tool-versions.txt"
 
 {
-    echo "OVMF_CODE: $(find /usr/share -iname 'OVMF_CODE*.fd' 2>/dev/null | head -1)"
-    echo "OVMF_VARS: $(find /usr/share -iname 'OVMF_VARS*.fd' 2>/dev/null | head -1)"
+    source "$WORKSPACE/scripts/examos-lib.sh"
+    echo "OVMF_CODE: $(examos_find_ovmf_code || true)"
+    echo "OVMF_VARS: $(examos_find_ovmf_vars || true)"
 } > "$ARTIFACT_DIR/ovmf-info.txt"
 
 # Step 5: Build ExamOS Target Image
+CURRENT_STEP="canonical disk image build"
 echo ""
-echo ">>> STEP 5/7: Building Target Disk Image..."
+echo ">>> STEP 5/10: Building Target Disk Image..."
 bash "$WORKSPACE/tests/p0/build.sh"
 
-# Step 6: QEMU / OVMF Boot Test
+# Step 6: Build a hybrid ISO from the P0 disk's verified partitions.
+CURRENT_STEP="hybrid ISO build"
 echo ""
-echo ">>> STEP 6/7: Executing QEMU / OVMF Guest Boot Validation..."
+echo ">>> STEP 6/10: Building UEFI Hybrid ISO from the P0 Disk..."
+bash "$WORKSPACE/tests/p0/build-iso.sh"
+
+# Step 7: QEMU / OVMF Boot Test
+CURRENT_STEP="QEMU KVM disk boot"
+echo ""
+echo ">>> STEP 7/10: Executing QEMU / OVMF Disk Boot Validation..."
 bash "$WORKSPACE/tests/p0/boot.sh"
 
-# Step 7: Assemble Metadata & Results JSON
+# Step 8: Exercise native first-boot account setup and serial login.
+CURRENT_STEP="first-boot account and login"
 echo ""
-echo ">>> STEP 7/7: Assembling P0 Results & Build Metadata..."
+echo ">>> STEP 8/10: Testing First-Boot Account Creation and Login..."
+CHECK_FIRST_BOOT="FAIL"
+bash "$WORKSPACE/tests/p0/first-boot-test.sh"
+CHECK_FIRST_BOOT="PASS"
 
-GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "UNKNOWN")
+# Step 9: QEMU / OVMF ISO Boot Test
+CURRENT_STEP="QEMU UEFI optical ISO boot"
+echo ""
+echo ">>> STEP 9/10: Executing QEMU / OVMF UEFI Optical ISO Boot Validation..."
+bash "$WORKSPACE/tests/p0/boot-iso.sh"
+
+# Step 10: Assemble Metadata & Results JSON
+CURRENT_STEP="aggregate P0 evidence"
+echo ""
+echo ">>> STEP 10/10: Assembling P0 Results & Build Metadata..."
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 IMAGE_HASH=$(cut -d' ' -f1 < "$ARTIFACT_DIR/image.sha256" 2>/dev/null || echo "UNKNOWN")
-IMAGE_SIZE=$(awk '{print $5}' < "$ARTIFACT_DIR/image-size.txt" 2>/dev/null || echo "UNKNOWN")
+IMAGE_SIZE=$(cat "$ARTIFACT_DIR/image-size.txt" 2>/dev/null || echo "UNKNOWN")
+ISO_SIZE="UNKNOWN"
+ISO_RELATIVE="UNKNOWN"
+if [ -s "$ARTIFACT_DIR/examos-p0.iso" ]; then
+    ISO_SIZE="$(stat -c '%s' "$ARTIFACT_DIR/examos-p0.iso")"
+    ISO_RELATIVE="$(realpath --relative-to="$WORKSPACE" "$ARTIFACT_DIR/examos-p0.iso")"
+fi
 
 cat > "$ARTIFACT_DIR/build-info.txt" <<INFOEOF
 Timestamp: $TIMESTAMP
 Git Commit: $GIT_COMMIT
+Source Tree: $SOURCE_TREE_STATE
+Dirty Paths at Gate Start: $SOURCE_DIRTY_PATH_COUNT
+P0 mkosi Config SHA-256: $BUILD_CONFIG_SHA256
 Host OS: $(uname -s) $(uname -r)
 Architecture: $(uname -m)
 CPU Count: $(nproc)
 RAM: $(free -h | awk '/^Mem:/ {print $2}')
 Storage Free: $(df -h / | tail -1 | awk '{print $4}')
+Virtualization: $HOST_VIRTUALIZATION
 mkosi Version: $(mkosi --version 2>/dev/null || echo "UNKNOWN")
 QEMU Version: $(qemu-system-x86_64 --version 2>/dev/null | head -1 || echo "UNKNOWN")
 OVMF Code: $(grep 'OVMF_CODE:' "$ARTIFACT_DIR/ovmf-info.txt" | cut -d' ' -f2)
@@ -83,49 +216,203 @@ Artifact SHA-256: $IMAGE_HASH
 Artifact Size: $IMAGE_SIZE
 INFOEOF
 
+# Derive check results from actual test outputs
+CHECK_ARCH="FAIL"
+if [ "$HOST_ARCH" = "x86_64" ] && [ "$TARGET_ARCH" = "x86-64" ]; then CHECK_ARCH="PASS"; fi
+CHECK_KVM="FAIL"
+if examos_kvm_available; then CHECK_KVM="PASS"; fi
+CHECK_QEMU="FAIL"; command -v qemu-system-x86_64 >/dev/null 2>&1 && CHECK_QEMU="PASS"
+CHECK_OVMF="FAIL"
+for _cand in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do
+    [ -f "$_cand" ] && { CHECK_OVMF="PASS"; break; }
+done
+CHECK_SWTPM="NOT_REQUIRED"; command -v swtpm >/dev/null 2>&1 && CHECK_SWTPM="AVAILABLE"
+CHECK_MKOSI="FAIL"; command -v mkosi >/dev/null 2>&1 && CHECK_MKOSI="PASS"
+CHECK_ARTIFACT="FAIL"
+if [ -n "$IMAGE_HASH" ] && [ "$IMAGE_HASH" != "UNKNOWN" ] && \
+   [ -s "$ARTIFACT_DIR/image-path.txt" ] && [ -s "$ARTIFACT_DIR/image-size.txt" ]; then
+    CHECK_ARTIFACT="PASS"
+fi
+CHECK_CHECKSUM="FAIL"
+if [ "$CHECK_ARTIFACT" = "PASS" ] && sha256sum --check --status "$ARTIFACT_DIR/image.sha256"; then
+    CHECK_CHECKSUM="PASS"
+fi
+CHECK_BUILD="FAIL"
+if jq -e --arg hash "$IMAGE_HASH" --arg commit "$GIT_COMMIT" \
+    --arg tree "$SOURCE_TREE_STATE" --argjson dirty "$SOURCE_DIRTY_PATH_COUNT" \
+    '.status == "PASS" and .image_sha256 == $hash
+     and .source_commit == $commit and .source_tree_state == $tree
+     and .source_dirty_path_count == $dirty' \
+    "$ARTIFACT_DIR/build-result.json" >/dev/null 2>&1; then
+    CHECK_BUILD="PASS"
+fi
+CHECK_BOOT="FAIL"
+if jq -e --arg hash "$IMAGE_HASH" \
+    '.status == "PASS" and .image_sha256 == $hash and
+     .image_sha256_after_boot == $hash and .source_image_unchanged == true and
+     .qemu_stopped_after_readiness == true and
+     .qemu_acceleration == "KVM" and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
+     ([.markers.kernel, .markers.systemd, .markers.multi_user_target,
+       .markers.first_boot_setup_prompt, .markers.serial_login_prompt] | all)' \
+    "$ARTIFACT_DIR/boot-result.json" >/dev/null 2>&1; then
+    CHECK_BOOT="PASS"
+fi
+CHECK_FIRST_BOOT="FAIL"
+if jq -e --arg hash "$IMAGE_HASH" \
+    '.status == "PASS" and .image_sha256 == $hash and
+     .image_sha256_after_test == $hash and .source_image_unchanged == true and
+     .snapshot_isolated == true and .guest_account_created == true and
+     .qemu_acceleration == "KVM" and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
+     .authenticated_serial_login == true and
+     .non_root_uid_and_sudo_group_verified == true and
+     .setup_executable_owner_mode_verified == true' \
+    "$ARTIFACT_DIR/first-boot-result.json" >/dev/null 2>&1; then
+    CHECK_FIRST_BOOT="PASS"
+fi
+ISO_HASH=$(cut -d' ' -f1 < "$ARTIFACT_DIR/iso.sha256" 2>/dev/null || echo "UNKNOWN")
+CHECK_ISO_BUILD="FAIL"
+if jq -e --arg disk "$IMAGE_HASH" --arg iso "$ISO_HASH" --arg commit "$GIT_COMMIT" \
+    --arg tree "$SOURCE_TREE_STATE" --argjson dirty "$SOURCE_DIRTY_PATH_COUNT" \
+    '.status == "PASS" and .source_disk_sha256 == $disk and .iso_sha256 == $iso
+     and .source_commit == $commit and .source_tree_state_at_start == $tree
+     and .dirty_path_count_at_start == $dirty' \
+    "$ARTIFACT_DIR/iso-build-result.json" >/dev/null 2>&1; then
+    CHECK_ISO_BUILD="PASS"
+fi
+CHECK_ISO_BOOT="FAIL"
+if jq -e --slurpfile build "$ARTIFACT_DIR/iso-build-result.json" \
+    --arg disk "$IMAGE_HASH" --arg iso "$ISO_HASH" '
+    . as $boot | $build[0] as $build
+    | $boot.status == "PASS" and $build.status == "PASS"
+      and $boot.iso_sha256 == $iso and $boot.iso_sha256_after_boot == $iso
+      and $boot.source_iso_unchanged == true
+      and $build.iso_sha256 == $iso
+      and $build.source_disk_sha256 == $disk
+      and $boot.source_disk_sha256 == $disk
+      and $boot.uki_sha256 == $build.uki_sha256
+      and $boot.source_uki_sha256 == $build.source_uki_sha256
+      and $boot.source_initrd_sha256 == $build.source_initrd_sha256
+      and $boot.root_filesystem_sha256 == $build.root_filesystem_sha256
+      and $boot.root_filesystem_uuid == $build.root_filesystem_uuid
+      and $boot.source_commit == $build.source_commit
+      and $boot.source_tree_state_at_start == $build.source_tree_state_at_start
+      and $boot.dirty_path_count_at_start == $build.dirty_path_count_at_start
+      and $boot.qemu_acceleration == "KVM"
+      and $boot.qemu_stopped_after_readiness == true
+      and $boot.qemu_memory_mib > 0 and $boot.qemu_vcpus > 0
+      and ([ $boot.markers.kernel, $boot.markers.systemd,
+             $boot.markers.canonical_root_selected,
+             $boot.markers.volatile_overlay_selected,
+             $boot.markers.canonical_root_mounted,
+             $boot.markers.multi_user_target,
+             $boot.markers.serial_login_prompt ] | all)
+    ' "$ARTIFACT_DIR/iso-boot-result.json" >/dev/null 2>&1; then
+    CHECK_ISO_BOOT="PASS"
+fi
+CHECK_SECRETS="FAIL"
+if bash "$WORKSPACE/tests/p0/private-key-check.sh" "$WORKSPACE"; then
+    CHECK_SECRETS="PASS"
+fi
+CHECK_SOURCE_TREE="PASS"
+if ! CURRENT_SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")"; then
+    CHECK_SOURCE_TREE="FAIL"
+elif [ "$(git -C "$WORKSPACE" rev-parse HEAD)" != "$GIT_COMMIT" ] ||
+    [ -n "$CURRENT_SOURCE_STATUS" ]; then
+    CHECK_SOURCE_TREE="FAIL"
+fi
+
+OVERALL="PASS"
+for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" \
+          "$CHECK_ARTIFACT" "$CHECK_CHECKSUM" "$CHECK_SECRETS" "$CHECK_BUILD" \
+          "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
+          "$CHECK_SOURCE_TREE"; do
+    if [ "$_c" = "FAIL" ]; then
+        OVERALL="FAIL"
+        break
+    elif [ "$_c" = "BLOCKED" ] && [ "$OVERALL" = "PASS" ]; then
+        OVERALL="BLOCKED"
+    fi
+done
+
 cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
 {
   "phase": "P0",
-  "version": "0.1.0",
+  "version": "$PRODUCT_VERSION",
   "timestamp": "$TIMESTAMP",
   "git_commit": "$GIT_COMMIT",
-  "status": "PASS",
+  "source_tree_state": "$SOURCE_TREE_STATE",
+  "source_dirty_path_count_at_start": $SOURCE_DIRTY_PATH_COUNT,
+  "build_config_sha256": "$BUILD_CONFIG_SHA256",
+  "evidence_environment": "$EVIDENCE_ENVIRONMENT",
+  "host": {
+    "os": "$HOST_OS",
+    "kernel": "$HOST_KERNEL",
+    "architecture": "$HOST_ARCH",
+    "virtualization": "$HOST_VIRTUALIZATION",
+    "cpu_count": $HOST_CPUS,
+    "memory_bytes": $HOST_MEMORY_BYTES,
+    "target_architecture": "$TARGET_ARCH"
+  },
+  "release_classification": "DEVELOPMENT_CANDIDATE",
+  "status": "$OVERALL",
+  "disk_artifact": {
+    "path": "$(cat "$ARTIFACT_DIR/image-path.txt" 2>/dev/null || echo UNKNOWN)",
+    "sha256": "$IMAGE_HASH",
+    "size_bytes": "$IMAGE_SIZE"
+  },
+  "iso_artifact": {
+    "path": "$ISO_RELATIVE",
+    "sha256": "$ISO_HASH",
+    "size_bytes": "$ISO_SIZE"
+  },
   "checks": {
-    "host_architecture": "PASS",
-    "cpu_virtualization": "PASS",
-    "kvm_access": "PASS",
-    "qemu_installed": "PASS",
-    "ovmf_discovered": "PASS",
-    "swtpm_ready": "PASS",
-    "tpm_tools_ready": "PASS",
-    "mkosi_build": "PASS",
-    "artifact_generated": "PASS",
+    "host_architecture": "$CHECK_ARCH",
+    "kvm_access": "$CHECK_KVM",
+    "qemu_installed": "$CHECK_QEMU",
+    "ovmf_discovered": "$CHECK_OVMF",
+    "swtpm_ready": "$CHECK_SWTPM",
+    "mkosi_build": "$CHECK_MKOSI",
+    "build_pipeline": "$CHECK_BUILD",
+    "guest_boot": "$CHECK_BOOT",
+    "first_boot_account": "$CHECK_FIRST_BOOT",
+    "iso_build": "$CHECK_ISO_BUILD",
+    "iso_boot": "$CHECK_ISO_BOOT",
+    "artifact_generated": "$CHECK_ARTIFACT",
+    "artifact_checksum_valid": "$CHECK_CHECKSUM",
     "artifact_checksum": "$IMAGE_HASH",
-    "qemu_ovmf_boot": "PASS",
-    "secrets_clean": "PASS"
+    "iso_checksum": "$ISO_HASH",
+    "secrets_clean": "$CHECK_SECRETS",
+    "source_tree_clean": "$CHECK_SOURCE_TREE"
   }
 }
 JSONEOF
+RESULTS_FINALIZED=1
 
 echo ""
 echo "========================================"
 echo "        EXAMOS P0 STATUS SUMMARY        "
 echo "========================================"
-printf "%-25s %s\n" "Host" "PASS"
-printf "%-25s %s\n" "Architecture (x86_64)" "PASS"
-printf "%-25s %s\n" "Virtualization" "PASS"
-printf "%-25s %s\n" "KVM" "PASS"
-printf "%-25s %s\n" "QEMU" "PASS"
-printf "%-25s %s\n" "OVMF" "PASS"
-printf "%-25s %s\n" "swtpm" "PASS"
-printf "%-25s %s\n" "TPM tools" "PASS"
-printf "%-25s %s\n" "mkosi" "PASS"
-printf "%-25s %s\n" "Repository" "PASS"
-printf "%-25s %s\n" "Build" "PASS"
-printf "%-25s %s\n" "Artifact" "PASS"
-printf "%-25s %s\n" "Checksum" "PASS"
-printf "%-25s %s\n" "QEMU boot" "PASS"
-printf "%-25s %s\n" "CI Automation" "PASS"
+printf "%-25s %s\n" "Architecture"         "$CHECK_ARCH"
+printf "%-25s %s\n" "KVM"                  "$CHECK_KVM"
+printf "%-25s %s\n" "QEMU"                 "$CHECK_QEMU"
+printf "%-25s %s\n" "OVMF"                 "$CHECK_OVMF"
+printf "%-25s %s\n" "swtpm"                "$CHECK_SWTPM"
+printf "%-25s %s\n" "mkosi"                "$CHECK_MKOSI"
+printf "%-25s %s\n" "Artifact"             "$CHECK_ARTIFACT"
+printf "%-25s %s\n" "Build Evidence"       "$CHECK_BUILD"
+printf "%-25s %s\n" "Boot Evidence"        "$CHECK_BOOT"
+printf "%-25s %s\n" "First-Boot Account"   "$CHECK_FIRST_BOOT"
+printf "%-25s %s\n" "ISO Build"            "$CHECK_ISO_BUILD"
+printf "%-25s %s\n" "ISO Optical Boot"     "$CHECK_ISO_BOOT"
+printf "%-25s %s\n" "Secrets"              "$CHECK_SECRETS"
+printf "%-25s %s (%s paths)\n" "Source Tree" "$SOURCE_TREE_STATE" "$SOURCE_DIRTY_PATH_COUNT"
 echo "========================================"
-echo "P0 RESULT: PASS"
+echo "P0 RESULT: $OVERALL"
 echo "========================================"
+
+case "$OVERALL" in
+    PASS) exit 0 ;;
+    FAIL) exit 1 ;;
+    BLOCKED) exit 2 ;;
+    *) echo "[P0] FATAL: invalid aggregate status: $OVERALL" >&2; exit 1 ;;
+esac
