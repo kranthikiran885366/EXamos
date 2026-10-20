@@ -80,6 +80,15 @@ fi
 MKOSI_VER=$("$MKOSI_BIN" --version 2>&1 || echo "UNKNOWN")
 echo "[P0-BUILD] Installed mkosi version: $MKOSI_VER"
 
+# Compile the first-boot account provisioner in a temporary staging tree and
+# pass that tree to mkosi explicitly. The source checkout remains read-only and
+# no host-built binary is checked into the image source tree.
+CXX_BIN="$(command -v g++ || true)"
+[ -n "$CXX_BIN" ] || {
+    echo "[P0-BUILD] FATAL: the pinned g++ compiler is required for first-boot provisioning." >&2
+    exit 1
+}
+
 # 3. Invoke the canonical, pinned P0 mkosi configuration with fresh isolated
 # output, cache, and build directories. A stale developer image cannot qualify.
 echo "[P0-BUILD] Invoking mkosi build..."
@@ -87,10 +96,23 @@ BUILD_LOG="$ARTIFACT_DIR/build.log"
 : > "$BUILD_LOG"
 BUILD_WORK_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/examos-p0-build.XXXXXX")"
 trap 'record_build_failure; rm -rf -- "$BUILD_WORK_DIR"' EXIT
+FIRST_BOOT_EXTRA_TREE="$BUILD_WORK_DIR/first-boot-extra"
+mkdir -p "$FIRST_BOOT_EXTRA_TREE/usr/local/sbin"
+"$CXX_BIN" -std=c++17 -O2 -Wall -Wextra -Werror \
+    -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat=2 \
+    -Werror=format-security -fPIE -pie -Wl,-z,relro,-z,now \
+    "$WORKSPACE/image/p0/dev-console-setup.cpp" \
+    -o "$FIRST_BOOT_EXTRA_TREE/usr/local/sbin/examos-dev-console-setup" || {
+        echo "[P0-BUILD] FATAL: failed to compile the first-boot provisioning helper." >&2
+        exit 1
+    }
+chmod 0755 "$FIRST_BOOT_EXTRA_TREE/usr/local/sbin/examos-dev-console-setup"
 "$MKOSI_BIN" --force -C "$WORKSPACE/image/p0" \
     --cache-directory "$BUILD_WORK_DIR/cache" \
     --output-directory "$BUILD_WORK_DIR/out" \
     --build-directory "$BUILD_WORK_DIR/build" \
+    --extra-tree="$WORKSPACE/image/p0/dev-console-tree" \
+    --extra-tree="$FIRST_BOOT_EXTRA_TREE" \
     build 2>&1 | tee "$BUILD_LOG"
 echo "[P0-BUILD] mkosi build succeeded."
 

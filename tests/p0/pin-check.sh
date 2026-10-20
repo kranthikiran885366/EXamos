@@ -18,12 +18,15 @@ fail() { echo "[P0-PIN] FAIL: $1" >&2; exit 1; }
 snapshot="$(awk -F= '$1=="debian_snapshot" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
 mirror="$(awk -F= '$1=="debian_mirror" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
 security_mirror="$(awk -F= '$1=="debian_security_mirror" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
+repart_seed="$(awk -F= '$1=="repart_seed" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
 runner="$(awk -F= '$1=="ci_runner_image" { sub(/\r$/, "", $2); print $2; exit }' "$TOOLS")"
 
 [[ "$snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "debian_snapshot is not a Debian snapshot timestamp"
 [[ "$mirror" == "https://snapshot.debian.org" ]] || fail "debian_mirror must be the snapshot service base URL"
 [[ "$security_mirror" == "$mirror/archive/debian-security/$snapshot" ]] || fail "debian_security_mirror does not match the locked snapshot"
+[[ "$repart_seed" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] || fail "repart_seed is not a valid UUID"
 awk -v expected="Snapshot=$snapshot" '{ sub(/\r$/, "") } $0 == expected { found=1 } END { exit !found }' "$MKOSI" || fail "image/p0/mkosi.conf Snapshot= does not match sources.lock"
+awk -v expected="Seed=$repart_seed" '{ sub(/\r$/, "") } $0 == expected { found=1 } END { exit !found }' "$MKOSI" || fail "image/p0/mkosi.conf Seed= does not match sources.lock"
 if tr -d '\r' < "$MKOSI" | grep -Eq '^[[:space:]]*Mirror[[:space:]]*='; then
     fail "image/p0/mkosi.conf must let mkosi derive snapshot repository paths from Snapshot="
 fi
@@ -35,5 +38,6 @@ fi
 echo "[P0-PIN] snapshot=$snapshot"
 echo "[P0-PIN] mirror=$mirror"
 echo "[P0-PIN] security_mirror=$security_mirror"
+echo "[P0-PIN] repart_seed=$repart_seed"
 echo "[P0-PIN] ci_runner_image=$runner"
 echo "[P0-PIN] PASS"

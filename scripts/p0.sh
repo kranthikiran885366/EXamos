@@ -137,6 +137,7 @@ echo ">>> STEP 4/10: Collecting Tool Versions & Firmware Paths..."
     mkosi --version
     qemu-system-x86_64 --version | head -n 1
     qemu-img --version | head -n 1
+    g++ --version | head -n 1
     swtpm --version | head -n 1
     tpm2_pcrread --version | head -n 1
     sbsign --version 2>&1 || true
@@ -359,6 +360,7 @@ done
 
 cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
 {
+  "schema": "examos.p0.results.v1",
   "phase": "P0",
   "version": "$PRODUCT_VERSION",
   "timestamp": "$TIMESTAMP",
@@ -413,6 +415,16 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
   }
 }
 JSONEOF
+
+if ! python3 "$WORKSPACE/tests/p0/validate-results.py" \
+    "$WORKSPACE/schemas/p0-results-v1.schema.json" "$ARTIFACT_DIR/results.json" \
+    > "$ARTIFACT_DIR/results-schema-validation.log" 2>&1; then
+    cat "$ARTIFACT_DIR/results-schema-validation.log" >&2
+    jq '.status = "FAIL"' "$ARTIFACT_DIR/results.json" > "$ARTIFACT_DIR/.results.json.tmp" &&
+        mv -- "$ARTIFACT_DIR/.results.json.tmp" "$ARTIFACT_DIR/results.json"
+    RESULTS_FINALIZED=1
+    exit 1
+fi
 RESULTS_FINALIZED=1
 
 echo ""

@@ -12,5 +12,6 @@ debian_components=main,contrib,non-free,non-free-firmware
 debian_snapshot=20261018T000000Z
 debian_mirror=https://snapshot.debian.org
 debian_security_mirror=https://snapshot.debian.org/archive/debian-security/20261018T000000Z
+repart_seed=f244e829-48b5-482f-a895-9af3ab43b70e
 snapshot_policy=fail-closed
 notes=This snapshot is a source pin, not a production certification. Two isolated builds must still match before ENG-04 is PASS.

@@ -336,7 +336,7 @@ FINAL_SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")" ||
 [ "$FINAL_SOURCE_COMMIT" = "$SOURCE_COMMIT_AT_START" ] &&
     [ "$FINAL_SOURCE_STATUS" = "$SOURCE_STATUS_AT_START" ] ||
     fail "Source commit or worktree changed while the ISO was being assembled"
-cp --no-clobber -- "$TMP_ISO" "$ISO_FILE" ||
+cp -- "$TMP_ISO" "$ISO_FILE" ||
     fail "Unable to publish the ISO into P0 run evidence"
 [ -s "$ISO_FILE" ] && cmp -s -- "$TMP_ISO" "$ISO_FILE" ||
     fail "Published ISO does not match the generated image"
