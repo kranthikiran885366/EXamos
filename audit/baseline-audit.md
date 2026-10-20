@@ -1,0 +1,58 @@
+# ExamOS Baseline Release and Security Audit
+
+**Audit date:** 2026-10-11  
+**Repository:** `D:\SEB BRO`  
+**Branch at audit start:** `work/p0-secure-release-remediation-20261011`  
+**Base commit:** `c8d8c6149458e9c1611966d5f2db66ed2f42e2d1`  
+**Source state:** Dirty before this audit; existing modifications and untracked files were preserved.  
+**Classification:** Development baseline only. This is not a production certification.
+
+This report captures observed source and evidence defects before remediation. It does not promote older PASS records or treat emulator output as physical hardware evidence.
+
+## Findings
+
+| ID | Severity | Finding and root cause | Affected files | Reproduction / observed evidence | Remediation |
+|---|---|---|---|---|---|
+| A-01 | High | The P0 orchestrator records `HEAD` but does not reject or record a dirty source tree. Its success decision is derived from artifact/test JSON without binding the generated disk/ISO to an immutable source snapshot. | `scripts/p0.sh`, `tests/p0/build.sh`, `tests/p0/build-iso.sh` | `git status --short`; inspect `scripts/p0.sh` for its `git rev-parse HEAD` use and absence of a dirty-tree gate. The worktree already contained tracked modifications and untracked files before this audit. | Record commit, tree state, and source/config digests in each build report. Do not issue a release PASS for dirty or mismatched provenance. |
+| A-02 | High | The earlier optical path could not mount an appended GPT root partition, and the first hybrid-disk attempt also failed because the builder used a stale/different initrd rather than the canonical UKI's `.initrd`. | `tests/p0/build-iso.sh`, `tests/p0/boot-iso.sh`, `artifacts/p0/iso-build-result.json`, `artifacts/p0/iso-boot-result.json` | The first hybrid attempt reached initramfs but did not enumerate the virtio disk or find `root-x86-64`; the embedded initrd did not match the canonical UKI. Current evidence records the canonical initrd digest, mounted root UUID `066693a3-6b71-4361-b0f0-f11fd68b5ded`, all six guest-readiness markers true, and unchanged ISO digest `83764cc4ff4b9198630b9382426f2e7a475064580a9770639e597512256347fc`. | Fixed: extract the kernel/initrd from the canonical UKI, pass `root=LABEL=root-x86-64 rootwait`, and test the hybrid GPT media as a QEMU virtio raw disk. This validates the virtual disk boot path only, not optical root mounting or physical USB hardware. |
+| A-03 | High | The physical TPM preflight proves only a locally generated quote from a locally generated nonce. It explicitly marks itself `not_production_attestation`; it does not prove server-issued challenge binding, production device enrollment, release authorization, or approved PCR measurements. A separate hardware-trust script can create transient EK/AK contexts instead of proving an enrolled persistent identity. | `tests/p3/hardware-tpm-preflight.sh`, `tests/production/hardware-trust-gate.sh`, `agent/attestation/tpm_attestation.c` | Read the physical preflight JSON construction and its final diagnostic. It sets `nonce_origin` to `local-random-not-server-issued`; the hardware trust gate calls `tpm2_createek`/`tpm2_createak` and locally verifies its quote. | Keep these results scoped as preflight evidence. Production enrollment must bind persistent EK/AK identity to server-issued challenge, approved manufacturer trust policy, device/release, and revocation state on actual hardware. |
+| A-04 | High | Event-log evidence is represented by a digest, not replayed against the quoted PCR state. The server recomputes a digest from submitted PCR values and compares it with the quote; it never receives or parses raw TCG events or replays PCR extends. | `agent/attestation/tpm_attestation.c`, `server/attestation/attestation_service.c`, `tests/p3/attestation-suite.sh` | `eventlog_verify_pcr_digest()` accepts only `event_log_hash_hex` plus PCR values; the agent hashes the system event-log file. The test suite also constructs an event-log hash from a synthetic string. | Implement a reviewed TCG event-log parser/replayer, bind raw event-log bytes to the quote/session, and fail closed when replayed PCR values differ. Until then, event-log replay is BLOCKED, not PASS. |
+| A-05 | High | The committed release registry is expressly development-only and contains a zero UKI digest, fabricated PCR values, and `APPROVED_DEV`. Production identity and signed measured release data are not provisioned. | `server/config/releases.json`, `tests/p3/production-registry.sh`, `docs/security/p3-trust-model.md` | Inspect `server/config/releases.json`; it labels itself development-only, contains zero `uki_hash`, synthetic notes, and `APPROVED_DEV`. The production-registry script generates ephemeral test keys and manifests for rejection/startup tests, not a production release. | Keep the committed registry development-only. Production requires an independently approved, externally signed immutable manifest with real image/UKI and controlled-hardware measurements. |
+| A-06 | High | P0 bootability is not proof of production Secure Boot. The P0 mkosi configuration builds a disk image and UKI path but does not sign it with an organization-owned release key or prove firmware enforcement of that key. The Secure Boot documentation describes signing/provisioning separately. | `image/p0/mkosi.conf`, `image/mkosi.conf`, `docs/security/p3-secure-boot.md` | Inspect the P0 mkosi configuration and signing instructions. P0 evidence is from QEMU/OVMF and does not include a production key identity or a negative invalid-signature enforcement test. | Require explicit signing identity and independent signature verification for release artifacts; test enforcement under configured Secure Boot firmware without changing the Dell's keys automatically. |
+| A-07 | High | dm-verity tooling generates a SquashFS/hash-tree pair and descriptor, but its own descriptor labels the result test-signed and leaves data/hash devices as placeholders. P0 boot evidence currently validates a disk image boot, not a live dm-verity root mapping or tamper rejection in that boot path. | `image/scripts/dm-verity-setup.sh`, `image/p0/mkosi.conf`, `tests/p2/p2-verity-tests.sh` | Inspect the generated descriptor template and P0 mkosi config. The descriptor uses `ROOT_PARTITION`/`HASH_PARTITION` placeholders and says production binding is completed later; P0 config does not enable `Verity=hash`. | Wire verity data/hash devices and authenticated root hash into the actual release boot chain; verify mounted mapping and disposable-image tamper rejection. Do not claim P0 boot as verity evidence. |
+| A-08 | Medium | A successful TPM-backed service test is not physical TPM certification. Production agent mode requires `/dev/tpmrm0` or `/dev/tpm0` and persistent handles, while development mode explicitly generates synthetic attestations and event-log data. | `agent/attestation/tpm_attestation.c`, `tests/p3/swtpm-quote-smoke.sh`, `tests/p3/attestation-suite.sh` | Inspect `tpm_attestation_init()`, `compute_event_log_hash()`, and the synthetic attestation functions; run `tests/p3/swtpm-quote-smoke.sh` only as emulator evidence. | Preserve separate `software TPM`, `virtual machine`, and `physical hardware` evidence classes; production must fail closed without the approved physical enrollment and release policy. |
+| A-09 | Medium | The pre-remediation P0 release document reported PASS and pointed at a legacy image path despite incomplete current ISO evidence. | `docs/releases/p0-release.md`, `docs/development/p0-gate.md`, `artifacts/p0/*` | This historical finding was reproduced against the earlier document and artifact set. The current release assessment now records the exact ISO hash, virtual boot evidence, enterprise BLOCKED status, and dirty-source provenance. | Fixed in the current release assessment; retain BLOCKED classification until all recorded release gates are clear. |
+| A-10 | Medium | Physical Dell testing cannot be inferred from this WSL/OVMF session. No device-side physical TPM, Secure Boot, UKI, event-log replay, dm-verity, or service evidence has been collected. | `tests/p3/hardware-tpm-preflight.sh`, `tests/production/hardware-trust-gate.sh`, `docs/releases/p0-release.md` | Current host evidence identifies WSL2/QEMU; no physical ExamOS evidence package is present in the current P0 artifacts. Hardware preflight itself documents the missing server-issued nonce and production checks. | Keep physical results `NOT TESTED`/`BLOCKED` until collected on the Dell. Never write media automatically or modify internal disks, firmware keys, Windows boot entries, or TPM state. |
+
+## Baseline P0 evidence at audit start
+
+- The canonical raw image was `image/p0/output/examos-p0.raw`, size `992399360` bytes.
+- Its live Windows SHA-256 was `eb4637b602113ea583fde840803b58e0fc3a0338d3ac3d5b6786b2b1ae933cad`, matching `artifacts/p0/image.sha256`.
+- `artifacts/p0/boot-result.json` recorded the same image hash before/after QEMU and all four disk-boot markers as true.
+- At audit start, `artifacts/p0/iso-build-result.json` was `IN_PROGRESS`, and the then-current ISO boot evidence was a failure. This state was superseded by the remediation evidence below.
+- The repository worktree was dirty. The base commit recorded above is not sufficient provenance for uncommitted build inputs.
+
+## Scope and reproduction commands
+
+Run from the repository root (WSL Ubuntu):
+
+```bash
+git rev-parse HEAD
+git status --short
+sha256sum image/p0/output/examos-p0.raw
+cat artifacts/p0/build-result.json artifacts/p0/boot-result.json
+cat artifacts/p0/iso-build-result.json artifacts/p0/iso-boot-result.json
+bash tests/p0/image-forensics.sh
+bash tests/p0/boot-iso.sh
+bash tests/p3/hardware-tpm-preflight.sh
+```
+
+The last two commands require their documented artifacts/hardware prerequisites and must be reported as `BLOCKED` rather than converted to PASS when unavailable. This baseline is an audit snapshot, not a substitute for fresh test execution.
+
+## Remediation and revalidation (2026-10-11)
+
+- The current ISO build evidence is `PASS`, with size 991,741,952 bytes and SHA-256 `83764cc4ff4b9198630b9382426f2e7a475064580a9770639e597512256347fc`. It binds to the canonical disk SHA-256 above and records root filesystem UUID `066693a3-6b71-4361-b0f0-f11fd68b5ded`.
+- The current OVMF/QEMU guest boot evidence is `PASS`: kernel, systemd, canonical root selector, canonical root mount, multi-user target, and serial login prompt are all true; the ISO hash is unchanged after boot. QEMU attaches the ISO as a virtio raw disk. This is not physical USB-controller or physical-device evidence.
+- The enterprise suite reports 60/64 passed, 0 failed, 2 warnings, and 2 blocked. Its overall result is `BLOCKED` because this WSL2 host cannot verify kernel namespace support and cannot verify extended-attribute support (`setfattr` is missing or the mounted filesystem does not support it). The C-source warning count and non-standard shell shebang count remain warnings, not passes.
+- The first enterprise run's boot-analysis failure was a test false positive: a case-insensitive substring search for `BUG` matched “report a bug” and `kernel-debug` strings. The check now searches explicit kernel panic/oops/BUG/fault signatures; the rerun records `panic_count: 0` and `kernel_fault_count: 0`.
+- The ISO build records source commit `c8d8c6149458e9c1611966d5f2db66ed2f42e2d1` and a dirty source tree with 304 paths. Release promotion remains blocked. Physical boot/TPM/Secure Boot testing, production signing, event-log replay, active dm-verity validation, and P1–P5 production evidence remain unproven.

@@ -1,0 +1,44 @@
+#!/usr/sbin/nft -f
+# ExamOS Advanced Firewall Ruleset (Module E)
+# Generated at timestamp 1792318543
+flush ruleset
+
+# IPv6 Drop Table: default drop on all hooks
+table ip6 filter {
+    chain input   { type filter hook input   priority 0; policy drop; }
+    chain forward { type filter hook forward priority 0; policy drop; }
+    chain output  { type filter hook output  priority 0; policy drop; }
+}
+
+# IPv4 Filtering Table
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        iif "lo" accept
+        ct state { established, related } accept
+        ct state invalid drop
+        udp sport 67 udp dport 68 accept
+        icmp type { echo-reply, destination-unreachable, time-exceeded } accept
+        limit rate 5/minute log prefix "[ExamOS-FW-IN-DROP]: "
+        reject with icmpx type admin-prohibited
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy drop;
+        oif "lo" accept
+        ct state { established, related } accept
+        ct state invalid drop
+        udp sport 68 udp dport 67 accept
+        ip daddr 127.0.0.53 udp dport 53 accept
+        ip daddr 127.0.0.53 tcp dport 53 accept
+        ip daddr 127.0.0.1 udp dport 123 accept
+        ip daddr 127.0.0.1 tcp dport 80 accept
+        ip daddr 127.0.0.1 tcp dport 443 accept
+        limit rate 5/minute log prefix "[ExamOS-FW-OUT-DROP]: "
+        drop
+    }
+}

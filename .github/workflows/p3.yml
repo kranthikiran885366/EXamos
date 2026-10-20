@@ -1,0 +1,180 @@
+name: ExamOS P3 — Trusted Boot + TPM Attestation + Exam-Key Release Gate
+
+on:
+  push:
+    branches: [main, develop, 'phase/p3']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  p3-gate:
+    name: P3 Gate — Attestation Engine + 18-Case Test Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # -----------------------------------------------------------------------
+      # Device and release config is development-only. The suite creates its
+      # own ephemeral API credentials and test registries for each run.
+      # -----------------------------------------------------------------------
+      EXAMOS_TPM_MODE: development
+      EXAMOS_RELEASE_ID: examos-0.4.0
+      EXAMOS_DEVICES_CONFIG: server/config/devices.json
+      EXAMOS_RELEASES_CONFIG: server/config/releases.json
+      EXAMOS_SERVER_PORT: "8000"
+      EXAMOS_TEST_SERVER_PORT: "9099"
+      EXAMOS_LEDGER_PATH: /tmp/examos_event_ledger.log
+
+    steps:
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      - name: Enforce clean source tree
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]; then
+            echo "FATAL: Source tree is DIRTY — P3 gate refuses to run on a dirty tree." >&2
+            git status --short --untracked-files=all | head -30 >&2
+            exit 1
+          fi
+          echo "Source tree is CLEAN at commit $(git rev-parse HEAD)"
+
+      # -----------------------------------------------------------------------
+      - name: Install P3 build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make \
+            libssl-dev libcurl4-openssl-dev libudev-dev \
+            openssl jq curl \
+            golang-go \
+            tpm2-tools \
+            swtpm swtpm-tools \
+            qemu-system-x86 ovmf
+
+      # -----------------------------------------------------------------------
+      - name: Collect P3 tool versions and artifacts
+        run: |
+          mkdir -p artifacts/p3
+          bash tests/p3/collect-artifacts.sh
+
+      - name: Audit credential-free release image inputs
+        run: python3 tests/p3/release-gate.py --credential-audit
+
+      # -----------------------------------------------------------------------
+      - name: Generate development trust keys
+        run: |
+          bash image/trust/generate-dev-keys.sh
+          echo "[P3-CI] Trust key gate:"
+          for f in PK.key PK.crt KEK.key KEK.crt db.key db.crt pcr-policy.key; do
+            if [ -f "image/trust/$f" ]; then
+              echo "  ✓ image/trust/$f"
+            else
+              echo "  ✗ MISSING: image/trust/$f" >&2
+              exit 1
+            fi
+          done
+
+      # -----------------------------------------------------------------------
+      - name: Compile all native C/C++ subsystems
+        run: |
+          make clean
+          make native
+          echo "[P3-CI] Build complete:"
+          ls -la server/examos-server agent/examos-agent
+
+      # -----------------------------------------------------------------------
+      - name: Build development-only Go verifier (not trust evidence)
+        run: |
+          make verifier
+          if [ -f server/attestation/examos-verifier ]; then
+            echo "[P3-CI] Development-only verifier built; it is not used for attestation decisions."
+          else
+            echo "[P3-CI] Development-only verifier build failed" >&2
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      - name: Smoke-test server startup
+        run: |
+          # Start server on default port — verify it starts and health endpoint responds
+          EXAMOS_SERVER_PORT=8000 \
+          EXAMOS_LEDGER_PATH=/tmp/examos_smoke_ledger.log \
+          EXAMOS_TPM_MODE=development \
+          EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
+          EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
+          EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
+          EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
+          EXAMOS_DEVICES_CONFIG="${EXAMOS_DEVICES_CONFIG}" \
+          EXAMOS_RELEASES_CONFIG="${EXAMOS_RELEASES_CONFIG}" \
+            server/examos-server &
+          SERVER_PID=$!
+
+          # Wait for health endpoint
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:8000/api/v1/health | grep -q '"status"'; then
+              echo "[P3-CI] Server health check PASS (attempt $i)"
+              break
+            fi
+            sleep 1
+            if [ $i -eq 20 ]; then
+              echo "[P3-CI] Server failed to start within 20 seconds" >&2
+              kill $SERVER_PID 2>/dev/null || true
+              exit 1
+            fi
+          done
+
+          # Check config loaded from JSON files
+          HEALTH=$(curl -sf http://127.0.0.1:8000/api/v1/health)
+          echo "[P3-CI] Health: $HEALTH"
+          kill $SERVER_PID 2>/dev/null || true
+          sleep 1
+
+      - name: Verify fail-closed startup configuration
+        run: python3 tests/p3/startup-fail-closed.py
+
+      # -----------------------------------------------------------------------
+      - name: Run P3 18-case attestation test suite
+        run: |
+          mkdir -p artifacts/p3
+          bash tests/p3/attestation-suite.sh
+        env:
+          EXAMOS_DEVICES_CONFIG: ${{ env.EXAMOS_DEVICES_CONFIG }}
+          EXAMOS_RELEASES_CONFIG: ${{ env.EXAMOS_RELEASES_CONFIG }}
+
+      # -----------------------------------------------------------------------
+      - name: Run P3 gate evaluation
+        if: always()
+        run: bash tests/p3/gate.sh
+        env:
+          EXAMOS_DEVICES_CONFIG: ${{ env.EXAMOS_DEVICES_CONFIG }}
+          EXAMOS_RELEASES_CONFIG: ${{ env.EXAMOS_RELEASES_CONFIG }}
+
+      # -----------------------------------------------------------------------
+      - name: Show P3 results summary
+        if: always()
+        run: |
+          echo "================================================================"
+          echo "ExamOS P3 Gate — Results Summary"
+          echo "================================================================"
+          cat artifacts/p3/results.json 2>/dev/null || echo "results.json not generated"
+          echo ""
+          echo "--- summary.md ---"
+          cat artifacts/p3/summary.md 2>/dev/null || echo "summary.md not generated"
+          echo ""
+          echo "--- Test ledger (last 10 blocks) ---"
+          tail -10 artifacts/p3/test-ledger.log 2>/dev/null || echo "ledger not generated"
+
+      # -----------------------------------------------------------------------
+      - name: Upload P3 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: examos-p3-artifacts
+          path: artifacts/p3/
+          retention-days: 30

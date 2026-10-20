@@ -1,0 +1,58 @@
+name: ExamOS Production Release Evidence Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_artifact:
+        description: Name of the previously uploaded signed evidence artifact
+        required: true
+        type: string
+      evidence_run_id:
+        description: Workflow run ID that produced the signed evidence artifact
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  production-release-gate:
+    name: Signed production evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download externally produced evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.manifest_artifact }}
+          path: /tmp/examos-production-evidence
+          run-id: ${{ inputs.evidence_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install verifier dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends openssl python3
+
+      - name: Reject incomplete or unsigned release evidence
+        env:
+          EXAMOS_RELEASE_EVIDENCE_MANIFEST: /tmp/examos-production-evidence/release-evidence.json
+          EXAMOS_RELEASE_EVIDENCE_SIGNATURE: /tmp/examos-production-evidence/release-evidence.json.sig
+          EXAMOS_RELEASE_EVIDENCE_PUBLIC_KEY: /tmp/examos-production-evidence/release-evidence.pub
+          EXAMOS_RELEASE_GATE_REPORT: /tmp/examos-production-evidence/release-gate-report.json
+          EXAMOS_P3_ARTIFACT_DIR: /tmp/examos-production-evidence/p3
+        run: python3 tests/p3/release-gate.py
+
+      - name: Upload gate decision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-release-gate-decision
+          path: /tmp/examos-production-evidence/release-gate-report.json
+          if-no-files-found: error
+          retention-days: 90

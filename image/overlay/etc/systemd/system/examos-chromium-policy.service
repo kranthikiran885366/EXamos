@@ -1,0 +1,40 @@
+[Unit]
+Description=ExamOS F2 — Chromium Managed Policy Generator
+Documentation=file:///etc/examos/exam.conf
+# Runs before the kiosk so the policy always matches the provisioned exam URL.
+# Depends on the exam config being readable; fails closed if EXAM_URL is
+# NOT_CONFIGURED, preventing the kiosk from starting with an empty allowlist.
+After=local-fs.target examos-unseal.service
+Before=examos-kiosk.service
+# If this unit fails the kiosk cannot start — that is the intended fail-closed
+# behaviour: an unconfigured or invalid exam URL must be rejected at boot.
+Conflicts=examos-lockdown-failed.target
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+
+# Generate the Chromium managed policy from /etc/examos/exam.conf.
+# The script validates EXAM_URL (HTTPS-required for non-loopback), builds
+# the JSON, Python-validates it, and atomically replaces both policy paths.
+ExecStart=/usr/local/sbin/generate-chromium-policy.sh
+
+StandardOutput=journal
+StandardError=journal
+
+# Minimal surface — the generator only needs to read exam.conf and write
+# to /etc/chromium/policies/ and /etc/opt/chrome/policies/.
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+# Allow only the paths it needs to write
+ReadWritePaths=/etc/chromium/policies/managed /etc/opt/chrome/policies/managed
+ReadOnlyPaths=/etc/examos/exam.conf
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Apply and verify restricted options on /dev/shm
+Documentation=file:///etc/examos/p2-config.conf
+DefaultDependencies=no
+After=systemd-remount-fs.service local-fs.target
+Before=examos-preflight.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Chromium's renderer/GPU shared-memory mappings require executable mappings.
+ExecStart=/usr/bin/mount -o remount,exec,nosuid,nodev /dev/shm
+ExecStartPost=/bin/sh -ec 'test "$(/usr/bin/findmnt -n -o FSTYPE --target /dev/shm)" = tmpfs; opts=$(/usr/bin/findmnt -n -o OPTIONS --target /dev/shm); case ",$opts," in *,nosuid,*) ;; *) echo "[ExamOS-shm] nosuid missing from /dev/shm" >&2; exit 1;; esac; case ",$opts," in *,nodev,*) ;; *) echo "[ExamOS-shm] nodev missing from /dev/shm" >&2; exit 1;; esac; case ",$opts," in *,noexec,*) echo "[ExamOS-shm] noexec prevents required Chromium shared-memory mappings" >&2; exit 1;; esac'
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=sysinit.target

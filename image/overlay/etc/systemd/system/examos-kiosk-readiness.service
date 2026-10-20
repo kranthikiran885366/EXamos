@@ -1,0 +1,18 @@
+[Unit]
+Description=Verify live ExamOS kiosk readiness
+Documentation=file:///etc/examos/p2-config.conf
+Requires=examos-kiosk.service
+After=examos-kiosk.service
+Before=graphical.target
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=25
+ExecStart=/usr/local/bin/examos-kiosk-readiness
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target

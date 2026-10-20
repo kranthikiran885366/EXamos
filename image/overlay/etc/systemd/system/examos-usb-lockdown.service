@@ -1,0 +1,36 @@
+[Unit]
+Description=ExamOS USB Default-Deny Authorization
+Documentation=file:///etc/examos/p2-config.conf
+# Run before udev processes USB add events so every device starts denied.
+DefaultDependencies=no
+Before=sysinit.target udev.service systemd-udevd.service
+After=local-fs.target
+ConditionPathExists=/sys/bus/usb
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Step 1: set authorized_default=0 on every USB host controller.
+# This means every newly plugged device starts in the unauthorized state
+# and must be explicitly authorized by the udev rules or USBGuard policy.
+ExecStart=/bin/sh -c '\
+  FOUND=0; \
+  for ctrl in /sys/bus/usb/devices/usb*; do \
+    if [ -f "$ctrl/authorized_default" ]; then \
+      echo 0 > "$ctrl/authorized_default" && \
+      echo "[ExamOS-USB] authorized_default=0 on $(basename $ctrl)" || \
+      echo "[ExamOS-USB] WARNING: could not set authorized_default on $(basename $ctrl)" >&2; \
+      FOUND=$((FOUND+1)); \
+    fi; \
+  done; \
+  [ "$FOUND" -gt 0 ] || echo "[ExamOS-USB] WARNING: no USB host controllers found in /sys/bus/usb/devices/"'
+# Step 2: re-authorize devices that udev rules have already processed
+# (handles devices present before this service started)
+ExecStartPost=/bin/sh -c '\
+  udevadm trigger --action=add --subsystem-match=usb 2>/dev/null; \
+  echo "[ExamOS-USB] udev re-triggered for USB subsystem"'
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=sysinit.target

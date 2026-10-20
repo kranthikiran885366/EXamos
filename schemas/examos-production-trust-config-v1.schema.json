@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://examos.example/schemas/examos-production-trust-config-v1.schema.json",
+  "title": "ExamOS production trust configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "trust_config_id", "status", "policy_id", "policy_version", "metadata_signers", "secure_boot", "validity", "approval", "revocation", "artifact_limits", "required_artifact_roles"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "trust_config_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "status": {"const": "approved"},
+    "policy_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "policy_version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "metadata_signers": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["signer_id", "public_key_spki_sha256", "signature_algorithm", "status"], "properties": {"signer_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}, "public_key_spki_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "signature_algorithm": {"enum": ["RSA-PSS-SHA256", "ECDSA-P256-SHA256", "ECDSA-P384-SHA384"]}, "status": {"const": "approved"}}}},
+    "secure_boot": {"type": "object", "additionalProperties": false, "required": ["db_certificate_der_sha256", "certificate_owner", "status"], "properties": {"db_certificate_der_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "certificate_owner": {"type": "string", "minLength": 1, "maxLength": 256}, "status": {"const": "approved"}}},
+    "validity": {"type": "object", "additionalProperties": false, "required": ["not_before", "not_after"], "properties": {"not_before": {"type": "string", "format": "date-time", "pattern": "Z$"}, "not_after": {"type": "string", "format": "date-time", "pattern": "Z$"}}},
+    "approval": {"type": "object", "additionalProperties": false, "required": ["approval_id", "authority"], "properties": {"approval_id": {"type": "string", "minLength": 1, "maxLength": 128}, "authority": {"type": "string", "minLength": 1, "maxLength": 256}}},
+    "revocation": {"type": "object", "additionalProperties": false, "required": ["policy_id", "evidence_required", "maximum_age_seconds"], "properties": {"policy_id": {"type": "string", "minLength": 1, "maxLength": 128}, "evidence_required": {"const": true}, "maximum_age_seconds": {"type": "integer", "minimum": 1, "maximum": 604800}}},
+    "artifact_limits": {"type": "object", "minProperties": 1, "maxProperties": 32, "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 68719476736}},
+    "required_artifact_roles": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}}
+  }
+}

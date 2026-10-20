@@ -1,0 +1,23 @@
+# ExamOS P2 — /var/log as nosuid,nodev tmpfs (writable, ephemeral)
+# Runtime logs are kept in RAM. No logs persist to any storage medium
+# after reboot, preventing candidate activity data from remaining on the
+# exam appliance after the session.
+#
+# exec is NOT restricted here because some log-rotation helpers and
+# systemd-journald helper binaries may run from /var paths.
+# nodev and nosuid are safe.
+[Unit]
+Description=ExamOS Runtime Log Directory (/var/log — tmpfs)
+Documentation=file:///etc/examos/p2-config.conf
+DefaultDependencies=no
+Before=sysinit.target local-fs.target
+Wants=local-fs-pre.target
+
+[Mount]
+What=tmpfs
+Where=/var/log
+Type=tmpfs
+Options=mode=0755,nosuid,nodev,size=64m
+
+[Install]
+WantedBy=local-fs.target

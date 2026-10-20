@@ -1,0 +1,7 @@
+{
+  "_schema": "examos-device-registry-v1",
+  "_comment": "No device identities are enrolled in the repository. Test fixtures are generated in temporary storage; production enrollment must use a signed external registry.",
+  "environment": "development",
+  "version": "1",
+  "devices": []
+}

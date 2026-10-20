@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://examos.example/schemas/p0-results-v1.schema.json",
+  "title": "ExamOS P0 aggregate result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "phase", "version", "timestamp", "git_commit", "source_tree_state", "source_dirty_path_count_at_start", "build_config_sha256", "evidence_environment", "host", "release_classification", "status", "disk_artifact", "iso_artifact", "checks"],
+  "properties": {
+    "schema": {"const": "examos.p0.results.v1"},
+    "phase": {"const": "P0"},
+    "version": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "source_tree_state": {"enum": ["CLEAN", "DIRTY"]},
+    "source_dirty_path_count_at_start": {"type": "integer", "minimum": 0},
+    "build_config_sha256": {"$ref": "#/$defs/sha256"},
+    "evidence_environment": {"type": "string", "minLength": 1},
+    "host": {"type": "object", "required": ["os", "kernel", "architecture", "virtualization", "cpu_count", "memory_bytes", "target_architecture"], "properties": {"os": {"type": "string", "minLength": 1}, "kernel": {"type": "string", "minLength": 1}, "architecture": {"type": "string", "minLength": 1}, "virtualization": {"type": "string", "minLength": 1}, "cpu_count": {"type": "integer", "minimum": 1}, "memory_bytes": {"type": "integer", "minimum": 1}, "target_architecture": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+    "release_classification": {"const": "DEVELOPMENT_CANDIDATE"},
+    "status": {"enum": ["IN_PROGRESS", "PASS", "FAIL", "BLOCKED"]},
+    "disk_artifact": {"$ref": "#/$defs/artifact"},
+    "iso_artifact": {"$ref": "#/$defs/artifact"},
+    "checks": {"type": "object", "additionalProperties": false, "required": ["host_architecture", "kvm_access", "qemu_installed", "ovmf_discovered", "swtpm_ready", "mkosi_build", "build_pipeline", "guest_boot", "first_boot_account", "iso_build", "iso_boot", "image_forensics", "pinned_inputs", "reproducible_build", "reproducibility_sha256", "artifact_generated", "artifact_checksum_valid", "artifact_checksum", "iso_checksum", "secrets_clean", "source_tree_clean"], "properties": {"host_architecture": {"$ref": "#/$defs/status"}, "kvm_access": {"$ref": "#/$defs/status"}, "qemu_installed": {"$ref": "#/$defs/status"}, "ovmf_discovered": {"$ref": "#/$defs/status"}, "swtpm_ready": {"enum": ["AVAILABLE", "NOT_REQUIRED"]}, "mkosi_build": {"$ref": "#/$defs/status"}, "build_pipeline": {"$ref": "#/$defs/status"}, "guest_boot": {"$ref": "#/$defs/status"}, "first_boot_account": {"$ref": "#/$defs/status"}, "iso_build": {"$ref": "#/$defs/status"}, "iso_boot": {"$ref": "#/$defs/status"}, "image_forensics": {"$ref": "#/$defs/status"}, "pinned_inputs": {"$ref": "#/$defs/status"}, "reproducible_build": {"$ref": "#/$defs/status"}, "reproducibility_sha256": {"$ref": "#/$defs/digestOrUnknown"}, "artifact_generated": {"$ref": "#/$defs/status"}, "artifact_checksum_valid": {"$ref": "#/$defs/status"}, "artifact_checksum": {"$ref": "#/$defs/sha256"}, "iso_checksum": {"$ref": "#/$defs/digestOrUnknown"}, "secrets_clean": {"$ref": "#/$defs/status"}, "source_tree_clean": {"$ref": "#/$defs/status"}}}
+  },
+  "$defs": {
+    "status": {"enum": ["PASS", "FAIL", "BLOCKED"]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "digestOrUnknown": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"const": "UNKNOWN"}]},
+    "artifact": {"type": "object", "required": ["path", "sha256", "size_bytes"], "properties": {"path": {"type": "string"}, "sha256": {"$ref": "#/$defs/digestOrUnknown"}, "size_bytes": {"type": "string", "pattern": "^[0-9]+$|^UNKNOWN$"}}, "additionalProperties": false}
+  }
+}

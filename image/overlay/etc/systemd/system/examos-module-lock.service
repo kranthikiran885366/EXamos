@@ -1,0 +1,46 @@
+[Unit]
+Description=ExamOS Kernel Module Loading Lock
+Documentation=file:///etc/examos/p2-config.conf
+# Must run after ALL hardware drivers are loaded and settled.
+# The module list is logged before locking so the state is auditable.
+After=systemd-udev-settle.service
+After=network.target
+After=sound.target
+After=examos-usb-lockdown.service
+# Lock before the kiosk starts — no new modules after this point.
+Before=examos-kiosk.service
+# Any failure here triggers the lockdown-failed guard which conflicts with
+# graphical.target, preventing the kiosk from starting.
+OnFailure=examos-lockdown-failed.target
+# Only run if the kernel exposes this control
+ConditionPathExists=/proc/sys/kernel/modules_disabled
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Log the full module list at lock time so post-boot auditing can verify
+# every required driver was loaded before the one-way lock.
+ExecStartPre=/bin/sh -c '\
+  echo "[ExamOS-ModLock] Module list before lock:"; \
+  lsmod; \
+  echo "[ExamOS-ModLock] Current modules_disabled: $(cat /proc/sys/kernel/modules_disabled)"'
+# Apply the one-way lock.
+# After this point: insmod/modprobe will return EPERM (Operation not permitted).
+ExecStart=/bin/sh -c '\
+  echo 1 > /proc/sys/kernel/modules_disabled && \
+  echo "[ExamOS-ModLock] kernel.modules_disabled=1 applied — no further modules can load" || \
+  { echo "[ExamOS-ModLock] FAIL: could not set modules_disabled" >&2; exit 1; }'
+# Verify the lock actually took effect
+ExecStartPost=/bin/sh -c '\
+  VAL=$(cat /proc/sys/kernel/modules_disabled); \
+  if [ "$VAL" = "1" ]; then \
+    echo "[ExamOS-ModLock] VERIFIED: modules_disabled=1"; \
+  else \
+    echo "[ExamOS-ModLock] FAIL: modules_disabled=$VAL after lock attempt" >&2; \
+    exit 1; \
+  fi'
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target

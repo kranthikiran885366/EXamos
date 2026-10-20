@@ -1,0 +1,36 @@
+[Unit]
+Description=ExamOS TPM Secret Unsealing (H6 — production secret management)
+Documentation=file:///etc/examos/deployment.conf
+# Run after TPM resource manager is ready, before any ExamOS service
+After=systemd-tpm2-setup.service tpm2.target
+Before=examos-server.service examos-agent.service
+Wants=tpm2.target
+ConditionPathExists=/etc/examos/sealed
+# Only run if sealed secrets directory is non-empty
+ConditionDirectoryNotEmpty=/etc/examos/sealed
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart=/usr/local/sbin/tpm-unseal-secrets.sh
+# Write unsealed secrets to /run/examos/secrets (tmpfs — lost on reboot)
+# This forces re-unsealing every boot, binding secrets to measured state.
+RuntimeDirectory=examos/secrets
+RuntimeDirectoryMode=0700
+StandardOutput=journal
+StandardError=journal
+
+# Strict sandboxing
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=no
+NoNewPrivileges=yes
+ProtectKernelLogs=no
+RestrictAddressFamilies=AF_UNIX
+# Must have access to /dev/tpmrm0 or /dev/tpm0
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+
+[Install]
+WantedBy=multi-user.target

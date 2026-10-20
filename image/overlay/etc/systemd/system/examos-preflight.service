@@ -1,0 +1,19 @@
+[Unit]
+Description=ExamOS P2 Startup Validator (mandatory control preflight)
+Documentation=file:///etc/examos/p2-config.conf
+Requires=examos-dev-shm-hardening.service examos-usb-lockdown.service usbguard.service
+After=examos-module-lock.service examos-usb-lockdown.service usbguard.service nftables.service
+After=tmp.mount home-exam.mount var-log.mount examos-dev-shm-hardening.service
+Before=examos-kiosk.service
+Conflicts=examos-lockdown-failed.target
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/local/bin/p2-startup-validator.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target

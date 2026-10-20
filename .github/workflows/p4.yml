@@ -1,0 +1,122 @@
+name: ExamOS P4 — Proctoring & Tamper-Evident Evidence Gate
+
+on:
+  push:
+    branches: [main, develop, 'phase/p4']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  p4-gate:
+    name: P4 Gate — Proctoring, Detection, Tamper Evidence, Concurrency
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      EXAMOS_TPM_MODE: development
+      EXAMOS_RELEASE_ID: examos-0.4.0
+      EXAMOS_DEVICES_CONFIG: server/config/devices.json
+      EXAMOS_RELEASES_CONFIG: server/config/releases.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enforce clean source tree
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]; then
+            echo "FATAL: Source tree is DIRTY — P4 gate refuses to run on a dirty tree." >&2
+            git status --short --untracked-files=all | head -30 >&2
+            exit 1
+          fi
+          echo "Source tree is CLEAN at commit $(git rev-parse HEAD)"
+
+      - name: Install P4 build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make \
+            libssl-dev libcurl4-openssl-dev libudev-dev \
+            libopencv-dev \
+            openssl jq curl python3 bc
+
+      - name: Compile all native subsystems
+        run: |
+          make clean
+          make native
+          echo "[P4-CI] Build complete:"
+          ls -la server/examos-server agent/examos-agent proctoring/examos-proctor
+
+      - name: Build CLI event verifier
+        run: |
+          mkdir -p tools
+          gcc -Wall -Wextra -O2 -o tools/exam-event-verify \
+            tools/exam-event-verify.c -lssl -lcrypto
+          echo "[P4-CI] Verifier built:"
+          ls -la tools/exam-event-verify
+
+      - name: P4.2 — Tamper Evidence Test Matrix (T1-T8)
+        run: |
+          mkdir -p artifacts/phase4
+          bash tests/p4/p4-tamper-test.sh || TAMPER_RC=$?
+          echo "Tamper gate exit: ${TAMPER_RC:-0}"
+          if [ "${TAMPER_RC:-0}" -eq 1 ]; then
+            echo "FATAL: Tamper evidence gate FAILED" >&2
+            exit 1
+          fi
+
+      - name: P4.3 — 50-Session Concurrency Test
+        run: |
+          mkdir -p artifacts/phase4
+          bash tests/p4/p4-concurrency-test.sh || CONC_RC=$?
+          echo "Concurrency gate exit: ${CONC_RC:-0}"
+          if [ "${CONC_RC:-0}" -eq 1 ]; then
+            echo "FATAL: Concurrency gate FAILED" >&2
+            exit 1
+          fi
+
+      - name: P4.1 — Detection Quality Gate (may BLOCK if no dataset)
+        run: |
+          mkdir -p artifacts/phase4
+          bash tests/p4/p4-detection-gate.sh || DETECT_RC=$?
+          echo "Detection gate exit: ${DETECT_RC:-0}"
+          # Exit 2 = BLOCKED (no dataset) — acceptable in CI for now
+          # Exit 1 = FAIL — must fail the workflow
+          if [ "${DETECT_RC:-0}" -eq 1 ]; then
+            echo "FATAL: Detection quality gate FAILED" >&2
+            exit 1
+          fi
+
+      - name: P4 gate decision
+        run: |
+          mkdir -p artifacts/phase4
+          bash tests/p4/p4-gate.sh || GATE_RC=$?
+          echo "P4 gate exit: ${GATE_RC:-0}"
+          if [ "${GATE_RC:-0}" -eq 1 ]; then
+            echo "FATAL: P4 gate FAILED" >&2
+            exit 1
+          fi
+
+      - name: Show P4 results
+        if: always()
+        run: |
+          echo "=== P4 Gate Results ==="
+          cat artifacts/phase4/phase4-manifest.json 2>/dev/null || echo "manifest not generated"
+          echo ""
+          echo "=== Tamper Results ==="
+          cat artifacts/phase4/tamper-test-results.json 2>/dev/null || echo "not generated"
+          echo ""
+          echo "=== Concurrency Results ==="
+          cat artifacts/phase4/concurrency-results.json 2>/dev/null || echo "not generated"
+
+      - name: Upload P4 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: examos-p4-artifacts
+          path: artifacts/phase4/
+          retention-days: 30

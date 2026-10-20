@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamOS Operations Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #475569;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+
+        .header .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #22c55e;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.stale {
+            background: #f59e0b;
+        }
+
+        .status-indicator.error {
+            background: #ef4444;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .last-update {
+            font-size: 0.875rem;
+            color: #94a3b8;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: #1e293b;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            border: 1px solid #334155;
+        }
+
+        .card h2 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #f1f5f9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card h2 .badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+            background: #3b82f6;
+            color: white;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+
+        .stat {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid #334155;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+
+        .stat-value.warning {
+            color: #f59e0b;
+        }
+
+        .stat-value.error {
+            color: #ef4444;
+        }
+
+        .stat-value.success {
+            color: #22c55e;
+        }
+
+        .exam-state {
+            font-size: 1.25rem;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        .exam-state.OPEN {
+            background: #22c55e;
+            color: white;
+        }
+
+        .exam-state.PAUSED {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .exam-state.CLOSED {
+            background: #64748b;
+            color: white;
+        }
+
+        .exam-state.SCHEDULED {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            border: none;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.875rem;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-success {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #16a34a;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #334155;
+        }
+
+        th {
+            background: #0f172a;
+            font-weight: 600;
+            color: #94a3b8;
+        }
+
+        tr:hover {
+            background: #1e293b;
+        }
+
+        .stale-indicator {
+            display: inline-block;
+            padding: 0.125rem 0.375rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .stale-indicator.fresh {
+            background: #22c55e;
+            color: white;
+        }
+
+        .stale-indicator.stale {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .incident-severity {
+            display: inline-block;
+            padding: 0.125rem 0.375rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .incident-severity.CRITICAL {
+            background: #ef4444;
+            color: white;
+        }
+
+        .incident-severity.HIGH {
+            background: #f97316;
+            color: white;
+        }
+
+        .incident-severity.MEDIUM {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .incident-severity.LOW {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .incident-severity.INFO {
+            background: #64748b;
+            color: white;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1e293b;
+            border-radius: 0.75rem;
+            padding: 2rem;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid #475569;
+        }
+
+        .modal-content h3 {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            color: #f8fafc;
+        }
+
+        .modal-content p {
+            color: #94a3b8;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-content textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #475569;
+            border-radius: 0.5rem;
+            background: #0f172a;
+            color: #e2e8f0;
+            resize: vertical;
+            min-height: 100px;
+            margin-bottom: 1rem;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 0.5rem;
+        }
+
+        .tab {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            border: none;
+            background: transparent;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .tab:hover:not(.active) {
+            background: #334155;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #94a3b8;
+        }
+
+        .error-message {
+            background: #7f1d1d;
+            color: #fecaca;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            border: 1px solid #991b1b;
+        }
+
+        .success-message {
+            background: #14532d;
+            color: #bbf7d0;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            border: 1px solid #166534;
+        }
+
+        .network-health {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+        }
+
+        .health-metric {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            text-align: center;
+        }
+
+        .health-metric-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+
+        .health-metric-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎓 ExamOS Operations Dashboard</h1>
+        <div class="status">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <span class="last-update" id="lastUpdate">Loading...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="tabs">
+            <button class="tab active" data-tab="overview">Overview</button>
+            <button class="tab" data-tab="devices">Devices</button>
+            <button class="tab" data-tab="candidates">Candidates</button>
+            <button class="tab" data-tab="incidents">Incidents</button>
+            <button class="tab" data-tab="events">Security Events</button>
+            <button class="tab" data-tab="reports">Reports</button>
+        </div>
+
+        <div id="errorContainer"></div>
+
+        <!-- Overview Tab -->
+        <div class="tab-content active" id="overview">
+            <div class="grid">
+                <div class="card">
+                    <h2>Exam Status <span class="badge" id="examStateBadge">SCHEDULED</span></h2>
+                    <div class="exam-state" id="examState">SCHEDULED</div>
+                    <div class="btn-group">
+                        <button class="btn btn-success" onclick="requestExamStateChange(5)">Open Exam</button>
+                        <button class="btn btn-warning" onclick="requestExamStateChange(7)">Pause Exam</button>
+                        <button class="btn btn-primary" onclick="requestExamStateChange(6)">Resume Exam</button>
+                        <button class="btn btn-danger" onclick="requestExamStateChange(8)">Close Exam</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Candidates</h2>
+                    <div class="stat-grid">
+                        <div class="stat">
+                            <div class="stat-label">Total</div>
+                            <div class="stat-value" id="totalCandidates">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Checked In</div>
+                            <div class="stat-value" id="checkedIn">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">In Exam</div>
+                            <div class="stat-value success" id="inExam">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Submitted</div>
+                            <div class="stat-value" id="submitted">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Devices</h2>
+                    <div class="stat-grid">
+                        <div class="stat">
+                            <div class="stat-label">Total</div>
+                            <div class="stat-value" id="totalDevices">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Online</div>
+                            <div class="stat-value success" id="onlineDevices">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Compliant</div>
+                            <div class="stat-value" id="compliantDevices">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Stale</div>
+                            <div class="stat-value warning" id="staleDevices">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Incidents</h2>
+                    <div class="stat-grid">
+                        <div class="stat">
+                            <div class="stat-label">Open</div>
+                            <div class="stat-value" id="openIncidents">0</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Critical</div>
+                            <div class="stat-value error" id="criticalIncidents">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Network Health</h2>
+                    <div class="network-health">
+                        <div class="health-metric">
+                            <div class="health-metric-value" id="avgLatency">0ms</div>
+                            <div class="health-metric-label">Avg Latency</div>
+                        </div>
+                        <div class="health-metric">
+                            <div class="health-metric-value" id="heartbeatFailures">0</div>
+                            <div class="health-metric-label">Heartbeat Failures (5m)</div>
+                        </div>
+                        <div class="health-metric">
+                            <div class="health-metric-value" id="attestationFailures">0</div>
+                            <div class="health-metric-label">Attestation Failures (5m)</div>
+                        </div>
+                        <div class="health-metric">
+                            <div class="health-metric-value" id="proctoringStreams">0</div>
+                            <div class="health-metric-label">Proctoring Streams</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Devices Tab -->
+        <div class="tab-content" id="devices">
+            <div class="card">
+                <h2>Device Telemetry</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Device ID</th>
+                                <th>Status</th>
+                                <th>Compliance</th>
+                                <th>Last Heartbeat</th>
+                                <th>Latency</th>
+                                <th>Staleness</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="devicesTable">
+                            <tr><td colspan="7" class="loading">Loading devices...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Candidates Tab -->
+        <div class="tab-content" id="candidates">
+            <div class="card">
+                <h2>Candidate Sessions</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Candidate ID</th>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Device</th>
+                                <th>Last Activity</th>
+                                <th>Security Events</th>
+                            </tr>
+                        </thead>
+                        <tbody id="candidatesTable">
+                            <tr><td colspan="6" class="loading">Loading candidates...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Incidents Tab -->
+        <div class="tab-content" id="incidents">
+            <div class="card">
+                <h2>Security Incidents</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Incident ID</th>
+                                <th>Severity</th>
+                                <th>Status</th>
+                                <th>Summary</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="incidentsTable">
+                            <tr><td colspan="6" class="loading">Loading incidents...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security Events Tab -->
+        <div class="tab-content" id="events">
+            <div class="card">
+                <h2>Event Pipeline Statistics</h2>
+                <div class="stat-grid">
+                    <div class="stat">
+                        <div class="stat-label">Total Events</div>
+                        <div class="stat-value" id="totalEvents">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Events (Last Hour)</div>
+                        <div class="stat-value" id="eventsLastHour">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Events (Last 24h)</div>
+                        <div class="stat-value" id="eventsLast24h">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Open Alerts</div>
+                        <div class="stat-value warning" id="openAlerts">0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card" style="margin-top: 1.5rem;">
+                <h2>Event Search</h2>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+                    <select id="eventSeverityFilter" style="padding: 0.5rem; border-radius: 0.25rem; border: 1px solid #475569; background: #0f172a; color: #e2e8f0;">
+                        <option value="">All Severities</option>
+                        <option value="0">INFO</option>
+                        <option value="1">LOW</option>
+                        <option value="2">MEDIUM</option>
+                        <option value="3">HIGH</option>
+                        <option value="4">CRITICAL</option>
+                    </select>
+                    <select id="eventClassificationFilter" style="padding: 0.5rem; border-radius: 0.25rem; border: 1px solid #475569; background: #0f172a; color: #e2e8f0;">
+                        <option value="">All Classifications</option>
+                        <option value="0">OBSERVED_FACT</option>
+                        <option value="1">INFERRED_RISK</option>
+                        <option value="2">UNVERIFIED_SUSPICION</option>
+                    </select>
+                    <input type="text" id="eventDeviceFilter" placeholder="Device ID" style="padding: 0.5rem; border-radius: 0.25rem; border: 1px solid #475569; background: #0f172a; color: #e2e8f0;">
+                    <input type="text" id="eventCandidateFilter" placeholder="Candidate ID" style="padding: 0.5rem; border-radius: 0.25rem; border: 1px solid #475569; background: #0f172a; color: #e2e8f0;">
+                    <button class="btn btn-primary" onclick="searchEvents()">Search</button>
+                    <button class="btn" onclick="clearEventFilters()">Clear</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Event ID</th>
+                                <th>Timestamp</th>
+                                <th>Type</th>
+                                <th>Severity</th>
+                                <th>Classification</th>
+                                <th>Device</th>
+                                <th>Candidate</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="eventsTable">
+                            <tr><td colspan="8" class="loading">Loading events...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reports Tab -->
+        <div class="tab-content" id="reports">
+            <div class="grid">
+                <div class="card">
+                    <h2>Submission Report</h2>
+                    <button class="btn btn-primary" onclick="generateReport('submission')">Generate Report</button>
+                    <pre id="submissionReport" style="margin-top: 1rem; font-size: 0.875rem; color: #94a3b8;"></pre>
+                </div>
+                <div class="card">
+                    <h2>Incident Report</h2>
+                    <button class="btn btn-primary" onclick="generateReport('incident')">Generate Report</button>
+                    <pre id="incidentReport" style="margin-top: 1rem; font-size: 0.875rem; color: #94a3b8;"></pre>
+                </div>
+                <div class="card">
+                    <h2>Device Health Report</h2>
+                    <button class="btn btn-primary" onclick="generateReport('device-health')">Generate Report</button>
+                    <pre id="deviceHealthReport" style="margin-top: 1rem; font-size: 0.875rem; color: #94a3b8;"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-content">
+            <h3 id="modalTitle">Confirm Action</h3>
+            <p id="modalMessage">Are you sure you want to proceed?</p>
+            <textarea id="modalReason" placeholder="Reason (required)"></textarea>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmAction()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1/operations';
+        const EVENTS_API_BASE = '/api/v1/events';
+        
+        // Dynamic configuration
+        let dashboardConfig = {
+            examId: null,
+            operatorId: null,
+            stalenessThresholdSec: 300,
+            refreshIntervalMs: 10000,
+            apiTimeoutMs: 30000
+        };
+        
+        let currentAction = null;
+        let currentTarget = null;
+        let pendingConfirmationToken = null;
+        let sessionToken = null;
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+                
+                if (tab.dataset.tab === 'devices') loadDevices();
+                if (tab.dataset.tab === 'candidates') loadCandidates();
+                if (tab.dataset.tab === 'incidents') loadIncidents();
+                if (tab.dataset.tab === 'events') loadEventStats();
+            });
+        });
+
+        // Load configuration from server or localStorage
+        async function loadConfiguration() {
+            try {
+                // Try to load from server first
+                const response = await fetch('/api/v1/operations/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    dashboardConfig = { ...dashboardConfig, ...config };
+                    saveConfiguration();
+                    return;
+                }
+            } catch (error) {
+                console.log('Server config not available, using localStorage');
+            }
+            
+            // Fallback to localStorage
+            const saved = localStorage.getItem('examos_dashboard_config');
+            if (saved) {
+                dashboardConfig = { ...dashboardConfig, ...JSON.parse(saved) };
+            }
+            
+            // Prompt for required values if missing
+            if (!dashboardConfig.examId) {
+                dashboardConfig.examId = prompt('Enter Exam ID:');
+            }
+            if (!dashboardConfig.operatorId) {
+                dashboardConfig.operatorId = prompt('Enter Operator ID:');
+            }
+            
+            saveConfiguration();
+        }
+        
+        function saveConfiguration() {
+            localStorage.setItem('examos_dashboard_config', JSON.stringify(dashboardConfig));
+        }
+        
+        // Get session token from cookie
+        function getSessionToken() {
+            const cookies = document.cookie.split(';');
+            for (const cookie of cookies) {
+                const [name, value] = cookie.trim().split('=');
+                if (name === 'admin_session') {
+                    return value;
+                }
+            }
+            return null;
+        }
+        
+        // Load overview data
+        async function loadOverview() {
+            if (!dashboardConfig.examId) {
+                await loadConfiguration();
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/summary?exam_id=${encodeURIComponent(dashboardConfig.examId)}`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                document.getElementById('totalCandidates').textContent = data.candidates.total;
+                document.getElementById('checkedIn').textContent = data.candidates.checked_in;
+                document.getElementById('inExam').textContent = data.candidates.in_exam;
+                document.getElementById('submitted').textContent = data.candidates.submitted;
+                
+                document.getElementById('totalDevices').textContent = data.devices.total;
+                document.getElementById('onlineDevices').textContent = data.devices.online;
+                document.getElementById('compliantDevices').textContent = data.devices.compliant;
+                document.getElementById('staleDevices').textContent = data.devices.stale;
+                
+                document.getElementById('openIncidents').textContent = data.incidents.open;
+                document.getElementById('criticalIncidents').textContent = data.incidents.critical;
+                
+                const examStateEl = document.getElementById('examState');
+                const examStateBadge = document.getElementById('examStateBadge');
+                const stateNames = ['DRAFT', 'VALIDATED', 'APPROVED', 'SCHEDULED', 'OPEN', 'ACTIVE', 'PAUSED', 'SUBMISSION', 'CLOSED', 'RECONCILED'];
+                examStateEl.textContent = stateNames[data.exam_state] || 'UNKNOWN';
+                examStateEl.className = 'exam-state ' + (stateNames[data.exam_state] || 'SCHEDULED');
+                examStateBadge.textContent = stateNames[data.exam_state] || 'UNKNOWN';
+                
+                const lastUpdate = new Date(data.last_update * 1000);
+                document.getElementById('lastUpdate').textContent = `Last update: ${lastUpdate.toLocaleTimeString()}`;
+                
+                const statusIndicator = document.getElementById('statusIndicator');
+                statusIndicator.className = 'status-indicator' + (data.system_healthy ? '' : ' error');
+                
+                // Load network health
+                loadNetworkHealth();
+            } catch (error) {
+                showError('Failed to load overview data');
+            }
+        }
+
+        async function loadNetworkHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/network-health`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                document.getElementById('avgLatency').textContent = data.avg_heartbeat_latency_ms.toFixed(1) + 'ms';
+                document.getElementById('heartbeatFailures').textContent = data.heartbeat_failures_last_5min;
+                document.getElementById('attestationFailures').textContent = data.attestation_failures_last_5min;
+                document.getElementById('proctoringStreams').textContent = data.proctoring_streams_active;
+            } catch (error) {
+                console.error('Failed to load network health');
+            }
+        }
+
+        async function loadDevices() {
+            try {
+                const response = await fetch(`${API_BASE}/devices/telemetry`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                const tbody = document.getElementById('devicesTable');
+                tbody.innerHTML = '';
+                
+                // Parse fleet data from platform
+                if (data.fleet_data) {
+                    const fleet = JSON.parse(data.fleet_data);
+                    fleet.forEach(device => {
+                        const row = document.createElement('tr');
+                        const lastHeartbeat = new Date(device.last_checkin * 1000);
+                        const isStale = (Date.now() / 1000 - device.last_checkin) > dashboardConfig.stalenessThresholdSec;
+                        
+                        row.innerHTML = `
+                            <td>${device.device_id}</td>
+                            <td>${device.session_state || 'IDLE'}</td>
+                            <td>${device.compliance_status}</td>
+                            <td>${lastHeartbeat.toLocaleTimeString()}</td>
+                            <td>--</td>
+                            <td><span class="stale-indicator ${isStale ? 'stale' : 'fresh'}">${isStale ? 'STALE' : 'FRESH'}</span></td>
+                            <td>
+                                <button class="btn btn-warning btn-sm" onclick="markDeviceFailed('${device.device_id}')">Mark Failed</button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+            } catch (error) {
+                showError('Failed to load devices');
+            }
+        }
+
+        async function loadCandidates() {
+            if (!dashboardConfig.examId) {
+                await loadConfiguration();
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/platform/roster?exam_id=${encodeURIComponent(dashboardConfig.examId)}`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                const tbody = document.getElementById('candidatesTable');
+                tbody.innerHTML = '';
+                
+                // Parse roster data
+                if (Array.isArray(data)) {
+                    data.forEach(candidate => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${candidate.candidate_id}</td>
+                            <td>${candidate.full_name}</td>
+                            <td>${candidate.status}</td>
+                            <td>${candidate.assigned_device_id || 'N/A'}</td>
+                            <td>--</td>
+                            <td>0</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+            } catch (error) {
+                showError('Failed to load candidates');
+            }
+        }
+
+        async function loadIncidents() {
+            try {
+                const response = await fetch(`${API_BASE}/incidents`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                const tbody = document.getElementById('incidentsTable');
+                tbody.innerHTML = '';
+                
+                // Parse incidents data
+                if (data.incidents) {
+                    data.incidents.forEach(incident => {
+                        const row = document.createElement('tr');
+                        const created = new Date(incident.created_at * 1000);
+                        row.innerHTML = `
+                            <td>${incident.incident_id}</td>
+                            <td><span class="incident-severity ${incident.severity}">${incident.severity}</span></td>
+                            <td>${incident.status}</td>
+                            <td>${incident.summary}</td>
+                            <td>${created.toLocaleString()}</td>
+                            <td>
+                                <button class="btn btn-primary btn-sm" onclick="acknowledgeIncident('${incident.incident_id}')">Acknowledge</button>
+                                <button class="btn btn-success btn-sm" onclick="resolveIncident('${incident.incident_id}')">Resolve</button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+            } catch (error) {
+                showError('Failed to load incidents');
+            }
+        }
+
+        async function loadEventStats() {
+            try {
+                const response = await fetch(`${EVENTS_API_BASE}/stats`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                document.getElementById('totalEvents').textContent = data.total_events || 0;
+                document.getElementById('eventsLastHour').textContent = data.events_last_hour || 0;
+                document.getElementById('eventsLast24h').textContent = data.events_last_24h || 0;
+                document.getElementById('openAlerts').textContent = data.open_alerts || 0;
+            } catch (error) {
+                showError('Failed to load event statistics');
+            }
+        }
+
+        async function searchEvents() {
+            const severity = document.getElementById('eventSeverityFilter').value;
+            const classification = document.getElementById('eventClassificationFilter').value;
+            const deviceId = document.getElementById('eventDeviceFilter').value;
+            const candidateId = document.getElementById('eventCandidateFilter').value;
+            
+            let queryParams = new URLSearchParams();
+            if (severity) queryParams.append('min_severity', severity);
+            if (classification !== '') queryParams.append('classification', classification);
+            if (deviceId) queryParams.append('device_id', deviceId);
+            if (candidateId) queryParams.append('candidate_id', candidateId);
+            queryParams.append('limit', '50');
+            
+            try {
+                const response = await fetch(`${EVENTS_API_BASE}/search?${queryParams.toString()}`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                const tbody = document.getElementById('eventsTable');
+                tbody.innerHTML = '';
+                
+                if (data.events && Array.isArray(data.events)) {
+                    data.events.forEach(event => {
+                        const row = document.createElement('tr');
+                        const timestamp = new Date(event.timestamp * 1000);
+                        
+                        const severityNames = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+                        const classificationNames = ['OBSERVED_FACT', 'INFERRED_RISK', 'UNVERIFIED_SUSPICION'];
+                        
+                        row.innerHTML = `
+                            <td style="font-family: monospace; font-size: 0.75rem;">${event.event_id.substring(0, 16)}...</td>
+                            <td>${timestamp.toLocaleString()}</td>
+                            <td>${event.event_type_str || 'UNKNOWN'}</td>
+                            <td><span class="incident-severity ${severityNames[event.severity] || 'INFO'}">${severityNames[event.severity] || 'INFO'}</span></td>
+                            <td>${classificationNames[event.classification] || 'UNKNOWN'}</td>
+                            <td>${event.device_id || 'N/A'}</td>
+                            <td>${event.candidate_id || 'N/A'}</td>
+                            <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${event.details || ''}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #94a3b8;">No events found</td></tr>';
+                }
+            } catch (error) {
+                showError('Failed to search events');
+            }
+        }
+
+        function clearEventFilters() {
+            document.getElementById('eventSeverityFilter').value = '';
+            document.getElementById('eventClassificationFilter').value = '';
+            document.getElementById('eventDeviceFilter').value = '';
+            document.getElementById('eventCandidateFilter').value = '';
+            
+            const tbody = document.getElementById('eventsTable');
+            tbody.innerHTML = '<tr><td colspan="8" class="loading">Loading events...</td></tr>';
+        }
+
+        // Exam state change
+        function requestExamStateChange(newState) {
+            const stateNames = ['DRAFT', 'VALIDATED', 'APPROVED', 'SCHEDULED', 'OPEN', 'ACTIVE', 'PAUSED', 'SUBMISSION', 'CLOSED', 'RECONCILED'];
+            currentAction = 'exam_state_change';
+            currentTarget = newState;
+            
+            document.getElementById('modalTitle').textContent = `Change Exam State to ${stateNames[newState]}`;
+            document.getElementById('modalMessage').textContent = 'This is a critical action that will affect all candidates. Please provide a reason.';
+            document.getElementById('modalReason').value = '';
+            document.getElementById('confirmModal').classList.add('active');
+        }
+
+        // Device failure
+        function markDeviceFailed(deviceId) {
+            currentAction = 'device_failed';
+            currentTarget = deviceId;
+            
+            document.getElementById('modalTitle').textContent = 'Mark Device as Failed';
+            document.getElementById('modalMessage').textContent = `Mark device ${deviceId} as failed. This will require device replacement.`;
+            document.getElementById('modalReason').value = '';
+            document.getElementById('confirmModal').classList.add('active');
+        }
+
+        // Incident actions
+        async function acknowledgeIncident(incidentId) {
+            if (!dashboardConfig.operatorId) {
+                await loadConfiguration();
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/incidents/acknowledge`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    body: JSON.stringify({ 
+                        incident_id: incidentId, 
+                        operator_id: dashboardConfig.operatorId 
+                    }),
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.status === 'INCIDENT_ACKNOWLEDGED') {
+                    showSuccess('Incident acknowledged');
+                    loadIncidents();
+                }
+            } catch (error) {
+                showError('Failed to acknowledge incident');
+            }
+        }
+
+        async function resolveIncident(incidentId) {
+            if (!dashboardConfig.operatorId) {
+                await loadConfiguration();
+            }
+            
+            currentAction = 'resolve_incident';
+            currentTarget = incidentId;
+            
+            document.getElementById('modalTitle').textContent = 'Resolve Incident';
+            document.getElementById('modalMessage').textContent = 'Provide resolution notes for this incident. This action will be logged for audit purposes.';
+            document.getElementById('modalReason').value = '';
+            document.getElementById('modalReason').placeholder = 'Resolution notes (required)';
+            document.getElementById('confirmModal').classList.add('active');
+        }
+
+        // Modal actions
+        function closeModal() {
+            document.getElementById('confirmModal').classList.remove('active');
+            currentAction = null;
+            currentTarget = null;
+        }
+
+        async function confirmAction() {
+            const reason = document.getElementById('modalReason').value;
+            if (!reason) {
+                showError('Reason is required for audit logging');
+                return;
+            }
+            
+            if (!dashboardConfig.operatorId) {
+                await loadConfiguration();
+            }
+            
+            try {
+                if (currentAction === 'exam_state_change') {
+                    // Request confirmation token
+                    const response = await fetch(`${API_BASE}/exam/state-change`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Cookie': `admin_session=${getSessionToken() || ''}`
+                        },
+                        body: JSON.stringify({
+                            exam_id: dashboardConfig.examId,
+                            new_state: currentTarget,
+                            reason: reason,
+                            operator_id: dashboardConfig.operatorId
+                        }),
+                        signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'CONFIRMATION_REQUIRED') {
+                        pendingConfirmationToken = data.confirmation_token;
+                        
+                        // Show second confirmation dialog
+                        document.getElementById('modalTitle').textContent = 'Confirm Critical Action';
+                        document.getElementById('modalMessage').textContent = `You are about to change the exam state. This action requires explicit confirmation. Token: ${data.confirmation_token.substring(0, 8)}...`;
+                        document.getElementById('modalReason').value = '';
+                        document.getElementById('modalReason').placeholder = 'Type CONFIRM to proceed';
+                        document.getElementById('confirmModal').classList.add('active');
+                        
+                        // Change action to confirmation step
+                        currentAction = 'exam_state_confirm';
+                        return;
+                    }
+                } else if (currentAction === 'exam_state_confirm') {
+                    // Verify confirmation text
+                    if (reason !== 'CONFIRM') {
+                        showError('You must type CONFIRM to proceed');
+                        return;
+                    }
+                    
+                    // Execute the confirmed action
+                    const response = await fetch(`${API_BASE}/confirm`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Cookie': `admin_session=${getSessionToken() || ''}`
+                        },
+                        body: JSON.stringify({
+                            confirmation_token: pendingConfirmationToken,
+                            operator_id: dashboardConfig.operatorId
+                        }),
+                        signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    showSuccess('Exam state changed successfully');
+                    loadOverview();
+                } else if (currentAction === 'device_failed') {
+                    const response = await fetch(`${API_BASE}/device/failed`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Cookie': `admin_session=${getSessionToken() || ''}`
+                        },
+                        body: JSON.stringify({
+                            device_id: currentTarget,
+                            reason: reason,
+                            operator_id: dashboardConfig.operatorId
+                        }),
+                        signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'CONFIRMATION_REQUIRED') {
+                        pendingConfirmationToken = data.confirmation_token;
+                        
+                        // Show second confirmation
+                        document.getElementById('modalTitle').textContent = 'Confirm Device Failure';
+                        document.getElementById('modalMessage').textContent = `You are about to mark device ${currentTarget} as failed. Type CONFIRM to proceed.`;
+                        document.getElementById('modalReason').value = '';
+                        document.getElementById('modalReason').placeholder = 'Type CONFIRM to proceed';
+                        currentAction = 'device_failed_confirm';
+                        return;
+                    }
+                } else if (currentAction === 'device_failed_confirm') {
+                    if (reason !== 'CONFIRM') {
+                        showError('You must type CONFIRM to proceed');
+                        return;
+                    }
+                    
+                    const response = await fetch(`${API_BASE}/confirm`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Cookie': `admin_session=${getSessionToken() || ''}`
+                        },
+                        body: JSON.stringify({
+                            confirmation_token: pendingConfirmationToken,
+                            operator_id: dashboardConfig.operatorId
+                        }),
+                        signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    showSuccess('Device marked as failed');
+                    loadDevices();
+                } else if (currentAction === 'resolve_incident') {
+                    const response = await fetch(`${API_BASE}/incidents/resolve`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Cookie': `admin_session=${getSessionToken() || ''}`
+                        },
+                        body: JSON.stringify({
+                            incident_id: currentTarget,
+                            resolution_notes: reason,
+                            operator_id: dashboardConfig.operatorId
+                        }),
+                        signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'INCIDENT_RESOLVED') {
+                        showSuccess('Incident resolved');
+                        loadIncidents();
+                    }
+                }
+                
+                closeModal();
+            } catch (error) {
+                showError(`Failed to execute action: ${error.message}`);
+            }
+        }
+
+        // Reports
+        async function generateReport(type) {
+            if (!dashboardConfig.examId) {
+                await loadConfiguration();
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/reports/${type}?exam_id=${encodeURIComponent(dashboardConfig.examId)}`, {
+                    headers: {
+                        'Cookie': `admin_session=${getSessionToken() || ''}`
+                    },
+                    signal: AbortSignal.timeout(dashboardConfig.apiTimeoutMs)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                const reportId = type + 'Report';
+                document.getElementById(reportId).textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                showError('Failed to generate report');
+            }
+        }
+
+        // Utility functions
+        function showError(message) {
+            const container = document.getElementById('errorContainer');
+            container.innerHTML = `<div class="error-message">${message}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+
+        function showSuccess(message) {
+            const container = document.getElementById('errorContainer');
+            container.innerHTML = `<div class="success-message">${message}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+
+        // Auto-refresh with configurable interval
+        let refreshInterval = null;
+        
+        function startAutoRefresh() {
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(loadOverview, dashboardConfig.refreshIntervalMs);
+        }
+        
+        // Initial load
+        loadConfiguration().then(() => {
+            loadOverview();
+            startAutoRefresh();
+        });
+    </script>
+</body>
+</html>

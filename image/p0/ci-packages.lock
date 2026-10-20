@@ -1,0 +1,31 @@
+# Exact package versions present in the Ubuntu snapshot configured in sources.lock.
+# mkosi is installed from its separately pinned upstream source commit.
+git=1:2.43.0-1ubuntu7
+qemu-system-x86=1:8.2.2+ds-0ubuntu1
+ovmf=2024.02-2
+swtpm=0.7.3-0ubuntu5
+swtpm-tools=0.7.3-0ubuntu5
+tpm2-tools=5.6-1build4
+sbsigntool=0.9.4-3.1ubuntu7
+efitools=1.9.2-3ubuntu3
+cryptsetup-bin=2:2.7.0-1ubuntu4
+squashfs-tools=1:4.6.1-1build1
+systemd-container=255.4-1ubuntu8
+debian-archive-keyring=2023.4ubuntu1
+xorriso=1:1.5.6-1.1ubuntu3
+fdisk=2.39.3-9ubuntu6
+mtools=4.0.43-1build1
+dosfstools=4.2-1.1build1
+grub-efi-amd64-bin=2.12-1ubuntu7
+grub-common=2.12-1ubuntu7
+binutils=2.42-4ubuntu2
+file=1:5.45-3build1
+jq=1.7.1-3build1
+cpio=2.15+dfsg-1ubuntu2
+zstd=1.5.5+dfsg2-2build1
+systemd-ukify=255.4-1ubuntu8
+qemu-utils=1:8.2.2+ds-0ubuntu1
+make=4.3-4.1build2
+gcc=4:13.2.0-7ubuntu1
+g++=4:13.2.0-7ubuntu1
+python3=3.12.3-0ubuntu1

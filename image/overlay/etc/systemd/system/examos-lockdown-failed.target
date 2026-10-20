@@ -1,0 +1,11 @@
+[Unit]
+Description=ExamOS Mandatory Lockdown Failure — Exam Blocked
+Documentation=file:///etc/examos/p2-config.conf
+# This target is activated when a mandatory P2 security control fails to apply.
+# It conflicts with graphical.target, which prevents examos-kiosk.service from
+# starting.  The device displays nothing to the candidate but does not present
+# a shell or login prompt.
+#
+# Recovery: the device must be rebooted and the engineering team must diagnose
+# the failed service via journal logs on a separate maintenance boot.
+Conflicts=graphical.target examos-kiosk.service

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+attempt=0
+while [ "$attempt" -lt 80 ]; do
+    if /usr/bin/systemctl is-active --quiet examos-kiosk.service; then
+        if [ -S /run/user/1000/wayland-0 ]; then
+            if /usr/bin/pgrep -u exam -f 'chromium.*--kiosk.*--app=' >/dev/null; then
+                echo "EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1"
+                exit 0
+            fi
+        fi
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.25
+done
+
+echo "EXAMOS_KIOSK_NOT_READY: live Cage, Wayland socket, and kiosk Chromium were not all verified" >&2
+exit 1

@@ -1,0 +1,20 @@
+{
+  "_schema": "examos-release-registry-v1",
+  "_comment": [
+    "ExamOS DEVELOPMENT-ONLY release registry.",
+    "Loaded at server startup from EXAMOS_RELEASES_CONFIG env var,",
+    "or /etc/examos/releases.json (production),",
+    "or <binary_dir>/../config/releases.json (development).",
+    "",
+    "The registry is intentionally empty until real signed release measurements are provisioned.",
+    "Production mode refuses this file: production requires an externally",
+    "signed registry, APPROVED_PRODUCTION entries, a non-placeholder signed",
+    "UKI hash, and complete SHA-256 PCR measurements from a controlled boot.",
+    "",
+    "revoked: set to true to prevent any new attestations with this release.",
+    "  Active sessions will fail their next re-attestation heartbeat."
+  ],
+  "environment": "development",
+  "version": "1",
+  "releases": []
+}

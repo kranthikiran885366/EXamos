@@ -1,0 +1,24 @@
+# ExamOS P2 — /tmp as noexec,nosuid,nodev tmpfs
+# Overrides the default tmp.mount from systemd to enforce exec restrictions.
+# A candidate cannot execute binaries placed in /tmp.
+[Unit]
+Description=Temporary Directory (/tmp) — ExamOS Hardened
+Documentation=man:hier(7)
+ConditionPathIsSymbolicLink=!/tmp
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target umount.target
+After=swap.target
+
+[Mount]
+What=tmpfs
+Where=/tmp
+Type=tmpfs
+# noexec: binaries in /tmp cannot be executed
+# nosuid: setuid/setgid bits are ignored (P2-04, P2-04 test evidence)
+# nodev: device files in /tmp have no effect
+# size=256m: bounded RAM consumption; adjust per target hardware if needed
+Options=mode=1777,strictatime,noexec,nosuid,nodev,size=256m
+
+[Install]
+WantedBy=local-fs.target

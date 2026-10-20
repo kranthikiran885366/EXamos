@@ -1,0 +1,72 @@
+name: examos-enterprise
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - NET_RAW
+      - SYS_ADMIN
+    pids_limit: 256
+    environment:
+      POSTGRES_DB: examos
+      POSTGRES_USER: examos_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_bootstrap_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      PGDATA: /var/lib/postgresql/data/cluster
+    entrypoint: ["/bin/sh", "/usr/local/bin/examos-postgres"]
+    ports:
+      - "127.0.0.1:5433:5432"
+    secrets:
+      - postgres_bootstrap_password
+      - postgres_app_password
+      - postgres_root_certificate
+      - postgres_server_certificate
+      - postgres_server_private_key
+    volumes:
+      - examos_postgres_data:/var/lib/postgresql/data
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 1777
+      - type: tmpfs
+        target: /var/run/postgresql
+        tmpfs:
+          mode: 0775
+      - ./docker/postgres/run-postgres.sh:/usr/local/bin/examos-postgres:ro
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./server/migrations:/opt/examos/migrations:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - PGPASSWORD="$$(cat /var/run/postgresql/application-password)" psql "host=localhost dbname=examos user=examos_app sslmode=verify-full sslrootcert=/var/run/postgresql/root-ca.crt connect_timeout=3" --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --command="SELECT 1 FROM examos_schema_migrations WHERE component = 'admin_auth' AND version = 1"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    stop_grace_period: 1m
+    networks:
+      - examos_data
+
+secrets:
+  postgres_bootstrap_password:
+    file: ${EXAMOS_POSTGRES_BOOTSTRAP_PASSWORD_FILE:?EXAMOS_POSTGRES_BOOTSTRAP_PASSWORD_FILE must name a protected bootstrap password file}
+  postgres_app_password:
+    file: ${EXAMOS_POSTGRES_APP_PASSWORD_FILE:?EXAMOS_POSTGRES_APP_PASSWORD_FILE must name a protected application password file}
+  postgres_root_certificate:
+    file: ${EXAMOS_POSTGRES_ROOT_CERTIFICATE_FILE:?EXAMOS_POSTGRES_ROOT_CERTIFICATE_FILE must name the trusted root certificate}
+  postgres_server_certificate:
+    file: ${EXAMOS_POSTGRES_CERTIFICATE_FILE:?EXAMOS_POSTGRES_CERTIFICATE_FILE must name a certificate signed for localhost}
+  postgres_server_private_key:
+    file: ${EXAMOS_POSTGRES_PRIVATE_KEY_FILE:?EXAMOS_POSTGRES_PRIVATE_KEY_FILE must name the matching protected private key}
+
+volumes:
+  examos_postgres_data:
+    name: examos-enterprise-postgres-data
+
+networks:
+  examos_data:
+    driver: bridge

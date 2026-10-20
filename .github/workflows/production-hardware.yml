@@ -1,0 +1,26 @@
+name: ExamOS Physical Hardware Trust Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardware-trust:
+    runs-on: [self-hosted, linux, x64, examos-hardware]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify physical TPM, Secure Boot, event log and quote
+        run: bash tests/production/hardware-trust-gate.sh
+      - name: Upload hardware evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-hardware-trust
+          path: artifacts/production/hardware-trust.json
+          if-no-files-found: error
+          retention-days: 90

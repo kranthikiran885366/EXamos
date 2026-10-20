@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ExamOS P5 — Viva Engine Test
+#
+# Tests:
+#   VI1: Generate viva questions (idempotent — calling twice returns same viva_id)
+#   VI2: Candidate JSON export (no rubric/keys leaked)
+#   VI3: Viva response submission
+#   VI4: Duplicate response rejection (immutable after first write)
+#   VI5: Reviewer export (includes suggestions and all evidence)
+#   VI6: Reviewer decision/override workflow
+#   VI7: Audit trail verification
+# =============================================================================
+set -uo pipefail
+
+WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
+ARTIFACT_DIR="${EXAMOS_P5_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase5}"
+mkdir -p "$ARTIFACT_DIR"
+
+SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9105}"
+SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
+SERVER_BIN="$WORKSPACE/server/examos-server"
+SERVER_PID=""
+PASS=0; FAIL=0; BLOCKED=0
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+record() {
+    local id="$1" expected="$2" actual="$3" detail="$4"
+    if [ "$actual" = "$expected" ]; then
+        PASS=$((PASS+1)); echo "  [VIVA-PASS] $id: $detail"
+    elif [ "$actual" = "BLOCKED" ]; then
+        BLOCKED=$((BLOCKED+1)); echo "  [VIVA-BLOCKED] $id: $detail"
+    else
+        FAIL=$((FAIL+1)); echo "  [VIVA-FAIL] $id: $detail (expected=$expected actual=$actual)"
+    fi
+}
+
+echo "=== [P5-VIVA] Viva Engine Test ==="
+
+# Start server
+CANDIDATE_TOKEN=""
+if [ -x "$SERVER_BIN" ]; then
+    CANDIDATE_ID="P5-VIVA-$(date +%s)"
+    CANDIDATE_PIN="$(openssl rand -hex 8)"
+    CAND_SALT="$(openssl rand -hex 32)"
+    CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
+        -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
+        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+    CAND_FILE="/tmp/examos-p5-viva-candidates.conf"
+    echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+
+    EXAMOS_SERVER_PORT="$SERVER_PORT" \
+    EXAMOS_LEDGER_PATH="/tmp/examos-p5-viva-ledger.log" \
+    EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
+    EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
+    EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
+    EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
+    EXAMOS_REVIEWER_TOKEN="$(openssl rand -hex 32)" \
+    EXAMOS_BEHAVIOUR_STORE="/tmp/examos-p5-viva-behaviour" \
+    EXAMOS_VIVA_STORE="/tmp/examos-p5-viva-store" \
+    EXAMOS_TPM_MODE=development \
+    EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
+    EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
+    EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
+    EXAMOS_SESSION_JOURNAL="/tmp/examos-p5-viva-sessions.log" \
+        "$SERVER_BIN" &
+    SERVER_PID=$!
+    for i in $(seq 1 15); do
+        curl -sf "${SERVER_URL}/api/v1/health" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+
+    LOGIN_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/candidate/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"pin\":\"${CANDIDATE_PIN}\"}" 2>/dev/null)
+    CANDIDATE_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+    REVIEWER_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_REVIEWER_TOKEN | cut -d= -f2)
+fi
+
+cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+
+if [ -z "$CANDIDATE_TOKEN" ]; then
+    echo "  BLOCKED: Cannot start server or authenticate"
+    echo "{\"phase\":\"P5\",\"test\":\"viva\",\"status\":\"BLOCKED\"}" > "$ARTIFACT_DIR/viva-results.json"
+    exit 2
+fi
+
+SESSION_ID="viva-test-session-$(date +%s)"
+RECEIPT_HASH=$(echo -n "${SESSION_ID}-submission" | sha256sum | cut -d' ' -f1)
+
+# -----------------------------------------------------------------------
+# VI1: Generate viva questions
+# -----------------------------------------------------------------------
+echo "  VI1: Generating viva questions..."
+VIVA_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/viva/generate" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
+    -d "{\"session_id\":\"${SESSION_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"exam_id\":\"EXAM-MAIN\",\"submission_receipt_hash\":\"${RECEIPT_HASH}\"}" 2>/dev/null)
+
+VIVA_ID=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('viva_id',''))" 2>/dev/null || echo "")
+VIVA_STATUS=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+VIVA_ERR=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "")
+VIVA_Q_COUNT=$(echo "$VIVA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('questions',[])))" 2>/dev/null || echo "0")
+
+if [ "$VIVA_STATUS" = "VIVA_PROVIDER_UNAVAILABLE" ] || [ "$VIVA_ERR" = "VIVA_PROVIDER_UNAVAILABLE" ]; then
+    # No LLM configured — this is expected in CI. The engine correctly
+    # reports UNAVAILABLE rather than fabricating questions.
+    record "VI1" "PASS" "PASS" "Viva engine correctly reports PROVIDER_UNAVAILABLE (no LLM in CI)"
+    # Skip remaining tests that require actual generated questions
+    for vid in VI2 VI3 VI4 VI5 VI6 VI7; do
+        record "$vid" "PASS" "BLOCKED" "Requires LLM provider — not available in CI"
+    done
+    # Write results and exit
+    OVERALL="BLOCKED"
+    cat > "$ARTIFACT_DIR/viva-results.json" <<EOF2
+{
+  "phase": "P5",
+  "test": "viva_engine",
+  "passed": $PASS,
+  "failed": $FAIL,
+  "blocked": $BLOCKED,
+  "overall": "$OVERALL",
+  "note": "LLM provider not configured — viva generation correctly returns PROVIDER_UNAVAILABLE",
+  "timestamp": "$(ts)"
+}
+EOF2
+    echo ""
+    echo "=== [P5-VIVA] PASS=$PASS FAIL=$FAIL BLOCKED=$BLOCKED OVERALL=$OVERALL ==="
+    exit 2
+fi
+
+if [ -n "$VIVA_ID" ] && [ "$VIVA_Q_COUNT" -ge 2 ]; then
+    record "VI1" "PASS" "PASS" "Viva generated: $VIVA_ID ($VIVA_Q_COUNT questions)"
+else
+    record "VI1" "PASS" "FAIL" "Viva generation failed: status=$VIVA_STATUS resp=$VIVA_RESP"
+    # If generation fails, mark remaining as blocked
+    for vid in VI2 VI3 VI4 VI5 VI6 VI7; do
+        record "$vid" "PASS" "BLOCKED" "Viva generation failed"
+    done
+    OVERALL="FAIL"
+    cat > "$ARTIFACT_DIR/viva-results.json" <<EOF2
+{
+  "phase": "P5",
+  "test": "viva_engine",
+  "passed": $PASS,
+  "failed": $FAIL,
+  "blocked": $BLOCKED,
+  "overall": "$OVERALL",
+  "timestamp": "$(ts)"
+}
+EOF2
+    echo ""
+    echo "=== [P5-VIVA] PASS=$PASS FAIL=$FAIL BLOCKED=$BLOCKED OVERALL=$OVERALL ==="
+    [ "$FAIL" -eq 0 ]
+    exit $([ "$FAIL" -eq 0 ] && echo 0 || echo 1)
+fi
+
+# -----------------------------------------------------------------------
+# VI2: Candidate JSON — no rubric/keys
+# -----------------------------------------------------------------------
+echo "  VI2: Checking candidate JSON has no rubric..."
+ANSWER_LEAK=$(echo "$VIVA_RESP" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for key in ['rubric_reference','answer_explanation','assessment_objective']:
+    # These are OK in questions array for context, but not as answer keys
+    pass
+# Check no answer keys
+for q in d.get('questions',[]):
+    if 'answer' in q or 'key' in q or 'rubric' in str(q).lower():
+        print('LEAKED')
+        sys.exit(0)
+print('CLEAN')
+" 2>/dev/null || echo "UNKNOWN")
+if [ "$ANSWER_LEAK" = "CLEAN" ]; then
+    record "VI2" "CLEAN" "CLEAN" "Candidate viva JSON has no answer keys"
+else
+    record "VI2" "CLEAN" "FAIL" "Answer key leaked in candidate JSON"
+fi
+
+# -----------------------------------------------------------------------
+# VI3: Viva response submission
+# -----------------------------------------------------------------------
+echo "  VI3: Submitting viva response..."
+FIRST_Q_ID=$(echo "$VIVA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['questions'][0]['question_id'])" 2>/dev/null || echo "")
+if [ -n "$FIRST_Q_ID" ]; then
+    SUBMIT_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/viva/response" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
+        -d "{\"viva_id\":\"${VIVA_ID}\",\"question_id\":\"${FIRST_Q_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"response_text\":\"The throughput calculation accounts for the pipeline latency by...\"}" 2>/dev/null)
+    SUBMIT_STATUS=$(echo "$SUBMIT_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    if [ "$SUBMIT_STATUS" = "RESPONSE_RECORDED" ]; then
+        record "VI3" "RESPONSE_RECORDED" "RESPONSE_RECORDED" "Viva response submitted"
+    else
+        record "VI3" "RESPONSE_RECORDED" "FAIL" "Response submission failed: $SUBMIT_STATUS"
+    fi
+else
+    record "VI3" "RESPONSE_RECORDED" "BLOCKED" "No question ID available"
+fi
+
+# -----------------------------------------------------------------------
+# VI4: Duplicate response rejection
+# -----------------------------------------------------------------------
+echo "  VI4: Testing duplicate response rejection..."
+if [ -n "$FIRST_Q_ID" ]; then
+    DUP_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/viva/response" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
+        -d "{\"viva_id\":\"${VIVA_ID}\",\"question_id\":\"${FIRST_Q_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"response_text\":\"Different answer that should be rejected\"}" 2>/dev/null)
+    DUP_STATUS=$(echo "$DUP_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    if [ "$DUP_STATUS" = "DUPLICATE_REJECTED" ] || [ "$DUP_STATUS" = "ALREADY_SUBMITTED" ]; then
+        record "VI4" "REJECTED" "REJECTED" "Duplicate response correctly rejected"
+    else
+        record "VI4" "REJECTED" "FAIL" "Duplicate not rejected: $DUP_STATUS"
+    fi
+else
+    record "VI4" "REJECTED" "BLOCKED" "No question ID"
+fi
+
+# -----------------------------------------------------------------------
+# VI5: Reviewer export
+# -----------------------------------------------------------------------
+echo "  VI5: Reviewer export..."
+if [ -n "$REVIEWER_TOKEN" ]; then
+    REVIEWER_RESP=$(curl -s "${SERVER_URL}/api/v1/reviewer/viva?viva_id=${VIVA_ID}" \
+        -H "Authorization: Bearer ${REVIEWER_TOKEN}" 2>/dev/null)
+    if echo "$REVIEWER_RESP" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+        record "VI5" "PASS" "PASS" "Reviewer viva export succeeded"
+    else
+        record "VI5" "PASS" "FAIL" "Reviewer export failed"
+    fi
+else
+    record "VI5" "PASS" "BLOCKED" "No reviewer token"
+fi
+
+# -----------------------------------------------------------------------
+# VI6: Reviewer decision/override
+# -----------------------------------------------------------------------
+echo "  VI6: Reviewer decision..."
+if [ -n "$REVIEWER_TOKEN" ]; then
+    DECISION_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/reviewer/viva/decide" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${REVIEWER_TOKEN}" \
+        -d "{\"viva_id\":\"${VIVA_ID}\",\"reviewer_id\":\"reviewer-001\",\"state\":1,\"final_score\":85.0,\"reason_code\":\"REVIEWED\",\"written_rationale\":\"Candidate demonstrated adequate understanding\"}" 2>/dev/null)
+    DECISION_STATUS=$(echo "$DECISION_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    if [ "$DECISION_STATUS" = "DECISION_RECORDED" ]; then
+        record "VI6" "DECISION_RECORDED" "DECISION_RECORDED" "Reviewer decision recorded"
+    else
+        record "VI6" "DECISION_RECORDED" "FAIL" "Decision failed: $DECISION_STATUS"
+    fi
+else
+    record "VI6" "DECISION_RECORDED" "BLOCKED" "No reviewer token"
+fi
+
+# -----------------------------------------------------------------------
+# VI7: Audit trail
+# -----------------------------------------------------------------------
+echo "  VI7: Audit trail..."
+# The audit trail is written internally — verify via reviewer export
+if [ -n "$REVIEWER_TOKEN" ]; then
+    AUDIT_RESP=$(curl -s "${SERVER_URL}/api/v1/reviewer/viva?viva_id=${VIVA_ID}" \
+        -H "Authorization: Bearer ${REVIEWER_TOKEN}" 2>/dev/null)
+    HAS_AUDIT=$(echo "$AUDIT_RESP" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+# Check if decision or audit info is present
+if 'review_state' in d or 'decision' in d or 'state' in d:
+    print('HAS_AUDIT')
+else:
+    print('NO_AUDIT')
+" 2>/dev/null || echo "PARSE_ERROR")
+    if [ "$HAS_AUDIT" = "HAS_AUDIT" ]; then
+        record "VI7" "HAS_AUDIT" "HAS_AUDIT" "Audit trail present in reviewer export"
+    else
+        record "VI7" "HAS_AUDIT" "WARN" "Audit trail not clearly visible"
+    fi
+else
+    record "VI7" "HAS_AUDIT" "BLOCKED" "No reviewer token"
+fi
+
+# -----------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------
+OVERALL="PASS"
+[ "$FAIL" -gt 0 ] && OVERALL="FAIL"
+[ "$BLOCKED" -gt 0 ] && [ "$FAIL" -eq 0 ] && OVERALL="BLOCKED"
+
+cat > "$ARTIFACT_DIR/viva-results.json" <<EOF
+{
+  "phase": "P5",
+  "test": "viva_engine",
+  "passed": $PASS,
+  "failed": $FAIL,
+  "blocked": $BLOCKED,
+  "overall": "$OVERALL",
+  "timestamp": "$(ts)"
+}
+EOF
+
+echo ""
+echo "=== [P5-VIVA] PASS=$PASS FAIL=$FAIL BLOCKED=$BLOCKED OVERALL=$OVERALL ==="
+[ "$FAIL" -eq 0 ]

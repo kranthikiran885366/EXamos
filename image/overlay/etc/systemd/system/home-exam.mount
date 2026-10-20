@@ -1,0 +1,21 @@
+# ExamOS P2 — /home/exam as noexec,nosuid,nodev tmpfs
+# The exam user's home directory is a RAM-backed tmpfs.
+# All content is wiped on reboot. No persistent candidate data remains
+# on the ExamOS boot media or any other storage.
+[Unit]
+Description=ExamOS Exam User Home Directory (tmpfs)
+Documentation=file:///etc/examos/p2-config.conf
+DefaultDependencies=no
+Before=examos-kiosk.service local-fs.target
+After=local-fs-pre.target
+
+[Mount]
+What=tmpfs
+Where=/home/exam
+Type=tmpfs
+# noexec,nosuid,nodev: no binary execution from candidate home
+# uid/gid 1000 = exam user (from sysusers.d/examos.conf)
+Options=mode=0700,uid=1000,gid=1000,noexec,nosuid,nodev,size=64m
+
+[Install]
+WantedBy=local-fs.target

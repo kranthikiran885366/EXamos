@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://examos.example/schemas/examos-release-provenance-v1.schema.json",
+  "title": "ExamOS release provenance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "source", "build", "artifacts", "trust", "approval", "evidence"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "release": {"$ref": "#/$defs/release"},
+    "source": {"$ref": "#/$defs/source"},
+    "build": {"$ref": "#/$defs/build"},
+    "artifacts": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/artifact"}},
+    "trust": {"$ref": "#/$defs/trust"},
+    "approval": {"$ref": "#/$defs/approval"},
+    "evidence": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/evidence"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "release": {"type": "object", "additionalProperties": false, "required": ["release_id", "channel", "policy_id", "policy_version", "created_at", "expires_at"], "properties": {"release_id": {"$ref": "#/$defs/identifier"}, "channel": {"const": "production"}, "policy_id": {"$ref": "#/$defs/identifier"}, "policy_version": {"$ref": "#/$defs/identifier"}, "created_at": {"$ref": "#/$defs/timestamp"}, "expires_at": {"$ref": "#/$defs/timestamp"}}},
+    "source": {"type": "object", "additionalProperties": false, "required": ["repository_id", "commit", "tree_clean", "source_tree_digest", "submodules", "declared_inputs_digest"], "properties": {"repository_id": {"$ref": "#/$defs/identifier"}, "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "tree_clean": {"const": true}, "source_tree_digest": {"$ref": "#/$defs/sha256"}, "submodules": {"type": "array", "maxItems": 32, "items": {"type": "object", "additionalProperties": false, "required": ["path", "commit"], "properties": {"path": {"type": "string", "pattern": "^(?!/)(?!.*//)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._/-]+$"}, "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}}}, "declared_inputs_digest": {"$ref": "#/$defs/sha256"}}},
+    "build": {"type": "object", "additionalProperties": false, "required": ["builder_identity", "build_recipe_digest", "toolchain", "dependencies_digest", "reproducibility"], "properties": {"builder_identity": {"$ref": "#/$defs/identifier"}, "build_recipe_digest": {"$ref": "#/$defs/sha256"}, "toolchain": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["name", "version", "digest"], "properties": {"name": {"$ref": "#/$defs/identifier"}, "version": {"type": "string", "minLength": 1, "maxLength": 128}, "digest": {"$ref": "#/$defs/sha256"}}}}, "dependencies_digest": {"$ref": "#/$defs/sha256"}, "reproducibility": {"type": "object", "additionalProperties": false, "required": ["policy", "result", "evidence_digest"], "properties": {"policy": {"const": "independent-rebuild-required"}, "result": {"enum": ["passed", "pending", "failed"]}, "evidence_digest": {"$ref": "#/$defs/sha256"}}}}},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["role", "path", "size_bytes", "digest"], "properties": {"role": {"$ref": "#/$defs/identifier"}, "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*//)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._/-]+$"}, "size_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "digest": {"type": "object", "additionalProperties": false, "required": ["algorithm", "value"], "properties": {"algorithm": {"const": "sha256"}, "value": {"$ref": "#/$defs/sha256"}}}}},
+    "trust": {"type": "object", "additionalProperties": false, "required": ["metadata_signer_spki_sha256", "secure_boot_db_certificate_sha256", "trust_config_digest"], "properties": {"metadata_signer_spki_sha256": {"$ref": "#/$defs/sha256"}, "secure_boot_db_certificate_sha256": {"$ref": "#/$defs/sha256"}, "trust_config_digest": {"$ref": "#/$defs/sha256"}}},
+    "approval": {"type": "object", "additionalProperties": false, "required": ["approval_id", "approver_identity", "approval_policy"], "properties": {"approval_id": {"$ref": "#/$defs/identifier"}, "approver_identity": {"$ref": "#/$defs/identifier"}, "approval_policy": {"$ref": "#/$defs/identifier"}}},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["role", "digest_algorithm", "digest"], "properties": {"role": {"$ref": "#/$defs/identifier"}, "digest_algorithm": {"const": "sha256"}, "digest": {"$ref": "#/$defs/sha256"}}}
+  }
+}
