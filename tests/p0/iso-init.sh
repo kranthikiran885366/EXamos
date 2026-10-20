@@ -94,4 +94,4 @@ echo "ExamOS ISO init: mounted canonical root filesystem $ROOT_UUID read-only wi
 mkdir -p /sysroot/run
 mount --move /run /sysroot/run ||
     fail "cannot preserve volatile runtime mounts across switch_root"
-exec /usr/sbin/switch_root /sysroot /sbin/init
+exec /usr/sbin/switch_root /sysroot /usr/lib/systemd/systemd
