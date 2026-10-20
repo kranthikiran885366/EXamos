@@ -47,6 +47,31 @@ examos_normalize_serial_log() {
     LC_ALL=C sed -E 's/\x1B\[[0-9;?]*m//g' "$input" | LC_ALL=C tr '\r' '\n' > "$output"
 }
 
+# Build one canonical P0 disk image with the exact first-boot provisioning tree
+# consumed by both the release image build and reproducibility comparison.
+examos_p0_mkosi_build() {
+    [ "$#" -eq 6 ] || return 2
+    local workspace="$1" output_dir="$2" cache_dir="$3" build_dir="$4"
+    local extra_dir="$5" build_log="$6" mkosi_bin cxx_bin
+    mkosi_bin="$(command -v mkosi)" || return 1
+    cxx_bin="$(command -v g++)" || return 1
+    mkdir -p "$output_dir" "$cache_dir" "$build_dir" \
+        "$extra_dir/usr/local/sbin" "$(dirname "$build_log")" || return 1
+    "$cxx_bin" -std=c++17 -O2 -Wall -Wextra -Werror \
+        -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat=2 \
+        -Werror=format-security -fPIE -pie -Wl,-z,relro,-z,now \
+        "$workspace/image/p0/dev-console-setup.cpp" \
+        -o "$extra_dir/usr/local/sbin/examos-dev-console-setup" || return 1
+    chmod 0755 "$extra_dir/usr/local/sbin/examos-dev-console-setup" || return 1
+    "$mkosi_bin" --force -C "$workspace/image/p0" \
+        --cache-directory "$cache_dir" \
+        --output-directory "$output_dir" \
+        --build-directory "$build_dir" \
+        --extra-tree="$workspace/image/p0/dev-console-tree" \
+        --extra-tree="$extra_dir" \
+        build 2>&1 | tee "$build_log"
+}
+
 examos_p0_validate_run_dir() {
     local root="${1:-$(pwd)}" directory="${2:-${EXAMOS_P0_ARTIFACT_DIR:-}}"
     [ -n "$directory" ] || return 1

@@ -57,7 +57,27 @@ def main() -> int:
         return fail("build A manifest digest mismatch")
     if hashlib.sha256(raw_b).hexdigest() != report.get("build_b_manifest_sha256"):
         return fail("build B manifest digest mismatch")
-    print("[P0-REPRO-VALIDATE] PASS: report, source commit, manifests, and image digests are bound")
+    evidence_root = report_path.resolve().parent
+    for name, expected in (("build_a_image", "build-a.raw"), ("build_b_image", "build-b.raw")):
+        artifact = report.get(name)
+        if not isinstance(artifact, dict) or artifact.get("path") != expected:
+            return fail(f"{name} path is missing or is not run-relative")
+        image_path = evidence_root / expected
+        try:
+            image_path.resolve(strict=True).relative_to(evidence_root)
+            image_bytes = image_path.read_bytes()
+        except (OSError, ValueError) as exc:
+            return fail(f"cannot read retained {name} artifact: {exc}")
+        if image_path.is_symlink():
+            return fail(f"retained {name} artifact must not be a symlink")
+        if hashlib.sha256(image_bytes).hexdigest() != artifact.get("sha256"):
+            return fail(f"retained {name} artifact digest differs from the report")
+        if len(image_bytes) != artifact.get("size_bytes"):
+            return fail(f"retained {name} artifact size differs from the report")
+        expected_hash = build_a[0]["sha256"] if name == "build_a_image" else build_b[0]["sha256"]
+        if artifact.get("sha256") != expected_hash:
+            return fail(f"retained {name} digest differs from its manifest")
+    print("[P0-REPRO-VALIDATE] PASS: report, source commit, retained images, and manifests are bound")
     return 0
 
 

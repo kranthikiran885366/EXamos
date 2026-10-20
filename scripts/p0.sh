@@ -125,7 +125,8 @@ CURRENT_STEP="repository integrity and secret scan"
 echo ""
 echo ">>> STEP 3/10: Checking Repository Structure & Secret Material..."
 bash "$WORKSPACE/tests/p0/repository-check.sh"
-bash "$WORKSPACE/tests/p0/pin-check.sh"
+bash "$WORKSPACE/tests/p0/pin-check.sh" --record "$ARTIFACT_DIR/pinned-inputs-result.json"
+CHECK_PINNED_INPUTS="PASS"
 bash "$WORKSPACE/tests/p0/agent-config-contract-test.sh"
 
 # Step 4: Tool Version & OVMF Firmware Discovery
@@ -331,8 +332,39 @@ if [ -s "$ARTIFACT_DIR/enterprise/image-forensics.json" ] && jq -e \
 else
     CHECK_IMAGE_FORENSICS="FAIL"
 fi
-CHECK_PINNED_INPUTS="BLOCKED"
-if bash "$WORKSPACE/tests/p0/pin-check.sh" >/dev/null 2>&1; then CHECK_PINNED_INPUTS="PASS"; else CHECK_PINNED_INPUTS="FAIL"; fi
+CHECK_REPRODUCIBLE_BUILD="BLOCKED"
+REPRODUCIBILITY_SHA256="UNKNOWN"
+CURRENT_STEP="two-build image reproducibility"
+if EXAMOS_P0_REPRO_MODE=image \
+    EXAMOS_P0_REPRO_OUT="$ARTIFACT_DIR/reproducibility" \
+    bash "$WORKSPACE/tests/p0/reproducible-build.sh"; then
+    REPRODUCIBILITY_RUN_STATUS=0
+else
+    REPRODUCIBILITY_RUN_STATUS=$?
+fi
+REPRO_REPORT="$ARTIFACT_DIR/reproducibility/report.json"
+if [ -s "$REPRO_REPORT" ]; then
+    REPRODUCIBILITY_SHA256="$(sha256sum "$REPRO_REPORT" | cut -d' ' -f1)"
+    REPRO_RESULT="$(jq -r '.result // "INVALID"' "$REPRO_REPORT" 2>/dev/null || echo INVALID)"
+    case "$REPRO_RESULT" in
+        PASS)
+            if python3 "$WORKSPACE/tests/p0/validate-reproducibility.py" \
+                "$REPRO_REPORT" \
+                "$ARTIFACT_DIR/reproducibility/build-a.sha256" \
+                "$ARTIFACT_DIR/reproducibility/build-b.sha256" "$GIT_COMMIT"; then
+                CHECK_REPRODUCIBLE_BUILD="PASS"
+            else
+                CHECK_REPRODUCIBLE_BUILD="FAIL"
+            fi
+            ;;
+        BLOCKED) CHECK_REPRODUCIBLE_BUILD="BLOCKED" ;;
+        *) CHECK_REPRODUCIBLE_BUILD="FAIL" ;;
+    esac
+elif [ "$REPRODUCIBILITY_RUN_STATUS" -eq 0 ]; then
+    CHECK_REPRODUCIBLE_BUILD="FAIL"
+else
+    CHECK_REPRODUCIBLE_BUILD="FAIL"
+fi
 CHECK_SECRETS="FAIL"
 if bash "$WORKSPACE/tests/p0/private-key-check.sh" "$WORKSPACE"; then
     CHECK_SECRETS="PASS"
@@ -345,11 +377,13 @@ elif [ "$(git -C "$WORKSPACE" rev-parse HEAD)" != "$GIT_COMMIT" ] ||
     CHECK_SOURCE_TREE="FAIL"
 fi
 
+CURRENT_STEP="aggregate P0 evidence"
 OVERALL="PASS"
 for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" \
           "$CHECK_ARTIFACT" "$CHECK_CHECKSUM" "$CHECK_SECRETS" "$CHECK_BUILD" \
           "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
-          "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_SOURCE_TREE"; do
+          "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_REPRODUCIBLE_BUILD" \
+          "$CHECK_SOURCE_TREE"; do
     if [ "$_c" = "FAIL" ]; then
         OVERALL="FAIL"
         break
@@ -404,8 +438,8 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
     "iso_boot": "$CHECK_ISO_BOOT",
     "image_forensics": "$CHECK_IMAGE_FORENSICS",
     "pinned_inputs": "$CHECK_PINNED_INPUTS",
-    "reproducible_build": "BLOCKED",
-    "reproducibility_sha256": "UNKNOWN",
+    "reproducible_build": "$CHECK_REPRODUCIBLE_BUILD",
+    "reproducibility_sha256": "$REPRODUCIBILITY_SHA256",
     "artifact_generated": "$CHECK_ARTIFACT",
     "artifact_checksum_valid": "$CHECK_CHECKSUM",
     "artifact_checksum": "$IMAGE_HASH",

@@ -7,6 +7,14 @@ LOCK="$WORKSPACE/image/p0/sources.lock"
 TOOLS="$WORKSPACE/image/p0/toolchain.lock"
 MKOSI="$WORKSPACE/image/p0/mkosi.conf"
 CI="$WORKSPACE/.github/workflows/p0.yml"
+PIN_RESULT=""
+if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--record" ] || {
+        echo "Usage: $0 [--record <run-bound-result.json>]" >&2
+        exit 2
+    }
+    PIN_RESULT="$2"
+fi
 
 fail() { echo "[P0-PIN] FAIL: $1" >&2; exit 1; }
 
@@ -40,4 +48,31 @@ echo "[P0-PIN] mirror=$mirror"
 echo "[P0-PIN] security_mirror=$security_mirror"
 echo "[P0-PIN] repart_seed=$repart_seed"
 echo "[P0-PIN] ci_runner_image=$runner"
+if [ -n "$PIN_RESULT" ]; then
+    source "$WORKSPACE/scripts/examos-lib.sh"
+    ARTIFACT_DIR="${EXAMOS_P0_ARTIFACT_DIR:-}"
+    examos_p0_validate_run_dir "$WORKSPACE" "$ARTIFACT_DIR" || fail "run-bound P0 evidence directory is invalid"
+    [ "$(realpath -m -- "$PIN_RESULT")" = "$PIN_RESULT" ] || fail "pin result path must be canonical"
+    [ "$(dirname "$PIN_RESULT")" = "$ARTIFACT_DIR" ] || fail "pin result must be written inside this evidence run"
+    [ ! -e "$PIN_RESULT" ] && [ ! -L "$PIN_RESULT" ] && \
+        [ ! -e "$PIN_RESULT.tmp" ] && [ ! -L "$PIN_RESULT.tmp" ] ||
+        fail "refusing to overwrite pinned-input evidence"
+    source_commit="$(git -C "$WORKSPACE" rev-parse HEAD)" || fail "unable to bind pin result to a source commit"
+    source_state="$(python3 "$WORKSPACE/scripts/source-state.py" "$WORKSPACE" --format json)" || fail "unable to read source state"
+    source_tree_state="$(printf '%s\n' "$source_state" | jq -er '.state')" || fail "source state report is invalid"
+    [ "$source_tree_state" = CLEAN ] || fail "release pins cannot be recorded for a dirty source tree"
+    jq -n --arg commit "$source_commit" --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+        --arg snapshot "$snapshot" --arg seed "$repart_seed" --arg runner "$runner" \
+        --arg sources_sha256 "$(sha256sum "$LOCK" | cut -d' ' -f1)" \
+        --arg toolchain_sha256 "$(sha256sum "$TOOLS" | cut -d' ' -f1)" \
+        --arg mkosi_config_sha256 "$(sha256sum "$MKOSI" | cut -d' ' -f1)" \
+        --arg workflow_sha256 "$(sha256sum "$CI" | cut -d' ' -f1)" \
+        '{schema:"examos.p0.pinned-inputs.v1",status:"PASS",generated_at:$generated_at,
+          source_commit:$commit,source_tree_state:"CLEAN",debian_snapshot:$snapshot,
+          repart_seed:$seed,ci_runner_image:$runner,
+          sources_lock_sha256:$sources_sha256,toolchain_lock_sha256:$toolchain_sha256,
+          mkosi_config_sha256:$mkosi_config_sha256,workflow_sha256:$workflow_sha256}' \
+        > "$PIN_RESULT.tmp" || fail "unable to serialize pinned-input evidence"
+    mv -- "$PIN_RESULT.tmp" "$PIN_RESULT" || fail "unable to publish pinned-input evidence"
+fi
 echo "[P0-PIN] PASS"
