@@ -28,8 +28,20 @@ static void sig_handler(int sig) {
 }
 
 int main(int argc, char *argv[]) {
-    const char *server_url = (argc > 1) ? argv[1] : "http://127.0.0.1:8000/api/v1/heartbeat";
-    const char *device_id = (argc > 2) ? argv[2] : "examos-device-node-01";
+    if (argc != 3 || !argv[1][0] || !argv[2][0] ||
+        strcmp(argv[1], "NOT_PROVISIONED") == 0 || strcmp(argv[2], "NOT_PROVISIONED") == 0) {
+        fprintf(stderr, "Agent requires a provisioned server URL and device identity.\n");
+        return 2;
+    }
+    const char *server_url = argv[1];
+    const char *device_id = argv[2];
+    const char *release_id = getenv("EXAMOS_RELEASE_ID");
+    const char *boot_nonce = getenv("EXAMOS_BOOT_NONCE");
+    if (!release_id || !*release_id || !boot_nonce || !*boot_nonce ||
+        strcmp(release_id, "NOT_PROVISIONED") == 0 || strcmp(boot_nonce, "NOT_PROVISIONED") == 0) {
+        fprintf(stderr, "Agent requires a provisioned release ID and boot nonce.\n");
+        return 2;
+    }
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -40,7 +52,8 @@ int main(int argc, char *argv[]) {
     log_info("Starting ExamOS Security & Attestation Agent (Native C)");
 
     if (tpm_attestation_init() != 0) {
-        log_info("TPM device unavailable; no PCR report can be produced.");
+        log_info("TPM device unavailable; refusing to start without hardware attestation.");
+        return 2;
     }
     hardware_guard_init();
     rf_scanner_init();
@@ -51,13 +64,14 @@ int main(int argc, char *argv[]) {
 
     // Initial Attestation Generation
     attestation_report_t report;
-    if (tpm_attestation_generate_report(device_id, "examos-0.4.0", "INITIAL-BOOT-NONCE", &report) == 0) {
+    if (tpm_attestation_generate_report(device_id, release_id, boot_nonce, &report) == 0) {
         char report_json[4096];
         tpm_attestation_format_json(&report, report_json, sizeof(report_json));
-        log_info("Unsigned PCR measurement digest computed; this is not a TPM quote.");
+        log_info("TPM event-log measurements were read; key-backed quote verification is pending.");
         log_info(report.composite_digest);
     } else {
-        log_info("PCR measurement unavailable; TPM attestation is not established.");
+        log_info("TPM quote and event-log attestation are not established; refusing to start.");
+        return 2;
     }
 
     int iteration = 0;

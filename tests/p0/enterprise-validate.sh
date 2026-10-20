@@ -502,57 +502,20 @@ echo "━━━ Domain 7: Disk Image Forensics ━━━━━━━━━━━
 
 IMAGE_SCRIPT="$WORKSPACE/tests/p0/image-forensics.sh"
 if [ -f "$IMAGE_SCRIPT" ]; then
-    IMAGE_FILE=""
-    for candidate in "$WORKSPACE/image/examos.raw" "$WORKSPACE/image/examos.raw.raw"; do
-        if [ -f "$candidate" ]; then IMAGE_FILE="$candidate"; break; fi
-    done
-
-    if [ -n "$IMAGE_FILE" ]; then
+    if [ -n "${EXAMOS_P0_ARTIFACT_DIR:-}" ] && [ -s "$EXAMOS_P0_ARTIFACT_DIR/image-path.txt" ]; then
         if bash "$IMAGE_SCRIPT" > "$ENT_DIR/image-forensics-output.log" 2>&1; then
-            log_check "image" "Image forensics suite" "PASS" "All checks passed"
+            log_check "image" "Image forensics suite" "PASS" "Run-bound canonical partition and digest checks passed"
         else
-            log_check "image" "Image forensics suite" "WARN" "Some checks had issues"
+            log_check "image" "Image forensics suite" "FAIL" "Forensic checks failed; see image-forensics-output.log"
         fi
-
-        # Additional direct checks
-        IMAGE_SIZE=$(stat -c%s "$IMAGE_FILE" 2>/dev/null || echo 0)
-        if [ "$IMAGE_SIZE" -gt 524288000 ]; then
-            log_check "image" "Image size (>500MB)" "PASS" "$(( IMAGE_SIZE / 1048576 ))MB"
+        if jq -e '.schema == "examos.p0.forensics.v1" and .status == "PASS"' \
+            "$EXAMOS_P0_ARTIFACT_DIR/enterprise/image-forensics.json" >/dev/null 2>&1; then
+            log_check "image" "Canonical forensic evidence contract" "PASS" "Versioned report matches current isolated run"
         else
-            log_check "image" "Image size (>500MB)" "FAIL" "$(( IMAGE_SIZE / 1048576 ))MB"
-        fi
-
-        if command -v sfdisk >/dev/null 2>&1; then
-            PART_COUNT=$(sfdisk --dump "$IMAGE_FILE" 2>/dev/null | grep -c '^/' || echo 0)
-            if [ "$PART_COUNT" -ge 2 ]; then
-                log_check "image" "Partition count (>=2)" "PASS" "$PART_COUNT partitions"
-            else
-                log_check "image" "Partition count (>=2)" "WARN" "$PART_COUNT partitions"
-            fi
-        else
-            log_check "image" "Partition analysis" "BLOCKED" "sfdisk not available"
-        fi
-
-        # UKI check
-        if [ -f "$WORKSPACE/image/examos.efi" ]; then
-            UKI_SIZE=$(stat -c%s "$WORKSPACE/image/examos.efi" 2>/dev/null || echo 0)
-            log_check "image" "Unified Kernel Image" "PASS" "$(( UKI_SIZE / 1048576 ))MB"
-        else
-            log_check "image" "Unified Kernel Image" "WARN" "examos.efi not found"
-        fi
-
-        # Kernel artifact
-        if [ -f "$WORKSPACE/image/examos.vmlinuz" ]; then
-            log_check "image" "Kernel artifact" "PASS" "examos.vmlinuz present"
-        else
-            log_check "image" "Kernel artifact" "WARN" "vmlinuz not found"
+            log_check "image" "Canonical forensic evidence contract" "FAIL" "Current run lacks a passing versioned forensic report"
         fi
     else
-        log_check "image" "Disk image" "FAIL" "No image file found"
-        log_check "image" "Image size" "BLOCKED" "No image"
-        log_check "image" "Partitions" "BLOCKED" "No image"
-        log_check "image" "UKI" "BLOCKED" "No image"
-        log_check "image" "Kernel" "BLOCKED" "No image"
+        log_check "image" "Image forensics suite" "BLOCKED" "Current P0 run has no bound disk image"
     fi
 else
     log_check "image" "Image forensics script" "BLOCKED" "Script not found"
@@ -759,9 +722,9 @@ for domain in $DOMAINS; do
 
     # Check critical domain failure
     if echo "$CRITICAL_DOMAINS" | grep -qw "$domain"; then
-        if [ "$DS" = "FAIL" ]; then
+        if [ "$DS" = "FAIL" ] || [ "$DS" = "WARN" ] || [ "$DS" = "BLOCKED" ]; then
             GATE="FAIL"
-            GATE_REASON="Critical domain '${DOMAIN_NAMES[$i]}' failed"
+            GATE_REASON="Critical domain '${DOMAIN_NAMES[$i]}' is $DS"
         fi
     fi
 

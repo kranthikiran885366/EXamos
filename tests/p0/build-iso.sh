@@ -39,11 +39,6 @@ if [ -n "$SOURCE_STATUS" ]; then
     printf '%s\n' "$SOURCE_STATUS" >&2
     exit 2
 fi
-if [ -n "$SOURCE_STATUS" ] && [ "${EXAMOS_P0_RELEASE_EVIDENCE:-0}" = "1" ]; then
-    echo "[P0-ISO] BLOCKED: release evidence cannot be built from a dirty source tree." >&2
-    printf '%s\n' "$SOURCE_STATUS" >&2
-    exit 2
-fi
 SOURCE_STATUS_AT_START="$SOURCE_STATUS"
 SOURCE_COMMIT_AT_START="$SOURCE_COMMIT"
 DIRTY_PATH_COUNT=0
@@ -96,13 +91,10 @@ if [ -n "$IMAGE_OVERRIDE" ]; then
     echo "[P0-ISO] WARNING: building a development ISO from $IMAGE_RELATIVE; this is not P0 release evidence."
 else
     IMAGE_RELATIVE=""
-    if [ -s "$ARTIFACT_DIR/image-path.txt" ]; then
-        IFS= read -r IMAGE_RELATIVE < "$ARTIFACT_DIR/image-path.txt"
-    fi
+    if [ -s "$ARTIFACT_DIR/image-path.txt" ]; then IFS= read -r IMAGE_RELATIVE < "$ARTIFACT_DIR/image-path.txt"; fi
     EXPECTED_IMAGE_RELATIVE="$(realpath --relative-to="$WORKSPACE" "$ARTIFACT_DIR/examos-p0.raw")" ||
         fail "Unable to resolve this P0 run's image path"
-    [ "$IMAGE_RELATIVE" = "$EXPECTED_IMAGE_RELATIVE" ] ||
-        fail "P0 disk artifact path is absent or does not belong to this run"
+    [ "$IMAGE_RELATIVE" = "$EXPECTED_IMAGE_RELATIVE" ] || fail "P0 disk artifact path is absent or does not belong to this run"
 
     IMAGE_FILE="$WORKSPACE/$IMAGE_RELATIVE"
     [ -f "$IMAGE_FILE" ] && [ -s "$IMAGE_FILE" ] && [ ! -L "$IMAGE_FILE" ] ||

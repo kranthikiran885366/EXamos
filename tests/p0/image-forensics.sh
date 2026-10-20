@@ -7,17 +7,18 @@
 set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-IMAGE=""
-for candidate in "$WORKSPACE/image/examos.raw" "$WORKSPACE/image/examos.raw.raw"; do
-    if [ -f "$candidate" ]; then IMAGE="$candidate"; break; fi
-done
+ARTIFACT_DIR="${EXAMOS_P0_ARTIFACT_DIR:?Run scripts/p0.sh or set EXAMOS_P0_ARTIFACT_DIR to a unique evidence run directory}"
+source "$WORKSPACE/scripts/examos-lib.sh"
+examos_p0_load_format "$WORKSPACE" || { echo '[FORENSICS] BLOCKED: invalid canonical partition contract' >&2; exit 2; }
+examos_p0_validate_run_dir "$WORKSPACE" "$ARTIFACT_DIR" || { echo '[FORENSICS] BLOCKED: invalid P0 evidence run directory' >&2; exit 2; }
+IMAGE_RELATIVE=""
+[ -s "$ARTIFACT_DIR/image-path.txt" ] && IFS= read -r IMAGE_RELATIVE < "$ARTIFACT_DIR/image-path.txt"
+EXPECTED_IMAGE_RELATIVE="$(realpath --relative-to="$WORKSPACE" "$ARTIFACT_DIR/examos-p0.raw")"
+[ "$IMAGE_RELATIVE" = "$EXPECTED_IMAGE_RELATIVE" ] || { echo '[FORENSICS] FAIL: image is not bound to this evidence run' >&2; exit 1; }
+IMAGE="$WORKSPACE/$IMAGE_RELATIVE"
+[ -f "$IMAGE" ] && [ -s "$IMAGE" ] && [ ! -L "$IMAGE" ] || { echo '[FORENSICS] FAIL: bound disk image is missing or invalid' >&2; exit 1; }
 
-if [ -z "$IMAGE" ]; then
-    echo '{"status":"FAIL","reason":"No disk image found"}'
-    exit 1
-fi
-
-ENT_DIR="$WORKSPACE/artifacts/p0/enterprise"
+ENT_DIR="$ARTIFACT_DIR/enterprise"
 mkdir -p "$ENT_DIR"
 
 echo "============================================================"
@@ -33,18 +34,18 @@ IMAGE_BYTES=$(stat -c%s "$IMAGE" 2>/dev/null || echo 0)
 IMAGE_HUMAN=$(du -sh "$IMAGE" | cut -f1)
 echo "[FORENSICS] Image size: $IMAGE_HUMAN ($IMAGE_BYTES bytes)"
 CHECKS=$((CHECKS + 1))
-if [ "$IMAGE_BYTES" -gt 524288000 ]; then
-    echo "[FORENSICS] Size check (>500MB): PASS"
+if [ "$IMAGE_BYTES" -gt 0 ]; then
+    echo "[FORENSICS] Non-empty image check: PASS"
     PASSED=$((PASSED + 1))
     SIZE_STATUS="PASS"
 else
-    echo "[FORENSICS] Size check (>500MB): FAIL ($IMAGE_HUMAN)"
+    echo "[FORENSICS] Non-empty image check: FAIL ($IMAGE_HUMAN)"
     SIZE_STATUS="FAIL"
 fi
 
 # --- 2. GPT partition table ---
 CHECKS=$((CHECKS + 1))
-GPT_DUMP=$(sfdisk --dump "$IMAGE" 2>/dev/null || echo "UNAVAILABLE")
+GPT_DUMP=$(sfdisk --dump "$IMAGE" 2>/dev/null || true)
 if echo "$GPT_DUMP" | grep -qi 'label:\s*gpt'; then
     echo "[FORENSICS] GPT partition table: PASS"
     PASSED=$((PASSED + 1))
@@ -57,13 +58,8 @@ fi
 # --- 3. ESP partition ---
 CHECKS=$((CHECKS + 1))
 ESP_FOUND="false"
-if echo "$GPT_DUMP" | grep -qi 'type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B'; then
+if echo "$GPT_DUMP" | grep -Eiq "type=${EXAMOS_P0_ESP_TYPE_GUID}"; then
     echo "[FORENSICS] EFI System Partition: PASS"
-    PASSED=$((PASSED + 1))
-    ESP_STATUS="PASS"
-    ESP_FOUND="true"
-elif echo "$GPT_DUMP" | grep -qi 'EFI\|esp'; then
-    echo "[FORENSICS] EFI System Partition: PASS (detected by label)"
     PASSED=$((PASSED + 1))
     ESP_STATUS="PASS"
     ESP_FOUND="true"
@@ -75,13 +71,8 @@ fi
 # --- 4. Root partition ---
 CHECKS=$((CHECKS + 1))
 ROOT_FOUND="false"
-if echo "$GPT_DUMP" | grep -qi 'type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709'; then
+if echo "$GPT_DUMP" | grep -Eiq "type=${EXAMOS_P0_ROOT_TYPE_GUID}"; then
     echo "[FORENSICS] Linux root x86-64 partition: PASS"
-    PASSED=$((PASSED + 1))
-    ROOT_STATUS="PASS"
-    ROOT_FOUND="true"
-elif echo "$GPT_DUMP" | grep -qi 'root\|linux'; then
-    echo "[FORENSICS] Linux root partition: PASS (detected by label)"
     PASSED=$((PASSED + 1))
     ROOT_STATUS="PASS"
     ROOT_FOUND="true"
@@ -94,16 +85,16 @@ fi
 CHECKS=$((CHECKS + 1))
 COMPUTED_HASH=$(sha256sum "$IMAGE" | cut -d' ' -f1)
 RECORDED_HASH=""
-if [ -f "$WORKSPACE/artifacts/p0/image.sha256" ]; then
-    RECORDED_HASH=$(cut -d' ' -f1 < "$WORKSPACE/artifacts/p0/image.sha256")
+if [ -f "$ARTIFACT_DIR/image.sha256" ]; then
+    RECORDED_HASH=$(cut -d' ' -f1 < "$ARTIFACT_DIR/image.sha256")
 fi
 if [ -n "$RECORDED_HASH" ] && [ "$COMPUTED_HASH" = "$RECORDED_HASH" ]; then
     echo "[FORENSICS] SHA-256 integrity match: PASS"
     PASSED=$((PASSED + 1))
     HASH_STATUS="PASS"
 else
-    echo "[FORENSICS] SHA-256 integrity: WARN (computed=$COMPUTED_HASH recorded=$RECORDED_HASH)"
-    HASH_STATUS="WARN"
+    echo "[FORENSICS] SHA-256 integrity: FAIL (computed=$COMPUTED_HASH recorded=$RECORDED_HASH)"
+    HASH_STATUS="FAIL"
 fi
 
 # --- 6. Companion artifacts ---
@@ -134,9 +125,17 @@ echo "[FORENSICS] Partition layout:"
 sfdisk -l "$IMAGE" 2>/dev/null | grep -E '^\/' || sfdisk --dump "$IMAGE" 2>/dev/null | grep -v '^$' | head -20 || true
 
 # --- Generate JSON ---
+FORENSICS_STATUS=PASS
+for required_status in "$SIZE_STATUS" "$GPT_STATUS" "$ESP_STATUS" "$ROOT_STATUS" "$HASH_STATUS"; do
+    [ "$required_status" = PASS ] || FORENSICS_STATUS=FAIL
+done
 cat > "$ENT_DIR/image-forensics.json" <<JSONEOF
 {
-  "image_path": "$IMAGE",
+  "schema": "examos.p0.forensics.v1",
+  "source_commit": "$(git -C "$WORKSPACE" rev-parse HEAD)",
+  "source_tree_state": "$(python3 "$WORKSPACE/scripts/source-state.py" "$WORKSPACE" --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')",
+  "artifact_path": "$IMAGE_RELATIVE",
+  "artifact_sha256": "$COMPUTED_HASH",
   "image_size_bytes": $IMAGE_BYTES,
   "image_size_human": "$IMAGE_HUMAN",
   "sha256_computed": "$COMPUTED_HASH",
@@ -148,7 +147,7 @@ cat > "$ENT_DIR/image-forensics.json" <<JSONEOF
   "companion_artifacts": {"vmlinuz": $VMLINUZ, "initrd": $INITRD, "efi": $EFI, "status": "$ARTIFACT_STATUS"},
   "checks": $CHECKS,
   "passed": $PASSED,
-  "status": "$([ $PASSED -ge $((CHECKS - 1)) ] && echo PASS || echo FAIL)"
+  "status": "$FORENSICS_STATUS"
 }
 JSONEOF
 
@@ -156,4 +155,4 @@ echo ""
 echo "============================================================"
 echo "[FORENSICS] Result: $PASSED/$CHECKS passed"
 echo "============================================================"
-exit $([ $PASSED -ge $((CHECKS - 1)) ] && echo 0 || echo 1)
+[ "$FORENSICS_STATUS" = PASS ]

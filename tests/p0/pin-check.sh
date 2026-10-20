@@ -15,15 +15,15 @@ fail() { echo "[P0-PIN] FAIL: $1" >&2; exit 1; }
 [ -s "$MKOSI" ] || fail "missing $MKOSI"
 [ -s "$CI" ] || fail "missing $CI"
 
-snapshot="$(awk -F= '$1=="debian_snapshot" { print $2; exit }' "$LOCK")"
-mirror="$(awk -F= '$1=="debian_mirror" { print $2; exit }' "$LOCK")"
-runner="$(awk -F= '$1=="ci_runner_image" { print $2; exit }' "$TOOLS")"
+snapshot="$(awk -F= '$1=="debian_snapshot" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
+mirror="$(awk -F= '$1=="debian_mirror" { sub(/\r$/, "", $2); print $2; exit }' "$LOCK")"
+runner="$(awk -F= '$1=="ci_runner_image" { sub(/\r$/, "", $2); print $2; exit }' "$TOOLS")"
 
 [[ "$snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "debian_snapshot is not a Debian snapshot timestamp"
 [[ "$mirror" == *"$snapshot" ]] || fail "debian_mirror does not contain debian_snapshot"
-grep -Fq "Mirror=$mirror" "$MKOSI" || fail "image/p0/mkosi.conf Mirror= does not match sources.lock"
-grep -Fq "runs-on: $runner" "$CI" || fail "P0 workflow is not pinned to $runner"
-if grep -Eq 'runs-on:[[:space:]]*ubuntu-latest' "$CI"; then
+awk -v expected="Mirror=$mirror" '{ sub(/\r$/, "") } $0 == expected { found=1 } END { exit !found }' "$MKOSI" || fail "image/p0/mkosi.conf Mirror= does not match sources.lock"
+tr -d '\r' < "$CI" | grep -Fqx "    runs-on: $runner" || fail "P0 workflow is not pinned to $runner"
+if tr -d '\r' < "$CI" | grep -Eq 'runs-on:[[:space:]]*ubuntu-latest'; then
     fail "P0 workflow still uses ubuntu-latest"
 fi
 

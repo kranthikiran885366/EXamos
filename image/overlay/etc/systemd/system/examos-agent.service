@@ -7,12 +7,16 @@ Wants=examos-server.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/examos-agent http://127.0.0.1:8000/api/v1/heartbeat examos-device-01
+ExecStart=/usr/local/bin/examos-agent "${EXAMOS_SERVER_BASE_URL}/api/v1/heartbeat" "${EXAMOS_DEVICE_ID}"
 Restart=always
 RestartSec=3
 StandardOutput=journal
 StandardError=journal
 EnvironmentFile=/etc/examos/proctor.env
+EnvironmentFile=/etc/examos/agent.conf
+ExecStartPre=/usr/bin/test "${EXAMOS_SERVER_BASE_URL}" != NOT_PROVISIONED
+ExecStartPre=/usr/bin/test "${EXAMOS_DEVICE_ID}" != NOT_PROVISIONED
+ExecStartPre=/usr/bin/test "${EXAMOS_AGENT_API_TOKEN}" != NOT_PROVISIONED
 
 ProtectSystem=full
 ProtectHome=yes

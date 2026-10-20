@@ -28,7 +28,7 @@ for DIR in \
         echo "[REPO-CHECK] Directory ($DIR): PASS"
     else
         echo "[REPO-CHECK] Directory ($DIR): MISSING"
-        mkdir -p "$WORKSPACE/$DIR"
+        FAILED=$((FAILED + 1))
     fi
 done
 

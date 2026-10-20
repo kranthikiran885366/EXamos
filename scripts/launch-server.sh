@@ -39,14 +39,10 @@ EXAM_DURATION_MINUTES=120
 CONF
 fi
 
-# Create admin credentials if missing
-if [ ! -f /etc/examos/admin.conf ]; then
-    echo "[LAUNCH] Creating default admin credentials..."
-    ADMIN_HASH=$(echo -n 'ExamOS@Admin2025!' | sha256sum | cut -d' ' -f1)
-    sudo tee /etc/examos/admin.conf > /dev/null <<CONF
-ADMIN_PASSWORD_SHA256=$ADMIN_HASH
-CONF
-    sudo chmod 600 /etc/examos/admin.conf
+# Never create a well-known administrator credential from a development
+# launcher. Provision credentials through the controlled administrator setup.
+if [ ! -s /etc/examos/admin.conf ]; then
+    echo "[LAUNCH] No administrator credential is provisioned. Configure an administrator before enabling admin access."
 fi
 
 # Set environment
@@ -65,7 +61,7 @@ echo "  Health Check:      http://localhost:$EXAMOS_SERVER_PORT/api/v1/health"
 echo "  System Status:     http://localhost:$EXAMOS_SERVER_PORT/api/v1/status"
 echo "  Event Ledger:      http://localhost:$EXAMOS_SERVER_PORT/api/v1/ledger"
 echo ""
-echo "[LAUNCH] Default admin credentials: admin / ExamOS@Admin2025!"
+echo "[LAUNCH] No default admin credentials are installed."
 echo "[LAUNCH] Press Ctrl+C to stop the server."
 echo ""
 echo "[LAUNCH] Starting ExamOS server..."

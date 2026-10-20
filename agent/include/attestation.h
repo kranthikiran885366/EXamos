@@ -28,6 +28,7 @@ typedef struct {
 } attestation_report_t;
 
 int tpm_attestation_init(void);
+/* Returns failure until key-backed TPM quote and event-log verification exists. */
 int tpm_attestation_generate_report(const char *device_id, const char *release_id, const char *nonce, attestation_report_t *report);
 int tpm_attestation_format_json(const attestation_report_t *report, char *out_buf, size_t max_len);
 

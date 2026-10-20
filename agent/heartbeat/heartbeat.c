@@ -8,16 +8,15 @@
 #include <dirent.h>
 #include <curl/curl.h>
 
-static char g_server_url[256] = "http://127.0.0.1:8000/api/v1/heartbeat";
-static char g_device_id[65] = "examos-device-default";
+static char g_server_url[256];
+static char g_device_id[65];
 
 int heartbeat_init(const char *server_url, const char *device_id) {
-    if (server_url && strlen(server_url) > 0) {
-        snprintf(g_server_url, sizeof(g_server_url), "%s", server_url);
-    }
-    if (device_id && strlen(device_id) > 0) {
-        snprintf(g_device_id, sizeof(g_device_id), "%s", device_id);
-    }
+    if (!server_url || !*server_url || strlen(server_url) >= sizeof(g_server_url) ||
+        !device_id || !*device_id || strlen(device_id) >= sizeof(g_device_id)) return -1;
+    if (strncmp(server_url, "https://", 8) != 0) return -1;
+    snprintf(g_server_url, sizeof(g_server_url), "%s", server_url);
+    snprintf(g_device_id, sizeof(g_device_id), "%s", device_id);
     return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? 0 : -1;
 }
 

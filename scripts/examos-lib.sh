@@ -40,7 +40,7 @@ examos_p0_source_status() {
 examos_p0_validate_run_dir() {
     local root="${1:-$(pwd)}" directory="${2:-${EXAMOS_P0_ARTIFACT_DIR:-}}"
     [ -n "$directory" ] || return 1
-    local runs_dir resolved marke
+    local runs_dir resolved marker
     runs_dir="$(realpath -m -- "$root/artifacts/p0/runs")" || return 1
     resolved="$(realpath -m -- "$directory")" || return 1
     [ "$directory" = "$resolved" ] || return 1

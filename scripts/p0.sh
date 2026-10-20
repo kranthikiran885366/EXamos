@@ -154,7 +154,7 @@ echo ">>> STEP 4/10: Collecting Tool Versions & Firmware Paths..."
 CURRENT_STEP="canonical disk image build"
 echo ""
 echo ">>> STEP 5/10: Building Target Disk Image..."
-bash "$WORKSPACE/tests/p0/build.sh"
+P0_BUILD_START_EPOCH="$(date +%s)" bash "$WORKSPACE/tests/p0/build.sh"
 
 # Step 6: Build a hybrid ISO from the P0 disk's verified partitions.
 CURRENT_STEP="hybrid ISO build"
@@ -309,6 +309,20 @@ if jq -e --slurpfile build "$ARTIFACT_DIR/iso-build-result.json" \
     ' "$ARTIFACT_DIR/iso-boot-result.json" >/dev/null 2>&1; then
     CHECK_ISO_BOOT="PASS"
 fi
+CHECK_IMAGE_FORENSICS="BLOCKED"
+if [ -s "$ARTIFACT_DIR/enterprise/image-forensics.json" ] && jq -e \
+    --arg image "$IMAGE_HASH" \
+    '.schema == "examos.p0.forensics.v1" and .artifact_sha256 == $image
+     and .gpt_table == "PASS" and .esp_partition == "PASS"
+     and .root_partition == "PASS" and .hash_integrity == "PASS"
+     and .status == "PASS"' \
+    "$ARTIFACT_DIR/enterprise/image-forensics.json" >/dev/null 2>&1; then
+    CHECK_IMAGE_FORENSICS="PASS"
+else
+    CHECK_IMAGE_FORENSICS="FAIL"
+fi
+CHECK_PINNED_INPUTS="BLOCKED"
+if bash "$WORKSPACE/tests/p0/pin-check.sh" >/dev/null 2>&1; then CHECK_PINNED_INPUTS="PASS"; else CHECK_PINNED_INPUTS="FAIL"; fi
 CHECK_SECRETS="FAIL"
 if bash "$WORKSPACE/tests/p0/private-key-check.sh" "$WORKSPACE"; then
     CHECK_SECRETS="PASS"
@@ -325,7 +339,7 @@ OVERALL="PASS"
 for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" \
           "$CHECK_ARTIFACT" "$CHECK_CHECKSUM" "$CHECK_SECRETS" "$CHECK_BUILD" \
           "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
-          "$CHECK_SOURCE_TREE"; do
+          "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_SOURCE_TREE"; do
     if [ "$_c" = "FAIL" ]; then
         OVERALL="FAIL"
         break
@@ -377,6 +391,10 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
     "first_boot_account": "$CHECK_FIRST_BOOT",
     "iso_build": "$CHECK_ISO_BUILD",
     "iso_boot": "$CHECK_ISO_BOOT",
+    "image_forensics": "$CHECK_IMAGE_FORENSICS",
+    "pinned_inputs": "$CHECK_PINNED_INPUTS",
+    "reproducible_build": "BLOCKED",
+    "reproducibility_sha256": "UNKNOWN",
     "artifact_generated": "$CHECK_ARTIFACT",
     "artifact_checksum_valid": "$CHECK_CHECKSUM",
     "artifact_checksum": "$IMAGE_HASH",
