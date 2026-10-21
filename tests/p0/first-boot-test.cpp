@@ -374,10 +374,13 @@ int main(int argc, char* argv[]) {
                   send_text(socket_fd, password + "\n") &&
                   wait_for_text(socket_fd, log, transcript, " is ready.", 45) &&
                   send_text(socket_fd,
-                            "printf '\\nEXAMOS_P0_RECOVERY_STATE=%s\\n' "
-                            "\"$(sudo -n cat /var/lib/examos/dev-console-user-created)\"\n") &&
+                            "sudo -k && sudo -S -p 'EXAMOS_P0_STATE_PASSWORD:' "
+                            "/bin/cat /var/lib/examos/dev-console-user-created\n") &&
                   wait_for_text(socket_fd, log, transcript,
-                                "EXAMOS_P0_RECOVERY_STATE=complete:" + username, 30);
+                                "EXAMOS_P0_STATE_PASSWORD:", 30) &&
+                  send_text(socket_fd, password + "\n") &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "complete:" + username, 30);
     }
 
     std::fflush(log);
