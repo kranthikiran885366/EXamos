@@ -32,6 +32,16 @@ BUILD_CONFIG_SHA256="$(sha256sum "$P0_CONFIG" | cut -d' ' -f1)"
 PRODUCT_VERSION="$(awk -F': *' '$1 == "version" { print $2; exit }' "$VERSION_FILE")"
 [ -n "$PRODUCT_VERSION" ] || { echo "[P0] FATAL: product version is missing." >&2; exit 2; }
 TARGET_ARCH="$(awk -F= '/^[[:space:]]*Architecture[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$P0_CONFIG")"
+QEMU_ACCEL_ARGS="$(examos_qemu_accel)" || {
+    echo "[P0] FATAL: requested QEMU acceleration is unavailable or invalid." >&2
+    exit 2
+}
+case "$QEMU_ACCEL_ARGS" in
+    *"-accel kvm"*) SELECTED_QEMU_ACCELERATION="KVM"; EXAMOS_P0_QEMU_ACCEL="kvm" ;;
+    *"-accel tcg"*) SELECTED_QEMU_ACCELERATION="TCG"; EXAMOS_P0_QEMU_ACCEL="tcg" ;;
+    *) echo "[P0] FATAL: QEMU acceleration selector returned an unsupported value." >&2; exit 2 ;;
+esac
+export EXAMOS_P0_QEMU_ACCEL
 mkdir -p "$RUNS_DIR"
 if [ -n "${EXAMOS_P0_ARTIFACT_DIR:-}" ]; then
     ARTIFACT_DIR="$(realpath -m -- "$EXAMOS_P0_ARTIFACT_DIR")"
@@ -165,7 +175,7 @@ echo ">>> STEP 6/10: Building UEFI Hybrid ISO from the P0 Disk..."
 bash "$WORKSPACE/tests/p0/build-iso.sh"
 
 # Step 7: QEMU / OVMF Boot Test
-CURRENT_STEP="QEMU KVM disk boot"
+CURRENT_STEP="QEMU disk boot ($SELECTED_QEMU_ACCELERATION)"
 echo ""
 echo ">>> STEP 7/10: Executing QEMU / OVMF Disk Boot Validation..."
 bash "$WORKSPACE/tests/p0/boot.sh"
@@ -254,22 +264,22 @@ if jq -e --arg hash "$IMAGE_HASH" --arg commit "$GIT_COMMIT" \
     CHECK_BUILD="PASS"
 fi
 CHECK_BOOT="FAIL"
-if jq -e --arg hash "$IMAGE_HASH" \
+if jq -e --arg hash "$IMAGE_HASH" --arg acceleration "$SELECTED_QEMU_ACCELERATION" \
     '.status == "PASS" and .image_sha256 == $hash and
      .image_sha256_after_boot == $hash and .source_image_unchanged == true and
      .readiness_observed == true and
-     .qemu_acceleration == "KVM" and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
+     .qemu_acceleration == $acceleration and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
      ([.markers.kernel, .markers.systemd, .markers.multi_user_target,
        .markers.serial_login_prompt] | all)' \
     "$ARTIFACT_DIR/boot-result.json" >/dev/null 2>&1; then
     CHECK_BOOT="PASS"
 fi
 CHECK_FIRST_BOOT="FAIL"
-if jq -e --arg hash "$IMAGE_HASH" \
+if jq -e --arg hash "$IMAGE_HASH" --arg acceleration "$SELECTED_QEMU_ACCELERATION" \
     '.status == "PASS" and .image_sha256 == $hash and
      .image_sha256_after_test == $hash and .source_image_unchanged == true and
      .snapshot_isolated == true and .guest_account_created == true and
-     .qemu_acceleration == "KVM" and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
+     .qemu_acceleration == $acceleration and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
      .authenticated_serial_login == true and
      .non_root_uid_and_sudo_group_verified == true and
      .setup_executable_owner_mode_verified == true' \
@@ -288,7 +298,8 @@ if jq -e --arg disk "$IMAGE_HASH" --arg iso "$ISO_HASH" --arg commit "$GIT_COMMI
 fi
 CHECK_ISO_BOOT="FAIL"
 if jq -e --slurpfile build "$ARTIFACT_DIR/iso-build-result.json" \
-    --arg disk "$IMAGE_HASH" --arg iso "$ISO_HASH" '
+    --arg disk "$IMAGE_HASH" --arg iso "$ISO_HASH" \
+    --arg acceleration "$SELECTED_QEMU_ACCELERATION" '
     . as $boot | $build[0] as $build
     | $boot.status == "PASS" and $build.status == "PASS"
       and $boot.iso_sha256 == $iso and $boot.iso_sha256_after_boot == $iso
@@ -304,7 +315,7 @@ if jq -e --slurpfile build "$ARTIFACT_DIR/iso-build-result.json" \
       and $boot.source_commit == $build.source_commit
       and $boot.source_tree_state_at_start == $build.source_tree_state_at_start
       and $boot.dirty_path_count_at_start == $build.dirty_path_count_at_start
-      and $boot.qemu_acceleration == "KVM"
+      and $boot.qemu_acceleration == $acceleration
       and $boot.qemu_stopped_after_readiness == true
       and $boot.qemu_memory_mib > 0 and $boot.qemu_vcpus > 0
       and ([ $boot.markers.kernel, $boot.markers.systemd,
