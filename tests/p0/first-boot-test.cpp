@@ -372,7 +372,7 @@ int main(int argc, char* argv[]) {
                   wait_for_text(socket_fd, log, transcript,
                                 "Retype new password:", 30) &&
                   send_text(socket_fd, password + "\n") &&
-                  wait_for_text(socket_fd, log, transcript, " login:", 45) &&
+                  wait_for_text(socket_fd, log, transcript, " is ready.", 45) &&
                   send_text(socket_fd,
                             "printf '\\nEXAMOS_P0_RECOVERY_STATE=%s\\n' "
                             "\"$(sudo -n cat /var/lib/examos/dev-console-user-created)\"\n") &&
