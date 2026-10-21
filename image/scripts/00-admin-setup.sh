@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== [ExamOS Build] Setting up Admin Portal Credentials ==="
+install -d -o root -g root -m 0750 /etc/examos
+install -d -o root -g root -m 0750 /var/log/examos
 
-mkdir -p /etc/examos
-mkdir -p /var/log/examos
-
-# Compute SHA-256 of default admin password 'ExamOS@Admin2025!'
-ADMIN_HASH=$(echo -n 'ExamOS@Admin2025!' | sha256sum | cut -d' ' -f1)
-
-cat > /etc/examos/admin.conf << EOF
-# ExamOS Admin Portal Credentials
-# Default password: ExamOS@Admin2025!
-ADMIN_PASSWORD_SHA256=${ADMIN_HASH}
+# Production credentials are provisioned after installation by the approved
+# deployment workflow. An unprovisioned image must deny administrator login.
+temporary="$(mktemp /etc/examos/.admin.conf.XXXXXX)"
+trap 'rm -f -- "$temporary"' EXIT
+cat > "$temporary" <<'EOF'
+ADMIN_USERNAME=NOT_PROVISIONED
+ADMIN_PASSWORD_PBKDF2=NOT_PROVISIONED
 EOF
-
-if [ ! -f /etc/examos/exam.conf ]; then
-cat > /etc/examos/exam.conf << 'EOF'
-EXAM_URL=NOT_CONFIGURED
-EXAM_NAME=ExamOS Final Examination
-EXAM_DURATION_MINUTES=120
-EOF
-fi
-
-chmod 0600 /etc/examos/admin.conf
-chmod 0644 /etc/examos/exam.conf
+chown root:root "$temporary"
+chmod 0600 "$temporary"
+mv -f -- "$temporary" /etc/examos/admin.conf
+trap - EXIT
 chmod 0750 /var/log/examos
-
-echo "=== [ExamOS Build] Admin credentials configured ==="

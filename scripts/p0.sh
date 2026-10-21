@@ -138,6 +138,7 @@ bash "$WORKSPACE/tests/p0/repository-check.sh"
 bash "$WORKSPACE/tests/p0/pin-check.sh" --record "$ARTIFACT_DIR/pinned-inputs-result.json"
 CHECK_PINNED_INPUTS="PASS"
 bash "$WORKSPACE/tests/p0/agent-config-contract-test.sh"
+bash "$WORKSPACE/tests/p0/admin-auth-security-test.sh"
 python3 "$WORKSPACE/tests/p0/results-schema-test.py"
 
 # Step 4: Tool Version & OVMF Firmware Discovery
@@ -149,6 +150,7 @@ echo ">>> STEP 4/10: Collecting Tool Versions & Firmware Paths..."
     mkosi --version
     qemu-system-x86_64 --version | head -n 1
     qemu-img --version | head -n 1
+    gcc --version | head -n 1
     g++ --version | head -n 1
     swtpm --version | head -n 1
     tpm2_pcrread --version | head -n 1
@@ -246,6 +248,16 @@ for _cand in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/s
 done
 CHECK_SWTPM="NOT_REQUIRED"; command -v swtpm >/dev/null 2>&1 && CHECK_SWTPM="AVAILABLE"
 CHECK_MKOSI="FAIL"; command -v mkosi >/dev/null 2>&1 && CHECK_MKOSI="PASS"
+CHECK_ADMIN_AUTH_SECURITY="FAIL"
+if jq -e --arg commit "$GIT_COMMIT" \
+    '.schema == "examos.p0.admin-auth-security.v1" and .phase == "P0" and
+     .check == "admin_auth_security" and .status == "PASS" and
+     .source_commit == $commit and .pbkdf2_verification == "PASS" and
+     .missing_legacy_and_unprovisioned_credentials_fail_closed == "PASS" and
+     .unsafe_config_permissions_rejected == "PASS"' \
+    "$ARTIFACT_DIR/admin-auth-security-result.json" >/dev/null 2>&1; then
+    CHECK_ADMIN_AUTH_SECURITY="PASS"
+fi
 CHECK_ARTIFACT="FAIL"
 if [ -n "$IMAGE_HASH" ] && [ "$IMAGE_HASH" != "UNKNOWN" ] && \
    [ -s "$ARTIFACT_DIR/image-path.txt" ] && [ -s "$ARTIFACT_DIR/image-size.txt" ]; then
@@ -429,7 +441,7 @@ for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" 
           "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_FIRST_BOOT_RECOVERY" \
           "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
           "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_REPRODUCIBLE_BUILD" \
-          "$CHECK_SOURCE_TREE"; do
+          "$CHECK_ADMIN_AUTH_SECURITY" "$CHECK_SOURCE_TREE"; do
     if [ "$_c" = "FAIL" ]; then
         OVERALL="FAIL"
         break
@@ -481,6 +493,7 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
     "guest_boot": "$CHECK_BOOT",
     "first_boot_account": "$CHECK_FIRST_BOOT",
     "first_boot_recovery": "$CHECK_FIRST_BOOT_RECOVERY",
+    "admin_auth_security": "$CHECK_ADMIN_AUTH_SECURITY",
     "iso_build": "$CHECK_ISO_BUILD",
     "iso_boot": "$CHECK_ISO_BOOT",
     "image_forensics": "$CHECK_IMAGE_FORENSICS",

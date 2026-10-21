@@ -47,7 +47,7 @@ else
 fi
 
 # 5. Core Tools
-for TOOL in git mkosi g++ qemu-system-x86_64 qemu-img swtpm tpm2_pcrread sbsign veritysetup mksquashfs; do
+for TOOL in git mkosi gcc g++ qemu-system-x86_64 qemu-img swtpm tpm2_pcrread sbsign veritysetup mksquashfs; do
     if command -v "$TOOL" >/dev/null 2>&1; then
         echo "[HOST-CHECK] Tool ($TOOL): PASS"
     else

@@ -6,7 +6,6 @@
 #define ADMIN_CONF_PATH "/etc/examos/admin.conf"
 #define EXAM_URL_MAX 512
 #define EXAM_NAME_MAX 128
-#define ADMIN_HASH_LEN 65   /* SHA-256 hex + null */
 
 typedef struct {
     char exam_url[EXAM_URL_MAX];
@@ -21,11 +20,10 @@ int  config_load(exam_config_t *cfg);
 /* Writes exam_url, exam_name, and duration to EXAM_CONF_PATH atomically. Returns 0 on success. */
 int  config_save(const exam_config_t *cfg);
 
-/* Reads the SHA-256 hex hash of the admin password from ADMIN_CONF_PATH.
-   Writes into out_hash (must be at least ADMIN_HASH_LEN bytes). Returns 0 on success. */
-int  config_load_admin_hash(char *out_hash, size_t max_len);
-
-/* Validates that the given plain-text password matches the stored hash. Returns 1 if valid, 0 if not. */
-int  config_verify_admin_password(const char *plaintext_password);
+/* PBKDF2-SHA256 credential format: iterations:salt_hex:hash_hex. */
+int config_verify_password_hash(const char *plaintext_password,
+                                const char *credential);
+int config_verify_admin_credentials(const char *username,
+                                    const char *plaintext_password);
 
 #endif

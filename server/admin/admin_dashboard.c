@@ -4,37 +4,47 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Base64 decoding helper */
-static int base64_char_value(char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return -1;
-}
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
 
 static int base64_decode(const char *input, char *output, size_t max_out) {
+    if (!input || !output || max_out < 2) return -1;
     size_t in_len = strlen(input);
-    size_t out_idx = 0;
-    int buf = 0, bits = 0;
-
-    for (size_t i = 0; i < in_len; i++) {
-        if (input[i] == '=') break;
-        int val = base64_char_value(input[i]);
-        if (val == -1) continue; // skip whitespace or invalid
-        buf = (buf << 6) | val;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            if (out_idx + 1 < max_out) {
-                output[out_idx++] = (char)((buf >> bits) & 0xFF);
-            }
+    if (in_len == 0 || in_len % 4 != 0 || in_len > 340) return -1;
+    size_t padding = 0;
+    if (input[in_len - 1] == '=') ++padding;
+    if (in_len > 1 && input[in_len - 2] == '=') ++padding;
+    for (size_t i = 0; i < in_len; ++i) {
+        char c = input[i];
+        int alphabet = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                       (c >= '0' && c <= '9') || c == '+' || c == '/';
+        if (alphabet) {
+            if (i >= in_len - padding) return -1;
+        } else if (c != '=' || i < in_len - padding) {
+            return -1;
         }
     }
-    if (out_idx < max_out) output[out_idx] = '\0';
-    return (int)out_idx;
+    int decoded = EVP_DecodeBlock((unsigned char *)output,
+                                  (const unsigned char *)input, (int)in_len);
+    if (decoded < 0 || (size_t)decoded < padding) return -1;
+    size_t output_length = (size_t)decoded - padding;
+    if (output_length == 0 || output_length >= max_out ||
+        memchr(output, '\0', output_length) != NULL) return -1;
+    for (size_t i = 0; i < output_length; ++i) {
+        unsigned char c = (unsigned char)output[i];
+        if (c < 0x20 || c == 0x7f) return -1;
+    }
+    char canonical[344] = {0};
+    int canonical_length = EVP_EncodeBlock((unsigned char *)canonical,
+                                            (const unsigned char *)output,
+                                            (int)output_length);
+    int canonical_valid = canonical_length >= 0 &&
+        (size_t)canonical_length == in_len &&
+        CRYPTO_memcmp(canonical, input, in_len) == 0;
+    OPENSSL_cleanse(canonical, sizeof(canonical));
+    if (!canonical_valid) return -1;
+    output[output_length] = '\0';
+    return (int)output_length;
 }
 
 int admin_check_auth(const char *auth_header) {
@@ -45,21 +55,24 @@ int admin_check_auth(const char *auth_header) {
     while (*b64 == ' ') b64++;
 
     char decoded[256] = {0};
-    if (base64_decode(b64, decoded, sizeof(decoded)) <= 0) return 0;
+    if (base64_decode(b64, decoded, sizeof(decoded)) <= 0) {
+        OPENSSL_cleanse(decoded, sizeof(decoded));
+        return 0;
+    }
 
     char *colon = strchr(decoded, ':');
-    if (!colon) return 0;
+    if (!colon) {
+        OPENSSL_cleanse(decoded, sizeof(decoded));
+        return 0;
+    }
 
     *colon = '\0';
     char *user = decoded;
     char *pass = colon + 1;
 
-    /* Accept admin or examos username */
-    if (strcmp(user, "admin") != 0 && strcmp(user, "examos") != 0) {
-        return 0;
-    }
-
-    return config_verify_admin_password(pass);
+    int valid = config_verify_admin_credentials(user, pass);
+    OPENSSL_cleanse(decoded, sizeof(decoded));
+    return valid;
 }
 
 const char *admin_login_html(void) {

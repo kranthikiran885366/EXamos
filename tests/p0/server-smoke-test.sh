@@ -43,8 +43,22 @@ find_free_port() {
 PORT=$(find_free_port)
 LEDGER="/tmp/examos-smoke-ledger-$$.log"
 PIDFILE="/tmp/examos-smoke-pid-$$"
-AGENT_TOKEN="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-ADMIN_AUTH="Basic YWRtaW46RXhhbU9TQEFkbWluMjAyNSE="
+AGENT_TOKEN="$(openssl rand -hex 32)"
+read -r ADMIN_USERNAME ADMIN_CREDENTIAL ADMIN_AUTH_VALUE < <(python3 - <<'PY'
+import base64
+import hashlib
+import secrets
+
+username = "admin-" + secrets.token_hex(8)
+password = secrets.token_urlsafe(32)
+salt = secrets.token_bytes(16)
+iterations = 600000
+digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+print(username, f"{iterations}:{salt.hex()}:{digest.hex()}", auth)
+PY
+)
+ADMIN_AUTH="Basic $ADMIN_AUTH_VALUE"
 
 echo "[SMOKE] Using port: $PORT"
 echo "[SMOKE] Ledger: $LEDGER"
@@ -59,9 +73,9 @@ EXAM_DURATION_MINUTES=60
 CONF
 fi
 
-ADMIN_HASH=$(echo -n 'ExamOS@Admin2025!' | sha256sum | cut -d' ' -f1)
 sudo tee /etc/examos/admin.conf > /dev/null <<CONF
-ADMIN_PASSWORD_SHA256=$ADMIN_HASH
+ADMIN_USERNAME=$ADMIN_USERNAME
+ADMIN_PASSWORD_PBKDF2=$ADMIN_CREDENTIAL
 CONF
 sudo chmod 600 /etc/examos/admin.conf
 

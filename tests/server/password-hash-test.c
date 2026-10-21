@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "../../server/include/config_manager.h"
+#include "../../server/include/admin_dashboard.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -91,11 +92,119 @@ int main(void) {
         OPENSSL_cleanse(credential, sizeof(credential));
         return 1;
     }
+    char basic_payload[256] = {0};
+    char basic_encoded[344] = {0};
+    char basic_header[352] = {0};
+    int payload_length = snprintf(basic_payload, sizeof(basic_payload),
+                                  "test-admin:%s", password);
+    int encoded_length = payload_length > 0 &&
+        (size_t)payload_length < sizeof(basic_payload)
+        ? EVP_EncodeBlock((unsigned char *)basic_encoded,
+                          (const unsigned char *)basic_payload, payload_length)
+        : -1;
+    if (encoded_length > 0 && (size_t)encoded_length < sizeof(basic_encoded))
+        basic_encoded[encoded_length] = '\0';
+    int header_length = encoded_length > 0
+        ? snprintf(basic_header, sizeof(basic_header), "Basic %s", basic_encoded)
+        : -1;
+    if (header_length <= 0 || (size_t)header_length + 2 > sizeof(basic_header) ||
+        !admin_check_auth(basic_header)) {
+        fprintf(stderr, "FAIL: valid configured Basic authentication was rejected\n");
+        unlink(config_path);
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
+    basic_header[header_length] = '!';
+    basic_header[header_length + 1] = '\0';
+    if (admin_check_auth(basic_header)) {
+        fprintf(stderr, "FAIL: malformed Basic authentication was accepted\n");
+        unlink(config_path);
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
+
+    config_file = fopen(config_path, "w");
+    int legacy_written = config_file &&
+        fprintf(config_file, "ADMIN_USERNAME=test-admin\n"
+                             "ADMIN_PASSWORD_SHA256=%064d\n", 0) >= 0;
+    int legacy_closed = config_file && fclose(config_file) == 0;
+    if (!legacy_written || !legacy_closed || chmod(config_path, 0600) != 0 ||
+        config_verify_admin_credentials("test-admin", password)) {
+        fprintf(stderr, "FAIL: legacy fast-hash credentials were accepted\n");
+        unlink(config_path);
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
+
+    config_file = fopen(config_path, "w");
+    int unprovisioned_written = config_file &&
+        fprintf(config_file, "ADMIN_USERNAME=NOT_PROVISIONED\n"
+                             "ADMIN_PASSWORD_PBKDF2=NOT_PROVISIONED\n") >= 0;
+    int unprovisioned_closed = config_file && fclose(config_file) == 0;
+    if (!unprovisioned_written || !unprovisioned_closed ||
+        chmod(config_path, 0600) != 0 ||
+        config_verify_admin_credentials("NOT_PROVISIONED", password)) {
+        fprintf(stderr, "FAIL: unprovisioned credentials were accepted\n");
+        unlink(config_path);
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
+
+    config_file = fopen(config_path, "w");
+    int insecure_written = config_file &&
+        fprintf(config_file, "ADMIN_USERNAME=test-admin\n"
+                             "ADMIN_PASSWORD_PBKDF2=%s\n", credential) >= 0;
+    int insecure_closed = config_file && fclose(config_file) == 0;
+    if (!insecure_written || !insecure_closed || chmod(config_path, 0644) != 0 ||
+        config_verify_admin_credentials("test-admin", password)) {
+        fprintf(stderr, "FAIL: group/world-readable admin credential file was accepted\n");
+        unlink(config_path);
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
     unlink(config_path);
+    if (config_verify_admin_credentials("test-admin", password)) {
+        fprintf(stderr, "FAIL: missing admin config did not fail closed\n");
+        OPENSSL_cleanse(salt, sizeof(salt));
+        OPENSSL_cleanse(hash, sizeof(hash));
+        OPENSSL_cleanse(credential, sizeof(credential));
+        OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+        OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+        OPENSSL_cleanse(basic_header, sizeof(basic_header));
+        return 1;
+    }
 
     OPENSSL_cleanse(salt, sizeof(salt));
     OPENSSL_cleanse(hash, sizeof(hash));
     OPENSSL_cleanse(credential, sizeof(credential));
-    puts("PASS: PBKDF2 hashes and configured admin identity reject invalid credentials");
+    OPENSSL_cleanse(basic_payload, sizeof(basic_payload));
+    OPENSSL_cleanse(basic_encoded, sizeof(basic_encoded));
+    OPENSSL_cleanse(basic_header, sizeof(basic_header));
+    puts("PASS: PBKDF2 admin auth, strict Basic parsing, and fail-closed config checks");
     return 0;
 }
