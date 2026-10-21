@@ -120,7 +120,13 @@ def main() -> int:
         build_a = pathlib.Path(temp) / "build-a.sha256"
         build_b = pathlib.Path(temp) / "build-b.sha256"
         report_path = pathlib.Path(temp) / "reproducibility.json"
-        manifest = ("e" * 64) + " p0-disk\n"
+        image_a = pathlib.Path(temp) / "build-a.raw"
+        image_b = pathlib.Path(temp) / "build-b.raw"
+        image_bytes = b"deterministic P0 image fixture"
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        image_a.write_bytes(image_bytes)
+        image_b.write_bytes(image_bytes)
+        manifest = image_hash + " p0-disk\n"
         build_a.write_bytes(manifest.encode("utf-8"))
         build_b.write_bytes(manifest.encode("utf-8"))
         reproducibility = {
@@ -130,21 +136,26 @@ def main() -> int:
             "mode": "image",
             "source_tree_state": "CLEAN",
             "source_commit": "a" * 40,
-            "build_a": [{"sha256": "e" * 64, "label": "p0-disk"}],
-            "build_b": [{"sha256": "e" * 64, "label": "p0-disk"}],
+            "source_date_epoch": 1792454400,
+            "build_a": [{"sha256": image_hash, "label": "p0-disk"}],
+            "build_b": [{"sha256": image_hash, "label": "p0-disk"}],
             "build_a_manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
             "build_b_manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+            "build_a_image": {"path": "build-a.raw", "sha256": image_hash,
+                              "size_bytes": len(image_bytes)},
+            "build_b_image": {"path": "build-b.raw", "sha256": image_hash,
+                              "size_bytes": len(image_bytes)},
         }
         report_path.write_text(json.dumps(reproducibility), encoding="utf-8")
         evidence_validator = workspace / "tests" / "p0" / "validate-reproducibility.py"
         bound = subprocess.run([sys.executable, str(evidence_validator), str(report_path),
-                                str(build_a), str(build_b), "a" * 40], check=False)
+                                str(build_a), str(build_b), "a" * 40, "1792454400"], check=False)
         if bound.returncode != 0:
             print("FAIL: reproducibility evidence validator rejected valid paired manifests", file=sys.stderr)
             return 1
         build_b.write_bytes((("f" * 64) + " p0-disk\n").encode("utf-8"))
         unbound = subprocess.run([sys.executable, str(evidence_validator), str(report_path),
-                                  str(build_a), str(build_b), "a" * 40], check=False)
+                                  str(build_a), str(build_b), "a" * 40, "1792454400"], check=False)
         if unbound.returncode == 0:
             print("FAIL: reproducibility evidence validator accepted mismatched manifests", file=sys.stderr)
             return 1

@@ -210,24 +210,42 @@ int main(int argc, char* argv[]) {
         close(port_socket);
         return 0;
     }
-    if (argc != 3) {
-        std::cerr << "usage: first-boot-test PORT LOG | --allocate-port\n";
+    if (argc == 2 && std::strcmp(argv[1], "--make-username") == 0) {
+        const auto username = make_test_username();
+        if (username.empty()) {
+            std::cerr << "cannot generate a one-time test username\n";
+            return 1;
+        }
+        std::cout << username << '\n';
+        return 0;
+    }
+    const bool resume = argc == 5 && std::strcmp(argv[1], "--resume") == 0;
+    if ((!resume && argc != 3) || (resume && argc != 5)) {
+        std::cerr << "usage: first-boot-test PORT LOG | --resume PORT USERNAME LOG | "
+                     "--allocate-port | --make-username\n";
         return 2;
     }
+    const char* port_argument = resume ? argv[2] : argv[1];
+    const char* log_path = resume ? argv[4] : argv[2];
     char* end = nullptr;
-    const long port = std::strtol(argv[1], &end, 10);
-    if (end == argv[1] || *end != '\0' || port < 1 || port > 65535) {
+    const long port = std::strtol(port_argument, &end, 10);
+    if (end == port_argument || *end != '\0' || port < 1 || port > 65535) {
         std::cerr << "invalid serial test arguments\n";
         return 2;
     }
 
-    const std::string username = make_test_username();
+    const std::string username = resume ? argv[3] : make_test_username();
+    const std::regex valid_username(R"([a-z_][a-z0-9_-]{0,31})");
+    if (!std::regex_match(username, valid_username) || username == "root") {
+        std::cerr << "invalid test username\n";
+        return 2;
+    }
     const std::string password = make_test_password();
     if (username.empty() || password.empty()) {
         std::cerr << "cannot generate one-time test credentials\n";
         return 1;
     }
-    FILE* log = std::fopen(argv[2], "wb");
+    FILE* log = std::fopen(log_path, "wb");
     if (log == nullptr) {
         std::perror("cannot open serial evidence log");
         return 1;
@@ -268,10 +286,20 @@ int main(int argc, char* argv[]) {
     }
 
     std::string transcript;
-    bool success =
-        wait_for_text(socket_fd, log, transcript,
-                      "New username (45-second timeout):", 150) &&
-        send_text(socket_fd, username + "\n") &&
+    bool success = true;
+    if (resume) {
+        success = wait_for_text(socket_fd, log, transcript,
+                                "Account " + username +
+                                    " is missing; repairing interrupted first-boot setup.", 180) &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "Resuming account setup for " + username +
+                                    " after an interrupted first boot.", 30);
+    } else {
+        success = wait_for_text(socket_fd, log, transcript,
+                                "New username (45-second timeout):", 150) &&
+                  send_text(socket_fd, username + "\n");
+    }
+    success = success &&
         wait_for_text(socket_fd, log, transcript, "New password:", 30) &&
         send_text(socket_fd, password + "\n") &&
         wait_for_text(socket_fd, log, transcript, "Retype new password:", 30) &&
@@ -295,8 +323,8 @@ int main(int argc, char* argv[]) {
     std::fflush(log);
     close(socket_fd);
     std::fclose(log);
-    if (!redact_password(argv[2], password)) {
-        std::remove(argv[2]);
+    if (!redact_password(log_path, password)) {
+        std::remove(log_path);
         std::cerr << "cannot safely redact the temporary test password from the log\n";
         return 1;
     }

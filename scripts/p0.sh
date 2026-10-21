@@ -138,6 +138,7 @@ bash "$WORKSPACE/tests/p0/repository-check.sh"
 bash "$WORKSPACE/tests/p0/pin-check.sh" --record "$ARTIFACT_DIR/pinned-inputs-result.json"
 CHECK_PINNED_INPUTS="PASS"
 bash "$WORKSPACE/tests/p0/agent-config-contract-test.sh"
+python3 "$WORKSPACE/tests/p0/results-schema-test.py"
 
 # Step 4: Tool Version & OVMF Firmware Discovery
 CURRENT_STEP="toolchain and firmware discovery"
@@ -187,6 +188,11 @@ echo ">>> STEP 8/10: Testing First-Boot Account Creation and Login..."
 CHECK_FIRST_BOOT="FAIL"
 bash "$WORKSPACE/tests/p0/first-boot-test.sh"
 CHECK_FIRST_BOOT="PASS"
+CURRENT_STEP="first-boot interrupted-setup recovery"
+echo "[P0] Exercising first-boot recovery from a persisted completion marker with a missing account..."
+CHECK_FIRST_BOOT_RECOVERY="FAIL"
+bash "$WORKSPACE/tests/p0/first-boot-recovery-test.sh"
+CHECK_FIRST_BOOT_RECOVERY="PASS"
 
 # Step 9: QEMU / OVMF ISO Boot Test
 CURRENT_STEP="QEMU UEFI optical ISO boot"
@@ -285,6 +291,31 @@ if jq -e --arg hash "$IMAGE_HASH" --arg acceleration "$SELECTED_QEMU_ACCELERATIO
      .setup_executable_owner_mode_verified == true' \
     "$ARTIFACT_DIR/first-boot-result.json" >/dev/null 2>&1; then
     CHECK_FIRST_BOOT="PASS"
+fi
+CHECK_FIRST_BOOT_RECOVERY="FAIL"
+RECOVERY_FIXTURE_HASH="UNKNOWN"
+RECOVERY_FIXTURE_HASH_FILE="$ARTIFACT_DIR/recovery-test-image.sha256"
+RECOVERY_FIXTURE_IMAGE="$ARTIFACT_DIR/recovery-test-image.raw"
+if [ -s "$RECOVERY_FIXTURE_IMAGE" ] && [ ! -L "$RECOVERY_FIXTURE_IMAGE" ] &&
+    [ -s "$RECOVERY_FIXTURE_HASH_FILE" ] && [ ! -L "$RECOVERY_FIXTURE_HASH_FILE" ]; then
+    RECOVERY_FIXTURE_HASH="$(sha256sum "$RECOVERY_FIXTURE_IMAGE" | cut -d' ' -f1)"
+    RECOVERY_RECORDED_HASH="$(cut -d' ' -f1 "$RECOVERY_FIXTURE_HASH_FILE")"
+    [ "$RECOVERY_FIXTURE_HASH" = "$RECOVERY_RECORDED_HASH" ] ||
+        RECOVERY_FIXTURE_HASH="UNKNOWN"
+fi
+if jq -e --arg canonical_hash "$IMAGE_HASH" --arg commit "$GIT_COMMIT" \
+    --arg acceleration "$SELECTED_QEMU_ACCELERATION" \
+    --arg fixture_hash "$RECOVERY_FIXTURE_HASH" \
+    '.schema == "examos.p0.first-boot-recovery.v1" and
+     .phase == "P0" and .check == "first_boot_recovery" and .status == "PASS" and
+     .source_commit == $commit and .canonical_image_sha256 == $canonical_hash and
+     $fixture_hash != "UNKNOWN" and .fixture_image_sha256 == $fixture_hash and
+     .scenario == "complete_marker_missing_account" and
+     .qemu_acceleration == $acceleration and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
+     .snapshot_isolated == true and .missing_account_reconciled == true and
+     .pending_setup_resumed == true and .authenticated_serial_login == true' \
+    "$ARTIFACT_DIR/first-boot-recovery-result.json" >/dev/null 2>&1; then
+    CHECK_FIRST_BOOT_RECOVERY="PASS"
 fi
 ISO_HASH=$(cut -d' ' -f1 < "$ARTIFACT_DIR/iso.sha256" 2>/dev/null || echo "UNKNOWN")
 CHECK_ISO_BUILD="FAIL"
@@ -393,7 +424,8 @@ CURRENT_STEP="aggregate P0 evidence"
 OVERALL="PASS"
 for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" \
           "$CHECK_ARTIFACT" "$CHECK_CHECKSUM" "$CHECK_SECRETS" "$CHECK_BUILD" \
-          "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
+          "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_FIRST_BOOT_RECOVERY" \
+          "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
           "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_REPRODUCIBLE_BUILD" \
           "$CHECK_SOURCE_TREE"; do
     if [ "$_c" = "FAIL" ]; then
@@ -446,6 +478,7 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
     "build_pipeline": "$CHECK_BUILD",
     "guest_boot": "$CHECK_BOOT",
     "first_boot_account": "$CHECK_FIRST_BOOT",
+    "first_boot_recovery": "$CHECK_FIRST_BOOT_RECOVERY",
     "iso_build": "$CHECK_ISO_BUILD",
     "iso_boot": "$CHECK_ISO_BOOT",
     "image_forensics": "$CHECK_IMAGE_FORENSICS",
