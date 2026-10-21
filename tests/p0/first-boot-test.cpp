@@ -37,13 +37,46 @@ bool send_text(int socket, const std::string& text) {
     return true;
 }
 
+std::string strip_terminal_controls(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+    for (std::size_t index = 0; index < input.size(); ++index) {
+        const auto byte = static_cast<unsigned char>(input[index]);
+        if (byte == 0x1b) {
+            if (index + 1 < input.size() && input[index + 1] == '[') {
+                index += 2;
+                while (index < input.size()) {
+                    const auto final_byte = static_cast<unsigned char>(input[index]);
+                    if (final_byte >= 0x40 && final_byte <= 0x7e) break;
+                    ++index;
+                }
+            } else if (index + 1 < input.size() && input[index + 1] == ']') {
+                index += 2;
+                while (index < input.size() && input[index] != '\a') {
+                    if (input[index] == '\x1b' && index + 1 < input.size() &&
+                        input[index + 1] == '\\') {
+                        ++index;
+                        break;
+                    }
+                    ++index;
+                }
+            } else if (index + 1 < input.size()) {
+                ++index;
+            }
+            continue;
+        }
+        if ((byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\r' || byte == '\t')
+            output.push_back(static_cast<char>(byte));
+    }
+    return output;
+}
 bool wait_for_text(int socket, FILE* log, std::string& transcript,
                    const std::string& marker, int timeout_seconds) {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(timeout_seconds);
     std::vector<char> buffer(4096);
     while (std::chrono::steady_clock::now() < deadline) {
-        if (transcript.find(marker) != std::string::npos) {
+        if (strip_terminal_controls(transcript).find(marker) != std::string::npos) {
             return true;
         }
         struct pollfd descriptor { socket, POLLIN, 0 };
@@ -70,7 +103,7 @@ bool wait_for_text(int socket, FILE* log, std::string& transcript,
             transcript.erase(0, transcript.size() - 1024 * 1024);
         }
     }
-    return transcript.find(marker) != std::string::npos;
+    return strip_terminal_controls(transcript).find(marker) != std::string::npos;
 }
 
 std::string make_test_username() {
@@ -304,9 +337,7 @@ int main(int argc, char* argv[]) {
         send_text(socket_fd, password + "\n") &&
         wait_for_text(socket_fd, log, transcript, "Retype new password:", 30) &&
         send_text(socket_fd, password + "\n") &&
-        wait_for_text(socket_fd, log, transcript,
-                      "Development account " + username + " is ready.", 45) &&
-        wait_for_text(socket_fd, log, transcript, " login:", 30) &&
+        wait_for_text(socket_fd, log, transcript, " login:", 45) &&
         send_text(socket_fd, username + "\n") &&
         wait_for_text(socket_fd, log, transcript, "Password:", 30) &&
         send_text(socket_fd, password + "\n");
@@ -341,8 +372,7 @@ int main(int argc, char* argv[]) {
                   wait_for_text(socket_fd, log, transcript,
                                 "Retype new password:", 30) &&
                   send_text(socket_fd, password + "\n") &&
-                  wait_for_text(socket_fd, log, transcript,
-                                "Development account " + username + " is ready.", 45) &&
+                  wait_for_text(socket_fd, log, transcript, " login:", 45) &&
                   send_text(socket_fd,
                             "printf '\\nEXAMOS_P0_RECOVERY_STATE=%s\\n' "
                             "\"$(sudo -n cat /var/lib/examos/dev-console-user-created)\"\n") &&

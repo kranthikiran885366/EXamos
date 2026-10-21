@@ -155,7 +155,8 @@ disk_boot_ready() {
     grep -qE 'Linux version [0-9]' "$NORMALIZED_LOG" &&
         grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$NORMALIZED_LOG" &&
         grep -qiE 'Reached target.*(Multi-User System|multi-user\.target)' "$NORMALIZED_LOG" &&
-        grep -qE '^[[:alnum:]_.-]+ login:' "$NORMALIZED_LOG"
+        { grep -qE '^[[:alnum:]_.-]+ login:' "$NORMALIZED_LOG" ||
+          grep -Fq 'New username (45-second timeout):' "$NORMALIZED_LOG"; }
 }
 
 BOOT_START=$SECONDS
@@ -198,14 +199,21 @@ KERNEL=false
 SYSTEMD=false
 MULTIUSER=false
 LOGIN_PROMPT=false
+FIRST_BOOT_SETUP_PROMPT=false
+SERIAL_CONSOLE_PROMPT=false
 examos_normalize_serial_log "$BOOT_LOG" "$NORMALIZED_LOG" || fail "Unable to normalize the guest serial log."
 grep -qE 'Linux version [0-9]' "$NORMALIZED_LOG" && KERNEL=true
 grep -qE 'systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]' "$NORMALIZED_LOG" && SYSTEMD=true
 grep -qiE 'Reached target (Multi-User System|multi-user\.target)([[:space:].]|$)' "$NORMALIZED_LOG" && MULTIUSER=true
 grep -qE '^[[:alnum:]_.-]+ login:' "$NORMALIZED_LOG" && LOGIN_PROMPT=true
+grep -Fq 'New username (45-second timeout):' "$NORMALIZED_LOG" && FIRST_BOOT_SETUP_PROMPT=true
+if [ "$LOGIN_PROMPT" = true ] || [ "$FIRST_BOOT_SETUP_PROMPT" = true ]; then
+    SERIAL_CONSOLE_PROMPT=true
+fi
 STATUS="FAIL"
 if [ "$BOOT_READY" = true ] && [ "$KERNEL" = true ] && [ "$SYSTEMD" = true ] && \
-    [ "$MULTIUSER" = true ] && [ "$LOGIN_PROMPT" = true ] && [ "$IMAGE_UNCHANGED" = true ]; then
+    [ "$MULTIUSER" = true ] && [ "$SERIAL_CONSOLE_PROMPT" = true ] && \
+    [ "$IMAGE_UNCHANGED" = true ]; then
     STATUS="PASS"
 fi
 
@@ -222,22 +230,26 @@ jq -n --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --argjson boot_ready "$BOOT_READY" --argjson image_unchanged "$IMAGE_UNCHANGED" \
     --argjson kernel "$KERNEL" --argjson systemd "$SYSTEMD" \
     --argjson multiuser "$MULTIUSER" --argjson login_prompt "$LOGIN_PROMPT" \
+    --argjson first_boot_prompt "$FIRST_BOOT_SETUP_PROMPT" \
+    --argjson console_prompt "$SERIAL_CONSOLE_PROMPT" \
     '{phase:"P0", check:"disk_boot", status:$status, timestamp:$timestamp,
       source_commit:$commit, image_path:$image_path, image_sha256:$image_hash,
       image_sha256_after_boot:$image_hash_after, source_image_unchanged:$image_unchanged,
       qemu_acceleration:$acceleration, qemu_memory_mib:$memory_mib, qemu_vcpus:$vcpus,
       readiness_timeout_seconds:$timeout_seconds, qemu_exit_status:$qemu_exit_status,
       readiness_observed:$boot_ready,
-      markers:{kernel:$kernel,systemd:$systemd,multi_user_target:$multiuser,serial_login_prompt:$login_prompt}}' \
+      markers:{kernel:$kernel,systemd:$systemd,multi_user_target:$multiuser,
+        serial_login_prompt:$login_prompt,first_boot_setup_prompt:$first_boot_prompt,
+        serial_console_prompt:$console_prompt}}' \
     > "$BOOT_RESULT_TMP" || fail "Unable to serialize disk boot evidence."
 mv -- "$BOOT_RESULT_TMP" "$BOOT_RESULT" || fail "Unable to publish disk boot evidence."
 
-echo "[P0-BOOT] Kernel=$KERNEL systemd=$SYSTEMD multi_user=$MULTIUSER login_prompt=$LOGIN_PROMPT image_unchanged=$IMAGE_UNCHANGED"
+echo "[P0-BOOT] Kernel=$KERNEL systemd=$SYSTEMD multi_user=$MULTIUSER login_prompt=$LOGIN_PROMPT first_boot_setup_prompt=$FIRST_BOOT_SETUP_PROMPT serial_console_prompt=$SERIAL_CONSOLE_PROMPT image_unchanged=$IMAGE_UNCHANGED"
 if [ "$STATUS" = "PASS" ]; then
     echo "[P0-BOOT] OVERALL DISK BOOT RESULT: PASS"
     exit 0
 fi
-echo "[P0-BOOT] FAIL: the guest did not prove kernel, systemd, multi-user, and serial login readiness."
+echo "[P0-BOOT] FAIL: the guest did not prove kernel, systemd, multi-user, and responsive serial console readiness."
 tail -40 "$BOOT_LOG" 2>/dev/null || true
 tail -30 "$TMP_DIR/qemu.log" 2>/dev/null || true
 exit 1

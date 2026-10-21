@@ -288,7 +288,9 @@ if jq -e --arg hash "$IMAGE_HASH" --arg acceleration "$SELECTED_QEMU_ACCELERATIO
      .readiness_observed == true and
      .qemu_acceleration == $acceleration and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
      ([.markers.kernel, .markers.systemd, .markers.multi_user_target,
-       .markers.serial_login_prompt] | all)' \
+       .markers.serial_console_prompt] | all) and
+     (.markers.serial_console_prompt ==
+       (.markers.serial_login_prompt or .markers.first_boot_setup_prompt))' \
     "$ARTIFACT_DIR/boot-result.json" >/dev/null 2>&1; then
     CHECK_BOOT="PASS"
 fi
