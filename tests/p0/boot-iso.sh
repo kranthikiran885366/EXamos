@@ -121,7 +121,8 @@ else
     truncate -s 4M "$TMP_VARS"
 fi
 
-ACCEL="$(source "$WORKSPACE/scripts/examos-lib.sh"; examos_qemu_accel)"
+ACCEL="$(source "$WORKSPACE/scripts/examos-lib.sh"; examos_qemu_accel)" ||
+    fail "Requested QEMU acceleration is unavailable or invalid"
 QEMU_RESOURCES="$(source "$WORKSPACE/scripts/examos-lib.sh"; examos_qemu_resources)" ||
     fail "Unable to derive a safe QEMU memory/CPU allocation from current host resources"
 IFS=$'\t' read -r QEMU_MEMORY_MB QEMU_CPUS <<< "$QEMU_RESOURCES"

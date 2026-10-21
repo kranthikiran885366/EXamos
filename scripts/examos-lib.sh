@@ -171,14 +171,50 @@ examos_kvm_available() {
     [ "$probe_status" -eq 124 ]
 }
 
-# Detect usable QEMU acceleration, not merely a readable /dev/kvm node.
-# Prints "-accel kvm -cpu host" or "-accel tcg -cpu max".
+# Probe that this QEMU build can initialize its software CPU accelerator.
+examos_tcg_available() {
+    command -v qemu-system-x86_64 >/dev/null 2>&1 || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+
+    local probe_status=0
+    timeout 2s qemu-system-x86_64 \
+        -machine none -accel tcg -nodefaults -display none -S \
+        -monitor none -serial none >/dev/null 2>&1 || probe_status=$?
+    [ "$probe_status" -eq 124 ]
+}
+
+# Select QEMU acceleration. EXAMOS_P0_QEMU_ACCEL=auto prefers KVM and falls
+# back to TCG; explicit kvm/tcg selections are validated and recorded by each
+# guest test. This lets CI avoid unstable nested KVM without disguising TCG.
 examos_qemu_accel() {
-    if examos_kvm_available; then
-        echo "-accel kvm -cpu host"
-    else
-        echo "-accel tcg -cpu max"
-    fi
+    local requested="${EXAMOS_P0_QEMU_ACCEL:-auto}"
+    case "$requested" in
+        auto)
+            if examos_kvm_available; then
+                echo "-accel kvm -cpu host"
+            else
+                echo "-accel tcg -cpu max"
+            fi
+            ;;
+        kvm)
+            examos_kvm_available || {
+                echo "[P0-QEMU] Requested KVM acceleration is unavailable." >&2
+                return 1
+            }
+            echo "-accel kvm -cpu host"
+            ;;
+        tcg)
+            examos_tcg_available || {
+                echo "[P0-QEMU] Requested TCG acceleration is unavailable." >&2
+                return 1
+            }
+            echo "-accel tcg -cpu max"
+            ;;
+        *)
+            echo "[P0-QEMU] EXAMOS_P0_QEMU_ACCEL must be auto, kvm, or tcg." >&2
+            return 2
+            ;;
+    esac
 }
 
 # Derive a bounded QEMU allocation from resources currently available to WSL.

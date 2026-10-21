@@ -80,7 +80,10 @@ OVMF_CODE="$(examos_find_ovmf_code)" || {
     exit 2
 }
 OVMF_VARS_TEMPLATE="$(examos_find_ovmf_vars || true)"
-QEMU_ACCEL="$(examos_qemu_accel)"
+QEMU_ACCEL="$(examos_qemu_accel)" || {
+    echo "[P0-BOOT] FATAL: requested QEMU acceleration is unavailable or invalid." >&2
+    exit 2
+}
 QEMU_RESOURCES="$(examos_qemu_resources)" || {
     echo "[P0-BOOT] FATAL: unable to derive safe QEMU resources from the host." >&2
     exit 2

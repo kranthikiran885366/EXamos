@@ -59,7 +59,10 @@ OVMF_CODE=$(examos_find_ovmf_code) || {
     exit 1
 }
 OVMF_VARS_TMPL=$(examos_find_ovmf_vars || true)
-ACCEL=$(examos_qemu_accel)
+ACCEL=$(examos_qemu_accel) || {
+    echo "[P0-FIRST-BOOT] FATAL: requested QEMU acceleration is unavailable or invalid." >&2
+    exit 2
+}
 QEMU_ACCELERATION="TCG"
 case "$ACCEL" in
     *"-accel kvm"*) QEMU_ACCELERATION="KVM" ;;

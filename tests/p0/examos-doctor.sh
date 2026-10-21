@@ -9,6 +9,9 @@ echo "========================================"
 echo "          EXAMOS P0 DOCTOR"
 echo "========================================"
 
+WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$WORKSPACE/scripts/examos-lib.sh"
+
 print_item() {
     local name="$1"
     local status="$2"
@@ -30,18 +33,18 @@ else
     print_item "Architecture" "FAIL"
 fi
 
-# 3. Virtualization
-if [ "$(egrep -c '(vmx|svm)' /proc/cpuinfo || true)" -gt 0 ]; then
-    print_item "Virtualization" "PASS"
+# 3. QEMU acceleration
+# KVM is optional because the P0 boot checks select TCG when KVM cannot be
+# initialized (common in nested virtualization and container environments).
+if examos_kvm_available; then
+    print_item "QEMU KVM acceleration" "PASS"
 else
-    print_item "Virtualization" "FAIL"
+    print_item "QEMU KVM acceleration" "UNAVAILABLE (TCG fallback)"
 fi
-
-# 4. KVM
-if [ -e /dev/kvm ]; then
-    print_item "KVM (/dev/kvm)" "PASS"
+if examos_tcg_available; then
+    print_item "QEMU TCG fallback" "AVAILABLE"
 else
-    print_item "KVM" "FAIL"
+    print_item "QEMU TCG fallback" "FAIL (cannot initialize)"
 fi
 
 # 5. UEFI Capability (OVMF)

@@ -20,22 +20,20 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# 2. Virtualization Support
-VIRT_COUNT=$(egrep -c '(vmx|svm)' /proc/cpuinfo || true)
-if [ "$VIRT_COUNT" -gt 0 ]; then
-    echo "[HOST-CHECK] CPU Virtualization ($VIRT_COUNT cores): PASS"
+# 2. Virtualization acceleration
+# P0 can run under QEMU TCG when nested virtualization/KVM is unavailable.
+# Probe the accelerator with QEMU itself; CPU flags and /dev/kvm alone do not
+# prove that KVM initialization will work in a container or WSL guest.
+source "$(cd "$(dirname "$0")/../.." && pwd)/scripts/examos-lib.sh"
+if examos_kvm_available; then
+    echo "[HOST-CHECK] QEMU KVM acceleration: PASS"
 else
-    echo "[HOST-CHECK] CPU Virtualization: FAIL (no vmx/svm flags in /proc/cpuinfo)"
-    FAILED=$((FAILED + 1))
+    echo "[HOST-CHECK] QEMU KVM acceleration: UNAVAILABLE (using QEMU TCG fallback)"
 fi
-
-# 3. KVM Device
-if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-    echo "[HOST-CHECK] /dev/kvm Access: PASS"
-elif [ -e /dev/kvm ]; then
-    echo "[HOST-CHECK] /dev/kvm: PASS (device exists, permissions restricted to $(ls -l /dev/kvm | cut -d' ' -f3-4))"
+if examos_tcg_available; then
+    echo "[HOST-CHECK] QEMU TCG fallback: AVAILABLE"
 else
-    echo "[HOST-CHECK] /dev/kvm: FAIL (device node missing)"
+    echo "[HOST-CHECK] QEMU TCG fallback: FAIL (QEMU cannot initialize TCG)"
     FAILED=$((FAILED + 1))
 fi
 
