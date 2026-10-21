@@ -313,7 +313,9 @@ if jq -e --arg canonical_hash "$IMAGE_HASH" --arg commit "$GIT_COMMIT" \
      .scenario == "complete_marker_missing_account" and
      .qemu_acceleration == $acceleration and .qemu_memory_mib > 0 and .qemu_vcpus > 0 and
      .snapshot_isolated == true and .missing_account_reconciled == true and
-     .pending_setup_resumed == true and .authenticated_serial_login == true' \
+     .pending_setup_resumed == true and
+     .interrupted_password_setup_recovered == true and
+     .recovery_state_completed == true and .authenticated_serial_login == true' \
     "$ARTIFACT_DIR/first-boot-recovery-result.json" >/dev/null 2>&1; then
     CHECK_FIRST_BOOT_RECOVERY="PASS"
 fi

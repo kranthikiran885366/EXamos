@@ -320,6 +320,36 @@ int main(int argc, char* argv[]) {
                   wait_for_login_result(socket_fd, log, transcript);
     }
 
+    if (success && resume) {
+        transcript.clear();
+        const std::string command =
+            "sudo -S -p 'EXAMOS_P0_SUDO_PASSWORD:' /bin/bash -c '"
+            "passwd --delete " + username + " && "
+            "printf %s pending:" + username +
+            " > /var/lib/examos/dev-console-user-created && "
+            "chmod 0600 /var/lib/examos/dev-console-user-created && "
+            "sync && exec /usr/local/sbin/examos-dev-console-setup /dev/ttyS0'\n";
+        success = send_text(socket_fd, command) &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "EXAMOS_P0_SUDO_PASSWORD:", 30) &&
+                  send_text(socket_fd, password + "\n") &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "Resuming account setup for " + username +
+                                    " after an interrupted first boot.", 30) &&
+                  wait_for_text(socket_fd, log, transcript, "New password:", 30) &&
+                  send_text(socket_fd, password + "\n") &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "Retype new password:", 30) &&
+                  send_text(socket_fd, password + "\n") &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "Development account " + username + " is ready.", 45) &&
+                  send_text(socket_fd,
+                            "printf '\\nEXAMOS_P0_RECOVERY_STATE=%s\\n' "
+                            "\"$(sudo -n cat /var/lib/examos/dev-console-user-created)\"\n") &&
+                  wait_for_text(socket_fd, log, transcript,
+                                "EXAMOS_P0_RECOVERY_STATE=complete:" + username, 30);
+    }
+
     std::fflush(log);
     close(socket_fd);
     std::fclose(log);
@@ -333,6 +363,8 @@ int main(int argc, char* argv[]) {
                      "inspect the first-boot log\n";
         return 1;
     }
-    std::cout << "First-boot account created and authenticated login verified.\n";
+    std::cout << (resume
+        ? "Missing-account and interrupted-password recovery verified with authenticated login.\n"
+        : "First-boot account created and authenticated login verified.\n");
     return 0;
 }

@@ -164,7 +164,9 @@ cat > "$RESULT_FILE" <<EOF
   "snapshot_isolated": true,
   "missing_account_reconciled": true,
   "pending_setup_resumed": true,
+  "interrupted_password_setup_recovered": true,
+  "recovery_state_completed": true,
   "authenticated_serial_login": true
 }
 EOF
-echo "[P0-FIRST-BOOT-RECOVERY] Missing-account recovery and authenticated login: PASS"
+echo "[P0-FIRST-BOOT-RECOVERY] Missing-account and interrupted-password recovery with authenticated login: PASS"
