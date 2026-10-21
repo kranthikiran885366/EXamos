@@ -379,12 +379,49 @@ int setup(const char* console_path) {
         close(console);
         return 1;
     }
+    std::string username;
     if (state_exists && state.rfind("complete:", 0) == 0) {
-        close(console);
-        return valid_username(std::string_view(state).substr(9)) ? 0 : 1;
+        username = state.substr(9);
+        if (!valid_username(username)) {
+            report("completed setup state contains an invalid account name");
+            close(console);
+            return 1;
+        }
+        struct passwd completed_account {};
+        std::vector<char> completed_storage;
+        const int completed_lookup = lookup_user(username, completed_account,
+                                                  completed_storage);
+        if (completed_lookup < 0) {
+            close(console);
+            return 1;
+        }
+        if (completed_lookup == 1) {
+            if (!expected_development_account(username)) {
+                close(console);
+                return 1;
+            }
+            const int completed_password = password_is_set(username);
+            if (completed_password < 0) {
+                close(console);
+                return 1;
+            }
+            if (completed_password == 1) {
+                close(console);
+                return 0;
+            }
+            dprintf(console, "\nThe password for %s is not configured; resuming account setup.\n",
+                    username.c_str());
+        } else {
+            dprintf(console, "\nAccount %s is missing; repairing interrupted first-boot setup.\n",
+                    username.c_str());
+        }
+        if (!save_state("pending:" + username)) {
+            close(console);
+            return 1;
+        }
+        state = "pending:" + username;
     }
 
-    std::string username;
     if (state_exists) {
         if (state.rfind("pending:", 0) != 0) {
             report("setup state is invalid");
