@@ -152,6 +152,7 @@ qemu-system-x86_64 \
     -drive file="$ISO_FILE",media=cdrom,readonly=on \
     -boot order=d \
     -net none \
+    -monitor none \
     -display none \
     -serial file:"$BOOT_LOG" 2>&1 &
 QEMU_PID=$!
