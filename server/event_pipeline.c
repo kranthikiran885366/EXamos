@@ -401,22 +401,32 @@ static void free_all_resources(void) {
     }
 }
 
-static void generate_event_id(char *out_id, size_t max_len) {
+static int generate_event_id(char *out_id, size_t max_len) {
+    if (!out_id || max_len < 33) return -1;
     unsigned char buf[16];
-    RAND_bytes(buf, sizeof(buf));
+    if (RAND_bytes(buf, sizeof(buf)) != 1) {
+        out_id[0] = '\0';
+        return -1;
+    }
     for (int i = 0; i < 16; i++) {
         snprintf(out_id + i * 2, max_len - i * 2, "%02x", buf[i]);
     }
     out_id[32] = '\0';
+    return 0;
 }
 
-static void generate_correlation_id(char *out_id, size_t max_len) {
+static int generate_correlation_id(char *out_id, size_t max_len) {
+    if (!out_id || max_len < 33) return -1;
     unsigned char buf[16];
-    RAND_bytes(buf, sizeof(buf));
+    if (RAND_bytes(buf, sizeof(buf)) != 1) {
+        out_id[0] = '\0';
+        return -1;
+    }
     for (int i = 0; i < 16; i++) {
         snprintf(out_id + i * 2, max_len - i * 2, "%02x", buf[i]);
     }
     out_id[32] = '\0';
+    return 0;
 }
 
 static const char* event_type_to_string_internal(event_type_t type) {
@@ -537,6 +547,8 @@ static int validate_no_sensitive_data(const security_event_t *event) {
 
 /* Sanitize details to remove sensitive information */
 static void sanitize_details(char *details, size_t max_len) {
+    if (!details || max_len == 0) return;
+    details[max_len - 1] = '\0';
     const char *sensitive_patterns[] = {
         "password=", "passwd=", "pwd=", "secret=", "key=", "token=",
         "credential=", "private_key=", "private=", "session_secret=", "auth_token="
@@ -756,7 +768,7 @@ int event_pipeline_shutdown(void) {
  * Event Ingestion
  * ----------------------------------------------------------------------- */
 int event_pipeline_ingest(const security_event_t *event) {
-    if (!event || !event->event_id[0]) return -1;
+    if (!event || !event->event_id[0] || !event->correlation_id[0]) return -1;
     
     pthread_mutex_lock(&g_pipeline_lock);
     
@@ -1578,11 +1590,11 @@ int event_pipeline_get_stats(event_pipeline_stats_t *out_stats) {
         }
     }
     
-    out_stats->open_alerts = 0;  /* Placeholder when alert storage is implemented */
-    out_stats->unresolved_incidents = 0;  /* Placeholder when incident tracking is implemented */
+    out_stats->open_alerts = -1;
+    out_stats->unresolved_incidents = -1;
     
     pthread_mutex_unlock(&g_pipeline_lock);
-    return 0;
+    return -1;
 }
 
 /* -----------------------------------------------------------------------
@@ -1601,8 +1613,7 @@ const char* event_classification_to_string(event_classification_t classification
 }
 
 int event_pipeline_generate_correlation_id(char *out_correlation_id, size_t max_len) {
-    generate_correlation_id(out_correlation_id, max_len);
-    return 0;
+    return generate_correlation_id(out_correlation_id, max_len);
 }
 
 int event_pipeline_validate_no_sensitive_data(const security_event_t *event) {

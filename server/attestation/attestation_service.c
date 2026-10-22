@@ -1,62 +1,27 @@
 /*
  * attestation_service.c — ExamOS Phase 3 Attestation Engine
  *
- * Implements the 16-step deterministic trust chain:
- *   device check → nonce freshness → EK/AK → PCR match → quote sig → key release
+ * Production attestation requires authenticated device/release registries,
+ * the TPM quote verifier, and PostgreSQL-backed replay-safe state.
  *
- * TEST/DEVELOPMENT CONFIGURATION.
- * Production golden PCR values must come from a controlled clean measured boot.
- * Production EK fingerprints come from real TPM manufacturer certificates.
- *
- * TEST ONLY — NOT FOR PRODUCTION.
+ * No default devices or release measurements are trusted at startup.
  */
 #define _GNU_SOURCE
 #include "../include/attestation_service.h"
 #include "../include/ledger.h"
+#include "../include/tpm_quote.h"
+#include "../include/admin_auth_store.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
-#include <ctype.h>
 #include <pthread.h>
-#include <openssl/sha.h>
+#include <ctype.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-
-/* -----------------------------------------------------------------------
- * Golden PCR values for ExamOS release examos-0.4.0 (development/test).
- * These are TEST placeholder measurements.  In production, golden values
- * are generated from a controlled clean measured boot, reviewed, approved
- * and published — they are NEVER manually guessed.
- * Each value is exactly 64 hex characters (SHA-256 digest).
- * ----------------------------------------------------------------------- */
-#define GOLDEN_PCR0  "f4a3c2e1b09876543210abcdef0123456789abcdef0123456789abcdef012345"
-#define GOLDEN_PCR4  "a1b2c3d4e5f6071829304a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e9f"
-#define GOLDEN_PCR7  "778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566"
-#define GOLDEN_PCR11 "112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00"
-
-/*
- * Test EK fingerprints — deterministic 64-char hex values per enrolled device.
- * In production these are derived from the TPM EK certificate (RSA-2048/ECC P-256).
- * TEST ONLY — NOT FOR PRODUCTION.
- */
-#define EK_DEV01     "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"
-#define EK_DEV02     "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c"
-#define EK_MACHINE_A "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
-#define EK_MACHINE_B "4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e"
-#define EK_NODE01    "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f"
-
-/*
- * Test AK quote-signature construction suffix.
- * Both the client test agent and this server use:
- *   composite = SHA256(pcr0 || pcr4 || pcr7 || pcr11 || nonce)
- *   quote_sig  = SHA256(composite || AK_TEST_SUFFIX)
- * This is a development test protocol — real production uses TPM2_Quote
- * signed with the AK private key and verified with the AK public key.
- */
-#define AK_TEST_SUFFIX "EXAMOS_AK_TEST_KEY_SIGNATURE"
+#include <openssl/pem.h>
 
 /* -----------------------------------------------------------------------
  * Module-level state
@@ -75,15 +40,6 @@ static pthread_mutex_t      g_trust_lock = PTHREAD_MUTEX_INITIALIZER;
 /* -----------------------------------------------------------------------
  * Internal helpers
  * ----------------------------------------------------------------------- */
-
-/* Compute SHA-256 of data and write 64-char lowercase hex into out_hex[65]. */
-static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(data, len, hash);
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
-        sprintf(out_hex + i * 2, "%02x", hash[i]);
-    out_hex[64] = '\0';
-}
 
 /* Minimal JSON string-field extractor.
  * Finds "key":"value" in buf and copies the value into out[0..max_out-1].
@@ -123,72 +79,6 @@ static void json_str(const char *buf, const char *key,
  *
  * Writes into pcr0/4/7/11 (each a 65-byte buffer).
  */
-static void parse_pcr_array(const char *buf,
-                             char *pcr0, char *pcr4,
-                             char *pcr7, char *pcr11) {
-    /* Locate the "pcrs" key */
-    const char *start = strstr(buf, "\"pcrs\"");
-    if (!start) return;
-    start = strchr(start, '[');
-    if (!start) return;
-
-    /* Find the matching closing bracket */
-    int depth = 1;
-    const char *arr_end = start + 1;
-    while (*arr_end && depth > 0) {
-        if (*arr_end == '[') depth++;
-        else if (*arr_end == ']') depth--;
-        arr_end++;
-    }
-
-    const char *p = start + 1;
-
-    while (p < arr_end && *p) {
-        /* Advance to next '{' */
-        while (p < arr_end && *p && *p != '{') p++;
-        if (p >= arr_end || !*p) break;
-
-        /* Find matching '}' within array bounds */
-        const char *obj_start = p;
-        const char *obj_end   = strchr(p, '}');
-        if (!obj_end || obj_end >= arr_end) break;
-
-        /* Extract "index": <int> */
-        int  idx      = -1;
-        char val[65]  = {0};
-
-        const char *idx_pos = strstr(obj_start, "\"index\"");
-        if (idx_pos && idx_pos < obj_end) {
-            idx_pos += 7; /* strlen("\"index\"") */
-            while (*idx_pos == ':' || *idx_pos == ' ' || *idx_pos == '\t') idx_pos++;
-            if (isdigit((unsigned char)*idx_pos))
-                idx = atoi(idx_pos);
-        }
-
-        /* Extract "value": "<hex>" */
-        const char *val_pos = strstr(obj_start, "\"value\"");
-        if (val_pos && val_pos < obj_end) {
-            val_pos += 7;
-            while (*val_pos == ':' || *val_pos == ' ' || *val_pos == '\t') val_pos++;
-            if (*val_pos == '"') {
-                val_pos++;
-                int j = 0;
-                while (*val_pos && *val_pos != '"' && j < 64) val[j++] = *val_pos++;
-                val[j] = '\0';
-            }
-        }
-
-        if (val[0]) {
-            if      (idx == 0  && pcr0)  { strncpy(pcr0,  val, 64); pcr0[64]  = '\0'; }
-            else if (idx == 4  && pcr4)  { strncpy(pcr4,  val, 64); pcr4[64]  = '\0'; }
-            else if (idx == 7  && pcr7)  { strncpy(pcr7,  val, 64); pcr7[64]  = '\0'; }
-            else if (idx == 11 && pcr11) { strncpy(pcr11, val, 64); pcr11[64] = '\0'; }
-        }
-
-        p = obj_end + 1;
-    }
-}
-
 /* Generate 32 cryptographically random bytes, write as 64-char lowercase hex. */
 static int random_hex64(char *out64) {
     unsigned char raw[32];
@@ -209,6 +99,268 @@ static void safe_copy(char *dst, size_t dst_size, const char *src) {
     dst[dst_size - 1] = '\0';
 }
 
+static int is_sha256_hex(const char *value) {
+    if (!value || strlen(value) != 64) return 0;
+    for (size_t i = 0; i < 64; i++) {
+        const char c = value[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return 0;
+    }
+    return 1;
+}
+
+static int decode_hex_bytes(const char *hex, unsigned char **out, size_t *out_len,
+                            size_t maximum_bytes) {
+    if (!hex || !out || !out_len) return -1;
+    size_t hex_len = strlen(hex);
+    if (hex_len == 0 || (hex_len & 1) != 0 || hex_len / 2 > maximum_bytes)
+        return -1;
+    size_t bytes = hex_len / 2;
+    unsigned char *decoded = malloc(bytes);
+    if (!decoded) return -1;
+    for (size_t i = 0; i < bytes; ++i) {
+        unsigned char a = (unsigned char)hex[i * 2];
+        unsigned char b = (unsigned char)hex[i * 2 + 1];
+        int hi = isdigit(a) ? a - '0' :
+            (tolower(a) >= 'a' && tolower(a) <= 'f' ? tolower(a) - 'a' + 10 : -1);
+        int lo = isdigit(b) ? b - '0' :
+            (tolower(b) >= 'a' && tolower(b) <= 'f' ? tolower(b) - 'a' + 10 : -1);
+        if (hi < 0 || lo < 0) {
+            OPENSSL_clear_free(decoded, bytes);
+            return -1;
+        }
+        decoded[i] = (unsigned char)((hi << 4) | lo);
+    }
+    *out = decoded;
+    *out_len = bytes;
+    return 0;
+}
+
+static int production_attestation_mode(void) {
+    const char *mode = getenv("EXAMOS_TPM_MODE");
+    return mode && strcmp(mode, "production") == 0;
+}
+
+static int hash_nonce_hex(const char *nonce, char out_hash[65]) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    if (!nonce || strlen(nonce) != 64 ||
+        EVP_Digest(nonce, strlen(nonce), digest, &digest_len,
+                   EVP_sha256(), NULL) != 1 || digest_len != 32) return -1;
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; ++i) {
+        out_hash[i * 2] = digits[digest[i] >> 4];
+        out_hash[i * 2 + 1] = digits[digest[i] & 15];
+    }
+    out_hash[64] = '\0';
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return 0;
+}
+
+static int valid_identifier(const char *value) {
+    if (!value || !value[0] || strlen(value) > 63) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+              (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' ||
+              *p == ':' || *p == '-')) return 0;
+    return 1;
+}
+
+static int persist_revocation(const char *type, const char *identifier,
+                              const char *reason) {
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *params[] = {type, identifier, reason};
+    PGresult *result = PQexecParams(conn,
+        "INSERT INTO examos_attestation_revocations(target_type,target_id,reason) "
+        "VALUES($1,$2,$3) ON CONFLICT(target_type,target_id) DO UPDATE "
+        "SET reason=EXCLUDED.reason,revoked_at=clock_timestamp()",
+        3, NULL, params, NULL, NULL, 0);
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    if (ok) {
+        const char *state_params[] = {type, identifier, reason};
+        result = PQexecParams(conn,
+            "UPDATE examos_attestation_challenges SET state='REVOKED',failure_code=$3 "
+            "WHERE (($1='DEVICE' AND device_id=$2) OR "
+            "($1='RELEASE' AND release_id=$2)) "
+            "AND state IN ('PENDING','VERIFYING','TRUSTED')",
+            3, NULL, state_params, NULL, NULL, 0);
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+    release_db_connection(conn, 0);
+    return ok ? 0 : -1;
+}
+
+static int persistently_revoked(const char *type, const char *identifier) {
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *params[] = {type, identifier};
+    PGresult *result = PQexecParams(conn,
+        "SELECT 1 FROM examos_attestation_revocations "
+        "WHERE target_type=$1 AND target_id=$2",
+        2, NULL, params, NULL, NULL, 0);
+    int status = result && PQresultStatus(result) == PGRES_TUPLES_OK
+        ? (PQntuples(result) == 1 ? 1 : 0) : -1;
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    return status;
+}
+
+static int persist_challenge(const attestation_session_t *session) {
+    char nonce_hash[65];
+    if (!session || hash_nonce_hex(session->nonce, nonce_hash) != 0) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *result = PQexec(conn, "BEGIN");
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    if (ok) {
+        const char *params[] = {session->session_id};
+        result = PQexecParams(conn,
+            "UPDATE examos_attestation_challenges SET state='STALE', "
+            "failure_code='RE_ATTESTATION_STARTED' "
+            "WHERE session_id=$1 AND state='TRUSTED'",
+            1, NULL, params, NULL, NULL, 0);
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+    if (ok) {
+        char created[32];
+        snprintf(created, sizeof(created), "%lld", (long long)session->created_at);
+        const char *params[] = {session->attestation_id, session->session_id,
+            session->device_id, session->release_id, nonce_hash, created};
+        result = PQexecParams(conn,
+            "INSERT INTO examos_attestation_challenges "
+            "(attestation_id,session_id,device_id,release_id,nonce_sha256,state,created_at,expires_at) "
+            "SELECT $1,$2,$3,$4,$5,'PENDING',to_timestamp($6::double precision), "
+            "to_timestamp($6::double precision)+interval '120 seconds' "
+            "WHERE NOT EXISTS (SELECT 1 FROM examos_attestation_revocations "
+            "WHERE (target_type='DEVICE' AND target_id=$3) OR "
+            "(target_type='RELEASE' AND target_id=$4))",
+            6, NULL, params, NULL, NULL, 0);
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
+             strcmp(PQcmdTuples(result), "1") == 0;
+        if (result) PQclear(result);
+    }
+    result = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
+    if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) ok = 0;
+    if (result) PQclear(result);
+    release_db_connection(conn, ok ? 0 : 0);
+    OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
+    return ok ? 0 : -1;
+}
+
+static int claim_persisted_challenge(const char *nonce, const char *device_id,
+                                     const char *release_id,
+                                     char out_attestation_id[64]) {
+    char nonce_hash[65];
+    if (hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *params[] = {nonce_hash, device_id, release_id};
+    PGresult *result = PQexecParams(conn,
+        "UPDATE examos_attestation_challenges "
+        "SET state='VERIFYING',claimed_at=clock_timestamp() "
+        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 "
+        "AND state='PENDING' AND expires_at>clock_timestamp() "
+        "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+        "WHERE (r.target_type='DEVICE' AND r.target_id=$2) OR "
+        "(r.target_type='RELEASE' AND r.target_id=$3)) "
+        "RETURNING attestation_id",
+        3, NULL, params, NULL, NULL, 0);
+    int claimed = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                  PQntuples(result) == 1;
+    if (claimed) snprintf(out_attestation_id, 64, "%s", PQgetvalue(result, 0, 0));
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
+    return claimed ? 0 : -1;
+}
+
+static int complete_persisted_challenge(const char *nonce, int verified,
+                                        const char *failure_code) {
+    char nonce_hash[65];
+    if (hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *state = verified ? "TRUSTED" : "FAILED";
+    const char *reason = verified ? "" : failure_code;
+    const char *params[] = {nonce_hash, state, reason};
+    PGresult *result = PQexecParams(conn,
+        "UPDATE examos_attestation_challenges SET state=$2,failure_code=$3, "
+        "verified_at=CASE WHEN $2='TRUSTED' THEN clock_timestamp() ELSE NULL END "
+        "WHERE nonce_sha256=$1 AND state='VERIFYING'",
+        3, NULL, params, NULL, NULL, 0);
+    int updated = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
+                  strcmp(PQcmdTuples(result), "1") == 0;
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
+    return updated ? 0 : -1;
+}
+
+static int persisted_attestation_status(const char *identifier,
+                                        char *out_status, size_t max_len) {
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *expire = PQexec(conn,
+        "UPDATE examos_attestation_challenges SET state='STALE', "
+        "failure_code='ATTESTATION_EXPIRED' "
+        "WHERE state='TRUSTED' AND verified_at<=clock_timestamp()-interval '10 minutes'");
+    int expiry_ok = expire && PQresultStatus(expire) == PGRES_COMMAND_OK;
+    if (expire) PQclear(expire);
+    if (!expiry_ok) { release_db_connection(conn, 0); return -1; }
+    const char *params[] = {identifier};
+    PGresult *result = PQexecParams(conn,
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+        "WHERE (r.target_type='DEVICE' AND r.target_id=examos_attestation_challenges.device_id) "
+        "OR (r.target_type='RELEASE' AND r.target_id=examos_attestation_challenges.release_id)) "
+        "THEN 'REVOKED' ELSE state END FROM examos_attestation_challenges "
+        "WHERE attestation_id=$1 OR session_id=$1 ORDER BY created_at DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+    int found = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                PQntuples(result) == 1;
+    if (found && max_len > 0)
+        snprintf(out_status, max_len, "%s", PQgetvalue(result, 0, 0));
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    return found ? 0 : -1;
+}
+
+static int persisted_re_attestation_source(const char *identifier,
+                                            const char *requested_device,
+                                            char out_device[64],
+                                            char out_session[64],
+                                            char out_release[64]) {
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *params[] = {identifier};
+    PGresult *result = PQexecParams(conn,
+        "SELECT device_id,session_id,release_id,state FROM examos_attestation_challenges "
+        "WHERE (attestation_id=$1 OR session_id=$1) "
+        "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+        "WHERE (r.target_type='DEVICE' AND r.target_id=examos_attestation_challenges.device_id) "
+        "OR (r.target_type='RELEASE' AND r.target_id=examos_attestation_challenges.release_id)) "
+        "AND (state<>'TRUSTED' OR verified_at>clock_timestamp()-interval '10 minutes') "
+        "ORDER BY created_at DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+    int valid = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                PQntuples(result) == 1 &&
+                strcmp(PQgetvalue(result, 0, 3), "TRUSTED") == 0 &&
+                (!requested_device || !requested_device[0] ||
+                 strcmp(PQgetvalue(result, 0, 0), requested_device) == 0);
+    if (valid) {
+        snprintf(out_device, 64, "%s", PQgetvalue(result, 0, 0));
+        snprintf(out_session, 64, "%s", PQgetvalue(result, 0, 1));
+        snprintf(out_release, 64, "%s", PQgetvalue(result, 0, 2));
+    }
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    return valid ? 0 : -1;
+}
+
 /* -----------------------------------------------------------------------
  * attestation_service_init
  * ----------------------------------------------------------------------- */
@@ -222,45 +374,38 @@ int attestation_service_init(void) {
     g_release_count = 0;
     g_session_count = 0;
 
-    /* ----- Register golden release: examos-0.4.0 ----- */
-    golden_release_t *rel = &g_releases[g_release_count++];
-    safe_copy(rel->release_id, sizeof(rel->release_id), "examos-0.4.0");
-    /*
-     * UKI hash is UNKNOWN until an actual signed UKI is built.
-     * This placeholder will be replaced by artifacts/p3/uki.sha256
-     * after a real P3 image build.
-     */
-    safe_copy(rel->uki_hash, sizeof(rel->uki_hash),
-              "0000000000000000000000000000000000000000000000000000000000000000");
-    /* Exact 64-char test golden PCR values */
-    safe_copy(rel->pcr0,  sizeof(rel->pcr0),  GOLDEN_PCR0);
-    safe_copy(rel->pcr4,  sizeof(rel->pcr4),  GOLDEN_PCR4);
-    safe_copy(rel->pcr7,  sizeof(rel->pcr7),  GOLDEN_PCR7);
-    safe_copy(rel->pcr11, sizeof(rel->pcr11), GOLDEN_PCR11);
-    rel->revoked    = 0;
-    rel->created_at = time(NULL);
-
-    /* ----- Register enrolled devices with deterministic test EK fingerprints ----- */
-    struct { const char *id; const char *ek; } devs[] = {
-        { "examos-device-01",      EK_DEV01     },
-        { "examos-device-02",      EK_DEV02     },
-        { "machine-a",             EK_MACHINE_A },
-        { "machine-b",             EK_MACHINE_B },
-        { "examos-device-node-01", EK_NODE01    },
-        { NULL, NULL }
-    };
-
-    for (int i = 0; devs[i].id && g_device_count < MAX_DEVICES; i++) {
-        enrolled_device_t *dev = &g_devices[g_device_count++];
-        safe_copy(dev->device_id,       sizeof(dev->device_id),       devs[i].id);
-        safe_copy(dev->ek_fingerprint,  sizeof(dev->ek_fingerprint),  devs[i].ek);
-        dev->status     = DEVICE_STATUS_ENROLLED;
-        safe_copy(dev->allowed_release, sizeof(dev->allowed_release), "examos-0.4.0");
-        dev->created_at = time(NULL);
-    }
-
     pthread_mutex_unlock(&g_trust_lock);
     return 0;
+}
+
+int attestation_store_init(void) {
+    if (!production_attestation_mode()) return 0;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *result = PQexec(conn,
+        "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
+        "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL");
+    int ready = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                PQntuples(result) == 1 && strcmp(PQgetvalue(result, 0, 0), "t") == 0;
+    if (result) PQclear(result);
+    if (ready) {
+        result = PQexec(conn,
+            "UPDATE examos_attestation_challenges SET state='FAILED', "
+            "failure_code='SERVER_RESTARTED_DURING_VERIFICATION' "
+            "WHERE state='VERIFYING'; "
+            "UPDATE examos_attestation_challenges SET state='STALE', "
+            "failure_code='CHALLENGE_EXPIRED' "
+            "WHERE state='PENDING' AND expires_at<=clock_timestamp(); "
+            "UPDATE examos_attestation_challenges SET state='STALE', "
+            "failure_code='ATTESTATION_EXPIRED' "
+            "WHERE state='TRUSTED' AND verified_at<=clock_timestamp()-interval '10 minutes'");
+        ready = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+    release_db_connection(conn, 0);
+    if (!ready)
+        fprintf(stderr, "[Attestation] Required PostgreSQL challenge-state schema is unavailable.\n");
+    return ready ? 0 : -1;
 }
 
 /* -----------------------------------------------------------------------
@@ -268,7 +413,61 @@ int attestation_service_init(void) {
  * ----------------------------------------------------------------------- */
 int attestation_register_device(const char *device_id, const char *ek_fingerprint,
                                   const char *allowed_release) {
-    if (!device_id || !ek_fingerprint) return -1;
+    return attestation_register_device_identity(device_id, ek_fingerprint,
+                                                "", "", "", allowed_release);
+}
+
+int attestation_register_device_identity(const char *device_id,
+                                          const char *ek_fingerprint,
+                                          const char *ak_qualified_name,
+                                          const char *ak_public_pem,
+                                          const char *ak_public_sha256,
+                                          const char *allowed_release) {
+    if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(g_devices[0].device_id) ||
+        !is_sha256_hex(ek_fingerprint) || !allowed_release || !allowed_release[0] ||
+        strlen(allowed_release) >= sizeof(g_devices[0].allowed_release)) return -1;
+
+    const int has_ak_identity = ak_qualified_name && ak_qualified_name[0] &&
+                                ak_public_pem && ak_public_pem[0] &&
+                                ak_public_sha256 && ak_public_sha256[0];
+    if ((ak_qualified_name && ak_qualified_name[0]) ||
+        (ak_public_pem && ak_public_pem[0]) ||
+        (ak_public_sha256 && ak_public_sha256[0])) {
+        if (!has_ak_identity || strlen(ak_qualified_name) != 68 ||
+            strncmp(ak_qualified_name, "000b", 4) != 0 ||
+            !is_sha256_hex(ak_qualified_name + 4) ||
+            !is_sha256_hex(ak_public_sha256) || strlen(ak_public_pem) >= 2048)
+            return -1;
+
+        BIO *bio = BIO_new_mem_buf(ak_public_pem, (int)strlen(ak_public_pem));
+        EVP_PKEY *key = bio ? PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL) : NULL;
+        BIO_free(bio);
+        unsigned char *der = NULL;
+        int der_len = key ? i2d_PUBKEY(key, &der) : -1;
+        unsigned char digest[EVP_MAX_MD_SIZE] = {0};
+        unsigned int digest_len = 0;
+        int valid = key && EVP_PKEY_base_id(key) == EVP_PKEY_RSA &&
+            EVP_PKEY_bits(key) >= 2048 && der_len > 0 && der &&
+            EVP_Digest(der, (size_t)der_len, digest, &digest_len,
+                       EVP_sha256(), NULL) == 1 && digest_len == 32;
+        char actual_hash[65] = {0};
+        static const char hex[] = "0123456789abcdef";
+        if (valid) {
+            for (size_t i = 0; i < 32; ++i) {
+                actual_hash[i * 2] = hex[digest[i] >> 4];
+                actual_hash[i * 2 + 1] = hex[digest[i] & 15];
+            }
+        }
+        for (size_t i = 0; valid && i < 64; ++i) {
+            if ((unsigned char)tolower((unsigned char)ak_public_sha256[i]) !=
+                (unsigned char)actual_hash[i]) valid = 0;
+        }
+        if (der) OPENSSL_clear_free(der, (size_t)der_len);
+        if (key) EVP_PKEY_free(key);
+        OPENSSL_cleanse(digest, sizeof(digest));
+        if (!valid) return -1;
+    }
+
     pthread_mutex_lock(&g_trust_lock);
 
     /* Update if already registered */
@@ -277,9 +476,14 @@ int attestation_register_device(const char *device_id, const char *ek_fingerprin
             safe_copy(g_devices[i].ek_fingerprint, sizeof(g_devices[i].ek_fingerprint),
                       ek_fingerprint);
             g_devices[i].status = DEVICE_STATUS_ENROLLED;
-            if (allowed_release)
-                safe_copy(g_devices[i].allowed_release,
-                          sizeof(g_devices[i].allowed_release), allowed_release);
+            safe_copy(g_devices[i].allowed_release,
+                      sizeof(g_devices[i].allowed_release), allowed_release);
+            safe_copy(g_devices[i].ak_qualified_name,
+                      sizeof(g_devices[i].ak_qualified_name),
+                      has_ak_identity ? ak_qualified_name : "");
+            safe_copy(g_devices[i].ak_public_pem,
+                      sizeof(g_devices[i].ak_public_pem),
+                      has_ak_identity ? ak_public_pem : "");
             g_devices[i].updated_at = time(NULL);
             pthread_mutex_unlock(&g_trust_lock);
             return 0;
@@ -292,7 +496,11 @@ int attestation_register_device(const char *device_id, const char *ek_fingerprin
         safe_copy(dev->ek_fingerprint, sizeof(dev->ek_fingerprint), ek_fingerprint);
         dev->status = DEVICE_STATUS_ENROLLED;
         safe_copy(dev->allowed_release, sizeof(dev->allowed_release),
-                  allowed_release ? allowed_release : "examos-0.4.0");
+                  allowed_release);
+        safe_copy(dev->ak_qualified_name, sizeof(dev->ak_qualified_name),
+                  has_ak_identity ? ak_qualified_name : "");
+        safe_copy(dev->ak_public_pem, sizeof(dev->ak_public_pem),
+                  has_ak_identity ? ak_public_pem : "");
         dev->created_at = time(NULL);
         pthread_mutex_unlock(&g_trust_lock);
         return 0;
@@ -308,17 +516,26 @@ int attestation_register_device(const char *device_id, const char *ek_fingerprin
 int attestation_register_release(const char *release_id, const char *uki_hash,
                                    const char *pcr0, const char *pcr4,
                                    const char *pcr7, const char *pcr11) {
-    if (!release_id || !pcr0) return -1;
+    if (!release_id || !release_id[0] || strlen(release_id) >= sizeof(g_releases[0].release_id) ||
+        !is_sha256_hex(uki_hash) || !is_sha256_hex(pcr0) || !is_sha256_hex(pcr4) ||
+        !is_sha256_hex(pcr7) || !is_sha256_hex(pcr11)) return -1;
     pthread_mutex_lock(&g_trust_lock);
+
+    for (int i = 0; i < g_release_count; i++) {
+        if (strcmp(g_releases[i].release_id, release_id) == 0) {
+            pthread_mutex_unlock(&g_trust_lock);
+            return -1;
+        }
+    }
 
     if (g_release_count < MAX_RELEASES) {
         golden_release_t *rel = &g_releases[g_release_count++];
         safe_copy(rel->release_id, sizeof(rel->release_id), release_id);
-        safe_copy(rel->uki_hash,   sizeof(rel->uki_hash),   uki_hash ? uki_hash : "");
+        safe_copy(rel->uki_hash,   sizeof(rel->uki_hash),   uki_hash);
         safe_copy(rel->pcr0,       sizeof(rel->pcr0),       pcr0);
-        safe_copy(rel->pcr4,       sizeof(rel->pcr4),       pcr4 ? pcr4 : "");
-        safe_copy(rel->pcr7,       sizeof(rel->pcr7),       pcr7 ? pcr7 : "");
-        safe_copy(rel->pcr11,      sizeof(rel->pcr11),      pcr11 ? pcr11 : "");
+        safe_copy(rel->pcr4,       sizeof(rel->pcr4),       pcr4);
+        safe_copy(rel->pcr7,       sizeof(rel->pcr7),       pcr7);
+        safe_copy(rel->pcr11,      sizeof(rel->pcr11),      pcr11);
         rel->revoked    = 0;
         rel->created_at = time(NULL);
         pthread_mutex_unlock(&g_trust_lock);
@@ -341,8 +558,25 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
                                    const char *release_id,
                                    char *out_nonce, char *out_attestation_id,
                                    char *out_error_code) {
-    if (!device_id || !out_nonce || !out_attestation_id) return -1;
+    if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(g_devices[0].device_id) ||
+        !session_id || !session_id[0] || strlen(session_id) >= sizeof(g_sessions[0].session_id) ||
+        !release_id || !release_id[0] || strlen(release_id) >= sizeof(g_sessions[0].release_id) ||
+        !out_nonce || !out_attestation_id) return -1;
     if (out_error_code) out_error_code[0] = '\0';
+
+    if (production_attestation_mode()) {
+        int device_revoked = persistently_revoked("DEVICE", device_id);
+        int release_revoked = persistently_revoked("RELEASE", release_id);
+        if (device_revoked < 0 || release_revoked < 0) {
+            if (out_error_code) safe_copy(out_error_code, 64, "P3_REVOCATION_STORE_UNAVAILABLE");
+            return -1;
+        }
+        if (device_revoked || release_revoked) {
+            if (out_error_code) safe_copy(out_error_code, 64,
+                device_revoked ? "P3_REVOKED_DEVICE" : "P3_REVOKED_RELEASE");
+            return -1;
+        }
+    }
 
     pthread_mutex_lock(&g_trust_lock);
 
@@ -363,6 +597,29 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
     /* Step 2: Device must not be revoked */
     if (dev->status == DEVICE_STATUS_REVOKED) {
         if (out_error_code) safe_copy(out_error_code, 64, "P3_REVOKED_DEVICE");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
+
+    if (dev->status != DEVICE_STATUS_ENROLLED && dev->status != DEVICE_STATUS_TRUSTED) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_DEVICE_NOT_ENROLLED");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
+    if (strcmp(dev->allowed_release, release_id) != 0) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_RELEASE_NOT_ALLOWED");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
+    int release_found = 0;
+    for (int i = 0; i < g_release_count; i++) {
+        if (strcmp(g_releases[i].release_id, release_id) == 0 && !g_releases[i].revoked) {
+            release_found = 1;
+            break;
+        }
+    }
+    if (!release_found) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_RELEASE_UNKNOWN_OR_REVOKED");
         pthread_mutex_unlock(&g_trust_lock);
         return -1;
     }
@@ -394,12 +651,10 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
     memset(s, 0, sizeof(*s));
 
     snprintf(s->attestation_id, sizeof(s->attestation_id),
-             "attest-%ld-%d", (long)time(NULL), slot);
-    safe_copy(s->session_id,  sizeof(s->session_id),
-              (session_id && session_id[0]) ? session_id : s->attestation_id);
+             "attest-%.32s", nonce);
+    safe_copy(s->session_id,  sizeof(s->session_id), session_id);
     safe_copy(s->device_id,   sizeof(s->device_id),  device_id);
-    safe_copy(s->release_id,  sizeof(s->release_id),
-              (release_id && release_id[0]) ? release_id : "examos-0.4.0");
+    safe_copy(s->release_id,  sizeof(s->release_id), release_id);
     safe_copy(s->nonce,       sizeof(s->nonce),       nonce);
     s->nonce_used  = 0;
     s->created_at  = time(NULL);
@@ -408,17 +663,22 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
     safe_copy(out_nonce,          128, nonce);
     safe_copy(out_attestation_id, 64,  s->attestation_id);
 
+    attestation_session_t persisted_copy = *s;
+
     pthread_mutex_unlock(&g_trust_lock);
+    if (production_attestation_mode() && persist_challenge(&persisted_copy) != 0) {
+        safe_copy(out_error_code, 64, "P3_CHALLENGE_STORE_UNAVAILABLE");
+        return -1;
+    }
     return 0;
 }
 
 /* -----------------------------------------------------------------------
  * attestation_verify_evidence
  *
- * Performs all 16 trust checks in deterministic order.
- * Field names corrected: quote_signature_hex, ak_pub_hex.
- * PCR values extracted from nested array {"pcrs": [{index,value}...]}.
- * Quote verification: SHA256(SHA256(pcr0||pcr4||pcr7||pcr11||nonce) || AK_TEST_SUFFIX)
+ * TPM quote verification validates the TPM2 wire format, signature, nonce,
+ * AK identity, and approved release PCR measurements. Production challenge
+ * and revocation state are backed by PostgreSQL; key release is separate.
  * ----------------------------------------------------------------------- */
 int attestation_verify_evidence(const char *evidence_json,
                                   char *out_reason, char *out_exam_key) {
@@ -426,233 +686,167 @@ int attestation_verify_evidence(const char *evidence_json,
     out_reason[0] = '\0';
     if (out_exam_key) out_exam_key[0] = '\0';
 
-    /* --- Parse evidence fields --- */
-    char dev_id[64]    = {0};
-    char rel_id[64]    = {0};
-    char nonce[128]    = {0};
-    char ek_fp[65]     = {0};
-    char ak_pub[512]   = {0};
-    char quote_sig[65] = {0};
-    char ev_log[65]    = {0};
-    char pcr0[65]      = {0};
-    char pcr4[65]      = {0};
-    char pcr7[65]      = {0};
-    char pcr11[65]     = {0};
-
-    json_str(evidence_json, "device_id",          dev_id,    sizeof(dev_id));
-    json_str(evidence_json, "release_id",          rel_id,    sizeof(rel_id));
-    json_str(evidence_json, "nonce",               nonce,     sizeof(nonce));
-    json_str(evidence_json, "ek_fingerprint",      ek_fp,     sizeof(ek_fp));
-    json_str(evidence_json, "ak_pub_hex",          ak_pub,    sizeof(ak_pub));    /* FIXED field name */
-    json_str(evidence_json, "quote_signature_hex", quote_sig, sizeof(quote_sig)); /* FIXED field name */
-    json_str(evidence_json, "event_log_hash",      ev_log,    sizeof(ev_log));
-
-    /* Extract PCR values from nested array */
-    parse_pcr_array(evidence_json, pcr0, pcr4, pcr7, pcr11);
-
-    pthread_mutex_lock(&g_trust_lock);
-
-    /* ----- Check 1: Request format ----- */
-    if (!dev_id[0] || !rel_id[0] || !nonce[0]) {
+    char nonce[128] = {0}, device_id[64] = {0}, release_id[64] = {0};
+    char quote_message_hex[8193] = {0}, quote_signature_hex[2049] = {0};
+    json_str(evidence_json, "device_id", device_id, sizeof(device_id));
+    json_str(evidence_json, "release_id", release_id, sizeof(release_id));
+    json_str(evidence_json, "nonce", nonce, sizeof(nonce));
+    json_str(evidence_json, "quote_message_hex", quote_message_hex,
+             sizeof(quote_message_hex));
+    json_str(evidence_json, "quote_signature_hex", quote_signature_hex,
+             sizeof(quote_signature_hex));
+    if (!nonce[0] || !device_id[0] || !release_id[0] ||
+        !quote_message_hex[0] || !quote_signature_hex[0]) {
         safe_copy(out_reason, 64, "P3_MALFORMED_REQUEST");
-        pthread_mutex_unlock(&g_trust_lock);
         return -1;
     }
 
-    /* ----- Check 2: Session exists (match by nonce) ----- */
-    attestation_session_t *sess = NULL;
-    for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
-        if (g_sessions[i].created_at &&
-            strcmp(g_sessions[i].nonce, nonce) == 0) {
-            sess = &g_sessions[i];
-            break;
+    if (production_attestation_mode()) {
+        enrolled_device_t production_device;
+        golden_release_t production_release;
+        int found_device = 0, found_release = 0;
+        pthread_mutex_lock(&g_trust_lock);
+        for (int i = 0; i < g_device_count; ++i) {
+            if (strcmp(g_devices[i].device_id, device_id) == 0 &&
+                (g_devices[i].status == DEVICE_STATUS_ENROLLED ||
+                 g_devices[i].status == DEVICE_STATUS_TRUSTED)) {
+                production_device = g_devices[i];
+                found_device = 1;
+                break;
+            }
         }
-    }
-    if (!sess) {
-        safe_copy(out_reason, 64, "P3_INVALID_NONCE");
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 3: Device exists ----- */
-    enrolled_device_t *dev = NULL;
-    for (int i = 0; i < g_device_count; i++) {
-        if (strcmp(g_devices[i].device_id, dev_id) == 0) {
-            dev = &g_devices[i];
-            break;
+        for (int i = 0; i < g_release_count; ++i) {
+            if (strcmp(g_releases[i].release_id, release_id) == 0 &&
+                !g_releases[i].revoked) {
+                production_release = g_releases[i];
+                found_release = 1;
+                break;
+            }
         }
-    }
-    if (!dev) {
-        safe_copy(out_reason, 64, "P3_UNKNOWN_DEVICE");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
         pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 4: Device not revoked ----- */
-    if (dev->status == DEVICE_STATUS_REVOKED) {
-        safe_copy(out_reason, 64, "P3_REVOKED_DEVICE");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 5: Release exists ----- */
-    golden_release_t *rel = NULL;
-    for (int i = 0; i < g_release_count; i++) {
-        if (strcmp(g_releases[i].release_id, rel_id) == 0) {
-            rel = &g_releases[i];
-            break;
-        }
-    }
-    if (!rel) {
-        safe_copy(out_reason, 64, "P3_UNKNOWN_RELEASE");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 6: Release not revoked ----- */
-    if (rel->revoked) {
-        safe_copy(out_reason, 64, "P3_REVOKED_RELEASE");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 7: Nonce is from this session ----- */
-    if (strcmp(sess->device_id, dev_id) != 0) {
-        safe_copy(out_reason, 64, "P3_SESSION_BINDING_FAIL");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 8: Nonce is unused (replay protection) ----- */
-    if (sess->nonce_used) {
-        safe_copy(out_reason, 64, "P3_NONCE_REPLAY");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-    sess->nonce_used = 1; /* Consume nonce atomically */
-
-    /* ----- Check 9: EK fingerprint matches enrolled device identity.
-     * A mismatched EK means this is not the registered hardware TPM — treat as
-     * an unknown device identity (unregistered software TPM / wrong machine).
-     * ----- */
-    if (ek_fp[0] == '\0' || strcmp(dev->ek_fingerprint, ek_fp) != 0) {
-        safe_copy(out_reason, 64, "P3_UNKNOWN_DEVICE");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 10: AK must be present (minimal check — production uses credential activation) ----- */
-    if (ak_pub[0] == '\0') {
-        safe_copy(out_reason, 64, "P3_INVALID_AK");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 11: PCR values must be present ----- */
-    if (pcr0[0] == '\0' || pcr4[0] == '\0' || pcr7[0] == '\0' || pcr11[0] == '\0') {
-        safe_copy(out_reason, 64, "P3_PCR_MISMATCH");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 12 & 13: PCR values match golden release measurements ----- */
-    if (strcmp(rel->pcr0,  pcr0)  != 0 ||
-        strcmp(rel->pcr4,  pcr4)  != 0 ||
-        strcmp(rel->pcr7,  pcr7)  != 0 ||
-        strcmp(rel->pcr11, pcr11) != 0) {
-        safe_copy(out_reason, 64, "P3_PCR_MISMATCH");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 14: Event log must be present ----- */
-    if (ev_log[0] == '\0') {
-        safe_copy(out_reason, 64, "P3_EVENTLOG_INVALID");
-        sess->state = ATTESTATION_STATE_FAILED;
-        safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-        pthread_mutex_unlock(&g_trust_lock);
-        return -1;
-    }
-
-    /* ----- Check 15: Quote signature verification.
-     *
-     * Development test protocol:
-     *   composite = SHA256(pcr0 || pcr4 || pcr7 || pcr11 || nonce)
-     *   expected  = SHA256(composite || AK_TEST_SUFFIX)
-     *
-     * Both client agent and server use the same formula so they agree.
-     * Production replaces this with TPM2_Quote RSA-PKCS1/ECDSA verification.
-     * ----- */
-    {
-        char combined[800];
-        /* nonce from the session (server-side) — binds quote freshness */
-        snprintf(combined, sizeof(combined), "%s%s%s%s%s",
-                 pcr0, pcr4, pcr7, pcr11, sess->nonce);
-        char composite[65];
-        sha256_hex((const unsigned char *)combined, strlen(combined), composite);
-
-        char sig_input[200];
-        snprintf(sig_input, sizeof(sig_input), "%s%s", composite, AK_TEST_SUFFIX);
-        char expected_sig[65];
-        sha256_hex((const unsigned char *)sig_input, strlen(sig_input), expected_sig);
-
-        if (quote_sig[0] == '\0' || strcmp(expected_sig, quote_sig) != 0) {
-            safe_copy(out_reason, 64, "P3_INVALID_SIGNATURE");
-            sess->state = ATTESTATION_STATE_FAILED;
-            safe_copy(sess->failure_reason, sizeof(sess->failure_reason), out_reason);
-            pthread_mutex_unlock(&g_trust_lock);
+        if (!found_device || !found_release ||
+            strcmp(production_device.allowed_release, release_id) != 0 ||
+            !production_device.ak_qualified_name[0] ||
+            !production_device.ak_public_pem[0]) {
+            safe_copy(out_reason, 64, "P3_DEVICE_OR_RELEASE_NOT_TRUSTED");
             return -1;
         }
+
+        char persisted_id[64] = {0};
+        if (claim_persisted_challenge(nonce, device_id, release_id,
+                                      persisted_id) != 0) {
+            safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
+            return -1;
+        }
+        unsigned char *attest = NULL, *signature = NULL;
+        size_t attest_len = 0, signature_len = 0;
+        int decoded = decode_hex_bytes(quote_message_hex, &attest,
+                                       &attest_len, 4096) == 0 &&
+                      decode_hex_bytes(quote_signature_hex, &signature,
+                                       &signature_len, 1024) == 0;
+        int verified = decoded && tpm_quote_verify_sha256_rsa(
+            attest, attest_len, signature, signature_len,
+            production_device.ak_public_pem,
+            production_device.ak_qualified_name, nonce,
+            production_release.pcr0, production_release.pcr4,
+            production_release.pcr7, production_release.pcr11) == 0;
+        if (attest) OPENSSL_clear_free(attest, attest_len);
+        if (signature) OPENSSL_clear_free(signature, signature_len);
+        const char *failure = decoded ? "P3_INVALID_TPM_QUOTE"
+                                      : "P3_MALFORMED_TPM_QUOTE";
+        if (complete_persisted_challenge(nonce, verified, failure) != 0) {
+            safe_copy(out_reason, 64, "P3_ATTESTATION_STATE_STORE_FAILED");
+            return -1;
+        }
+        if (!verified) {
+            safe_copy(out_reason, 64, failure);
+            return -1;
+        }
+        safe_copy(out_reason, 64, "TPM_QUOTE_VERIFIED");
+        return 0;
     }
 
-    /* ----- Check 16: Session binding confirmed — all checks passed ----- */
-    sess->state            = ATTESTATION_STATE_TRUSTED;
-    sess->last_re_attestation = time(NULL);
-    dev->status            = DEVICE_STATUS_TRUSTED;
-    dev->updated_at        = time(NULL);
+    enrolled_device_t device_copy;
+    golden_release_t release_copy;
+    char selected_attestation_id[64] = {0};
+    pthread_mutex_lock(&g_trust_lock);
+    enrolled_device_t *device = NULL;
+    golden_release_t *release = NULL;
+    for (int i = 0; i < g_device_count; ++i)
+        if (strcmp(g_devices[i].device_id, device_id) == 0) device = &g_devices[i];
+    for (int i = 0; i < g_release_count; ++i)
+        if (strcmp(g_releases[i].release_id, release_id) == 0 &&
+            !g_releases[i].revoked) release = &g_releases[i];
+    if (!device || !release || strcmp(device->allowed_release, release_id) != 0 ||
+        device->status == DEVICE_STATUS_REVOKED ||
+        device->status == DEVICE_STATUS_SUSPENDED ||
+        !device->ak_qualified_name[0] || !device->ak_public_pem[0]) {
+        safe_copy(out_reason, 64, "P3_DEVICE_OR_RELEASE_NOT_TRUSTED");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
 
-    /* Generate session-bound exam key: SHA256("EXAMOS-KEY-" || attest_id || device_id || ts) */
-    char key_seed[256];
-    snprintf(key_seed, sizeof(key_seed), "EXAMOS-KEY-%s-%s-%ld",
-             sess->attestation_id, sess->device_id, (long)time(NULL));
-    sha256_hex((const unsigned char *)key_seed, strlen(key_seed), sess->exam_key);
-    sess->exam_key_released = 1;
+    for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
+        attestation_session_t *sess = &g_sessions[i];
+        if (sess->created_at && strcmp(sess->nonce, nonce) == 0) {
+            if (sess->nonce_used || sess->state != ATTESTATION_STATE_PENDING ||
+                strcmp(sess->device_id, device_id) != 0 ||
+                strcmp(sess->release_id, release_id) != 0 ||
+                time(NULL) - sess->created_at > 120) {
+                safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
+                pthread_mutex_unlock(&g_trust_lock);
+                return -1;
+            }
+            sess->nonce_used = 1;
+            safe_copy(selected_attestation_id, sizeof(selected_attestation_id),
+                      sess->attestation_id);
+            device_copy = *device;
+            release_copy = *release;
+            pthread_mutex_unlock(&g_trust_lock);
 
-    if (out_exam_key)
-        safe_copy(out_exam_key, EXAM_KEY_LEN + 1, sess->exam_key);
+            unsigned char *attest = NULL, *signature = NULL;
+            size_t attest_len = 0, signature_len = 0;
+            int decoded = decode_hex_bytes(quote_message_hex, &attest,
+                                           &attest_len, 4096) == 0 &&
+                          decode_hex_bytes(quote_signature_hex, &signature,
+                                           &signature_len, 1024) == 0;
+            int verified = decoded && tpm_quote_verify_sha256_rsa(
+                attest, attest_len, signature, signature_len,
+                device_copy.ak_public_pem, device_copy.ak_qualified_name,
+                nonce, release_copy.pcr0, release_copy.pcr4,
+                release_copy.pcr7, release_copy.pcr11) == 0;
+            if (attest) OPENSSL_clear_free(attest, attest_len);
+            if (signature) OPENSSL_clear_free(signature, signature_len);
 
-    safe_copy(out_reason, 64, "ATTESTATION_PASS");
-
-    /* Audit log entry */
-    ledger_block_t blk;
-    char details[256];
-    snprintf(details, sizeof(details),
-             "P3 VERIFIED: device=%s release=%s session=%s",
-             dev_id, rel_id, sess->attestation_id);
-    ledger_append_event("P3_ATTESTATION_VERIFIED", dev_id, details, &blk);
-
+            pthread_mutex_lock(&g_trust_lock);
+            for (int j = 0; j < MAX_ATTESTATION_SESSIONS; ++j) {
+                attestation_session_t *current = &g_sessions[j];
+                if (current->created_at &&
+                    strcmp(current->attestation_id, selected_attestation_id) == 0 &&
+                    strcmp(current->nonce, nonce) == 0 && current->nonce_used &&
+                    current->state == ATTESTATION_STATE_PENDING) {
+                    current->state = verified ? ATTESTATION_STATE_TRUSTED
+                                               : ATTESTATION_STATE_FAILED;
+                    current->last_re_attestation = verified ? time(NULL) : 0;
+                    safe_copy(current->failure_reason,
+                              sizeof(current->failure_reason),
+                              verified ? "" : "P3_INVALID_TPM_QUOTE");
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_trust_lock);
+            if (!verified) {
+                safe_copy(out_reason, 64, decoded ? "P3_INVALID_TPM_QUOTE"
+                                                  : "P3_MALFORMED_TPM_QUOTE");
+                return -1;
+            }
+            safe_copy(out_reason, 64, "TPM_QUOTE_VERIFIED");
+            return 0;
+        }
+    }
     pthread_mutex_unlock(&g_trust_lock);
-    return 0;
+    safe_copy(out_reason, 64, "P3_INVALID_NONCE");
+    return -1;
 }
 
 /* -----------------------------------------------------------------------
@@ -666,6 +860,20 @@ int attestation_re_attest_challenge(const char *session_id, const char *device_i
                                       char *out_new_nonce) {
     if (!session_id || !out_new_nonce) return -1;
     out_new_nonce[0] = '\0';
+
+    if (production_attestation_mode()) {
+        char persisted_device[64] = {0}, persisted_session[64] = {0};
+        char persisted_release[64] = {0}, new_attestation_id[64] = {0};
+        char error_code[64] = {0};
+        if (persisted_re_attestation_source(session_id, device_id,
+                                            persisted_device, persisted_session,
+                                            persisted_release) != 0 ||
+            attestation_create_challenge(persisted_device, persisted_session,
+                                         persisted_release, out_new_nonce,
+                                         new_attestation_id, error_code) != 0)
+            return -1;
+        return 0;
+    }
 
     pthread_mutex_lock(&g_trust_lock);
 
@@ -770,8 +978,11 @@ int attestation_re_attest(const char *attestation_id, const char *evidence_json,
 /* -----------------------------------------------------------------------
  * attestation_revoke_release
  * ----------------------------------------------------------------------- */
-void attestation_revoke_release(const char *release_id) {
-    if (!release_id) return;
+int attestation_revoke_release(const char *release_id) {
+    if (!valid_identifier(release_id)) return -1;
+    if (production_attestation_mode() &&
+        persist_revocation("RELEASE", release_id, "RELEASE_REVOKED") != 0)
+        return -1;
     pthread_mutex_lock(&g_trust_lock);
     for (int i = 0; i < g_release_count; i++) {
         if (strcmp(g_releases[i].release_id, release_id) == 0) {
@@ -785,13 +996,17 @@ void attestation_revoke_release(const char *release_id) {
         }
     }
     pthread_mutex_unlock(&g_trust_lock);
+    return 0;
 }
 
 /* -----------------------------------------------------------------------
  * attestation_revoke_device
  * ----------------------------------------------------------------------- */
-void attestation_revoke_device(const char *device_id) {
-    if (!device_id) return;
+int attestation_revoke_device(const char *device_id) {
+    if (!valid_identifier(device_id)) return -1;
+    if (production_attestation_mode() &&
+        persist_revocation("DEVICE", device_id, "DEVICE_REVOKED") != 0)
+        return -1;
     pthread_mutex_lock(&g_trust_lock);
     for (int i = 0; i < g_device_count; i++) {
         if (strcmp(g_devices[i].device_id, device_id) == 0) {
@@ -806,13 +1021,16 @@ void attestation_revoke_device(const char *device_id) {
         }
     }
     pthread_mutex_unlock(&g_trust_lock);
+    return 0;
 }
 
 /* -----------------------------------------------------------------------
  * attestation_get_status
  * ----------------------------------------------------------------------- */
 int attestation_get_status(const char *attestation_id, char *out_status, size_t max_len) {
-    if (!attestation_id || !out_status) return -1;
+    if (!attestation_id || !out_status || max_len == 0) return -1;
+    if (production_attestation_mode())
+        return persisted_attestation_status(attestation_id, out_status, max_len);
     pthread_mutex_lock(&g_trust_lock);
 
     for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
@@ -847,7 +1065,7 @@ int attestation_get_status(const char *attestation_id, char *out_status, size_t 
  * ----------------------------------------------------------------------- */
 int attestation_get_exam_key(const char *session_id, const char *device_id,
                                char *out_key, size_t max_len) {
-    if (!session_id || !out_key) return -1;
+    if (!session_id || !out_key || max_len == 0) return -1;
     pthread_mutex_lock(&g_trust_lock);
 
     for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
@@ -877,7 +1095,7 @@ int attestation_get_exam_key(const char *session_id, const char *device_id,
         ledger_block_t blk;
         char details[256];
         snprintf(details, sizeof(details),
-                 "Exam key released: session=%s device=%s",
+                 "Exam key released: session=%.63s device=%.63s",
                  g_sessions[i].attestation_id, g_sessions[i].device_id);
         ledger_append_event("P3_KEY_RELEASED", g_sessions[i].device_id, details, &blk);
 

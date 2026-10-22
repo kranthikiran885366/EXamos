@@ -3,18 +3,95 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
+static int configured_exam_host(const char *host) {
+    const char *allowlist = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
+    if (!allowlist || !allowlist[0] || !host || !host[0]) return 0;
+    const char *entry = allowlist;
+    while (*entry) {
+        const char *end = strchr(entry, ',');
+        size_t length = end ? (size_t)(end - entry) : strlen(entry);
+        while (length && isspace((unsigned char)*entry)) { entry++; length--; }
+        while (length && isspace((unsigned char)entry[length - 1])) length--;
+        if (strlen(host) == length && strncasecmp(entry, host, length) == 0) return 1;
+        if (!end) break;
+        entry = end + 1;
+    }
+    return 0;
+}
+
+int config_validate_exam_url(const char *url) {
+    if (!url || !url[0] || strlen(url) >= EXAM_URL_MAX ||
+        strchr(url, '@') || strchr(url, '*') || strstr(url, "..") ||
+        strpbrk(url, "\\\r\n\t ")) return 0;
+
+    const char *authority = NULL;
+    int loopback_http = 0;
+    if (strncasecmp(url, "https://", 8) == 0) {
+        authority = url + 8;
+    } else if (strncasecmp(url, "http://", 7) == 0 &&
+               getenv("EXAMOS_ALLOW_LOOPBACK_EXAM_URL") &&
+               strcmp(getenv("EXAMOS_ALLOW_LOOPBACK_EXAM_URL"), "1") == 0) {
+        authority = url + 7;
+        loopback_http = 1;
+    } else {
+        return 0;
+    }
+
+    const char *authority_end = strpbrk(authority, "/?#");
+    size_t authority_len = authority_end ? (size_t)(authority_end - authority) : strlen(authority);
+    if (authority_len == 0 || authority_len >= 256) return 0;
+    char host_port[256];
+    memcpy(host_port, authority, authority_len);
+    host_port[authority_len] = '\0';
+    if (strchr(host_port, '@')) return 0;
+
+    char *host = host_port;
+    char *port = NULL;
+    if (host[0] == '[') {
+        char *close = strchr(host, ']');
+        if (!close) return 0;
+        if (close[1]) {
+            if (close[1] != ':') return 0;
+            port = close + 2;
+        }
+        close[1] = '\0';
+    } else {
+        char *colon = strrchr(host, ':');
+        if (colon) {
+            if (strchr(host, ':') != colon) return 0;
+            *colon = '\0';
+            port = colon + 1;
+        }
+    }
+    if (!host[0]) return 0;
+    if (port) {
+        if (!port[0]) return 0;
+        char *end = NULL;
+        errno = 0;
+        long number = strtol(port, &end, 10);
+        if (errno || end == port || *end || number < 1 || number > 65535) return 0;
+    }
+    if (loopback_http) {
+        return strcasecmp(host, "localhost") == 0 ||
+               strcmp(host, "127.0.0.1") == 0 || strcmp(host, "[::1]") == 0;
+    }
+    return configured_exam_host(host);
+}
+
 int config_load(exam_config_t *cfg) {
     if (!cfg) return -1;
     memset(cfg, 0, sizeof(exam_config_t));
-    cfg->exam_duration_minutes = 120;
+    cfg->exam_duration_minutes = 0;
 
     FILE *f = fopen(EXAM_CONF_PATH, "r");
     if (!f) return -1;
@@ -55,16 +132,14 @@ int config_load(exam_config_t *cfg) {
     }
     fclose(f);
 
-    if (strlen(cfg->exam_url) > 0 && strcmp(cfg->exam_url, "NOT_CONFIGURED") != 0) {
-        if (strncmp(cfg->exam_url, "http://", 7) == 0 || strncmp(cfg->exam_url, "https://", 8) == 0) {
-            cfg->configured = 1;
-        }
-    }
+    cfg->configured = config_validate_exam_url(cfg->exam_url) &&
+                      cfg->exam_name[0] && cfg->exam_duration_minutes > 0;
     return 0;
 }
 
 int config_save(const exam_config_t *cfg) {
-    if (!cfg) return -1;
+    if (!cfg || !config_validate_exam_url(cfg->exam_url) || !cfg->exam_name[0] ||
+        cfg->exam_duration_minutes < 1) return -1;
 
     char tmp_path[512];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", EXAM_CONF_PATH, getpid());
@@ -74,9 +149,9 @@ int config_save(const exam_config_t *cfg) {
 
     fprintf(f, "# ExamOS Examination Configuration\n");
     fprintf(f, "# Managed automatically by ExamOS Admin Dashboard\n");
-    fprintf(f, "EXAM_URL=%s\n", cfg->exam_url[0] ? cfg->exam_url : "NOT_CONFIGURED");
-    fprintf(f, "EXAM_NAME=%s\n", cfg->exam_name[0] ? cfg->exam_name : "ExamOS Secure Exam");
-    fprintf(f, "EXAM_DURATION_MINUTES=%d\n", cfg->exam_duration_minutes > 0 ? cfg->exam_duration_minutes : 120);
+    fprintf(f, "EXAM_URL=%s\n", cfg->exam_url);
+    fprintf(f, "EXAM_NAME=%s\n", cfg->exam_name);
+    fprintf(f, "EXAM_DURATION_MINUTES=%d\n", cfg->exam_duration_minutes);
 
     if (fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
         unlink(tmp_path);

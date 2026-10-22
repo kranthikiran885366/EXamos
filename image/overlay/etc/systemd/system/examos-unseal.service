@@ -2,7 +2,8 @@
 Description=ExamOS TPM Secret Unsealing (H6 — production secret management)
 Documentation=file:///etc/examos/deployment.conf
 # Run after TPM resource manager is ready, before any ExamOS service
-After=systemd-tpm2-setup.service tpm2.target
+Requires=tpm2-abrmd.service
+After=systemd-tpm2-setup.service tpm2.target dbus.service tpm2-abrmd.service
 Before=examos-server.service examos-agent.service
 Wants=tpm2.target
 ConditionPathExists=/etc/examos/sealed
@@ -28,9 +29,11 @@ PrivateTmp=no
 NoNewPrivileges=yes
 ProtectKernelLogs=no
 RestrictAddressFamilies=AF_UNIX
-# Must have access to /dev/tpmrm0 or /dev/tpm0
-DeviceAllow=/dev/tpmrm0 rw
-DeviceAllow=/dev/tpm0 rw
+DevicePolicy=closed
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/zero rw
+DeviceAllow=/dev/random r
+DeviceAllow=/dev/urandom r
 
 [Install]
 WantedBy=multi-user.target

@@ -23,8 +23,9 @@ typedef struct {
 } exam_session_t;
 
 int exam_manager_init(void);
-exam_session_t* exam_manager_create_session(const char *candidate_id, const char *exam_code);
-exam_session_t* exam_manager_get_session(const char *session_id);
+int exam_manager_create_session(const char *candidate_id, const char *exam_code,
+                                long max_duration_seconds, exam_session_t *out_session);
+int exam_manager_get_session(const char *session_id, exam_session_t *out_session);
 int exam_manager_update_state(const char *session_id, exam_session_state_t new_state);
 
 #ifdef __cplusplus

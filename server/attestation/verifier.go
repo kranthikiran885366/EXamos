@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,75 +31,37 @@ type VerificationResult struct {
 	Reason         string `json:"reason,omitempty"`
 }
 
-func verifyEvidence(ev Evidence) VerificationResult {
-	res := VerificationResult{
+// The standalone Go verifier is deliberately disabled. It has no authenticated
+// trust configuration, enrolled TPM key, release registry, or TPM quote parser.
+// Never infer attestation from caller-supplied digests or signature-shaped data.
+func verifyEvidence(_ Evidence) VerificationResult {
+	return VerificationResult{
 		Result: "FAIL",
+		Reason: "P3_VERIFIER_DISABLED",
 	}
-
-	if len(ev.Nonce) < 32 {
-		res.Reason = "P3_INVALID_NONCE"
-		return res
-	}
-	res.NonceValid = true
-
-	if ev.ReleaseID != "examos-0.4.0" {
-		res.Reason = "P3_UNKNOWN_RELEASE"
-		return res
-	}
-	res.ReleaseTrusted = true
-
-	if ev.DeviceID == "" || len(ev.EKFingerprint) != 64 {
-		res.Reason = "P3_UNKNOWN_DEVICE"
-		return res
-	}
-	res.DeviceTrusted = true
-
-	// Check PCR 0, 4, 7, 11
-	goldenPCR0 := "f4a3c2e1b09876543210abcdef0123456789abcdef0123456789abcdef012345"
-	if ev.PCRs["0"] != goldenPCR0 {
-		res.Reason = "P3_PCR_MISMATCH"
-		return res
-	}
-	res.PCRMatch = true
-
-	// Verify Quote Signature
-	sigInput := ev.CompositeDigest + ":" + ev.AKPub
-	h := sha256.Sum256([]byte(sigInput))
-	expectedSig := hex.EncodeToString(h[:])
-
-	if ev.QuoteSignature != expectedSig {
-		res.Reason = "P3_INVALID_SIGNATURE"
-		return res
-	}
-	res.QuoteValid = true
-
-	res.Result = "PASS"
-	return res
 }
 
 func main() {
+	var data []byte
+	var err error
 	if len(os.Args) < 2 {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil || len(data) == 0 {
-			fmt.Println(`{"result":"FAIL","reason":"NO_INPUT"}`)
-			return
-		}
-		var ev Evidence
-		if err := json.Unmarshal(data, &ev); err != nil {
-			fmt.Println(`{"result":"FAIL","reason":"MALFORMED_JSON"}`)
-			return
-		}
-		out, _ := json.Marshal(verifyEvidence(ev))
-		fmt.Println(string(out))
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data = []byte(os.Args[1])
+	}
+	if err != nil || len(data) == 0 {
+		fmt.Println(`{"result":"FAIL","reason":"NO_INPUT"}`)
 		return
 	}
-
-	raw := os.Args[1]
-	var ev Evidence
-	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+	var evidence Evidence
+	if err := json.Unmarshal(data, &evidence); err != nil {
 		fmt.Println(`{"result":"FAIL","reason":"MALFORMED_JSON"}`)
 		return
 	}
-	out, _ := json.Marshal(verifyEvidence(ev))
+	out, err := json.Marshal(verifyEvidence(evidence))
+	if err != nil {
+		fmt.Println(`{"result":"FAIL","reason":"SERIALIZATION_ERROR"}`)
+		return
+	}
 	fmt.Println(string(out))
 }

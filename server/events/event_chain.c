@@ -13,7 +13,6 @@
 #include <openssl/crypto.h>
 
 #define MAX_ACTIVE_SESSION_CHAINS 256
-#define SIGNING_KEY_ID "key-examos-p4-2026-01"
 
 typedef struct {
     char     session_id[64];
@@ -37,25 +36,37 @@ static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
     out_hex[64] = '\0';
 }
 
-static void hmac_sha256_hex(const char *key, const unsigned char *data, size_t len, char *out_hex) {
+static int hmac_sha256_hex(const char *key, const unsigned char *data, size_t len, char *out_hex) {
     unsigned char digest[SHA256_DIGEST_LENGTH];
-    unsigned int digest_len = SHA256_DIGEST_LENGTH;
-    HMAC(EVP_sha256(), key, strlen(key), data, len, digest, &digest_len);
+    unsigned int digest_len = 0;
+    if (!HMAC(EVP_sha256(), key, (int)strlen(key), data, len, digest, &digest_len) ||
+        digest_len != SHA256_DIGEST_LENGTH) return -1;
     for (unsigned int i = 0; i < digest_len; i++) {
         sprintf(out_hex + (i * 2), "%02x", digest[i]);
     }
     out_hex[digest_len * 2] = '\0';
+    return 0;
 }
 
 static void get_iso8601_utc(char *out, size_t max_len) {
     struct timeval tv;
-    gettimeofday(&tv, NULL);
+    if (!out || max_len == 0 || gettimeofday(&tv, NULL) != 0) return;
     struct tm tm_utc;
-    gmtime_r(&tv.tv_sec, &tm_utc);
-    snprintf(out, max_len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
-             tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
-             tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
-             tv.tv_usec / 1000);
+    if (!gmtime_r(&tv.tv_sec, &tm_utc)) return;
+    char base[24];
+    if (strftime(base, sizeof(base), "%Y-%m-%dT%H:%M:%S", &tm_utc) == 0) return;
+    int written = snprintf(out, max_len, "%s.%03uZ", base,
+                           (unsigned)(tv.tv_usec / 1000));
+    if (written < 0 || (size_t)written >= max_len) out[0] = '\0';
+}
+
+static int safe_event_label(const char *value, size_t max_len) {
+    if (!value || !value[0] || strnlen(value, max_len) >= max_len) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '.')) return 0;
+    }
+    return 1;
 }
 
 int event_chain_init(const char *storage_file_path) {
@@ -70,7 +81,8 @@ int event_chain_init(const char *storage_file_path) {
 
     /* Create directory structure if needed */
     char dir_path[512];
-    strncpy(dir_path, g_storage_path, sizeof(dir_path) - 1);
+    memcpy(dir_path, g_storage_path, sizeof(dir_path));
+    dir_path[sizeof(dir_path) - 1] = '\0';
     char *slash = strrchr(dir_path, '/');
     if (slash) {
         *slash = '\0';
@@ -112,7 +124,13 @@ int event_chain_append(const char *session_id, const char *source_type,
                         const char *event_type, const char *payload_json,
                         const char *model_name, const char *model_version,
                         proctoring_event_t *out_event) {
-    if (!session_id || !source_type || !event_type) return -1;
+    if (!safe_event_label(session_id, sizeof(((proctoring_event_t *)0)->session_id)) ||
+        !safe_event_label(source_type, MAX_SOURCE_TYPE_LEN) ||
+        !safe_event_label(event_type, MAX_EVENT_TYPE_LEN) ||
+        !payload_json || !payload_json[0] || strnlen(payload_json, MAX_PAYLOAD_LEN) >= MAX_PAYLOAD_LEN ||
+        (payload_json[0] != '{' && payload_json[0] != '[') ||
+        !safe_event_label(model_name, MAX_MODEL_LEN) ||
+        !safe_event_label(model_version, MAX_MODEL_LEN)) return -1;
 
     pthread_mutex_lock(&g_event_lock);
 
@@ -144,12 +162,12 @@ int event_chain_append(const char *session_id, const char *source_type,
     strncpy(ev.session_id, session_id, sizeof(ev.session_id) - 1);
     ev.sequence = st->last_sequence + 1;
     get_iso8601_utc(ev.server_timestamp, sizeof(ev.server_timestamp));
-    strncpy(ev.source_timestamp, ev.server_timestamp, sizeof(ev.source_timestamp) - 1);
+    memcpy(ev.source_timestamp, ev.server_timestamp, sizeof(ev.source_timestamp));
     strncpy(ev.source_type, source_type, sizeof(ev.source_type) - 1);
     strncpy(ev.event_type, event_type, sizeof(ev.event_type) - 1);
-    strncpy(ev.payload_json, (payload_json && payload_json[0]) ? payload_json : "{}", sizeof(ev.payload_json) - 1);
-    strncpy(ev.model_name, model_name ? model_name : "native-vision", sizeof(ev.model_name) - 1);
-    strncpy(ev.model_version, model_version ? model_version : "1.0.0", sizeof(ev.model_version) - 1);
+    strncpy(ev.payload_json, payload_json, sizeof(ev.payload_json) - 1);
+    strncpy(ev.model_name, model_name, sizeof(ev.model_name) - 1);
+    strncpy(ev.model_version, model_version, sizeof(ev.model_version) - 1);
     strcpy(ev.previous_hash, st->latest_hash);
 
     /* 3. Compute Canonical JSON representation */
@@ -206,7 +224,9 @@ int event_chain_sign_checkpoint(const char *session_id, event_checkpoint_t *out_
     if (!session_id || !out_checkpoint) return -1;
 
     const char *signing_key = getenv("EXAMOS_EVENT_SIGNING_KEY");
-    if (!signing_key || strlen(signing_key) < 32) return -1;
+    const char *signing_key_id = getenv("EXAMOS_EVENT_SIGNING_KEY_ID");
+    if (!signing_key || strlen(signing_key) < 32 ||
+        !safe_event_label(signing_key_id, sizeof(out_checkpoint->signing_key_id))) return -1;
 
     pthread_mutex_lock(&g_event_lock);
 
@@ -227,19 +247,23 @@ int event_chain_sign_checkpoint(const char *session_id, event_checkpoint_t *out_
     strncpy(out_checkpoint->session_id, session_id, sizeof(out_checkpoint->session_id) - 1);
     out_checkpoint->checkpoint_sequence = st->last_sequence;
     strcpy(out_checkpoint->latest_event_hash, st->latest_hash);
-    strcpy(out_checkpoint->signing_key_id, SIGNING_KEY_ID);
+    snprintf(out_checkpoint->signing_key_id, sizeof(out_checkpoint->signing_key_id), "%s", signing_key_id);
     get_iso8601_utc(out_checkpoint->server_timestamp, sizeof(out_checkpoint->server_timestamp));
 
     /* A deployment-provisioned key signs the checkpoint; no key is compiled in. */
     char sign_input[512];
-    snprintf(sign_input, sizeof(sign_input), "%s:%lu:%s:%s",
+    int sign_len = snprintf(sign_input, sizeof(sign_input), "%s:%s:%lu:%s:%s",
+             out_checkpoint->signing_key_id,
              out_checkpoint->session_id,
              (unsigned long)out_checkpoint->checkpoint_sequence,
              out_checkpoint->latest_event_hash,
              out_checkpoint->server_timestamp);
-
-    hmac_sha256_hex(signing_key, (const unsigned char *)sign_input, strlen(sign_input),
-                    out_checkpoint->signature_hex);
+    if (sign_len < 0 || (size_t)sign_len >= sizeof(sign_input) ||
+        hmac_sha256_hex(signing_key, (const unsigned char *)sign_input, (size_t)sign_len,
+                        out_checkpoint->signature_hex) != 0) {
+        pthread_mutex_unlock(&g_event_lock);
+        return -1;
+    }
 
     pthread_mutex_unlock(&g_event_lock);
     return 0;

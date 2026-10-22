@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/random.h>
 
 #define TOKEN_VALIDITY_SECONDS 300 /* 5 minutes */
 
@@ -14,19 +15,24 @@ static second_camera_session_t g_second_cams[MAX_SECOND_CAMERA_SESSIONS];
 static int                     g_second_cam_count = 0;
 static pthread_mutex_t         g_second_cam_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void random_hex(char *out, size_t num_bytes) {
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        unsigned char *buf = malloc(num_bytes);
-        if (buf && read(fd, buf, num_bytes) == (ssize_t)num_bytes) {
-            for (size_t i = 0; i < num_bytes; i++) {
-                sprintf(out + (i * 2), "%02x", buf[i]);
-            }
-            out[num_bytes * 2] = '\0';
+static int random_hex(char *out, size_t num_bytes) {
+    unsigned char *buf = malloc(num_bytes);
+    if (!buf) return -1;
+    size_t offset = 0;
+    while (offset < num_bytes) {
+        ssize_t count = getrandom(buf + offset, num_bytes - offset, 0);
+        if (count <= 0) {
+            free(buf);
+            return -1;
         }
-        free(buf);
-        close(fd);
+        offset += (size_t)count;
     }
+    for (size_t i = 0; i < num_bytes; i++) {
+        snprintf(out + (i * 2), 3, "%02x", buf[i]);
+    }
+    out[num_bytes * 2] = '\0';
+    free(buf);
+    return 0;
 }
 
 void second_camera_init(void) {
@@ -59,7 +65,11 @@ int second_camera_create_pairing_token(const char *session_id, char *out_token, 
         strncpy(sc->session_id, session_id, sizeof(sc->session_id) - 1);
     }
 
-    random_hex(sc->qr_pairing_token, 32);
+    if (random_hex(sc->qr_pairing_token, 32) != 0) {
+        memset(sc, 0, sizeof(*sc));
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return -1;
+    }
     sc->state = SECOND_CAM_STATE_PAIRING_REQUESTED;
     sc->token_created_at = time(NULL);
     sc->expires_at = sc->token_created_at + TOKEN_VALIDITY_SECONDS;
@@ -122,11 +132,11 @@ int second_camera_validate_pairing(const char *session_id, const char *pairing_t
     }
 
     sc->token_used = 1;
-    sc->state = SECOND_CAM_STATE_CONNECTED;
+    sc->state = SECOND_CAM_STATE_PAIRED;
     sc->connected_at = now;
 
-    event_chain_append(session_id, "SECONDARY_ROOM_CAMERA", "SECOND_CAMERA_CONNECTED",
-                       "{\"role\":\"room_desk_view\",\"status\":\"STREAMING\"}",
+    event_chain_append(session_id, "SECONDARY_ROOM_CAMERA", "SECOND_CAMERA_PAIRED",
+                       "{\"role\":\"room_desk_view\",\"status\":\"PAIRED_NO_MEDIA_TRANSPORT\"}",
                        "second-camera-manager", "1.0.0", NULL);
 
     pthread_mutex_unlock(&g_second_cam_lock);
@@ -180,8 +190,7 @@ const char *second_camera_portal_html(const char *session_id, const char *token)
         "    p.sub { font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.25rem; }\n"
         "    .video-box { width: 100%%; aspect-ratio: 4/3; background: #000; border-radius: 8px; overflow: hidden; position: relative; margin-bottom: 1rem; border: 2px solid #475569; }\n"
         "    video { width: 100%%; height: 100%%; object-fit: cover; }\n"
-        "    .badge { position: absolute; top: 8px; left: 8px; background: rgba(15,23,42,0.85); color: #22c55e; border: 1px solid #22c55e; font-size: 0.75rem; font-weight: 600; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; }\n"
-        "    .dot { width: 6px; height: 6px; border-radius: 50%%; background: #22c55e; animation: pulse 1.5s infinite; }\n"
+        "    .badge { position: absolute; top: 8px; left: 8px; background: rgba(15,23,42,0.85); color: #fbbf24; border: 1px solid #fbbf24; font-size: 0.75rem; font-weight: 600; padding: 4px 8px; border-radius: 4px; }\n"
         "    @keyframes pulse { 0%%,100%% { opacity: 1; } 50%% { opacity: 0.3; } }\n"
         "    .instructions { text-align: left; background: #0f172a; border-radius: 8px; padding: 0.85rem; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 1rem; line-height: 1.4; }\n"
         "    .btn { width: 100%%; padding: 0.75rem; background: #0284c7; color: #fff; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }\n"
@@ -194,7 +203,7 @@ const char *second_camera_portal_html(const char *session_id, const char *token)
         "    <p class=\"sub\">Session: <code>%s</code></p>\n"
         "    <div class=\"video-box\">\n"
         "      <video id=\"secondVideo\" autoplay playsinline muted></video>\n"
-        "      <div class=\"badge\"><span class=\"dot\"></span> SECONDARY STREAM ACTIVE</div>\n"
+        "      <div id=\"cameraStatus\" class=\"badge\">CAMERA NOT STARTED</div>\n"
         "    </div>\n"
         "    <div class=\"instructions\">\n"
         "      <strong>Placement Guidelines:</strong><br>\n"
@@ -210,7 +219,7 @@ const char *second_camera_portal_html(const char *session_id, const char *token)
         "      try {\n"
         "        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });\n"
         "        document.getElementById('secondVideo').srcObject = stream;\n"
-        "        document.getElementById('startBtn').style.display = 'none';\n"
+        "        document.getElementById('cameraStatus').textContent = 'LOCAL PREVIEW ONLY — STREAMING UNAVAILABLE';\n"
         "        await fetch('/api/v1/second-camera/pair', {\n"
         "          method: 'POST',\n"
         "          headers: { 'Content-Type': 'application/json' },\n"

@@ -342,6 +342,7 @@ int  platform_update_device_checkin(const char *device_id, const char *os_releas
 int  platform_update_device_attestation(const char *device_id, const char *attestation_status, const char *compliance_status);
 int  platform_set_device_maintenance(const char *device_id, int in_maintenance);
 int  platform_record_device_heartbeat(const char *device_id, int battery_pct, int battery_charging, int disk_free_mb, int mem_used_mb, const char *network_state, unsigned int policy_version, const char *image_digest, const char *session_state);
+int  platform_record_agent_heartbeat(const char *device_id, const char *payload_json, size_t payload_length, long *out_record_id);
 int  platform_bulk_device_action(const char *action_type, const char *target_group, const char *target_inst, const char *target_campus, const char *target_room, const char *param_val, int preview_only, const char *actor, char *out_json, size_t max_len);
 int  platform_get_fleet_compliance_json(const char *inst_id, char *out_buf, size_t max_len);
 

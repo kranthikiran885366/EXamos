@@ -46,22 +46,7 @@ int attestation_config_load_releases(const char *json_path);
  */
 int attestation_config_load_all(const char *binary_dir);
 
-/*
- * Persist the current in-memory device table back to the devices.json file
- * at the path resolved by attestation_config_load_all() (same resolution
- * order: $EXAMOS_DEVICES_CONFIG → /etc/examos/devices.json → dev path).
- *
- * Stage 2/3 fix: runtime enroll/revoke changes were lost on restart because
- * the table was only loaded, never saved.  This function writes atomically
- * (tmp + fsync + rename) so a crash during write leaves the old file intact.
- *
- * Returns 0 on success, -1 on failure (caller should log and continue;
- * the in-memory state is still valid for the current run).
- *
- * IMPORTANT: only persists status/fields that originated from attestation_register_device().
- * The signed registry fields (ek_fingerprint, ak_name, ak_pub_sha256) are written
- * verbatim from the in-memory record so the file remains verifiable on next load.
- */
+/* Disabled until runtime state retains the complete signed device-key identity. */
 int attestation_config_save_devices(const char *json_path);
 
 #endif /* EXAMOS_ATTESTATION_CONFIG_H */

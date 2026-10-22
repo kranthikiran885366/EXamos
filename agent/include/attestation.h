@@ -20,7 +20,8 @@ typedef struct {
     int  tpm_hardware_detected;
     char ek_fingerprint[65];
     char ak_pub_hex[512];
-    char quote_signature_hex[512];
+    char quote_message_hex[8193];
+    char quote_signature_hex[2049];
     char event_log_hash[65];
     pcr_entry_t pcrs[16];
     int  pcr_count;
@@ -28,7 +29,7 @@ typedef struct {
 } attestation_report_t;
 
 int tpm_attestation_init(void);
-/* Returns failure until key-backed TPM quote and event-log verification exists. */
+/* Generates a real TPM 2.0 Quote with the provisioned persistent AK. */
 int tpm_attestation_generate_report(const char *device_id, const char *release_id, const char *nonce, attestation_report_t *report);
 int tpm_attestation_format_json(const attestation_report_t *report, char *out_buf, size_t max_len);
 

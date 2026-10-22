@@ -27,6 +27,12 @@ sudo mount "${LOOP}p2" "$MNT"
 
 echo "=== [3/5] Installing Binaries & Overlay Configurations ==="
 sudo cp server/examos-server "$MNT/usr/local/bin/"
+sudo cp server/examos-db-migrate "$MNT/usr/local/bin/"
+sudo install -D -m 755 image/scripts/tpm-seal-secrets.sh "$MNT/usr/local/sbin/tpm-seal-secrets.sh"
+sudo install -D -m 755 scripts/setup-postgres-tls.sh "$MNT/usr/local/sbin/examos-setup-postgres-tls"
+sudo install -D -m 755 scripts/provision-remote-postgres.sh "$MNT/usr/local/sbin/examos-provision-remote-postgres"
+sudo install -d "$MNT/usr/share/examos/migrations"
+sudo install -m 644 server/migrations/*.sql "$MNT/usr/share/examos/migrations/"
 sudo cp agent/examos-agent "$MNT/usr/local/bin/"
 sudo cp kiosk/launcher/examos-kiosk-launcher "$MNT/usr/local/bin/"
 sudo chmod 755 "$MNT/usr/local/bin/examos-"*

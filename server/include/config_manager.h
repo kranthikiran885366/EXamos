@@ -19,6 +19,7 @@ int  config_load(exam_config_t *cfg);
 
 /* Writes exam_url, exam_name, and duration to EXAM_CONF_PATH atomically. Returns 0 on success. */
 int  config_save(const exam_config_t *cfg);
+int  config_validate_exam_url(const char *url);
 
 /* PBKDF2-SHA256 credential format: iterations:salt_hex:hash_hex. */
 int config_verify_password_hash(const char *plaintext_password,

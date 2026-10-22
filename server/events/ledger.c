@@ -35,6 +35,59 @@ int ledger_init(const char *ledger_file_path) {
     }
     g_block_count = 0;
     strcpy(g_latest_hash, "0000000000000000000000000000000000000000000000000000000000000000");
+
+    FILE *f = fopen(g_ledger_file, "r");
+    if (!f && errno != ENOENT) {
+        pthread_mutex_unlock(&g_ledger_lock);
+        return -1;
+    }
+    if (f) {
+        char line[1024];
+        char expected_prev[65] = "0000000000000000000000000000000000000000000000000000000000000000";
+        long verified_count = 0;
+        int valid = 1;
+
+        while (fgets(line, sizeof(line), f)) {
+            size_t line_len = strlen(line);
+            if (line_len == 0 || line[line_len - 1] != '\n') {
+                valid = 0;
+                break;
+            }
+
+            long idx = 0, ts = 0;
+            char type[32] = {0}, dev[64] = {0}, details[256] = {0};
+            char prev[65] = {0}, hash[65] = {0}, trailing = '\0';
+            if (sscanf(line, "%ld|%ld|%31[^|]|%63[^|]|%255[^|]|%64[^|]|%64s%c",
+                       &idx, &ts, type, dev, details, prev, hash, &trailing) != 8 ||
+                trailing != '\n' ||
+                idx != verified_count + 1 || ts <= 0 ||
+                strlen(prev) != 64 || strlen(hash) != 64 ||
+                strcmp(prev, expected_prev) != 0) {
+                valid = 0;
+                break;
+            }
+
+            char payload[1024], computed[65];
+            snprintf(payload, sizeof(payload), "%ld:%ld:%s:%s:%s:%s",
+                     idx, ts, type, dev, details, prev);
+            compute_sha256(payload, computed);
+            if (strcmp(computed, hash) != 0) {
+                valid = 0;
+                break;
+            }
+            memcpy(expected_prev, hash, sizeof(expected_prev));
+            verified_count = idx;
+        }
+
+        if (ferror(f)) valid = 0;
+        if (fclose(f) != 0) valid = 0;
+        if (!valid) {
+            pthread_mutex_unlock(&g_ledger_lock);
+            return -1;
+        }
+        g_block_count = verified_count;
+        memcpy(g_latest_hash, expected_prev, sizeof(g_latest_hash));
+    }
     pthread_mutex_unlock(&g_ledger_lock);
     return 0;
 }

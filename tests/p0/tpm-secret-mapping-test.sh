@@ -7,10 +7,22 @@ WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 SEAL_SCRIPT="$WORKSPACE/image/scripts/tpm-seal-secrets.sh"
 SESSION_STORE="$WORKSPACE/server/login/session_store.c"
 VMWARE_BUILDER="$WORKSPACE/scripts/build-vmware-image.sh"
+ENROLL_SCRIPT="$WORKSPACE/scripts/enroll-physical-tpm.sh"
+TRUST_GATE="$WORKSPACE/tests/production/trust-provisioning-gate.sh"
 
 grep -Fq '["ledger-hmac-key"]="${EXAMOS_LEDGER_HMAC_KEY:-}"' "$SEAL_SCRIPT"
 grep -Fq '[ledger-hmac-key]=EXAMOS_LEDGER_HMAC_KEY' "$SEAL_SCRIPT"
 grep -Fq 'getenv("EXAMOS_LEDGER_HMAC_KEY")' "$SESSION_STORE"
+grep -Fq 'mv -Tf -- "$CURRENT_LINK_TMP" "$SEAL_DIR/current"' "$SEAL_SCRIPT"
+grep -Fq 'flock -n 9' "$SEAL_SCRIPT"
+grep -Fq 'must contain exactly six sealed bundles' "$SEAL_SCRIPT"
+grep -Fq '"$RUNTIME_DIR"/database-password' "$SEAL_SCRIPT"
+grep -Fq 'does not identify physical versus virtual TPM hardware.' "$SEAL_SCRIPT"
+grep -Fq 'EXAMOS_TPM_CA_STORE_SHA256' "$ENROLL_SCRIPT"
+grep -Fq 'openssl verify -CAfile "$EXAMOS_TPM_CA_STORE"' "$ENROLL_SCRIPT"
+grep -Fq 'EXAMOS_RELEASES_PUBLIC_KEY_SHA256' "$TRUST_GATE"
+grep -Fq 'sbverify' "$TRUST_GATE"
+grep -Fq 'pinned EK certificate is not enrolled for the approved UKI in the signed device manifest' "$TRUST_GATE"
 
 if grep -Eq 'session-hmac-key|EXAMOS_SESSION_HMAC_KEY' "$SEAL_SCRIPT"; then
     echo "FAIL: TPM secret map contains an unused duplicate session HMAC secret" >&2

@@ -6,31 +6,121 @@
 #include "include/candidate_login.h"
 #include "include/admin_dashboard.h"
 #include "include/attestation_service.h"
+#include "include/attestation_config.h"
 #include "include/event_chain.h"
 #include "include/second_camera.h"
+#include "include/enterprise_platform.h"
+#include "include/admin_auth_store.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdint.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/wait.h>
+#include <spawn.h>
 #include <openssl/crypto.h>
 
-#define DEFAULT_SERVER_PORT 8000
+extern char **environ;
+
 #define BUFFER_SIZE 65536
+#define MAX_HTTP_CLIENTS 512
 
 static volatile sig_atomic_t g_server_running = 1;
+static sem_t g_client_slots;
+static unsigned int g_max_clients = 128;
 
 static void sig_handler(int sig) {
     (void)sig;
     g_server_running = 0;
+}
+
+static int parse_http_content_length(const char *buffer, const char *headers_end,
+                                    size_t capacity, size_t *out_expected) {
+    if (!buffer || !headers_end || !out_expected || headers_end < buffer) return -1;
+    const char *line = strstr(buffer, "\r\n");
+    if (!line || line > headers_end) return -1;
+    line += 2;
+    size_t header_bytes = (size_t)(headers_end + 4 - buffer);
+    size_t content_length = 0;
+    int content_length_seen = 0;
+    while (line < headers_end) {
+        const char *line_end = strstr(line, "\r\n");
+        if (!line_end || line_end > headers_end || line_end == line) return -1;
+        const char *colon = memchr(line, ':', (size_t)(line_end - line));
+        if (!colon || colon == line) return -1;
+        size_t name_length = (size_t)(colon - line);
+        if (name_length == sizeof("Content-Length") - 1 &&
+            strncasecmp(line, "Content-Length", name_length) == 0) {
+            if (content_length_seen) return -1;
+            content_length_seen = 1;
+            const char *value = colon + 1;
+            while (value < line_end && (*value == ' ' || *value == '\t')) value++;
+            if (value == line_end) return -1;
+            size_t parsed = 0;
+            for (; value < line_end; value++) {
+                if (*value < '0' || *value > '9') return -1;
+                unsigned int digit = (unsigned int)(*value - '0');
+                if (parsed > (SIZE_MAX - digit) / 10) return -1;
+                parsed = parsed * 10 + digit;
+            }
+            if (parsed > capacity - header_bytes - 1) return -1;
+            content_length = parsed;
+        } else if (name_length == sizeof("Transfer-Encoding") - 1 &&
+                   strncasecmp(line, "Transfer-Encoding", name_length) == 0) {
+            return -1;
+        }
+        line = line_end + 2;
+    }
+    *out_expected = header_bytes + content_length;
+    return 0;
+}
+
+static int extract_authorization_header(const char *buffer, char *out, size_t out_size) {
+    if (!buffer || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    const char *headers_end = strstr(buffer, "\r\n\r\n");
+    const char *line = strstr(buffer, "\r\n");
+    if (!headers_end || !line || line > headers_end) return -1;
+    line += 2;
+    int found = 0;
+    while (line < headers_end) {
+        const char *line_end = strstr(line, "\r\n");
+        if (!line_end || line_end > headers_end) return -1;
+        const char *colon = memchr(line, ':', (size_t)(line_end - line));
+        if (!colon || colon == line) return -1;
+        size_t name_length = (size_t)(colon - line);
+        if (name_length == sizeof("Authorization") - 1 &&
+            strncasecmp(line, "Authorization", name_length) == 0) {
+            if (found) return -1;
+            found = 1;
+            const char *value = colon + 1;
+            while (value < line_end && (*value == ' ' || *value == '\t')) value++;
+            const char *value_end = line_end;
+            while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end--;
+            size_t value_length = (size_t)(value_end - value);
+            if (value_length == 0 || value_length >= out_size) return -1;
+            for (size_t i = 0; i < value_length; i++) {
+                unsigned char c = (unsigned char)value[i];
+                if (c < 0x20 || c == 0x7f) return -1;
+            }
+            memcpy(out, value, value_length);
+            out[value_length] = '\0';
+        }
+        line = line_end + 2;
+    }
+    return 0;
 }
 
 static const char *status_text(int status_code) {
@@ -71,19 +161,11 @@ static ssize_t receive_http_request(int fd, char *buffer, size_t capacity) {
         char *body = strstr(buffer, "\r\n\r\n");
         if (body && !headers_complete) {
             headers_complete = 1;
-            size_t header_bytes = (size_t)(body + 4 - buffer);
-            const char *cl = strcasestr(buffer, "\r\nContent-Length:");
-            if (cl && cl < body) {
-                cl += 17;
-                while (*cl == ' ' || *cl == '\t') ++cl;
-                char *end = NULL;
-                errno = 0;
-                unsigned long value = strtoul(cl, &end, 10);
-                if (errno || end == cl || value > capacity - header_bytes - 1) return -2;
-                expected = header_bytes + (size_t)value;
-            } else expected = header_bytes;
+            if (parse_http_content_length(buffer, body, capacity, &expected) != 0)
+                return -2;
         }
-        if (headers_complete && used >= expected) return (ssize_t)used;
+        if (headers_complete && used >= expected)
+            return used == expected ? (ssize_t)used : -2;
     }
     return headers_complete && used >= expected ? (ssize_t)used : -1;
 }
@@ -115,25 +197,139 @@ static void send_http_response(int client_fd, int status_code, const char *conte
     send_http_response_ex(client_fd, status_code, content_type, body, NULL);
 }
 
+static int json_hex4(const char **cursor, uint32_t *value) {
+    uint32_t parsed = 0;
+    for (int i = 0; i < 4; ++i) {
+        unsigned char c = (unsigned char)*(*cursor)++;
+        parsed <<= 4;
+        if (c >= '0' && c <= '9') parsed |= (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') parsed |= (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') parsed |= (uint32_t)(c - 'A' + 10);
+        else return -1;
+    }
+    *value = parsed;
+    return 0;
+}
+
+static int json_append_codepoint(char *out, size_t capacity, size_t *used, uint32_t cp) {
+    unsigned char bytes[4];
+    size_t length;
+    if (cp == 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return -1;
+    if (cp <= 0x7f) { bytes[0] = (unsigned char)cp; length = 1; }
+    else if (cp <= 0x7ff) {
+        bytes[0] = (unsigned char)(0xc0 | (cp >> 6));
+        bytes[1] = (unsigned char)(0x80 | (cp & 0x3f)); length = 2;
+    } else if (cp <= 0xffff) {
+        bytes[0] = (unsigned char)(0xe0 | (cp >> 12));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | (cp & 0x3f)); length = 3;
+    } else {
+        bytes[0] = (unsigned char)(0xf0 | (cp >> 18));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[3] = (unsigned char)(0x80 | (cp & 0x3f)); length = 4;
+    }
+    if (*used + length >= capacity) return -1;
+    memcpy(out + *used, bytes, length);
+    *used += length;
+    return 0;
+}
+
+static int json_decode_string(const char **cursor, char *out, size_t capacity) {
+    const char *p = *cursor;
+    if (*p++ != '"') return -1;
+    size_t used = 0;
+    while (*p && *p != '"') {
+        unsigned char value = (unsigned char)*p++;
+        if (value == '\\') {
+            value = (unsigned char)*p++;
+            if (value == 'u') {
+                uint32_t codepoint = 0;
+                if (json_hex4(&p, &codepoint) != 0) return -1;
+                if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+                    uint32_t low = 0;
+                    if (p[0] != '\\' || p[1] != 'u') return -1;
+                    p += 2;
+                    if (json_hex4(&p, &low) != 0 || low < 0xdc00 || low > 0xdfff) return -1;
+                    codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+                }
+                if (json_append_codepoint(out, capacity, &used, codepoint) != 0) return -1;
+                continue;
+            }
+            switch (value) {
+                case '"': case '\\': case '/': break;
+                case 'b': value = '\b'; break;
+                case 'f': value = '\f'; break;
+                case 'n': value = '\n'; break;
+                case 'r': value = '\r'; break;
+                case 't': value = '\t'; break;
+                default: return -1;
+            }
+        } else if (value < 0x20) return -1;
+        if (used + 1 >= capacity) return -1;
+        out[used++] = (char)value;
+    }
+    if (*p != '"') return -1;
+    out[used] = '\0';
+    *cursor = p + 1;
+    return 0;
+}
+
 static void parse_json_string(const char *buf, const char *key, char *out, size_t max_out) {
+    if (!out || max_out == 0) return;
     out[0] = '\0';
     if (!buf || !key) return;
-
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *pos = strstr(buf, pattern);
-    if (!pos) return;
-
-    pos += strlen(pattern);
-    while (*pos == ' ' || *pos == ':' || *pos == '\t') pos++;
-    if (*pos == '\"') {
-        pos++;
-        size_t idx = 0;
-        while (*pos && *pos != '\"' && idx + 1 < max_out) {
-            out[idx++] = *pos++;
+    const char *p = buf;
+    int object_depth = 0, array_depth = 0, found = 0;
+    while (*p) {
+        if (*p == '{') { object_depth++; p++; continue; }
+        if (*p == '}') { object_depth--; p++; continue; }
+        if (*p == '[') { array_depth++; p++; continue; }
+        if (*p == ']') { array_depth--; p++; continue; }
+        if (*p != '"') { p++; continue; }
+        char token[256];
+        if (json_decode_string(&p, token, sizeof(token)) != 0) return;
+        const char *value = p;
+        while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n') value++;
+        if (object_depth == 1 && array_depth == 0 && *value == ':' && strcmp(token, key) == 0) {
+            if (found) { out[0] = '\0'; return; }
+            found = 1;
+            value++;
+            while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n') value++;
+            if (*value != '"' || json_decode_string(&value, out, max_out) != 0) out[0] = '\0';
+            return;
         }
-        out[idx] = '\0';
     }
+}
+
+static int json_escape(const char *input, char *output, size_t capacity) {
+    if (!input || !output || capacity == 0) return -1;
+    size_t used = 0;
+    static const char hex[] = "0123456789abcdef";
+    for (const unsigned char *p = (const unsigned char *)input; *p; ++p) {
+        char escaped[6];
+        const char *value = escaped;
+        size_t length = 0;
+        switch (*p) {
+            case '"': escaped[0] = '\\'; escaped[1] = '"'; length = 2; break;
+            case '\\': escaped[0] = '\\'; escaped[1] = '\\'; length = 2; break;
+            case '\b': escaped[0] = '\\'; escaped[1] = 'b'; length = 2; break;
+            case '\f': escaped[0] = '\\'; escaped[1] = 'f'; length = 2; break;
+            case '\n': escaped[0] = '\\'; escaped[1] = 'n'; length = 2; break;
+            case '\r': escaped[0] = '\\'; escaped[1] = 'r'; length = 2; break;
+            case '\t': escaped[0] = '\\'; escaped[1] = 't'; length = 2; break;
+            default:
+                if (*p < 0x20) {
+                    escaped[0] = '\\'; escaped[1] = 'u'; escaped[2] = '0'; escaped[3] = '0';
+                    escaped[4] = hex[*p >> 4]; escaped[5] = hex[*p & 15]; length = 6;
+                } else { value = (const char *)p; length = 1; }
+        }
+        if (used + length >= capacity) return -1;
+        memcpy(output + used, value, length);
+        used += length;
+    }
+    output[used] = '\0';
+    return 0;
 }
 
 static const char *bearer_token(const char *authorization) {
@@ -164,8 +360,43 @@ static int parse_json_int(const char *buf, const char *key, int default_val) {
     if (!pos) return default_val;
 
     pos += strlen(pattern);
-    while (*pos == ' ' || *pos == ':' || *pos == '\t') pos++;
-    return atoi(pos);
+    while (*pos == ' ' || *pos == ':' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    errno = 0;
+    char *end = NULL;
+    long value = strtol(pos, &end, 10);
+    if (errno != 0 || end == pos || value < INT_MIN || value > INT_MAX) return default_val;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != ',' && *end != '}' && *end != '\0') return default_val;
+    return (int)value;
+}
+
+static int parse_query_id(const char *path, const char *name, char *out, size_t out_size) {
+    if (!path || !name || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    const char *query = strchr(path, '?');
+    if (!query) return -1;
+    size_t name_len = strlen(name);
+    const char *item = query + 1;
+    while (*item) {
+        const char *end = strchr(item, '&');
+        size_t item_len = end ? (size_t)(end - item) : strlen(item);
+        if (item_len > name_len && memcmp(item, name, name_len) == 0 && item[name_len] == '=') {
+            size_t value_len = item_len - name_len - 1;
+            if (value_len == 0 || value_len >= out_size) return -1;
+            for (size_t i = 0; i < value_len; i++) {
+                unsigned char c = (unsigned char)item[name_len + 1 + i];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                      c == '.' || c == ':')) return -1;
+                out[i] = (char)c;
+            }
+            out[value_len] = '\0';
+            return 0;
+        }
+        if (!end) break;
+        item = end + 1;
+    }
+    return -1;
 }
 
 static void* handle_client(void *arg) {
@@ -179,31 +410,20 @@ static void* handle_client(void *arg) {
     if (bytes_read <= 0) {
         if (bytes_read == -2)
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"Request too large or invalid Content-Length\"}");
-        close(client_fd);
-        return NULL;
+        goto client_done;
     }
 
     char method[16] = {0}, path[256] = {0};
     if (sscanf(buffer, "%15s %255s", method, path) != 2) {
         send_http_response(client_fd, 400, "application/json", "{\"error\":\"Malformed HTTP request\"}");
-        close(client_fd);
-        return NULL;
+        goto client_done;
     }
 
-    // Extract headers
+    // Extract Authorization only from the parsed header block, never from the body.
     char auth_header[512] = {0};
-    const char *auth_pos = strcasestr(buffer, "\r\nAuthorization:");
-    if (auth_pos) {
-        auth_pos += 16;
-        while (*auth_pos == ' ') auth_pos++;
-        const char *eol = strstr(auth_pos, "\r\n");
-        if (eol) {
-            size_t len = eol - auth_pos;
-            if (len < sizeof(auth_header)) {
-                strncpy(auth_header, auth_pos, len);
-                auth_header[len] = '\0';
-            }
-        }
+    if (extract_authorization_header(buffer, auth_header, sizeof(auth_header)) != 0) {
+        send_http_response(client_fd, 400, "application/json", "{\"error\":\"Invalid or duplicate Authorization header\"}");
+        goto client_done;
     }
 
     // Extract body if POST
@@ -231,11 +451,19 @@ static void* handle_client(void *arg) {
             if (candidate_session_create(cid, token) == 0) {
                 exam_config_t cfg;
                 config_load(&cfg);
-                char resp[1024];
+                char resp[4096], safe_url[3072], safe_name[768];
+                const char *exam_url = cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED";
+                const char *exam_name = cfg.exam_name[0] ? cfg.exam_name : "Not configured";
+                if (json_escape(exam_url, safe_url, sizeof(safe_url)) != 0 ||
+                    json_escape(exam_name, safe_name, sizeof(safe_name)) != 0) {
+                    OPENSSL_cleanse(token, sizeof(token));
+                    send_http_response(client_fd, 500, "application/json", "{\"status\":\"FAIL\",\"error\":\"Invalid configured exam text\"}");
+                    goto client_done;
+                }
                 snprintf(resp, sizeof(resp),
                          "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"exam_url\":\"%s\",\"exam_name\":\"%s\"}",
-                         token, cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED",
-                         cfg.exam_name[0] ? cfg.exam_name : "ExamOS Final");
+                         token, safe_url, safe_name);
+                OPENSSL_cleanse(token, sizeof(token));
 
                 ledger_block_t blk;
                 char details[128];
@@ -248,9 +476,45 @@ static void* handle_client(void *arg) {
             }
         }
     }
+    /* Route: POST /api/v1/admin/login -> PostgreSQL-backed admin session */
+    else if (strcmp(path, "/api/v1/admin/login") == 0 && strcmp(method, "POST") == 0) {
+        char username[64] = {0}, password[256] = {0}, mfa_code[16] = {0};
+        parse_json_string(req_body, "username", username, sizeof(username));
+        parse_json_string(req_body, "password", password, sizeof(password));
+        parse_json_string(req_body, "mfa_code", mfa_code, sizeof(mfa_code));
+        auth_session_t session;
+        memset(&session, 0, sizeof(session));
+        int login_status = admin_auth_store_login(username, password,
+            mfa_code[0] ? mfa_code : NULL, &session);
+        OPENSSL_cleanse(password, sizeof(password));
+        OPENSSL_cleanse(mfa_code, sizeof(mfa_code));
+        if (login_status == AUTH_LOGIN_SUCCESS) {
+            char response[512];
+            snprintf(response, sizeof(response),
+                "{\"status\":\"AUTHENTICATED\",\"token\":\"%s\",\"mfa_required\":false}",
+                session.session_token);
+            send_http_response(client_fd, 200, "application/json", response);
+        } else if (login_status == AUTH_LOGIN_MFA_REQUIRED) {
+            send_http_response(client_fd, 401, "application/json",
+                "{\"status\":\"MFA_REQUIRED\",\"error\":\"MFA code required\"}");
+        } else {
+            send_http_response(client_fd, 401, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"Invalid credentials or MFA code\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (strcmp(path, "/api/v1/admin/logout") == 0 && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        if (strncmp(auth_header, prefix, sizeof(prefix) - 1) != 0 ||
+            admin_auth_store_revoke(auth_header + sizeof(prefix) - 1) != 0) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
+        } else {
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"SIGNED_OUT\"}");
+        }
+    }
     /* Route: GET /admin -> Admin Dashboard (requires auth) */
     else if (strcmp(path, "/admin") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 200, "text/html; charset=utf-8", admin_login_html());
         } else {
             exam_config_t cfg;
@@ -261,17 +525,19 @@ static void* handle_client(void *arg) {
     }
     /* Route: POST /api/v1/admin/config -> Update Exam URL / Config */
     else if (strcmp(path, "/api/v1/admin/config") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_EXAM_MUTATION)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
             exam_config_t cfg;
             memset(&cfg, 0, sizeof(cfg));
             parse_json_string(req_body, "exam_url", cfg.exam_url, sizeof(cfg.exam_url));
             parse_json_string(req_body, "exam_name", cfg.exam_name, sizeof(cfg.exam_name));
-            cfg.exam_duration_minutes = parse_json_int(req_body, "exam_duration_minutes", 120);
+            cfg.exam_duration_minutes = parse_json_int(req_body, "exam_duration_minutes", 0);
 
-            if (strncmp(cfg.exam_url, "http://", 7) != 0 && strncmp(cfg.exam_url, "https://", 8) != 0) {
-                send_http_response(client_fd, 400, "application/json", "{\"error\":\"Exam URL must start with http:// or https://\"}");
+            if (!config_validate_exam_url(cfg.exam_url)) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"Exam URL must be HTTPS and its host must be in EXAMOS_ALLOWED_EXAM_HOSTS; loopback HTTP requires explicit development opt-in\"}");
+            } else if (!cfg.exam_name[0] || cfg.exam_duration_minutes < 1) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_name and a positive exam_duration_minutes are required\"}");
             } else if (config_save(&cfg) == 0) {
                 ledger_block_t blk;
                 char details[512];
@@ -283,37 +549,31 @@ static void* handle_client(void *arg) {
             }
         }
     }
-    /* Route: POST /api/v1/attestation/nonce -> Issue challenge
-     * BUG-FIX: checks device registry before issuing nonce.
-     * Returns both session_id and attestation_id (same value) so test
-     * clients that parse either field can find a valid identifier.
-     * Returns 403 with structured error_code on rejection.
-     */
+    /* Route: POST /api/v1/attestation/nonce -> Issue challenge */
     else if (strcmp(path, "/api/v1/attestation/nonce") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         char dev_id[64] = {0}, sess_id[64] = {0}, rel_id[64] = {0};
         parse_json_string(req_body, "device_id", dev_id, sizeof(dev_id));
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         parse_json_string(req_body, "release_id", rel_id, sizeof(rel_id));
 
-        if (strlen(dev_id) == 0) {
-            send_http_response(client_fd, 400, "application/json", "{\"error\":\"device_id required\"}");
+        if (!dev_id[0] || !sess_id[0] || !rel_id[0]) {
+            send_http_response(client_fd, 400, "application/json",
+                               "{\"error\":\"device_id, session_id, and release_id required\"}");
         } else {
             char nonce[128] = {0}, attest_id[64] = {0}, error_code[64] = {0};
             int rc = attestation_create_challenge(
-                dev_id,
-                sess_id[0] ? sess_id : "SESSION-01",
-                rel_id[0]  ? rel_id  : "examos-0.4.0",
+                dev_id, sess_id, rel_id,
                 nonce, attest_id, error_code);
             if (rc == 0) {
                 char resp[512];
                 snprintf(resp, sizeof(resp),
                          "{\"status\":\"CHALLENGE_ISSUED\",\"nonce\":\"%s\","
                          "\"session_id\":\"%s\",\"attestation_id\":\"%s\"}",
-                         nonce, attest_id, attest_id);
+                         nonce, sess_id, attest_id);
                 send_http_response(client_fd, 200, "application/json", resp);
             } else {
                 char resp[256];
@@ -330,7 +590,7 @@ static void* handle_client(void *arg) {
     else if (strcmp(path, "/api/v1/attestation/verify") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         char reason[64] = {0}, exam_key[65] = {0};
         if (attestation_verify_evidence(req_body, reason, exam_key) == 0) {
@@ -357,7 +617,7 @@ static void* handle_client(void *arg) {
     else if (strcmp(path, "/api/v1/attestation/re-attest") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         char sess_id[64] = {0}, dev_id[64] = {0}, new_nonce[128] = {0};
         parse_json_string(req_body, "session_id",    sess_id, sizeof(sess_id));
@@ -380,77 +640,78 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: GET /api/v1/attestation/status */
-    else if (strcmp(path, "/api/v1/attestation/status") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_auth(auth_header)) {
+    else if (strncmp(path, "/api/v1/attestation/status", 26) == 0 &&
+             (path[26] == '\0' || path[26] == '?') && strcmp(method, "GET") == 0) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
-            close(client_fd); return NULL;
-        }
-        char status_json[512];
-        if (attestation_get_status("attest-default", status_json, sizeof(status_json)) == 0) {
-            send_http_response(client_fd, 200, "application/json", status_json);
         } else {
-            send_http_response(client_fd, 200, "application/json", "{\"status\":\"ACTIVE\",\"attestation_engine\":\"ONLINE\"}");
+            char attestation_id[64] = {0}, status[32] = {0};
+            if (parse_query_id(path, "attestation_id", attestation_id,
+                               sizeof(attestation_id)) != 0 &&
+                parse_query_id(path, "session_id", attestation_id,
+                               sizeof(attestation_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"attestation_id or session_id query parameter required\"}");
+            } else if (attestation_get_status(attestation_id, status,
+                                               sizeof(status)) != 0) {
+                send_http_response(client_fd, 404, "application/json",
+                                   "{\"status\":\"NOT_FOUND\"}");
+            } else {
+                char response[128];
+                snprintf(response, sizeof(response), "{\"status\":\"%s\"}", status);
+                send_http_response(client_fd, 200, "application/json", response);
+            }
         }
     }
-    /* Route: POST /api/v1/admin/revoke/release
-     * BUG-FIX: removed admin auth requirement so P3-007 revocation test works.
-     * In a full enterprise deployment this endpoint is behind the API gateway.
-     */
+    /* Route: POST /api/v1/admin/revoke/release */
     else if (strcmp(path, "/api/v1/admin/revoke/release") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
-        char rel_id[64] = {0};
-        parse_json_string(req_body, "release_id", rel_id, sizeof(rel_id));
-        if (!rel_id[0]) {
-            send_http_response(client_fd, 400, "application/json", "{\"error\":\"release_id required\"}");
-        } else {
-            attestation_revoke_release(rel_id);
-            char resp[128];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"RELEASE_REVOKED\",\"release_id\":\"%s\"}", rel_id);
-            send_http_response(client_fd, 200, "application/json", resp);
-        }
+            char release_id[64] = {0};
+            parse_json_string(req_body, "release_id", release_id, sizeof(release_id));
+            if (attestation_revoke_release(release_id) == 0)
+                send_http_response(client_fd, 200, "application/json", "{\"status\":\"REVOKED\"}");
+            else
+                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Release revocation could not be persisted\"}");
         }
     }
-    /* Route: POST /api/v1/admin/revoke/device
-     * BUG-FIX: removed admin auth requirement so P3-016 revocation test works.
-     */
+    /* Route: POST /api/v1/admin/revoke/device */
     else if (strcmp(path, "/api/v1/admin/revoke/device") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
-        char dev_id[64] = {0};
-        parse_json_string(req_body, "device_id", dev_id, sizeof(dev_id));
-        if (!dev_id[0]) {
-            send_http_response(client_fd, 400, "application/json", "{\"error\":\"device_id required\"}");
-        } else {
-            attestation_revoke_device(dev_id);
-            char resp[128];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"DEVICE_REVOKED\",\"device_id\":\"%s\"}", dev_id);
-            send_http_response(client_fd, 200, "application/json", resp);
-        }
+            char device_id[64] = {0};
+            parse_json_string(req_body, "device_id", device_id, sizeof(device_id));
+            if (attestation_revoke_device(device_id) == 0)
+                send_http_response(client_fd, 200, "application/json", "{\"status\":\"REVOKED\"}");
+            else
+                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Device revocation could not be persisted\"}");
         }
     }
     /* Route: POST /api/v1/admin/reload -> Restart Kiosk */
     else if (strcmp(path, "/api/v1/admin/reload") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
-            int ret = system("systemctl restart examos-kiosk 2>/dev/null || true");
-            (void)ret;
-            send_http_response(client_fd, 202, "application/json", "{\"status\":\"RELOAD_QUEUED\"}");
+            char *const argv[] = {"systemctl", "restart", "examos-kiosk.service", NULL};
+            pid_t child = -1;
+            int spawn_status = posix_spawnp(&child, "systemctl", NULL, NULL, argv, environ);
+            int child_status = 0;
+            int waited = spawn_status == 0 ? waitpid(child, &child_status, 0) : -1;
+            if (spawn_status == 0 && waited == child && WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0) {
+                send_http_response(client_fd, 202, "application/json", "{\"status\":\"RESTARTED\"}");
+            } else {
+                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Kiosk restart failed\"}");
+            }
         }
     }
     /* Route: POST /api/v1/admin/lock -> Emergency lock */
     else if (strcmp(path, "/api/v1/admin/lock") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
-            ledger_block_t blk;
-            ledger_append_event("EMERGENCY_LOCK_ENGAGED", "ADMIN_CONSOLE", "Appliance locked by administrator", &blk);
-            send_http_response(client_fd, 202, "application/json", "{\"status\":\"LOCKED\"}");
+            send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Appliance isolation is not integrated with the system service manager\"}");
         }
     }
     /* Route: GET /exam -> Redirect to Configured Exam URL or candidate portal */
@@ -469,20 +730,42 @@ static void* handle_client(void *arg) {
     else if (strcmp(path, "/api/v1/heartbeat") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
-        ledger_block_t blk;
-        if (ledger_append_event("HEARTBEAT_TELEMETRY", "SECURITY_AGENT", "Telemetry digest received", &blk) != 0) {
-            send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\"}");
+        const char *dev_mode = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+        if (dev_mode && strcmp(dev_mode, "1") == 0) {
+            ledger_block_t blk;
+            if (ledger_append_event("HEARTBEAT_TELEMETRY", "SECURITY_AGENT", "Untrusted development telemetry received", &blk) != 0) {
+                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\"}");
+            } else {
+                char response[128];
+                snprintf(response, sizeof(response), "{\"status\":\"RECEIVED_UNTRUSTED\",\"block_index\":%ld}", ledger_get_block_count());
+                send_http_response(client_fd, 202, "application/json", response);
+            }
         } else {
-            send_http_response(client_fd, 202, "application/json", "{\"status\":\"RECEIVED\",\"block_index\":1}");
+            char device_id[64] = {0};
+            parse_json_string(req_body, "device_id", device_id, sizeof(device_id));
+            const char *body_start = strstr(buffer, "\r\n\r\n");
+            size_t payload_length = body_start ? (size_t)(bytes_read - (body_start + 4 - buffer)) : 0;
+            long record_id = 0;
+            int recorded = device_id[0] ? platform_record_agent_heartbeat(
+                device_id, req_body, payload_length, &record_id) : -1;
+            if (recorded == 0) {
+                char response[128];
+                snprintf(response, sizeof(response), "{\"status\":\"STORED\",\"heartbeat_id\":%ld}", record_id);
+                send_http_response(client_fd, 202, "application/json", response);
+            } else if (recorded == -1) {
+                send_http_response(client_fd, 403, "application/json", "{\"status\":\"REJECTED\",\"error\":\"Device is not enrolled or heartbeat is invalid\"}");
+            } else {
+                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Heartbeat was not durably stored\"}");
+            }
         }
     }
     /* Route: GET /api/v1/ledger -> Audit Log */
     else if (strcmp(path, "/api/v1/ledger") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         int valid = ledger_verify_integrity();
         long count = ledger_get_block_count();
@@ -494,18 +777,22 @@ static void* handle_client(void *arg) {
     }
     /* Route: GET /api/v1/status */
     else if (strcmp(path, "/api/v1/status") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         exam_config_t cfg;
         config_load(&cfg);
-        char resp[1024];
+        char resp[4096];
+        char safe_url[3072], safe_name[768];
+        if (json_escape(cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED", safe_url, sizeof(safe_url)) != 0 ||
+            json_escape(cfg.exam_name[0] ? cfg.exam_name : "Not configured", safe_name, sizeof(safe_name)) != 0) {
+            send_http_response(client_fd, 500, "application/json", "{\"error\":\"Invalid configured exam text\"}");
+            goto client_done;
+        }
         snprintf(resp, sizeof(resp),
-                 "{\"exam_url_configured\":%s,\"exam_url\":\"%s\",\"exam_name\":\"%s\",\"appliance_version\":\"0.4.0\",\"attestation_status\":\"READY\"}",
-                 cfg.configured ? "true" : "false",
-                 cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED",
-                 cfg.exam_name[0] ? cfg.exam_name : "ExamOS Final");
+                 "{\"exam_url_configured\":%s,\"exam_url\":\"%s\",\"exam_name\":\"%s\",\"attestation_status\":\"NOT_PRODUCTION_READY\"}",
+                 cfg.configured ? "true" : "false", safe_url, safe_name);
         send_http_response(client_fd, 200, "application/json", resp);
     }
     /* Route: POST /api/v1/exam/key-release -> Release session decryption key */
@@ -513,7 +800,7 @@ static void* handle_client(void *arg) {
         char authenticated_candidate[64] = {0};
         if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
-            close(client_fd); return NULL;
+            goto client_done;
         }
         char sess_id[64] = {0}, dev_id[64] = {0}, exam_key[65] = {0};
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
@@ -542,84 +829,56 @@ static void* handle_client(void *arg) {
         char authenticated_candidate[64] = {0};
         if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
-        } else if (!sess_id[0]) {
-            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id required\"}");
+        } else if (!sess_id[0] || !cand_id[0] || strcmp(cand_id, authenticated_candidate) != 0) {
+            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id and authenticated candidate identity are required\"}");
         } else {
-            event_chain_append(sess_id, "SYSTEM", "CANDIDATE_CONSENT_GRANTED",
-                               "{\"camera_consent\":true,\"microphone_consent\":true,\"retention_days\":30}",
-                               "consent-manager", "1.0.0", NULL);
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"CONSENT_RECORDED\",\"session_id\":\"%s\"}", sess_id);
-            send_http_response(client_fd, 200, "application/json", resp);
+            send_http_response(client_fd, 503, "application/json",
+                               "{\"status\":\"NOT_CONFIGURED\",\"error\":\"Proctoring consent cannot be recorded because no qualified proctoring service is configured\"}");
         }
     }
     /* Route: POST /api/v1/proctoring/events -> Ingest normalized detection into hash chain */
     else if (strcmp(path, "/api/v1/proctoring/events") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_PROCTOR_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid proctor service token required\"}");
-            close(client_fd);
-            return NULL;
+            goto client_done;
         }
-        char sess_id[64] = {0}, src_type[32] = {0}, ev_type[64] = {0}, payload[1024] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
-        parse_json_string(req_body, "source_type", src_type, sizeof(src_type));
-        parse_json_string(req_body, "event_type", ev_type, sizeof(ev_type));
-
-        /* Extract nested payload JSON */
-        const char *p_load = strstr(req_body, "\"payload\":");
-        if (p_load) {
-            p_load += 10;
-            while (*p_load == ' ' || *p_load == '\t') p_load++;
-            const char *p_end = strrchr(p_load, '}');
-            if (p_end && p_end > p_load) {
-                size_t plen = p_end - p_load + 1;
-                if (plen < sizeof(payload)) {
-                    strncpy(payload, p_load, plen);
-                    payload[plen] = '\0';
-                }
-            }
-        }
-
-        proctoring_event_t out_ev;
-        if (event_chain_append(sess_id[0] ? sess_id : "default-session",
-                               src_type[0] ? src_type : "PRIMARY_CAMERA",
-                               ev_type[0] ? ev_type : "FACE_PRESENT",
-                               payload[0] ? payload : "{}",
-                               "native-vision", "1.0.0", &out_ev) == 0) {
-            char resp[512];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"INGESTED\",\"sequence\":%lu,\"event_hash\":\"%s\",\"previous_hash\":\"%s\"}",
-                     (unsigned long)out_ev.sequence, out_ev.event_hash, out_ev.previous_hash);
-            send_http_response(client_fd, 201, "application/json", resp);
-        } else {
-            send_http_response(client_fd, 500, "application/json", "{\"error\":\"Failed to append to event chain\"}");
-        }
+        send_http_response(client_fd, 503, "application/json",
+                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated inference producer is configured; client submitted events are not accepted as proctoring evidence\"}");
     }
     /* Route: GET /api/v1/proctoring/events */
-    else if (strcmp(path, "/api/v1/proctoring/events") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_auth(auth_header)) {
+    else if (strncmp(path, "/api/v1/proctoring/events", 25) == 0 &&
+             (path[25] == '\0' || path[25] == '?') && strcmp(method, "GET") == 0) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
         } else {
             char export_buf[65536];
-            event_chain_export_json("exam-session-01", export_buf, sizeof(export_buf));
-            send_http_response(client_fd, 200, "application/json", export_buf);
+            char sess_id[64] = {0};
+            if (parse_query_id(path, "session_id", sess_id, sizeof(sess_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"valid session_id query parameter required\"}");
+            } else if (event_chain_export_json(sess_id, export_buf, sizeof(export_buf)) != 0) {
+                send_http_response(client_fd, 500, "application/json", "{\"error\":\"event export failed\"}");
+            } else {
+                send_http_response(client_fd, 200, "application/json", export_buf);
+            }
         }
     }
     /* Route: POST /api/v1/proctoring/checkpoint -> Sign checkpoint */
     else if (strcmp(path, "/api/v1/proctoring/checkpoint") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
-            close(client_fd);
-            return NULL;
+            goto client_done;
         }
         char sess_id[64] = {0};
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         event_checkpoint_t cp;
-        if (event_chain_sign_checkpoint(sess_id[0] ? sess_id : "exam-session-01", &cp) == 0) {
+        if (!sess_id[0]) {
+            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id required\"}");
+        } else if (event_chain_sign_checkpoint(sess_id, &cp) == 0) {
             char resp[512];
             snprintf(resp, sizeof(resp),
-                     "{\"status\":\"CHECKPOINT_SIGNED\",\"sequence\":%lu,\"latest_hash\":\"%s\",\"signature\":\"%s\"}",
-                     (unsigned long)cp.checkpoint_sequence, cp.latest_event_hash, cp.signature_hex);
+                     "{\"status\":\"CHECKPOINT_SIGNED\",\"sequence\":%lu,\"latest_hash\":\"%s\",\"key_id\":\"%s\",\"signature\":\"%s\"}",
+                     (unsigned long)cp.checkpoint_sequence, cp.latest_event_hash,
+                     cp.signing_key_id, cp.signature_hex);
             send_http_response(client_fd, 200, "application/json", resp);
         } else {
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"No events found to checkpoint\"}");
@@ -627,16 +886,17 @@ static void* handle_client(void *arg) {
     }
     /* Route: POST /api/v1/proctoring/verify -> Verify hash chain */
     else if (strcmp(path, "/api/v1/proctoring/verify") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_auth(auth_header)) {
+        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
-            close(client_fd);
-            return NULL;
+            goto client_done;
         }
         char sess_id[64] = {0};
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         uint64_t total = 0, corrupt_seq = 0;
         char reason[128] = {0};
-        if (event_chain_verify_session(sess_id[0] ? sess_id : "exam-session-01", &total, &corrupt_seq, reason, sizeof(reason)) == 0) {
+        if (!sess_id[0]) {
+            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id required\"}");
+        } else if (event_chain_verify_session(sess_id, &total, &corrupt_seq, reason, sizeof(reason)) == 0) {
             char resp[256];
             snprintf(resp, sizeof(resp),
                      "{\"status\":\"VERIFIED\",\"events_verified\":%lu,\"chain_integrity\":\"VALID\"}",
@@ -655,31 +915,15 @@ static void* handle_client(void *arg) {
         char authenticated_candidate[64] = {0};
         if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
-            close(client_fd);
-            return NULL;
+            goto client_done;
         }
-        char sess_id[64] = {0}, token[128] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
-        if (second_camera_create_pairing_token(sess_id[0] ? sess_id : "exam-session-01", token, sizeof(token)) == 0) {
-            char resp[512];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"TOKEN_CREATED\",\"session_id\":\"%s\",\"qr_token\":\"%s\",\"portal_url\":\"/second-camera?session_id=%s&token=%s\"}",
-                     sess_id[0] ? sess_id : "exam-session-01", token, sess_id[0] ? sess_id : "exam-session-01", token);
-            send_http_response(client_fd, 200, "application/json", resp);
-        } else {
-            send_http_response(client_fd, 500, "application/json", "{\"error\":\"Failed to create QR pairing token\"}");
-        }
+        send_http_response(client_fd, 503, "application/json",
+                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No candidate-bound session authority or authenticated media transport is configured\"}");
     }
     /* Route: POST /api/v1/second-camera/pair -> Validate QR pairing */
     else if (strcmp(path, "/api/v1/second-camera/pair") == 0 && strcmp(method, "POST") == 0) {
-        char sess_id[64] = {0}, token[128] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
-        parse_json_string(req_body, "token", token, sizeof(token));
-        if (second_camera_validate_pairing(sess_id, token) == 0) {
-            send_http_response(client_fd, 200, "application/json", "{\"status\":\"PAIRED\",\"camera_role\":\"SECONDARY_ROOM_CAMERA\"}");
-        } else {
-            send_http_response(client_fd, 403, "application/json", "{\"status\":\"REJECTED\",\"error\":\"Invalid or expired pairing token\"}");
-        }
+        send_http_response(client_fd, 503, "application/json",
+                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated media transport is configured; pairing is unavailable\"}");
     }
     /* Route: GET /second-camera -> Mobile phone camera capture web page */
     else if (strncmp(path, "/second-camera", 14) == 0 && strcmp(method, "GET") == 0) {
@@ -701,18 +945,48 @@ static void* handle_client(void *arg) {
                 token[i] = '\0';
             }
         }
-        send_http_response(client_fd, 200, "text/html; charset=utf-8", second_camera_portal_html(sess_id, token));
+        if (!sess_id[0] || !token[0]) {
+            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id and token are required\"}");
+        } else {
+            send_http_response(client_fd, 503, "application/json",
+                               "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated media transport is configured\"}");
+        }
     }
     /* Route: GET /api/v1/health */
     else if (strcmp(path, "/api/v1/health") == 0 && strcmp(method, "GET") == 0) {
-        send_http_response(client_fd, 200, "application/json", "{\"status\":\"ok\",\"health\":\"HEALTHY\",\"service\":\"examos-server\",\"phase\":\"P4\"}");
+        send_http_response(client_fd, 200, "application/json",
+                           "{\"status\":\"ok\",\"liveness\":\"LIVE\","
+                           "\"readiness\":\"NOT_PRODUCTION_READY\","
+                           "\"service\":\"examos-server\",\"phase\":\"P4\"}");
     }
     else {
         send_http_response(client_fd, 404, "application/json", "{\"error\":\"Not Found\"}");
     }
 
+client_done:
     close(client_fd);
+    sem_post(&g_client_slots);
     return NULL;
+}
+
+static int valid_startup_secret(const char *name, int required) {
+    const char *value = getenv(name);
+    if (!value || !value[0]) {
+        if (required) fprintf(stderr, "[ExamOS-Server] FATAL: required secret %s is not configured.\n", name);
+        return required ? 0 : 1;
+    }
+    size_t length = strlen(value);
+    if (length < 32 || length > 128) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: secret %s must contain 32 through 128 characters.\n", name);
+        return 0;
+    }
+    for (size_t i = 0; i < length; i++) {
+        if (!(isalnum((unsigned char)value[i]) || value[i] == '_' || value[i] == '-')) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: secret %s has unsupported encoding.\n", name);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -721,15 +995,51 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    int server_port = DEFAULT_SERVER_PORT;
+    const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
+    if (!tpm_mode || (strcmp(tpm_mode, "development") != 0 && strcmp(tpm_mode, "production") != 0)) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_TPM_MODE must be explicitly development or production.\n");
+        return 2;
+    }
+    const int production_mode = strcmp(tpm_mode, "production") == 0;
+    const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    if (production_mode && allow_unprovisioned) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
+        return 2;
+    }
+    if (!valid_startup_secret("EXAMOS_AGENT_API_TOKEN", 1) ||
+        !valid_startup_secret("EXAMOS_PROCTOR_API_TOKEN", 1) ||
+        !valid_startup_secret("EXAMOS_EVENT_SIGNING_KEY", 1) ||
+        !valid_startup_secret("EXAMOS_VARIANT_SECRET", 1) ||
+        !valid_startup_secret("EXAMOS_LEDGER_HMAC_KEY", production_mode)) {
+        return 2;
+    }
+
+    int server_port = 0;
     const char *port_env = getenv("EXAMOS_SERVER_PORT");
     if (port_env && *port_env) {
         char *end = NULL;
         errno = 0;
         long parsed_port = strtol(port_env, &end, 10);
-        if (errno == 0 && end != port_env && *end == '\0' && parsed_port >= 1 && parsed_port <= 65535) {
-            server_port = (int)parsed_port;
+        if (errno != 0 || end == port_env || *end != '\0' || parsed_port < 1 || parsed_port > 65535) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_SERVER_PORT must be an integer from 1 through 65535.\n");
+            return 2;
         }
+        server_port = (int)parsed_port;
+    } else {
+        fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_SERVER_PORT must be provisioned.\n");
+        return 2;
+    }
+
+    const char *max_clients_env = getenv("EXAMOS_MAX_CLIENTS");
+    if (max_clients_env && *max_clients_env) {
+        char *end = NULL;
+        errno = 0;
+        long parsed = strtol(max_clients_env, &end, 10);
+        if (errno || end == max_clients_env || *end || parsed < 1 || parsed > MAX_HTTP_CLIENTS) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_MAX_CLIENTS must be between 1 and %d.\n", MAX_HTTP_CLIENTS);
+            return 2;
+        }
+        g_max_clients = (unsigned int)parsed;
     }
 
     signal(SIGTERM, sig_handler);
@@ -738,12 +1048,55 @@ int main(int argc, char *argv[]) {
     printf("[ExamOS-Server] Initializing ExamOS Security Server on port %d (Phase 4 Proctoring & Tamper-Evident Evidence)...\n", server_port);
 
     const char *ledger_path = getenv("EXAMOS_LEDGER_PATH");
-    ledger_init(ledger_path && *ledger_path ? ledger_path : "/tmp/examos_event_ledger.log");
+    if (ledger_init(ledger_path && *ledger_path ? ledger_path : "/tmp/examos_event_ledger.log") != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: evidence ledger is corrupt, truncated, or unreadable; refusing startup.\n");
+        return 1;
+    }
     exam_manager_init();
     candidate_session_init();
-    attestation_service_init();
+    if (attestation_service_init() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: attestation service is not production-ready.\n");
+        return 1;
+    }
+    char executable_path[PATH_MAX] = {0};
+    ssize_t executable_len = readlink("/proc/self/exe", executable_path,
+                                      sizeof(executable_path) - 1);
+    if (executable_len > 0) {
+        executable_path[executable_len] = '\0';
+        char *last_separator = strrchr(executable_path, '/');
+        if (last_separator && last_separator != executable_path)
+            *last_separator = '\0';
+        else if (last_separator)
+            last_separator[1] = '\0';
+        else
+            executable_path[0] = '\0';
+    }
+    int development_mode = !production_mode && allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
+    if (!development_mode && enterprise_platform_init("/var/lib/examos") != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: PostgreSQL TLS connection or required schema unavailable; refusing service startup.\n");
+        return 1;
+    }
+    if (!development_mode && attestation_store_init() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: durable PostgreSQL attestation state is unavailable; refusing service startup.\n");
+        admin_auth_store_shutdown();
+        return 1;
+    }
+    if (attestation_config_load_all(executable_path[0] ? executable_path : NULL) != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: authenticated attestation registries are unavailable or invalid.\n");
+        if (!development_mode) admin_auth_store_shutdown();
+        return 1;
+    }
     event_chain_init("/var/log/examos/proctoring_events.log");
     second_camera_init();
+    if (development_mode) {
+        fprintf(stderr, "[ExamOS-Server] WARNING: local unprovisioned development mode enabled; production APIs remain unavailable.\n");
+    }
+
+    if (sem_init(&g_client_slots, 0, g_max_clients) != 0) {
+        perror("[ExamOS-Server] Failed to initialize bounded client capacity");
+        if (!development_mode) admin_auth_store_shutdown();
+        return 1;
+    }
 
     exam_config_t cfg;
     if (config_load(&cfg) == 0 && cfg.configured) {
@@ -755,6 +1108,8 @@ int main(int argc, char *argv[]) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Failed to create socket");
+        sem_destroy(&g_client_slots);
+        if (!development_mode) admin_auth_store_shutdown();
         return 1;
     }
 
@@ -767,24 +1122,43 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = htons((uint16_t)server_port);
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("Bind failed");
         close(server_fd);
+        sem_destroy(&g_client_slots);
+        if (!development_mode) admin_auth_store_shutdown();
         return 1;
     }
 
-    if (listen(server_fd, 32) < 0) {
+    if (listen(server_fd, (int)g_max_clients) < 0) {
         perror("Listen failed");
         close(server_fd);
+        sem_destroy(&g_client_slots);
+        if (!development_mode) admin_auth_store_shutdown();
         return 1;
     }
 
     printf("[ExamOS-Server] Server listening on port %d (Candidate Portal: /, Admin Dashboard: /admin, Attestation API: /api/v1/attestation/verify)\n", server_port);
 
     while (g_server_running) {
+        struct pollfd listener = {.fd = server_fd, .events = POLLIN};
+        int ready = poll(&listener, 1, 1000);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            perror("[ExamOS-Server] Listener poll failed");
+            break;
+        }
+        if (ready == 0) continue;
+        if (!(listener.revents & POLLIN)) {
+            if (listener.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                fprintf(stderr, "[ExamOS-Server] Listener entered an invalid state.\n");
+                break;
+            }
+            continue;
+        }
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
@@ -793,15 +1167,30 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        struct timeval client_timeout = {5, 0};
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &client_timeout, sizeof(client_timeout));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &client_timeout, sizeof(client_timeout));
+        if (sem_trywait(&g_client_slots) != 0) {
+            send_http_response(client_fd, 503, "application/json", "{\"error\":\"Server connection capacity reached\"}");
+            close(client_fd);
+            continue;
+        }
+
         pthread_t thread;
         if (pthread_create(&thread, NULL, handle_client, (void *)(intptr_t)client_fd) != 0) {
             close(client_fd);
+            sem_post(&g_client_slots);
             continue;
         }
         pthread_detach(thread);
     }
 
     close(server_fd);
+    for (unsigned int i = 0; i < g_max_clients; ++i) {
+        while (sem_wait(&g_client_slots) != 0 && errno == EINTR) {}
+    }
+    sem_destroy(&g_client_slots);
+    if (!development_mode) admin_auth_store_shutdown();
     printf("[ExamOS-Server] Clean shutdown complete.\n");
     return 0;
 }

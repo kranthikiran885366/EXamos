@@ -13,6 +13,10 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define AUTH_DATABASE_URL_MAX 8192
 
@@ -53,14 +57,42 @@ static int parse_required_connection_settings(const char *conninfo) {
 static PGconn *create_raw_connection(void) {
     pthread_mutex_lock(&g_store_lock);
     const char *conninfo = g_conninfo;
-    PGconn *connection = conninfo ? PQconnectdb(conninfo) : NULL;
+    PGconn *connection = NULL;
+    if (conninfo) {
+        char *parse_error = NULL;
+        PQconninfoOption *options = PQconninfoParse(conninfo, &parse_error);
+        if (options) {
+            const char *keywords[64], *values[64];
+            size_t count = 0;
+            int timeout_added = 0;
+            for (PQconninfoOption *option = options; option->keyword && count < 62; ++option) {
+                if (strcmp(option->keyword, "connect_timeout") == 0) {
+                    keywords[count] = option->keyword;
+                    values[count++] = "5";
+                    timeout_added = 1;
+                } else {
+                    keywords[count] = option->keyword;
+                    values[count++] = option->val;
+                }
+            }
+            if (!timeout_added && count < 62) {
+                keywords[count] = "connect_timeout";
+                values[count++] = "5";
+            }
+            keywords[count] = NULL;
+            values[count] = NULL;
+            connection = PQconnectdbParams(keywords, values, 0);
+            PQconninfoFree(options);
+        }
+        if (parse_error) PQfreemem(parse_error);
+    }
     pthread_mutex_unlock(&g_store_lock);
 
     if (!connection || PQstatus(connection) != CONNECTION_OK) {
         if (connection) PQfinish(connection);
         return NULL;
     }
-    if (strcmp(PQsslAttribute(connection, "library") ? "TLS" : "NO_TLS", "TLS") != 0) {
+    if (!PQsslInUse(connection)) {
         PQfinish(connection);
         return NULL;
     }
@@ -71,8 +103,10 @@ static PGconn *create_raw_connection(void) {
 PGconn *acquire_db_connection(void) {
     pthread_mutex_lock(&g_pool_lock);
     while (g_initialized) {
+        int has_available_slot = 0;
         for (int i = 0; i < MAX_POOL_CONNECTIONS; ++i) {
             if (!g_conn_busy[i]) {
+                has_available_slot = 1;
                 if (!g_conn_pool[i] || PQstatus(g_conn_pool[i]) != CONNECTION_OK) {
                     if (g_conn_pool[i]) PQfinish(g_conn_pool[i]);
                     g_conn_pool[i] = create_raw_connection();
@@ -84,7 +118,20 @@ PGconn *acquire_db_connection(void) {
                 }
             }
         }
-        pthread_cond_wait(&g_pool_cond, &g_pool_lock);
+        if (has_available_slot) {
+            pthread_mutex_unlock(&g_pool_lock);
+            return NULL;
+        }
+        struct timespec deadline;
+        if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+            pthread_mutex_unlock(&g_pool_lock);
+            return NULL;
+        }
+        deadline.tv_sec += 5;
+        if (pthread_cond_timedwait(&g_pool_cond, &g_pool_lock, &deadline) == ETIMEDOUT) {
+            pthread_mutex_unlock(&g_pool_lock);
+            return NULL;
+        }
     }
     pthread_mutex_unlock(&g_pool_lock);
     return NULL;
@@ -115,8 +162,20 @@ static int load_database_url(char **out_conninfo) {
     if (!path || !path[0]) {
         path = "/etc/examos/secrets/db_url";
     }
-    FILE *file = fopen(path, "r");
-    if (!file) return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    struct stat file_stat;
+    if (fstat(fd, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+        file_stat.st_uid != geteuid() || (file_stat.st_mode & 0077) != 0 ||
+        file_stat.st_size <= 0 || file_stat.st_size >= AUTH_DATABASE_URL_MAX) {
+        close(fd);
+        return -1;
+    }
+    FILE *file = fdopen(fd, "r");
+    if (!file) {
+        close(fd);
+        return -1;
+    }
 
     char contents[AUTH_DATABASE_URL_MAX];
     size_t length = fread(contents, 1, sizeof(contents) - 1, file);
@@ -148,15 +207,85 @@ static int load_database_url(char **out_conninfo) {
 
 static int verify_schema(PGconn *connection) {
     PGresult *result = PQexec(connection,
-        "SELECT MAX(version) FROM examos_schema_migrations "
-        "WHERE component = 'admin_auth'");
+        "SELECT "
+        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='admin_auth'),0)>=7,"
+        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='exam_lifecycle'),0)>=4,"
+        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='device_fleet'),0)>=9");
     int valid = 0;
     if (result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1) {
-        const char *val = PQgetvalue(result, 0, 0);
-        if (val && atoi(val) >= 1) valid = 1;
+        valid = strcmp(PQgetvalue(result, 0, 0), "t") == 0 &&
+                strcmp(PQgetvalue(result, 0, 1), "t") == 0 &&
+                strcmp(PQgetvalue(result, 0, 2), "t") == 0;
     }
     if (result) PQclear(result);
     return valid ? 0 : -1;
+}
+
+static int login_subject_hash(const char *username, char out[65]) {
+    if (!username || !username[0] || strlen(username) > 63 || !out) return -1;
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_length = 0;
+    if (EVP_Digest(username, strlen(username), digest, &digest_length, EVP_sha256(), NULL) != 1 ||
+        digest_length != 32) return -1;
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < digest_length; ++i) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 15];
+    }
+    out[64] = '\0';
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return 0;
+}
+
+static int login_subject_locked(PGconn *conn, const char *subject_hash) {
+    const char *params[] = {subject_hash};
+    PGresult *result = PQexecParams(conn,
+        "SELECT COALESCE(locked_until > clock_timestamp(),false) "
+        "FROM examos_admin_login_throttle WHERE subject_hash=$1",
+        1, NULL, params, NULL, NULL, 0);
+    int status = -1;
+    if (result && PQresultStatus(result) == PGRES_TUPLES_OK)
+        status = PQntuples(result) == 1 && strcmp(PQgetvalue(result, 0, 0), "t") == 0;
+    if (result) PQclear(result);
+    return status;
+}
+
+static int login_subject_failure(PGconn *conn, const char *subject_hash) {
+    const char *params[] = {subject_hash};
+    PGresult *result = PQexecParams(conn,
+        "DELETE FROM examos_admin_login_throttle "
+        "WHERE updated_at < clock_timestamp()-interval '1 day' AND locked_until IS NULL",
+        0, NULL, NULL, NULL, NULL, 0);
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    if (!ok) return -1;
+    result = PQexecParams(conn,
+        "INSERT INTO examos_admin_login_throttle "
+        "(subject_hash,failed_attempts,window_started_at,locked_until) "
+        "VALUES($1,1,clock_timestamp(),NULL) "
+        "ON CONFLICT(subject_hash) DO UPDATE SET "
+        "failed_attempts=CASE WHEN examos_admin_login_throttle.window_started_at <= clock_timestamp()-interval '15 minutes' "
+        "THEN 1 ELSE LEAST(examos_admin_login_throttle.failed_attempts+1,5) END, "
+        "window_started_at=CASE WHEN examos_admin_login_throttle.window_started_at <= clock_timestamp()-interval '15 minutes' "
+        "THEN clock_timestamp() ELSE examos_admin_login_throttle.window_started_at END, "
+        "locked_until=CASE WHEN examos_admin_login_throttle.window_started_at <= clock_timestamp()-interval '15 minutes' "
+        "THEN NULL WHEN examos_admin_login_throttle.failed_attempts >= 4 "
+        "THEN clock_timestamp()+interval '15 minutes' ELSE examos_admin_login_throttle.locked_until END, "
+        "updated_at=clock_timestamp()",
+        1, NULL, params, NULL, NULL, 0);
+    ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    return ok ? 0 : -1;
+}
+
+static int login_subject_clear(PGconn *conn, const char *subject_hash) {
+    const char *params[] = {subject_hash};
+    PGresult *result = PQexecParams(conn,
+        "DELETE FROM examos_admin_login_throttle WHERE subject_hash=$1",
+        1, NULL, params, NULL, NULL, 0);
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    return ok ? 0 : -1;
 }
 
 int admin_auth_store_init(void) {
@@ -268,6 +397,18 @@ int admin_auth_store_login(const char *username, const char *password,
     PGconn *conn = acquire_connection();
     if (!conn) return AUTH_LOGIN_FAILED;
 
+    char subject_hash[65] = {0};
+    if (login_subject_hash(username, subject_hash) != 0) {
+        release_connection(conn, 0);
+        return AUTH_LOGIN_FAILED;
+    }
+    int locked = login_subject_locked(conn, subject_hash);
+    if (locked != 0) {
+        OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
+        release_connection(conn, 0);
+        return AUTH_LOGIN_FAILED;
+    }
+
     const char *user_params[] = { username };
     PGresult *result = PQexecParams(conn,
         "SELECT user_id, username, password_hash, full_name, email, "
@@ -286,6 +427,7 @@ int admin_auth_store_login(const char *username, const char *password,
     if (result) PQclear(result);
 
     if (!ok) {
+        (void)login_subject_failure(conn, subject_hash);
         if (result) {
             const char *fail_audit[] = { username, "ADMIN_LOGIN_FAILED" };
             PQexecParams(conn, "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES (NULL, $2)",
@@ -293,6 +435,7 @@ int admin_auth_store_login(const char *username, const char *password,
         }
         OPENSSL_cleanse(&account, sizeof(account));
         OPENSSL_cleanse(totp_secret, sizeof(totp_secret));
+        OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
         release_connection(conn, 0);
         return AUTH_LOGIN_FAILED;
     }
@@ -300,16 +443,19 @@ int admin_auth_store_login(const char *username, const char *password,
     /* MFA Verification Step */
     if (account.mfa_enabled) {
         if (!mfa_code || !mfa_code[0]) {
+            int throttle_recorded = login_subject_failure(conn, subject_hash) == 0;
             OPENSSL_cleanse(&account, sizeof(account));
             OPENSSL_cleanse(totp_secret, sizeof(totp_secret));
+            OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
             release_connection(conn, 0);
-            return AUTH_LOGIN_MFA_REQUIRED;
+            return throttle_recorded ? AUTH_LOGIN_MFA_REQUIRED : AUTH_LOGIN_FAILED;
         }
 
         int mfa_ok = totp_verify_code(totp_secret, mfa_code, time(NULL), 1);
         int recovery_used = 0;
 
         if (!mfa_ok) {
+            (void)login_subject_failure(conn, subject_hash);
             /* Check if code is a valid recovery code */
             char rec_hash[65];
             if (totp_hash_recovery_code(mfa_code, rec_hash) == 0) {
@@ -332,6 +478,7 @@ int admin_auth_store_login(const char *username, const char *password,
                          2, NULL, audit_params, NULL, NULL, 0);
             OPENSSL_cleanse(&account, sizeof(account));
             OPENSSL_cleanse(totp_secret, sizeof(totp_secret));
+            OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
             release_connection(conn, 0);
             return AUTH_LOGIN_FAILED;
         }
@@ -349,6 +496,7 @@ int admin_auth_store_login(const char *username, const char *password,
     char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
     if (secure_token_create(raw_token, token_hash) != 0) {
         OPENSSL_cleanse(&account, sizeof(account));
+        OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
         release_connection(conn, 0);
         return AUTH_LOGIN_FAILED;
     }
@@ -358,7 +506,16 @@ int admin_auth_store_login(const char *username, const char *password,
     const char *session_params[] = { token_hash, account.user_id, role, account.institution_id };
 
     result = PQexec(conn, "BEGIN");
+    int transaction_started = result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
+    if (!transaction_started) {
+        OPENSSL_cleanse(raw_token, sizeof(raw_token));
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
+        OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
+        OPENSSL_cleanse(&account, sizeof(account));
+        release_connection(conn, 0);
+        return AUTH_LOGIN_FAILED;
+    }
 
     result = PQexecParams(conn,
         "INSERT INTO examos_admin_sessions "
@@ -388,15 +545,22 @@ int admin_auth_store_login(const char *username, const char *password,
         result = PQexecParams(conn,
             "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
             2, NULL, audit_params, NULL, NULL, 0);
+        inserted = result && PQresultStatus(result) == PGRES_COMMAND_OK;
         if (result) PQclear(result);
 
-        const char *last_login_params[] = { account.user_id };
-        result = PQexecParams(conn,
-            "UPDATE examos_admin_users SET last_login_at = clock_timestamp() "
-            "WHERE user_id = $1 AND active",
-            1, NULL, last_login_params, NULL, NULL, 0);
-        if (result) PQclear(result);
+        if (inserted) {
+            const char *last_login_params[] = { account.user_id };
+            result = PQexecParams(conn,
+                "UPDATE examos_admin_users SET last_login_at = clock_timestamp() "
+                "WHERE user_id = $1 AND active",
+                1, NULL, last_login_params, NULL, NULL, 0);
+            inserted = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
+                       strcmp(PQcmdTuples(result), "1") == 0;
+            if (result) PQclear(result);
+        }
     }
+
+    if (inserted && login_subject_clear(conn, subject_hash) != 0) inserted = 0;
 
     result = PQexec(conn, inserted ? "COMMIT" : "ROLLBACK");
     int committed = result && PQresultStatus(result) == PGRES_COMMAND_OK && inserted;
@@ -404,6 +568,7 @@ int admin_auth_store_login(const char *username, const char *password,
 
     OPENSSL_cleanse(raw_token, sizeof(raw_token));
     OPENSSL_cleanse(token_hash, sizeof(token_hash));
+    OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
     OPENSSL_cleanse(&account, sizeof(account));
     release_connection(conn, 0);
 

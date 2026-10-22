@@ -35,15 +35,45 @@ static void cfg_json_str(const char *buf, const char *key,
     if (!pos) return;
 
     pos += strlen(pattern);
-    while (*pos == ' ' || *pos == ':' || *pos == '\t') pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    if (*pos++ != ':') return;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
     if (*pos != '"') return;
     pos++;
 
     size_t i = 0;
-    while (*pos && *pos != '"' && i + 1 < max_out) {
-        if (*pos == '\\' && *(pos + 1)) pos++;
-        out[i++] = *pos++;
+    while (*pos && *pos != '"') {
+        unsigned char value = (unsigned char)*pos++;
+        if (value == '\\') {
+            switch (*pos++) {
+                case '"': value = '"'; break;
+                case '\\': value = '\\'; break;
+                case '/': value = '/'; break;
+                case 'b': value = '\b'; break;
+                case 'f': value = '\f'; break;
+                case 'n': value = '\n'; break;
+                case 'r': value = '\r'; break;
+                case 't': value = '\t'; break;
+                case 'u': {
+                    unsigned int codepoint = 0;
+                    for (int digit = 0; digit < 4; ++digit) {
+                        unsigned char c = (unsigned char)*pos++;
+                        if (!isxdigit(c)) { out[0] = '\0'; return; }
+                        codepoint = (codepoint << 4) |
+                            (unsigned int)(isdigit(c) ? c - '0' :
+                            (tolower(c) - 'a' + 10));
+                    }
+                    if (codepoint > 0x7f) { out[0] = '\0'; return; }
+                    value = (unsigned char)codepoint;
+                    break;
+                }
+                default: out[0] = '\0'; return;
+            }
+        }
+        if (i + 1 >= max_out || value == '\0') { out[0] = '\0'; return; }
+        out[i++] = (char)value;
     }
+    if (*pos != '"') { out[0] = '\0'; return; }
     out[i] = '\0';
 }
 
@@ -109,6 +139,7 @@ static char *read_file_all(const char *path, size_t *out_len) {
 static int verify_manifest_signature(const unsigned char *data, size_t data_len,
                                     const char *signature_env,
                                     const char *key_env,
+                                    const char *key_fingerprint_env,
                                     const char *default_signature,
                                     const char *default_key,
                                     const char *manifest_name) {
@@ -134,6 +165,55 @@ static int verify_manifest_signature(const unsigned char *data, size_t data_len,
     if (!public_key) {
         fprintf(stderr, "[AttestConfig] Production %s verification key is missing or invalid: %s\n",
                 manifest_name, public_key_path);
+        free(signature);
+        return -1;
+    }
+
+    const char *expected_fingerprint = getenv(key_fingerprint_env);
+    if (!expected_fingerprint || strlen(expected_fingerprint) != 64) {
+        fprintf(stderr, "[AttestConfig] Production %s trusted-key fingerprint is unset or malformed.\n",
+                manifest_name);
+        EVP_PKEY_free(public_key);
+        free(signature);
+        return -1;
+    }
+    for (size_t i = 0; i < 64; i++) {
+        if (!isxdigit((unsigned char)expected_fingerprint[i])) {
+            fprintf(stderr, "[AttestConfig] Production %s trusted-key fingerprint is malformed.\n",
+                    manifest_name);
+            EVP_PKEY_free(public_key);
+            free(signature);
+            return -1;
+        }
+    }
+    int der_len = i2d_PUBKEY(public_key, NULL);
+    unsigned char *der = der_len > 0 ? malloc((size_t)der_len) : NULL;
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    unsigned char *der_cursor = der;
+    const int fingerprint_ok = der &&
+        i2d_PUBKEY(public_key, &der_cursor) == der_len &&
+        EVP_Digest(der, (size_t)der_len, digest, &digest_len, EVP_sha256(), NULL) == 1 &&
+        digest_len == 32;
+    free(der);
+    static const char hex[] = "0123456789abcdef";
+    char actual_fingerprint[65] = {0};
+    if (fingerprint_ok) {
+        for (size_t i = 0; i < 32; i++) {
+            actual_fingerprint[i * 2] = hex[digest[i] >> 4];
+            actual_fingerprint[i * 2 + 1] = hex[digest[i] & 0x0f];
+        }
+    }
+    int pin_matches = fingerprint_ok;
+    for (size_t i = 0; pin_matches && i < 64; i++) {
+        if ((unsigned char)tolower((unsigned char)expected_fingerprint[i]) !=
+            (unsigned char)actual_fingerprint[i]) pin_matches = 0;
+    }
+    OPENSSL_cleanse(digest, sizeof(digest));
+    if (!pin_matches) {
+        fprintf(stderr, "[AttestConfig] Production %s key does not match its externally pinned SHA-256 fingerprint.\n",
+                manifest_name);
+        EVP_PKEY_free(public_key);
         free(signature);
         return -1;
     }
@@ -172,6 +252,7 @@ static int verify_release_registry_signature(const unsigned char *data,
     return verify_manifest_signature(data, data_len,
                                      "EXAMOS_RELEASES_SIGNATURE",
                                      "EXAMOS_RELEASES_PUBLIC_KEY",
+                                     "EXAMOS_RELEASES_PUBLIC_KEY_SHA256",
                                      "/etc/examos/releases.json.sig",
                                      "/etc/examos/release-registry.pub",
                                      "release registry");
@@ -182,6 +263,7 @@ static int verify_device_registry_signature(const unsigned char *data,
     return verify_manifest_signature(data, data_len,
                                      "EXAMOS_DEVICES_SIGNATURE",
                                      "EXAMOS_DEVICES_PUBLIC_KEY",
+                                     "EXAMOS_DEVICES_PUBLIC_KEY_SHA256",
                                      "/etc/examos/devices.json.sig",
                                      "/etc/examos/device-registry.pub",
                                      "device registry");
@@ -259,23 +341,28 @@ int attestation_config_load_devices(const char *json_path) {
         /* Extract fields */
         char device_id[64]    = {0};
         char ek_fp[65]        = {0};
-        char ak_name[69]      = {0};
+        char ak_qualified_name[69] = {0};
         char ak_pub_sha256[65] = {0};
+        char ak_public_pem[2048] = {0};
         char allowed_rel[64]  = {0};
         char status_str[32]   = {0};
 
         cfg_json_str(obj, "device_id",       device_id,   sizeof(device_id));
         cfg_json_str(obj, "ek_fingerprint",  ek_fp,       sizeof(ek_fp));
-        cfg_json_str(obj, "ak_name",          ak_name,     sizeof(ak_name));
+        cfg_json_str(obj, "ak_qualified_name", ak_qualified_name,
+                     sizeof(ak_qualified_name));
         cfg_json_str(obj, "ak_pub_sha256",    ak_pub_sha256, sizeof(ak_pub_sha256));
+        cfg_json_str(obj, "ak_public_pem",    ak_public_pem, sizeof(ak_public_pem));
         cfg_json_str(obj, "allowed_release", allowed_rel, sizeof(allowed_rel));
         cfg_json_str(obj, "status",          status_str,  sizeof(status_str));
 
         if (production &&
             (!device_id[0] || !is_sha256_hex(ek_fp, 1) ||
-             strlen(ak_name) != 68 || strncmp(ak_name, "000b", 4) != 0 ||
-             !is_sha256_hex(ak_name + 4, 1) ||
+             strlen(ak_qualified_name) != 68 ||
+             strncmp(ak_qualified_name, "000b", 4) != 0 ||
+             !is_sha256_hex(ak_qualified_name + 4, 1) ||
              !is_sha256_hex(ak_pub_sha256, 1) ||
+             !ak_public_pem[0] ||
              !allowed_rel[0] ||
              (strcmp(status_str, "ENROLLED") != 0 &&
               strcmp(status_str, "TRUSTED") != 0 &&
@@ -292,18 +379,19 @@ int attestation_config_load_devices(const char *json_path) {
         const int active = !production ||
             strcmp(status_str, "ENROLLED") == 0 ||
             strcmp(status_str, "TRUSTED") == 0;
-        if (device_id[0] && ek_fp[0] && active) {
-            int rc = attestation_register_device_bound(
-                device_id,
-                ek_fp,
-                ak_name,
-                ak_pub_sha256,
-                allowed_rel[0] ? allowed_rel : "examos-0.4.0"
-            );
+        if (device_id[0] && ek_fp[0] && allowed_rel[0] && active) {
+            int rc = production
+                ? attestation_register_device_identity(
+                    device_id, ek_fp, ak_qualified_name, ak_public_pem,
+                    ak_pub_sha256, allowed_rel)
+                : attestation_register_device(device_id, ek_fp, allowed_rel);
             if (rc == 0) {
                 count++;
                 fprintf(stdout, "[AttestConfig]   + device: %s (%s)\n",
                         device_id, status_str[0] ? status_str : "ENROLLED");
+            } else if (production) {
+                fprintf(stderr, "[AttestConfig] Failed to register production device %s.\n", device_id);
+                invalid_production_entry = 1;
             }
         }
 
@@ -418,15 +506,20 @@ int attestation_config_load_releases(const char *json_path) {
         }
 
         if (release_id[0] && pcr0[0]) {
-            int rc = attestation_register_release_from_registry(
-                release_id, uki_hash, pcr0, pcr4, pcr7, pcr11
-            );
+            int rc = attestation_register_release(
+                release_id, uki_hash, pcr0, pcr4, pcr7, pcr11);
             if (rc == 0) {
                 count++;
                 fprintf(stdout, "[AttestConfig]   + release: %s (revoked=%s)\n",
                         release_id, revoked ? "true" : "false");
-                if (revoked)
-                    attestation_revoke_release(release_id);
+                if (revoked && attestation_revoke_release(release_id) != 0 && production) {
+                    fprintf(stderr, "[AttestConfig] Could not persist production release revocation for %s.\n",
+                            release_id);
+                    invalid_production_entry = 1;
+                }
+            } else if (production) {
+                fprintf(stderr, "[AttestConfig] Failed to register production release %s.\n", release_id);
+                invalid_production_entry = 1;
             }
         } else if (production) {
             fprintf(stderr, "[AttestConfig] Production registry has a malformed release entry.\n");
@@ -534,121 +627,12 @@ int attestation_config_load_all(const char *binary_dir) {
 }
 
 /* -----------------------------------------------------------------------
- * attestation_config_save_devices  (Stage 2/3 — runtime persistence)
- *
- * Serializes the current in-memory device table to a JSON file atomically
- * (tmp-file + fsync + rename).  Mirrors the format expected by
- * attestation_config_load_devices() so the file can be reloaded on restart.
- *
- * json_path — destination file path.  Pass NULL to use the same resolution
- *             order as attestation_config_load_all() (env var → production
- *             path → dev path).
- *
- * Returns 0 on success, -1 on failure.  Failure is non-fatal: the in-memory
- * device table is still valid; the caller should log and continue.
- *
- * Security notes:
- *   • File is written 0600 (root-only read/write) to protect EK/AK material.
- *   • Atomic rename prevents partial-file reads on concurrent startup.
- *   • Written fields are the same ones accepted by load_devices(); no extra
- *     fields are added that would confuse signature verification on next load.
+ * Runtime persistence is disabled until AK identity material is retained.
  * ----------------------------------------------------------------------- */
 int attestation_config_save_devices(const char *json_path)
 {
-    /* Resolve path using the same priority as load_all */
-    char resolved[512] = {0};
-    if (json_path && json_path[0]) {
-        snprintf(resolved, sizeof(resolved), "%s", json_path);
-    } else {
-        const char *env = getenv("EXAMOS_DEVICES_CONFIG");
-        if (env && *env)
-            snprintf(resolved, sizeof(resolved), "%s", env);
-        else if (access("/etc/examos/devices.json", F_OK) == 0 ||
-                 access("/etc/examos/", F_OK) == 0)
-            snprintf(resolved, sizeof(resolved), "/etc/examos/devices.json");
-        else
-            snprintf(resolved, sizeof(resolved), "config/devices.json");
-    }
-
-    /* Take a snapshot of the device table outside the file I/O path */
-    enrolled_device_t snapshot[MAX_DEVICES];
-    int count = 0;
-    if (attestation_get_device_snapshot(snapshot, &count) != 0) {
-        fprintf(stderr, "[AttestConfig] save_devices: snapshot failed.\n");
-        return -1;
-    }
-
-    /* Build tmp path alongside the real path */
-    char tmp_path[520];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", resolved, getpid());
-
-    FILE *f = fopen(tmp_path, "w");
-    if (!f) {
-        fprintf(stderr, "[AttestConfig] save_devices: cannot open %s: %s\n",
-                tmp_path, strerror(errno));
-        return -1;
-    }
-
-    /* Write a minimal JSON array matching the format load_devices() expects:
-     * [{"device_id":..., "ek_fingerprint":..., "ak_name":...,
-     *   "ak_pub_sha256":..., "allowed_release":..., "status":...,
-     *   "created_at":..., "updated_at":...}, ...] */
-    fprintf(f, "[\n");
-    for (int i = 0; i < count; i++) {
-        const enrolled_device_t *d = &snapshot[i];
-        if (!d->device_id[0]) continue;  /* skip empty slots */
-
-        const char *status_str;
-        switch (d->status) {
-            case DEVICE_STATUS_ENROLLED:   status_str = "enrolled";   break;
-            case DEVICE_STATUS_TRUSTED:    status_str = "trusted";    break;
-            case DEVICE_STATUS_SUSPENDED:  status_str = "suspended";  break;
-            case DEVICE_STATUS_REVOKED:    status_str = "revoked";    break;
-            case DEVICE_STATUS_RETIRED:    status_str = "retired";    break;
-            default:                       status_str = "enrolled";   break;
-        }
-
-        fprintf(f, "  %s{\n"
-                   "    \"device_id\": \"%s\",\n"
-                   "    \"ek_fingerprint\": \"%s\",\n"
-                   "    \"ak_name\": \"%s\",\n"
-                   "    \"ak_pub_sha256\": \"%s\",\n"
-                   "    \"allowed_release\": \"%s\",\n"
-                   "    \"status\": \"%s\",\n"
-                   "    \"created_at\": %ld,\n"
-                   "    \"updated_at\": %ld\n"
-                   "  }",
-                i > 0 ? "," : "",
-                d->device_id,
-                d->ek_fingerprint,
-                d->ak_name,
-                d->ak_pub_sha256,
-                d->allowed_release,
-                status_str,
-                (long)d->created_at,
-                (long)d->updated_at);
-    }
-    fprintf(f, "\n]\n");
-
-    int write_ok = (fflush(f) == 0) && (fsync(fileno(f)) == 0);
-    if (fclose(f) != 0) write_ok = 0;
-
-    if (!write_ok) {
-        fprintf(stderr, "[AttestConfig] save_devices: write/flush failed for %s\n",
-                tmp_path);
-        unlink(tmp_path);
-        return -1;
-    }
-
-    chmod(tmp_path, 0600);  /* EK/AK material — root-only */
-    if (rename(tmp_path, resolved) != 0) {
-        fprintf(stderr, "[AttestConfig] save_devices: rename %s -> %s failed: %s\n",
-                tmp_path, resolved, strerror(errno));
-        unlink(tmp_path);
-        return -1;
-    }
-
-    fprintf(stdout, "[AttestConfig] Device table persisted: %d device(s) -> %s\n",
-            count, resolved);
-    return 0;
+    (void)json_path;
+    fprintf(stderr, "[AttestConfig] Device registry persistence is unavailable: the runtime registry does not retain validated AK identity material.\n");
+    errno = ENOTSUP;
+    return -1;
 }

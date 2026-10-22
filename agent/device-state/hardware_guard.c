@@ -7,6 +7,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <errno.h>
+#include <limits.h>
 
 static const char *g_blacklisted_processes[] = {
     "gdb", "strace", "ltrace", "wireshark", "tshark", "tcpdump",
@@ -26,11 +28,16 @@ static int scan_and_terminate_prohibited_processes(void) {
     struct dirent *entry;
     while ((entry = readdir(proc_dir)) != NULL) {
         if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
-            int pid = atoi(entry->d_name);
-            if (pid <= 1 || pid == getpid()) continue;
+            char *pid_end = NULL;
+            errno = 0;
+            long parsed_pid = strtol(entry->d_name, &pid_end, 10);
+            if (errno != 0 || pid_end == entry->d_name || *pid_end != '\0' ||
+                parsed_pid <= 1 || parsed_pid > INT_MAX || parsed_pid == getpid()) continue;
+            pid_t pid = (pid_t)parsed_pid;
 
-            char comm_path[256];
-            snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", entry->d_name);
+            char comm_path[512];
+            int path_length = snprintf(comm_path, sizeof(comm_path), "/proc/%ld/comm", parsed_pid);
+            if (path_length < 0 || (size_t)path_length >= sizeof(comm_path)) continue;
             FILE *f = fopen(comm_path, "r");
             if (f) {
                 char comm[64] = {0};

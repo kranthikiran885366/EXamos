@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "include/attestation.h"
+#include "include/attestation_client.h"
 #include "include/hardware_guard.h"
 #include "include/heartbeat.h"
 #include "include/rf_scanner.h"
@@ -9,6 +10,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
+#include <openssl/rand.h>
 
 static volatile sig_atomic_t g_running = 1;
 
@@ -36,10 +38,8 @@ int main(int argc, char *argv[]) {
     const char *server_url = argv[1];
     const char *device_id = argv[2];
     const char *release_id = getenv("EXAMOS_RELEASE_ID");
-    const char *boot_nonce = getenv("EXAMOS_BOOT_NONCE");
-    if (!release_id || !*release_id || !boot_nonce || !*boot_nonce ||
-        strcmp(release_id, "NOT_PROVISIONED") == 0 || strcmp(boot_nonce, "NOT_PROVISIONED") == 0) {
-        fprintf(stderr, "Agent requires a provisioned release ID and boot nonce.\n");
+    if (!release_id || !*release_id || strcmp(release_id, "NOT_PROVISIONED") == 0) {
+        fprintf(stderr, "Agent requires a provisioned release ID.\n");
         return 2;
     }
 
@@ -62,13 +62,38 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Initial Attestation Generation
+    unsigned char session_random[16];
+    char session_id[40];
+    static const char hex[] = "0123456789abcdef";
+    if (RAND_bytes(session_random, sizeof(session_random)) != 1) {
+        log_info("Could not create a cryptographically random boot session identifier.");
+        return 2;
+    }
+    for (size_t i = 0; i < sizeof(session_random); ++i) {
+        session_id[i * 2] = hex[session_random[i] >> 4];
+        session_id[i * 2 + 1] = hex[session_random[i] & 15];
+    }
+    session_id[sizeof(session_random) * 2] = '\0';
+    memset(session_random, 0, sizeof(session_random));
+
+    char challenge_nonce[65] = {0};
+    if (attestation_client_issue_challenge(server_url, device_id, release_id,
+                                          session_id, challenge_nonce,
+                                          sizeof(challenge_nonce)) != 0) {
+        log_info("Server did not issue a fresh attestation challenge; refusing to run.");
+        return 2;
+    }
+
+    // Initial attestation uses the server's one-time challenge.
     attestation_report_t report;
-    if (tpm_attestation_generate_report(device_id, release_id, boot_nonce, &report) == 0) {
+    if (tpm_attestation_generate_report(device_id, release_id, challenge_nonce, &report) == 0) {
         char report_json[4096];
-        tpm_attestation_format_json(&report, report_json, sizeof(report_json));
-        log_info("TPM event-log measurements were read; key-backed quote verification is pending.");
-        log_info(report.composite_digest);
+        if (tpm_attestation_format_json(&report, report_json, sizeof(report_json)) != 0 ||
+            attestation_client_verify(server_url, report_json) != 0) {
+            log_info("Server rejected the TPM quote; refusing to run.");
+            return 2;
+        }
+        log_info("Fresh TPM quote verified by the server; attestation state is trusted.");
     } else {
         log_info("TPM quote and event-log attestation are not established; refusing to start.");
         return 2;
@@ -76,6 +101,21 @@ int main(int argc, char *argv[]) {
 
     int iteration = 0;
     while (g_running) {
+        if (iteration > 0 && iteration % 60 == 0) {
+            char re_nonce[65] = {0};
+            attestation_report_t re_report;
+            char re_json[4096];
+            if (attestation_client_rechallenge(server_url, device_id, session_id,
+                                               re_nonce, sizeof(re_nonce)) != 0 ||
+                tpm_attestation_generate_report(device_id, release_id, re_nonce,
+                                                &re_report) != 0 ||
+                tpm_attestation_format_json(&re_report, re_json, sizeof(re_json)) != 0 ||
+                attestation_client_verify(server_url, re_json) != 0) {
+                log_info("Periodic TPM re-attestation failed; stopping the agent.");
+                break;
+            }
+            log_info("Periodic TPM re-attestation verified by the server.");
+        }
         hardware_state_t hw_state;
         hardware_guard_scan(&hw_state);
         char hw_json[512];

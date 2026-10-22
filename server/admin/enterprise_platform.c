@@ -40,7 +40,7 @@ static int                      g_submission_count = 0;
 static enterprise_release_t     g_releases[PLATFORM_MAX_RELEASES];
 static int                      g_release_count = 0;
 
-static void load_devices_from_db(void);
+static int load_devices_from_db(void);
 
 /* Helper: string conversions */
 const char *role_to_string(user_role_t role) {
@@ -255,7 +255,8 @@ int enterprise_platform_init(const char *data_dir) {
     pthread_mutex_unlock(&g_platform_lock);
     int rc = admin_auth_store_init();
     if (rc == 0) {
-        load_devices_from_db();
+        rc = load_devices_from_db();
+        if (rc != 0) admin_auth_store_shutdown();
     }
     return rc;
 }
@@ -328,12 +329,13 @@ int platform_get_institutions_json(char *out_buf, size_t max_len) {
 }
 
 int platform_create_institution(const institution_t *inst) {
-    if (!inst || !inst->institution_id[0] || !inst->name[0] || !inst->code[0]) return -1;
+    if (!inst || !inst->institution_id[0] || !inst->name[0] || !inst->code[0] ||
+        inst->retention_days <= 0) return -1;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
 
     char ret_str[16];
-    snprintf(ret_str, sizeof(ret_str), "%d", inst->retention_days > 0 ? inst->retention_days : 365);
+    snprintf(ret_str, sizeof(ret_str), "%d", inst->retention_days);
 
     const char *params[] = {
         inst->institution_id,
@@ -471,12 +473,13 @@ int platform_get_rooms_json(const char *campus_id, char *out_buf, size_t max_len
 }
 
 int platform_create_room(const room_t *room) {
-    if (!room || !room->room_id[0] || !room->campus_id[0] || !room->institution_id[0] || !room->name[0]) return -1;
+    if (!room || !room->room_id[0] || !room->campus_id[0] || !room->institution_id[0] ||
+        !room->name[0] || room->capacity <= 0) return -1;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
 
     char cap_str[16];
-    snprintf(cap_str, sizeof(cap_str), "%d", room->capacity > 0 ? room->capacity : 50);
+    snprintf(cap_str, sizeof(cap_str), "%d", room->capacity);
 
     const char *params[] = {
         room->room_id,
@@ -505,17 +508,19 @@ int platform_create_room(const room_t *room) {
  * ------------------------------------------------------------------------- */
 
 static int compute_policy_hmac(const char *exam_id, unsigned int version, const char *url, char out_sig[65]) {
+    if (!exam_id || !exam_id[0] || !url || !out_sig) return -1;
     const char *key = getenv("EXAMOS_EVENT_SIGNING_KEY");
-    if (!key || strlen(key) < 32) key = "ExamOS_Default_Enterprise_Platform_Signing_Key_2026";
+    if (!key || strlen(key) < 32) return -1;
 
     char data[2048];
-    snprintf(data, sizeof(data), "%s:%u:%s", exam_id, version, url);
+    int data_len = snprintf(data, sizeof(data), "%s:%u:%s", exam_id, version, url);
+    if (data_len < 0 || (size_t)data_len >= sizeof(data)) return -1;
 
     unsigned char md[32];
     unsigned int md_len = 0;
-    HMAC(EVP_sha256(), key, (int)strlen(key),
-         (const unsigned char *)data, strlen(data),
-         md, &md_len);
+    if (!HMAC(EVP_sha256(), key, (int)strlen(key),
+              (const unsigned char *)data, (size_t)data_len,
+              md, &md_len) || md_len != sizeof(md)) return -1;
 
     static const char hex[] = "0123456789abcdef";
     for (size_t i = 0; i < 32; ++i) {
@@ -527,17 +532,22 @@ static int compute_policy_hmac(const char *exam_id, unsigned int version, const 
 }
 
 int platform_create_exam(const enterprise_exam_t *exam) {
-    if (!exam || !exam->exam_id[0] || !exam->institution_id[0] || !exam->title[0]) return -1;
+    if (!exam || !exam->exam_id[0] || !exam->institution_id[0] || !exam->title[0] ||
+        !exam->code[0] || !exam->exam_url[0] || !exam->timezone[0] ||
+        !exam->permitted_device_group[0] || !exam->browser_policy_json[0] ||
+        exam->duration_minutes <= 0 || exam->retention_days <= 0 ||
+        exam->scheduled_start <= 0 || exam->scheduled_end <= exam->scheduled_start ||
+        platform_validate_exam_url(exam->exam_url, NULL, 0) != 0) return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
 
     char dur_str[16], start_str[32], end_str[32], ret_str[16];
-    snprintf(dur_str, sizeof(dur_str), "%d", exam->duration_minutes > 0 ? exam->duration_minutes : 120);
-    snprintf(ret_str, sizeof(ret_str), "%d", exam->retention_days > 0 ? exam->retention_days : 365);
+    snprintf(dur_str, sizeof(dur_str), "%d", exam->duration_minutes);
+    snprintf(ret_str, sizeof(ret_str), "%d", exam->retention_days);
 
-    time_t s_start = exam->scheduled_start > 0 ? exam->scheduled_start : time(NULL) + 3600;
-    time_t s_end   = exam->scheduled_end > s_start ? exam->scheduled_end : s_start + (exam->duration_minutes * 60);
+    time_t s_start = exam->scheduled_start;
+    time_t s_end   = exam->scheduled_end;
     snprintf(start_str, sizeof(start_str), "%ld", (long)s_start);
     snprintf(end_str, sizeof(end_str), "%ld", (long)s_end);
 
@@ -545,21 +555,21 @@ int platform_create_exam(const enterprise_exam_t *exam) {
         exam->exam_id,
         exam->institution_id,
         exam->owner_user_id[0] ? exam->owner_user_id : NULL,
-        exam->code[0] ? exam->code : "EXAM",
+        exam->code,
         exam->title,
-        exam->exam_url[0] ? exam->exam_url : "https://exam.internal/session",
+        exam->exam_url,
         exam->allowed_origins[0] ? exam->allowed_origins : "",
         exam->additional_apis[0] ? exam->additional_apis : "",
         dur_str,
         start_str,
         end_str,
-        exam->timezone[0] ? exam->timezone : "UTC",
+        exam->timezone,
         exam_state_to_string(exam->state),
-        exam->permitted_device_group[0] ? exam->permitted_device_group : "ALL",
+        exam->permitted_device_group,
         exam->accommodations_allowed ? "true" : "false",
         exam->network_offline_allowed ? "true" : "false",
-        exam->browser_policy_json[0] ? exam->browser_policy_json : "{}",
-        exam->incident_appeal_procedure[0] ? exam->incident_appeal_procedure : "Standard Proctor Appeal",
+        exam->browser_policy_json,
+        exam->incident_appeal_procedure,
         ret_str
     };
 
@@ -768,7 +778,8 @@ int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
     if (exam.state != EXAM_STATE_VALIDATED && exam.state != EXAM_STATE_DRAFT) return -1;
 
     char sig[65];
-    compute_policy_hmac(exam_id, exam.policy_version, exam.exam_url, sig);
+    if (compute_policy_hmac(exam_id, exam.policy_version, exam.exam_url, sig) != 0)
+        return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
@@ -821,7 +832,7 @@ int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
 }
 
 int platform_schedule_exam(const char *exam_id, time_t start_time, time_t end_time, const char *timezone, const char *actor) {
-    if (!exam_id || end_time <= start_time) return -1;
+    if (!exam_id || !timezone || !timezone[0] || end_time <= start_time) return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
@@ -830,7 +841,7 @@ int platform_schedule_exam(const char *exam_id, time_t start_time, time_t end_ti
     snprintf(s_str, sizeof(s_str), "%ld", (long)start_time);
     snprintf(e_str, sizeof(e_str), "%ld", (long)end_time);
 
-    const char *params[] = { s_str, e_str, timezone ? timezone : "UTC", exam_id };
+    const char *params[] = { s_str, e_str, timezone, exam_id };
     PGresult *res = PQexecParams(conn,
         "UPDATE examos_exams SET state = 'SCHEDULED', scheduled_start = to_timestamp($1::bigint), "
         "  scheduled_end = to_timestamp($2::bigint), timezone = $3, updated_at = clock_timestamp() "
@@ -862,23 +873,12 @@ int platform_check_readiness(const char *exam_id, const char *device_id, char *o
     enterprise_exam_t exam;
     if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
 
-    int net_ok = (exam.exam_url[0] != '\0');
+    int net_ok = platform_validate_exam_url(exam.exam_url, NULL, 0) == 0;
+    /* The P3 quote verifier, measured kiosk-policy source, and authenticated
+       camera health producer are not integrated into this readiness path. */
     int tpm_ok = 0;
-    fleet_device_record_t dev_rec;
-    if (platform_get_device_by_id(device_id, &dev_rec) == 0) {
-        time_t now = time(NULL);
-        int is_trusted = (strcmp(dev_rec.attestation_status, "TRUSTED") == 0);
-        int not_revoked = (strcmp(dev_rec.enrollment_status, "REVOKED") != 0 &&
-                           strcmp(dev_rec.enrollment_status, "QUARANTINED") != 0);
-        int fresh = (dev_rec.last_attestation_ts > 0 &&
-                     (now >= dev_rec.last_attestation_ts) &&
-                     ((now - dev_rec.last_attestation_ts) <= 7200)); /* 2h TTL */
-        if (is_trusted && not_revoked && fresh) {
-            tpm_ok = 1;
-        }
-    }
-    int kiosk_ok = 1;
-    int cam_ok = 1;
+    int kiosk_ok = 0;
+    int cam_ok = 0;
     int passed = (net_ok && tpm_ok && kiosk_ok && cam_ok);
 
     PGconn *conn = acquire_db_connection();
@@ -890,7 +890,8 @@ int platform_check_readiness(const char *exam_id, const char *device_id, char *o
             kiosk_ok ? "true" : "false",
             cam_ok ? "true" : "false",
             passed ? "true" : "false",
-            passed ? "All preflight security controls satisfied" : "Readiness check failed"
+            passed ? "All configured controls passed" :
+                     "Not ready: TPM quote verification, kiosk-policy evidence, or camera health is unavailable"
         };
         PGresult *res = PQexecParams(conn,
             "INSERT INTO examos_exam_readiness_checks ("
@@ -960,37 +961,11 @@ int platform_update_exam_url(const char *exam_id, const char *new_url, const cha
     if (!exam_id || !new_url) return -1;
 
     enterprise_exam_t exam;
-    if (platform_get_exam_by_id(exam_id, &exam) != 0) {
-        /* Auto-create exam shell under default institution if exam doesn't exist yet */
-        institution_t def_inst = {0};
-        snprintf(def_inst.institution_id, sizeof(def_inst.institution_id), "inst-default");
-        snprintf(def_inst.name, sizeof(def_inst.name), "Default Institution");
-        snprintf(def_inst.code, sizeof(def_inst.code), "DEFAULT");
-        snprintf(def_inst.contact_email, sizeof(def_inst.contact_email), "admin@internal.exam");
-        def_inst.retention_days = 365;
-        def_inst.active = 1;
-        platform_create_institution(&def_inst);
-
-        memset(&exam, 0, sizeof(exam));
-        snprintf(exam.exam_id, sizeof(exam.exam_id), "%s", exam_id);
-        snprintf(exam.institution_id, sizeof(exam.institution_id), "inst-default");
-        snprintf(exam.code, sizeof(exam.code), "%s", exam_id);
-        snprintf(exam.title, sizeof(exam.title), "Dynamic Exam %s", exam_id);
-        snprintf(exam.exam_url, sizeof(exam.exam_url), "%s", new_url);
-        snprintf(exam.allowed_origins, sizeof(exam.allowed_origins), "%s", allowed_origins ? allowed_origins : "");
-        exam.duration_minutes = 120;
-        exam.scheduled_start = time(NULL);
-        exam.scheduled_end = exam.scheduled_start + 7200;
-        snprintf(exam.timezone, sizeof(exam.timezone), "UTC");
-        exam.state = EXAM_STATE_DRAFT;
-        exam.policy_version = 0;
-        platform_create_exam(&exam);
-        platform_get_exam_by_id(exam_id, &exam);
-    }
+    if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
 
     unsigned int new_version = exam.policy_version + 1;
     char sig[65];
-    compute_policy_hmac(exam_id, new_version, new_url, sig);
+    if (compute_policy_hmac(exam_id, new_version, new_url, sig) != 0) return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
@@ -1156,31 +1131,44 @@ int platform_get_active_signed_policy(const char *exam_id, signed_policy_t *out_
     return 0;
 }
 
+static int policy_device_is_eligible(const char *exam_id, const char *device_id,
+                                    unsigned int policy_version,
+                                    const char *permitted_device_group) {
+    if (!exam_id || !exam_id[0] || !device_id || !device_id[0] ||
+        !policy_version || !permitted_device_group || !permitted_device_group[0]) return 0;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return 0;
+    char version[16];
+    snprintf(version, sizeof(version), "%u", policy_version);
+    const char *params[] = {exam_id, device_id, version, permitted_device_group};
+    PGresult *res = PQexecParams(conn,
+        "SELECT 1 FROM examos_exams e "
+        "JOIN examos_exam_policies p ON p.exam_id=e.exam_id AND p.policy_version=$3::integer "
+        "JOIN examos_devices d ON d.device_id=$2 "
+        "WHERE e.exam_id=$1 AND p.status IN ('ACTIVE','ROLLBACK') "
+        "AND e.permitted_device_group=$4 "
+        "AND d.institution_id=e.institution_id AND d.assigned_exam_id=e.exam_id "
+        "AND d.enrolled=true AND d.enrollment_status='ENROLLED' "
+        "AND d.attestation_status='TRUSTED' AND d.compliance_status='COMPLIANT' "
+        "AND d.maintenance_mode=false AND d.group_name<>'' "
+        "AND (e.permitted_device_group='ALL' OR d.group_name=e.permitted_device_group) "
+        "LIMIT 1",
+        4, NULL, params, NULL, NULL, 0);
+    int eligible = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1;
+    if (res) PQclear(res);
+    release_db_connection(conn, PQstatus(conn) != CONNECTION_OK);
+    return eligible;
+}
+
 int platform_distribute_policy_bundle_json(const char *exam_id, const char *device_id, char *out_json, size_t max_len) {
-    if (!exam_id || !out_json || max_len < 256) return -1;
+    if (!exam_id || !device_id || !device_id[0] || !out_json || max_len < 256) return -1;
 
     signed_policy_t p;
     if (platform_get_active_signed_policy(exam_id, &p) != 0) {
         return -1;
     }
-
-    /* Device group eligibility check: if permitted_device_group is not ALL, check device group */
-    if (device_id && device_id[0] && strcmp(p.permitted_device_group, "ALL") != 0 && strlen(p.permitted_device_group) > 0) {
-        pthread_mutex_lock(&g_platform_lock);
-        int matched = 0;
-        for (int i = 0; i < g_device_count; i++) {
-            if (strcmp(g_devices[i].device_id, device_id) == 0) {
-                if (strcmp(g_devices[i].group_name, p.permitted_device_group) == 0) {
-                    matched = 1;
-                }
-                break;
-            }
-        }
-        pthread_mutex_unlock(&g_platform_lock);
-        if (!matched && g_device_count > 0) {
-            return -2; /* Device group mismatch */
-        }
-    }
+    if (!policy_device_is_eligible(exam_id, device_id, p.policy_version,
+                                   p.permitted_device_group)) return -2;
 
     /* Format cryptographic distribution bundle */
     snprintf(out_json, max_len,
@@ -1204,7 +1192,7 @@ int platform_distribute_policy_bundle_json(const char *exam_id, const char *devi
         p.exam_url,
         p.allowed_origins,
         p.additional_apis,
-        p.permitted_device_group[0] ? p.permitted_device_group : "ALL",
+        p.permitted_device_group,
         p.network_offline_allowed ? "true" : "false",
         (p.browser_policy_json[0] == '{') ? p.browser_policy_json : "{}",
         (long)p.expires_at,
@@ -1274,7 +1262,10 @@ int platform_verify_client_policy(const char *policy_json, const char *expected_
 
     /* 4. Signature verification */
     char expected_sig[65] = {0};
-    compute_policy_hmac(exam_id, version, exam_url, expected_sig);
+    if (compute_policy_hmac(exam_id, version, exam_url, expected_sig) != 0) {
+        if (err_msg && err_len) snprintf(err_msg, err_len, "Policy signing key is not configured");
+        return -1;
+    }
     if (CRYPTO_memcmp(signature, expected_sig, 64) != 0) {
         if (err_msg && err_len) snprintf(err_msg, err_len, "Cryptographic signature verification failed: tampered policy");
         return -1;
@@ -1285,21 +1276,11 @@ int platform_verify_client_policy(const char *policy_json, const char *expected_
         return -1;
     }
 
-    /* 6. Device assignment verification */
-    if (device_id && device_id[0] && device_group[0] && strcmp(device_group, "ALL") != 0) {
-        pthread_mutex_lock(&g_platform_lock);
-        int matched = 0;
-        for (int i = 0; i < g_device_count; i++) {
-            if (strcmp(g_devices[i].device_id, device_id) == 0) {
-                if (strcmp(g_devices[i].group_name, device_group) == 0) matched = 1;
-                break;
-            }
-        }
-        pthread_mutex_unlock(&g_platform_lock);
-        if (!matched && g_device_count > 0) {
-            if (err_msg && err_len) snprintf(err_msg, err_len, "Device %s not in permitted device group %s", device_id, device_group);
-            return -1;
-        }
+    /* 6. Device assignment and trust verification */
+    if (!device_id || !device_id[0] || !device_group[0] ||
+        !policy_device_is_eligible(expected_exam_id, device_id, version, device_group)) {
+        if (err_msg && err_len) snprintf(err_msg, err_len, "Device is not enrolled, assigned, trusted, compliant, or permitted by the active exam policy");
+        return -1;
     }
 
     if (err_msg && err_len) err_msg[0] = '\0';
@@ -1439,7 +1420,7 @@ int platform_reconcile_exam(const char *exam_id, char *out_report_json, size_t m
 }
 
 int platform_purge_expired_exams(int retention_days, char *out_summary_json, size_t max_len) {
-    if (retention_days <= 0) retention_days = 365;
+    if (retention_days <= 0) return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
@@ -1535,7 +1516,8 @@ int platform_get_roster_json(const char *exam_id, char *out_buf, size_t max_len)
 }
 
 int platform_add_candidate_roster(const candidate_roster_entry_t *entry) {
-    if (!entry || !entry->exam_id[0] || !entry->candidate_id[0]) return -1;
+    if (!entry || !entry->exam_id[0] || !entry->candidate_id[0] || !entry->pin_hash[0] ||
+        entry->accommodation_extra_time_mins < 0) return -1;
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
@@ -1554,9 +1536,9 @@ int platform_add_candidate_roster(const candidate_roster_entry_t *entry) {
         auto_roster_id,
         entry->exam_id,
         entry->candidate_id,
-        entry->full_name[0] ? entry->full_name : "Candidate",
-        entry->email[0] ? entry->email : "candidate@examos.internal",
-        entry->pin_hash[0] ? entry->pin_hash : "DEFAULT_HASH",
+        entry->full_name,
+        entry->email,
+        entry->pin_hash,
         entry->room_id[0] ? entry->room_id : NULL,
         entry->assigned_seat[0] ? entry->assigned_seat : "",
         entry->assigned_device_id[0] ? entry->assigned_device_id : "",
@@ -1650,34 +1632,39 @@ static int db_sync_device_upsert(const fleet_device_record_t *dev) {
     }
     const char *last_attest_param = last_attest_str[0] ? last_attest_str : NULL;
 
-    const char *params[27];
+    const char *params[28];
     params[0] = dev->device_id;
-    params[1] = dev->hostname[0] ? dev->hostname : dev->device_id;
+    params[1] = dev->hostname;
     params[2] = inst_param;
     params[3] = campus_param;
     params[4] = room_param;
-    params[5] = dev->group_name[0] ? dev->group_name : "DEFAULT";
+    params[5] = dev->group_name;
     params[6] = ring_to_string(dev->ring);
     params[7] = dev->ownership_type[0] ? dev->ownership_type : (dev->student_owned ? "STUDENT_OWNED" : "INSTITUTION_OWNED");
     params[8] = dev->student_owned ? "true" : "false";
-    params[9] = dev->hardware_platform[0] ? dev->hardware_platform : "x86_64 / UEFI TPM 2.0";
+    params[9] = dev->hardware_platform;
     params[10] = dev->enrollment_status[0] ? dev->enrollment_status : (dev->enrolled ? "ENROLLED" : "PENDING_APPROVAL");
     params[11] = dev->crypto_identity_ref[0] ? dev->crypto_identity_ref : "";
-    params[12] = dev->os_release[0] ? dev->os_release : "examos-2.0.26";
+    params[12] = dev->os_release;
     params[13] = dev->image_digest[0] ? dev->image_digest : "";
     params[14] = dev->uki_digest[0] ? dev->uki_digest : "";
     params[15] = pol_ver_str;
     params[16] = dev->attestation_status[0] ? dev->attestation_status : "NOT_ATTESTED";
-    params[17] = dev->compliance_status[0] ? dev->compliance_status : "COMPLIANT";
+    params[17] = dev->compliance_status[0] ? dev->compliance_status : "NON_COMPLIANT";
     params[18] = exam_param;
     params[19] = dev->current_candidate_id[0] ? dev->current_candidate_id : "";
     params[20] = dev->session_state[0] ? dev->session_state : "IDLE";
-    params[21] = dev->update_status[0] ? dev->update_status : "UP_TO_DATE";
+    params[21] = dev->update_status[0] ? dev->update_status : "UNKNOWN";
     params[22] = dev->incident_refs[0] ? dev->incident_refs : "";
     params[23] = replace_param;
     params[24] = dev->maintenance_mode ? "true" : "false";
     params[25] = dev->enrolled ? "true" : "false";
     params[26] = last_attest_param;
+    char last_checkin_str[32] = {0};
+    if (dev->last_checkin > 0) {
+        snprintf(last_checkin_str, sizeof(last_checkin_str), "%lld", (long long)dev->last_checkin);
+    }
+    params[27] = last_checkin_str[0] ? last_checkin_str : NULL;
 
     PGresult *res = PQexecParams(conn,
         "INSERT INTO examos_devices ("
@@ -1698,7 +1685,7 @@ static int db_sync_device_upsert(const fleet_device_record_t *dev) {
         "  $20, $21, $22, "
         "  $23, $24, $25::boolean, $26::boolean, "
         "  CASE WHEN $27::text IS NOT NULL THEN to_timestamp($27::bigint) ELSE NULL END, "
-        "  clock_timestamp(), clock_timestamp()"
+        "  CASE WHEN $28::text IS NOT NULL THEN to_timestamp($28::bigint) ELSE NULL END, clock_timestamp()"
         ") ON CONFLICT (device_id) DO UPDATE SET "
         "  hostname = EXCLUDED.hostname, "
         "  institution_id = EXCLUDED.institution_id, "
@@ -1726,9 +1713,9 @@ static int db_sync_device_upsert(const fleet_device_record_t *dev) {
         "  maintenance_mode = EXCLUDED.maintenance_mode, "
         "  enrolled = EXCLUDED.enrolled, "
         "  last_attestation_ts = COALESCE(EXCLUDED.last_attestation_ts, examos_devices.last_attestation_ts), "
-        "  last_checkin = clock_timestamp(), "
+        "  last_checkin = EXCLUDED.last_checkin, "
         "  updated_at = clock_timestamp()",
-        27, NULL, params, NULL, NULL, 0);
+        28, NULL, params, NULL, NULL, 0);
 
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
     if (res) PQclear(res);
@@ -1736,9 +1723,9 @@ static int db_sync_device_upsert(const fleet_device_record_t *dev) {
     return ok ? 0 : -1;
 }
 
-static void load_devices_from_db(void) {
+static int load_devices_from_db(void) {
     PGconn *conn = acquire_db_connection();
-    if (!conn) return;
+    if (!conn) return -1;
 
     PGresult *res = PQexec(conn,
         "SELECT device_id, hostname, COALESCE(institution_id, ''), COALESCE(campus_id, ''), "
@@ -1754,7 +1741,7 @@ static void load_devices_from_db(void) {
     if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
         if (res) PQclear(res);
         release_db_connection(conn, 0);
-        return;
+        return -1;
     }
 
     int rows = PQntuples(res);
@@ -1798,6 +1785,7 @@ static void load_devices_from_db(void) {
 
     PQclear(res);
     release_db_connection(conn, 0);
+    return 0;
 }
 
 int platform_get_fleet_json(const char *inst_id, char *out_buf, size_t max_len) {
@@ -1939,13 +1927,16 @@ int platform_get_fleet_json(const char *inst_id, char *out_buf, size_t max_len) 
 }
 
 int platform_register_device(const fleet_device_record_t *dev) {
-    if (!dev || !dev->device_id[0]) return -1;
+    if (!dev || !dev->device_id[0] || !dev->group_name[0]) return -1;
     pthread_mutex_lock(&g_platform_lock);
     for (int i = 0; i < g_device_count; i++) {
         if (strcmp(g_devices[i].device_id, dev->device_id) == 0) {
+            if (db_sync_device_upsert(dev) != 0) {
+                pthread_mutex_unlock(&g_platform_lock);
+                return -1;
+            }
             memcpy(&g_devices[i], dev, sizeof(fleet_device_record_t));
             pthread_mutex_unlock(&g_platform_lock);
-            db_sync_device_upsert(dev);
             return 0;
         }
     }
@@ -1953,9 +1944,12 @@ int platform_register_device(const fleet_device_record_t *dev) {
         pthread_mutex_unlock(&g_platform_lock);
         return -1;
     }
+    if (db_sync_device_upsert(dev) != 0) {
+        pthread_mutex_unlock(&g_platform_lock);
+        return -1;
+    }
     memcpy(&g_devices[g_device_count++], dev, sizeof(fleet_device_record_t));
     pthread_mutex_unlock(&g_platform_lock);
-    db_sync_device_upsert(dev);
     return 0;
 }
 
@@ -2031,7 +2025,6 @@ int platform_get_device_by_id(const char *device_id, fleet_device_record_t *out_
     PQclear(res);
     release_db_connection(conn, 0);
 
-    platform_register_device(out_dev);
     return 0;
 }
 
@@ -2040,9 +2033,6 @@ int platform_enroll_device(const fleet_device_record_t *dev, const char *actor) 
     fleet_device_record_t rec;
     memcpy(&rec, dev, sizeof(rec));
 
-    if (!rec.hostname[0]) {
-        snprintf(rec.hostname, sizeof(rec.hostname), "%.48s.kiosk.internal", rec.device_id);
-    }
     if (rec.student_owned || strcasecmp(rec.ownership_type, "STUDENT_OWNED") == 0) {
         rec.student_owned = 1;
         snprintf(rec.ownership_type, sizeof(rec.ownership_type), "STUDENT_OWNED");
@@ -2050,38 +2040,19 @@ int platform_enroll_device(const fleet_device_record_t *dev, const char *actor) 
         rec.student_owned = 0;
         snprintf(rec.ownership_type, sizeof(rec.ownership_type), "INSTITUTION_OWNED");
     }
-    if (!rec.hardware_platform[0]) {
-        snprintf(rec.hardware_platform, sizeof(rec.hardware_platform), "x86_64 / UEFI TPM 2.0");
-    }
     if (!rec.enrollment_status[0]) {
         snprintf(rec.enrollment_status, sizeof(rec.enrollment_status), "PENDING_APPROVAL");
     }
-    if (!rec.crypto_identity_ref[0]) {
-        snprintf(rec.crypto_identity_ref, sizeof(rec.crypto_identity_ref), "urn:examos:tpm2:key:%s", rec.device_id);
-    }
-    if (!rec.os_release[0]) {
-        snprintf(rec.os_release, sizeof(rec.os_release), "examos-2.0.26");
-    }
-    if (!rec.group_name[0]) {
-        snprintf(rec.group_name, sizeof(rec.group_name), "DEFAULT");
-    }
+    if (!rec.group_name[0]) return -1;
     if (!rec.attestation_status[0]) {
         snprintf(rec.attestation_status, sizeof(rec.attestation_status), "NOT_ATTESTED");
     }
     if (!rec.compliance_status[0]) {
-        snprintf(rec.compliance_status, sizeof(rec.compliance_status), "COMPLIANT");
+        snprintf(rec.compliance_status, sizeof(rec.compliance_status), "NON_COMPLIANT");
     }
     if (!rec.session_state[0]) {
         snprintf(rec.session_state, sizeof(rec.session_state), "IDLE");
     }
-    if (!rec.update_status[0]) {
-        snprintf(rec.update_status, sizeof(rec.update_status), "UP_TO_DATE");
-    }
-    if (rec.active_policy_version == 0) {
-        rec.active_policy_version = 1;
-    }
-    rec.last_checkin = time(NULL);
-
     /* Enforce privacy guarantee for student-owned devices */
     if (rec.student_owned) {
         if (!rec.incident_refs[0]) {
@@ -2105,9 +2076,7 @@ int platform_approve_device_enrollment(const char *device_id, const char *actor)
 
     snprintf(dev.enrollment_status, sizeof(dev.enrollment_status), "ENROLLED");
     dev.enrolled = 1;
-    snprintf(dev.compliance_status, sizeof(dev.compliance_status), "COMPLIANT");
-    dev.last_checkin = time(NULL);
-
+    snprintf(dev.compliance_status, sizeof(dev.compliance_status), "NON_COMPLIANT");
     if (platform_register_device(&dev) != 0) return -1;
 
     char details[256];
@@ -2232,16 +2201,13 @@ int platform_replace_device(const char *old_device_id, const char *new_device_id
     snprintf(old_dev.enrollment_status, sizeof(old_dev.enrollment_status), "REPLACED");
     old_dev.enrolled = 0;
     snprintf(old_dev.compliance_status, sizeof(old_dev.compliance_status), "NON_COMPLIANT");
-    platform_register_device(&old_dev);
+    if (platform_register_device(&old_dev) != 0) return -1;
 
     /* Setup new device */
     fleet_device_record_t new_dev;
     if (platform_get_device_by_id(new_device_id, &new_dev) != 0) {
         memset(&new_dev, 0, sizeof(new_dev));
         snprintf(new_dev.device_id, sizeof(new_dev.device_id), "%s", new_device_id);
-        snprintf(new_dev.hostname, sizeof(new_dev.hostname), "%.48s.kiosk.internal", new_device_id);
-        snprintf(new_dev.hardware_platform, sizeof(new_dev.hardware_platform), "%s", old_dev.hardware_platform);
-        snprintf(new_dev.os_release, sizeof(new_dev.os_release), "%s", old_dev.os_release);
     }
     snprintf(new_dev.institution_id, sizeof(new_dev.institution_id), "%s", old_dev.institution_id);
     snprintf(new_dev.campus_id, sizeof(new_dev.campus_id), "%s", old_dev.campus_id);
@@ -2250,11 +2216,12 @@ int platform_replace_device(const char *old_device_id, const char *new_device_id
     new_dev.ring = old_dev.ring;
     new_dev.student_owned = old_dev.student_owned;
     snprintf(new_dev.ownership_type, sizeof(new_dev.ownership_type), "%s", old_dev.ownership_type);
-    snprintf(new_dev.enrollment_status, sizeof(new_dev.enrollment_status), "ENROLLED");
-    new_dev.enrolled = 1;
-    snprintf(new_dev.compliance_status, sizeof(new_dev.compliance_status), "COMPLIANT");
+    snprintf(new_dev.enrollment_status, sizeof(new_dev.enrollment_status), "PENDING_APPROVAL");
+    new_dev.enrolled = 0;
+    snprintf(new_dev.attestation_status, sizeof(new_dev.attestation_status), "NOT_ATTESTED");
+    snprintf(new_dev.compliance_status, sizeof(new_dev.compliance_status), "NON_COMPLIANT");
     snprintf(new_dev.replacement_for_device_id, sizeof(new_dev.replacement_for_device_id), "%s", old_device_id);
-    new_dev.last_checkin = time(NULL);
+    new_dev.last_checkin = 0;
 
     if (platform_register_device(&new_dev) != 0) return -1;
 
@@ -2279,47 +2246,37 @@ int platform_update_device_checkin(const char *device_id, const char *os_release
 }
 
 int platform_update_device_attestation(const char *device_id, const char *attestation_status, const char *compliance_status) {
-    if (!device_id || !device_id[0]) return -1;
+    if (!device_id || !device_id[0] || !attestation_status || !attestation_status[0] ||
+        (strcmp(attestation_status, "FAILED") != 0 &&
+         strcmp(attestation_status, "STALE") != 0 &&
+         strcmp(attestation_status, "NOT_ATTESTED") != 0) ||
+        (compliance_status && compliance_status[0] &&
+         strcmp(compliance_status, "NON_COMPLIANT") != 0 &&
+         strcmp(compliance_status, "MAINTENANCE") != 0 &&
+         strcmp(compliance_status, "QUARANTINED") != 0)) return -1;
     fleet_device_record_t dev;
-    if (platform_get_device_by_id(device_id, &dev) != 0) {
-        /* Auto-register device stub into fleet registry if first seen */
-        memset(&dev, 0, sizeof(dev));
-        snprintf(dev.device_id, sizeof(dev.device_id), "%s", device_id);
-        snprintf(dev.hostname, sizeof(dev.hostname), "%.48s.kiosk.internal", device_id);
-        snprintf(dev.group_name, sizeof(dev.group_name), "DEFAULT");
-        snprintf(dev.ownership_type, sizeof(dev.ownership_type), "INSTITUTION_OWNED");
-        snprintf(dev.enrollment_status, sizeof(dev.enrollment_status), "ENROLLED");
-        dev.enrolled = 1;
-        snprintf(dev.hardware_platform, sizeof(dev.hardware_platform), "x86_64 / UEFI TPM 2.0");
-        snprintf(dev.os_release, sizeof(dev.os_release), "examos-2.0.26");
-        dev.active_policy_version = 1;
-        snprintf(dev.session_state, sizeof(dev.session_state), "IDLE");
-        snprintf(dev.update_status, sizeof(dev.update_status), "UP_TO_DATE");
-    }
+    if (platform_get_device_by_id(device_id, &dev) != 0) return -1;
 
     if (attestation_status && attestation_status[0]) {
         snprintf(dev.attestation_status, sizeof(dev.attestation_status), "%s", attestation_status);
-        if (strcmp(attestation_status, "TRUSTED") == 0) {
-            dev.last_attestation_ts = time(NULL);
-        }
+        dev.last_attestation_ts = 0;
     }
     if (compliance_status && compliance_status[0]) {
         snprintf(dev.compliance_status, sizeof(dev.compliance_status), "%s", compliance_status);
     }
-    dev.last_checkin = time(NULL);
 
     return platform_register_device(&dev);
 }
 
 int platform_set_device_maintenance(const char *device_id, int in_maintenance) {
-    if (!device_id || !device_id[0]) return -1;
+    if (!device_id || !device_id[0] || (in_maintenance != 0 && in_maintenance != 1)) return -1;
     fleet_device_record_t dev;
     if (platform_get_device_by_id(device_id, &dev) == 0) {
         dev.maintenance_mode = in_maintenance ? 1 : 0;
         if (in_maintenance) {
             snprintf(dev.compliance_status, sizeof(dev.compliance_status), "MAINTENANCE");
         } else {
-            snprintf(dev.compliance_status, sizeof(dev.compliance_status), "COMPLIANT");
+            snprintf(dev.compliance_status, sizeof(dev.compliance_status), "NON_COMPLIANT");
         }
         char details[128];
         snprintf(details, sizeof(details), "device_id=%s maintenance=%d", device_id, in_maintenance);
@@ -2327,59 +2284,63 @@ int platform_set_device_maintenance(const char *device_id, int in_maintenance) {
         return platform_register_device(&dev);
     }
 
-    /* If device not yet enrolled, auto-enroll into fleet with desired maintenance state */
-    memset(&dev, 0, sizeof(dev));
-    snprintf(dev.device_id, sizeof(dev.device_id), "%s", device_id);
-    snprintf(dev.hostname, sizeof(dev.hostname), "%.48s.kiosk.internal", device_id);
-    snprintf(dev.group_name, sizeof(dev.group_name), "PRODUCTION_LAB");
-    dev.ring = RING_PILOT;
-    dev.maintenance_mode = in_maintenance ? 1 : 0;
-    dev.enrolled = 1;
-    snprintf(dev.enrollment_status, sizeof(dev.enrollment_status), "ENROLLED");
-    snprintf(dev.attestation_status, sizeof(dev.attestation_status), "TRUSTED");
-    snprintf(dev.compliance_status, sizeof(dev.compliance_status), in_maintenance ? "MAINTENANCE" : "COMPLIANT");
-    snprintf(dev.hardware_platform, sizeof(dev.hardware_platform), "x86_64 / UEFI TPM 2.0");
-    snprintf(dev.os_release, sizeof(dev.os_release), "examos-2.0.26");
-    dev.active_policy_version = 1;
-    dev.last_checkin = time(NULL);
-
-    char details[128];
-    snprintf(details, sizeof(details), "device_id=%s maintenance=%d (auto-enrolled)", device_id, in_maintenance);
-    ledger_append("DEVICE_MAINTENANCE_TOGGLED", device_id, details);
-    return platform_register_device(&dev);
+    return -1;
 }
 
 int platform_record_device_heartbeat(const char *device_id, int battery_pct, int battery_charging,
                                     int disk_free_mb, int mem_used_mb, const char *network_state,
                                     unsigned int policy_version, const char *image_digest,
                                     const char *session_state) {
-    if (!device_id || !device_id[0]) return -1;
-    fleet_device_record_t dev;
-    int found = (platform_get_device_by_id(device_id, &dev) == 0);
-    if (!found) {
-        memset(&dev, 0, sizeof(dev));
-        snprintf(dev.device_id, sizeof(dev.device_id), "%s", device_id);
-        snprintf(dev.hostname, sizeof(dev.hostname), "%.48s.kiosk.internal", device_id);
-        snprintf(dev.group_name, sizeof(dev.group_name), "DEFAULT");
-        dev.ring = RING_PILOT;
-        dev.enrolled = 1;
-        snprintf(dev.enrollment_status, sizeof(dev.enrollment_status), "ENROLLED");
-        snprintf(dev.compliance_status, sizeof(dev.compliance_status), "COMPLIANT");
-        snprintf(dev.attestation_status, sizeof(dev.attestation_status), "TRUSTED");
-        snprintf(dev.hardware_platform, sizeof(dev.hardware_platform), "x86_64 / UEFI TPM 2.0");
-        snprintf(dev.os_release, sizeof(dev.os_release), "examos-2.0.26");
+    if (!device_id || !device_id[0] || battery_pct < -1 || battery_pct > 100 ||
+        (battery_charging != 0 && battery_charging != 1) ||
+        disk_free_mb < 0 || mem_used_mb < 0 || !network_state || !network_state[0] ||
+        strlen(network_state) > 31 || policy_version > 2147483647U) return -1;
+    for (const unsigned char *p = (const unsigned char *)network_state; *p; ++p)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-')) return -1;
+    if (session_state && session_state[0] &&
+        strcmp(session_state, "IDLE") != 0 && strcmp(session_state, "CHECKED_IN") != 0 &&
+        strcmp(session_state, "IN_EXAM") != 0 && strcmp(session_state, "SUBMITTED") != 0 &&
+        strcmp(session_state, "UNKNOWN") != 0) return -1;
+    if (image_digest && image_digest[0]) {
+        if (strlen(image_digest) != 64) return -1;
+        for (size_t i = 0; i < 64; ++i)
+            if (!((image_digest[i] >= '0' && image_digest[i] <= '9') ||
+                  (image_digest[i] >= 'a' && image_digest[i] <= 'f') ||
+                  (image_digest[i] >= 'A' && image_digest[i] <= 'F'))) return -1;
     }
+    fleet_device_record_t dev;
+    if (platform_get_device_by_id(device_id, &dev) != 0) return -1;
 
     dev.last_checkin = time(NULL);
     if (policy_version > 0) dev.active_policy_version = policy_version;
     if (image_digest && image_digest[0]) snprintf(dev.image_digest, sizeof(dev.image_digest), "%s", image_digest);
     if (session_state && session_state[0]) snprintf(dev.session_state, sizeof(dev.session_state), "%s", session_state);
 
-    platform_register_device(&dev);
-
-    /* Insert telemetry into examos_device_heartbeats */
     PGconn *conn = acquire_db_connection();
-    if (conn) {
+    if (!conn) return -1;
+    PGresult *res = PQexec(conn, "BEGIN");
+    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (res) PQclear(res);
+
+    if (ok) {
+        char pol_str[16];
+        snprintf(pol_str, sizeof(pol_str), "%u", policy_version);
+        const char *update_params[] = {device_id, pol_str,
+            image_digest && image_digest[0] ? image_digest : "",
+            session_state && session_state[0] ? session_state : ""};
+        res = PQexecParams(conn,
+            "UPDATE examos_devices SET last_checkin=clock_timestamp(), "
+            "policy_version=CASE WHEN $2::integer > 0 THEN $2::integer ELSE policy_version END, "
+            "image_digest=CASE WHEN $3 <> '' THEN $3 ELSE image_digest END, "
+            "session_state=CASE WHEN $4 <> '' THEN $4 ELSE session_state END, "
+            "updated_at=clock_timestamp() "
+            "WHERE device_id=$1 AND enrolled=true AND enrollment_status='ENROLLED'",
+            4, NULL, update_params, NULL, NULL, 0);
+        ok = res && PQresultStatus(res) == PGRES_COMMAND_OK && atoi(PQcmdTuples(res)) == 1;
+        if (res) PQclear(res);
+    }
+
+    if (ok) {
         char bat_str[16], chg_str[16], disk_str[16], mem_str[16], pol_str[16];
         snprintf(bat_str, sizeof(bat_str), "%d", battery_pct);
         snprintf(chg_str, sizeof(chg_str), "%s", battery_charging ? "true" : "false");
@@ -2393,28 +2354,81 @@ int platform_record_device_heartbeat(const char *device_id, int battery_pct, int
             chg_str,
             disk_str,
             mem_str,
-            network_state && network_state[0] ? network_state : "CONNECTED",
+            network_state,
             pol_str,
             dev.image_digest[0] ? dev.image_digest : "",
             dev.session_state[0] ? dev.session_state : "IDLE"
         };
 
-        PGresult *res = PQexecParams(conn,
+        res = PQexecParams(conn,
             "INSERT INTO examos_device_heartbeats "
             "(device_id, battery_pct, battery_charging, disk_free_mb, mem_used_mb, network_state, policy_version, image_digest, session_state) "
             "VALUES ($1, $2::integer, $3::boolean, $4::integer, $5::integer, $6, $7::integer, $8, $9)",
             9, NULL, hb_params, NULL, NULL, 0);
 
+        ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
         if (res) PQclear(res);
-        release_db_connection(conn, 0);
     }
+
+    res = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
+    int committed = ok && res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (res) PQclear(res);
+    release_db_connection(conn, PQstatus(conn) != CONNECTION_OK);
+    if (!committed) return -1;
+
+    pthread_mutex_lock(&g_platform_lock);
+    for (int i = 0; i < g_device_count; ++i) {
+        if (strcmp(g_devices[i].device_id, device_id) == 0) {
+            g_devices[i].last_checkin = dev.last_checkin;
+            if (policy_version > 0) g_devices[i].active_policy_version = policy_version;
+            if (image_digest && image_digest[0]) snprintf(g_devices[i].image_digest, sizeof(g_devices[i].image_digest), "%s", image_digest);
+            if (session_state && session_state[0]) snprintf(g_devices[i].session_state, sizeof(g_devices[i].session_state), "%s", session_state);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_platform_lock);
 
     char details[256];
     snprintf(details, sizeof(details), "device_id=%s bat=%d%% net=%s pol=%u state=%s",
-             device_id, battery_pct, network_state ? network_state : "CONNECTED",
+             device_id, battery_pct, network_state,
              dev.active_policy_version, dev.session_state);
     ledger_append("DEVICE_HEARTBEAT", device_id, details);
     return 0;
+}
+
+int platform_record_agent_heartbeat(const char *device_id, const char *payload_json,
+                                   size_t payload_length, long *out_record_id) {
+    if (!device_id || !device_id[0] || strlen(device_id) > 63 || !payload_json ||
+        payload_length == 0 || payload_length > 16384 ||
+        memchr(payload_json, '\0', payload_length) != NULL ||
+        payload_json[payload_length] != '\0') return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -2;
+    const char *params[] = {device_id, payload_json};
+    PGresult *result = PQexecParams(conn,
+        "INSERT INTO examos_agent_heartbeat_records(device_id,reported_at,payload) "
+        "SELECT d.device_id,to_timestamp((($2::jsonb->>'timestamp')::bigint)::double precision),$2::jsonb "
+        "FROM examos_devices d WHERE d.device_id=$1 AND d.enrolled=true "
+        "AND d.enrollment_status='ENROLLED' AND $2::jsonb->>'device_id'=d.device_id "
+        "AND to_timestamp((($2::jsonb->>'timestamp')::bigint)::double precision) "
+        "BETWEEN clock_timestamp()-interval '5 minutes' AND clock_timestamp()+interval '30 seconds' "
+        "ON CONFLICT(device_id,reported_at) DO UPDATE "
+        "SET payload=examos_agent_heartbeat_records.payload "
+        "WHERE examos_agent_heartbeat_records.payload=EXCLUDED.payload "
+        "RETURNING heartbeat_id::text",
+        2, NULL, params, NULL, NULL, 0);
+    int accepted = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1;
+    if (accepted && out_record_id) *out_record_id = strtol(PQgetvalue(result, 0, 0), NULL, 10);
+    int invalid = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 0;
+    if (result) PQclear(result);
+    release_db_connection(conn, PQstatus(conn) != CONNECTION_OK);
+    if (accepted) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "heartbeat_record=%ld", out_record_id ? *out_record_id : 0L);
+        ledger_append("AGENT_HEARTBEAT_STORED", device_id, detail);
+        return 0;
+    }
+    return invalid ? -1 : -2;
 }
 
 int platform_bulk_device_action(const char *action_type, const char *target_group,
@@ -2465,7 +2479,7 @@ int platform_bulk_device_action(const char *action_type, const char *target_grou
             if (g_devices[i].maintenance_mode) {
                 snprintf(g_devices[i].compliance_status, sizeof(g_devices[i].compliance_status), "MAINTENANCE");
             } else {
-                snprintf(g_devices[i].compliance_status, sizeof(g_devices[i].compliance_status), "COMPLIANT");
+                snprintf(g_devices[i].compliance_status, sizeof(g_devices[i].compliance_status), "NON_COMPLIANT");
             }
             action_ok = 1;
         } else if (strcasecmp(action_type, "SET_RING") == 0) {

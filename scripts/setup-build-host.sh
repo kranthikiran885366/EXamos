@@ -15,6 +15,7 @@ sudo apt-get install -y \
     build-essential \
     pkg-config \
     libssl-dev \
+    libpq-dev \
     libcap-dev \
     libseccomp-dev \
     qemu-system-x86 \

@@ -33,6 +33,8 @@ typedef enum {
 typedef struct {
     char              device_id[64];
     char              ek_fingerprint[65];   /* SHA-256 hex of EK public key */
+    char              ak_qualified_name[69]; /* TPM2B_NAME from TPMS_ATTEST */
+    char              ak_public_pem[2048];   /* pinned RSA signing key */
     device_status_t   status;
     char              allowed_release[64];
     time_t            created_at;
@@ -75,10 +77,17 @@ typedef struct {
 
 /* --- Service Lifecycle --- */
 int  attestation_service_init(void);
+int  attestation_store_init(void);
 
 /* --- Device & Release Registry --- */
 int  attestation_register_device(const char *device_id, const char *ek_fingerprint,
                                   const char *allowed_release);
+int  attestation_register_device_identity(const char *device_id,
+                                           const char *ek_fingerprint,
+                                           const char *ak_qualified_name,
+                                           const char *ak_public_pem,
+                                           const char *ak_public_sha256,
+                                           const char *allowed_release);
 int  attestation_register_release(const char *release_id, const char *uki_hash,
                                    const char *pcr0, const char *pcr4,
                                    const char *pcr7, const char *pcr11);
@@ -98,10 +107,10 @@ int  attestation_create_challenge(const char *device_id, const char *session_id,
 
 /*
  * attestation_verify_evidence:
- *   Performs all 16 trust checks against provided evidence JSON.
- *   On success: sets session TRUSTED, generates session-bound exam key.
- *   On failure: records error in out_reason (64 bytes).
- *   Returns 0 on success (TRUSTED), -1 on failure.
+ *   Verifies TPM quote evidence against the enrolled AK and approved release
+ *   PCR measurements. Production challenge and revocation state are durably
+ *   recorded in PostgreSQL. Exam-key release is a separate lifecycle.
+ *   On failure: records the error in out_reason (64 bytes).
  */
 int  attestation_verify_evidence(const char *evidence_json,
                                   char *out_reason, char *out_exam_key);
@@ -121,8 +130,8 @@ int  attestation_re_attest(const char *attestation_id, const char *evidence_json
                             char *out_reason);
 
 /* --- Revocation --- */
-void attestation_revoke_release(const char *release_id);
-void attestation_revoke_device(const char *device_id);
+int  attestation_revoke_release(const char *release_id);
+int  attestation_revoke_device(const char *device_id);
 
 /* --- Status & Key Release --- */
 int  attestation_get_status(const char *attestation_id, char *out_status, size_t max_len);

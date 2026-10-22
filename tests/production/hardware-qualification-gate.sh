@@ -12,14 +12,7 @@ out, record, workspace = sys.argv[1:4]
 commit = subprocess.check_output(["git", "-C", workspace, "rev-parse", "HEAD"], text=True).strip()
 reasons = []
 result = "BLOCKED"
-model_scope = [{
-    "manufacturer": "Dell",
-    "model": "Vostro 15 3510",
-    "architecture": "x86-64",
-    "firmware": "UEFI",
-    "tpm": "TPM 2.0 required, not confirmed on unit",
-    "qualification": "NOT_QUALIFIED",
-}]
+model_scope = []
 if not record:
     reasons.append("EXAMOS_HARDWARE_QUALIFICATION_RECORD is unset; no device is qualified")
 elif not os.path.isfile(record):
@@ -27,6 +20,18 @@ elif not os.path.isfile(record):
     reasons.append(f"qualification record path does not exist: {record}")
 else:
     text = pathlib.Path(record).read_text(encoding="utf-8", errors="replace")
+    values = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    model_scope.append({
+        "manufacturer": values.get("MANUFACTURER"),
+        "model": values.get("MODEL"),
+        "firmware": values.get("FIRMWARE"),
+        "tpm": values.get("TPM_MANUFACTURER"),
+        "qualification": "NOT_QUALIFIED",
+    })
     required = ("MODEL=", "SERIAL=", "FIRMWARE=", "TPM_MANUFACTURER=",
                 "SECURE_BOOT=ENABLED", "INTERNAL_DISK_WRITES=NONE",
                 "QUALIFIED=YES", "RECOVERY_PLAN=DOCUMENTED")

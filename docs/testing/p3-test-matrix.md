@@ -9,18 +9,12 @@ source commit, and clean/dirty worktree state, is current development-gate
 evidence. A dirty worktree means the recorded commit alone does not identify all
 executed code. An interrupted run leaves the gate marked `IN_PROGRESS`.
 
-The integration suite generates a run-local software TPM with `swtpm`, extends
-PCR 7 with a deterministic test measurement so a zero-PCR disabled-Secure-Boot
-case is distinguishable, reads its PCRs, creates an RSA Attestation Key by default (set
-`EXAMOS_P3_TPM_AK_TYPE=ecc` to exercise ECDSA), obtains TPM-generated quotes
-for fresh nonces, and independently checks TPM output with
-`tpm2_checkquote`.
-This dynamically exercises quote parsing, PCR selection, nonce binding, AK
-signature verification, replay rejection, re-attestation, and device
-revocation. It is software-TPM evidence only, not physical-TPM, EK trust,
-measured-boot, or production-enrollment evidence.
+The former 18-case suite used synthetic quote signatures and has been retired.
+`tests/p3/attestation-suite.sh` now exits BLOCKED and cannot produce test
+evidence. The supported software checks are `tests/p3/swtpm-quote-smoke.sh`
+and `tests/p3/production-registry.sh`; their results do not qualify physical
+TPM behavior or production enrollment.
 
-Test suite: `tests/p3/attestation-suite.sh`
 Gate script: `tests/p3/gate.sh`
 
 ## Environment Setup
@@ -140,9 +134,10 @@ log, or production policy. If no `/dev/tpmrm0` or `/dev/tpm0` exists, it exits
 `tests/p3/release-gate.py` is a separate production release evaluator. The
 development gate above can never substitute for it. It returns:
 
-- `PASS` only when the source worktree is clean, fresh 18/18 P3 evidence is
-  bound to the current commit, and a detached-signature-verified production
-  evidence manifest is complete, unexpired, and bound to that same commit.
+- `PASS` only when the source worktree is clean, current-commit software checks
+  pass, and a detached-signature-verified production evidence manifest is
+  complete, unexpired, and bound to that same commit. Physical evidence in the
+  manifest must come from the target device and approved trust roots.
 - `FAIL` for failed checks, dirty source, malformed or inconsistent evidence,
   weak signing keys, signature failures, or incorrect source binding.
 - `BLOCKED` when required evidence or production manifest inputs are absent.
@@ -216,6 +211,7 @@ EXAMOS_RELEASES_CONFIG=server/config/releases.json \
 EXAMOS_AGENT_API_TOKEN="$EXAMOS_AGENT_API_TOKEN" \
     server/examos-server &
 
-# Run specific test manually
-bash tests/p3/attestation-suite.sh
+# Run the software quote and signed-registry checks
+bash tests/p3/swtpm-quote-smoke.sh
+bash tests/p3/production-registry.sh
 ```

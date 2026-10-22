@@ -11,6 +11,11 @@ WORKSPACE_PARENT="${EXAMOS_BUILD_WORKSPACE_ROOT:-${HOME:?HOME must be set}/.loca
 PKG_CACHE="${EXAMOS_PACKAGE_CACHE_DIR:-${HOME:?HOME must be set}/.cache/examos/mkosi-packages}"
 OUTPUT_PARENT="${EXAMOS_BUILD_OUTPUT_ROOT:-$ROOT/output}"
 RUN_ID="${EXAMOS_BUILD_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+VMWARE_DEV_MODE="${EXAMOS_VMWARE_DEV_MODE:-0}"
+if [[ "$VMWARE_DEV_MODE" != 0 && "$VMWARE_DEV_MODE" != 1 ]]; then
+    echo "FATAL: EXAMOS_VMWARE_DEV_MODE must be 0 or 1." >&2
+    exit 1
+fi
 if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "FATAL: EXAMOS_BUILD_RUN_ID must be a filename-safe identifier." >&2
     exit 1
@@ -54,13 +59,67 @@ rm -rf "$STAGE"/etc/systemd/system/*.wants
 
 # Install compiled binaries
 mkdir -p "$STAGE/usr/local/bin"
-for bin in server/examos-server agent/examos-agent \
+for bin in server/examos-server server/examos-db-migrate agent/examos-agent \
            kiosk/launcher/examos-kiosk-launcher proctoring/examos-proctor; do
     if [ -f "$ROOT/$bin" ]; then
         install -m 0755 "$ROOT/$bin" "$STAGE/usr/local/bin/"
         echo "  Installed $(basename "$bin")"
     fi
 done
+install -D -m 0755 "$ROOT/image/scripts/tpm-seal-secrets.sh" "$STAGE/usr/local/sbin/tpm-seal-secrets.sh"
+install -D -m 0755 "$ROOT/image/scripts/generate-chromium-policy.sh" "$STAGE/usr/local/sbin/generate-chromium-policy.sh"
+install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE/usr/local/sbin/examos-setup-postgres-tls"
+install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE/usr/local/sbin/examos-provision-remote-postgres"
+install -d "$STAGE/usr/share/examos/migrations"
+install -m 0644 "$ROOT"/server/migrations/*.sql "$STAGE/usr/share/examos/migrations/"
+
+# Optional local-only test profile. It never provisions credentials or trusts
+# device/release evidence. The service remains bound to loopback and every
+# production identity/attestation API remains unavailable until real setup.
+if [[ "$VMWARE_DEV_MODE" == 1 ]]; then
+    cat > "$STAGE/etc/systemd/system/examos-server.service" <<'UNIT'
+[Unit]
+Description=ExamOS VMware Development Server (loopback-only, unprovisioned)
+ConditionPathExists=/etc/examos/vmware-development-mode
+After=network.target
+Before=examos-kiosk.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/examos-server
+Restart=on-failure
+RestartSec=3
+Environment=EXAMOS_SERVER_PORT=8000
+Environment=EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
+Environment=EXAMOS_ALLOW_UNPROVISIONED_DEV=1
+ProtectSystem=full
+ProtectHome=yes
+StateDirectory=examos
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/log/examos /etc/examos/exam.conf
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    install -m 0644 /dev/null "$STAGE/etc/examos/vmware-development-mode"
+fi
 
 # Keep the image unprovisioned. The copied overlay templates contain explicit
 # NOT_PROVISIONED/NOT_CONFIGURED values and production services fail closed
@@ -71,6 +130,7 @@ done
 find "$STAGE" -type d -exec chmod 0755 {} + 2>/dev/null || true
 find "$STAGE" -type f -exec chmod 0644 {} + 2>/dev/null || true
 find "$STAGE/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
+find "$STAGE/usr/local/sbin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0600 "$STAGE/etc/examos/admin.conf"
 echo "  Overlay staged."
 
@@ -152,14 +212,11 @@ ln -sf /usr/lib/systemd/system/serial-getty@.service \
 echo "  Image patched."
 umount "$MNT"
 losetup -d "$LOOP"
+LOOP=""
 rmdir "$MNT" 2>/dev/null || true
 
 # ── Step 5: Convert to VMDK ────────────────────────────────────────
 echo "=== Step 5/5: Converting RAW → VMDK ==="
-VMDK="$ROOT/image/examos.vmdk"
-FLAT="$ROOT/image/examos-flat.vmdk"
-rm -f "$VMDK" "$FLAT"
-
 # Preserve the raw image beside the VMDK in this unique run directory.
 RAW_OUTPUT="$VMWARE_OUTPUT_DIR/examos.raw"
 VMDK="$VMWARE_OUTPUT_DIR/examos.vmdk"

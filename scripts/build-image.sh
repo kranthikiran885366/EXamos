@@ -32,9 +32,16 @@ install -D -m 0755 "$ROOT/kiosk/launcher/examos-kiosk-launcher" "$OVERLAY_DIR/us
 install -D -m 0755 "$ROOT/agent/examos-agent" "$OVERLAY_DIR/usr/local/bin/examos-agent"
 install -D -m 0755 "$ROOT/proctoring/examos-proctor" "$OVERLAY_DIR/usr/local/bin/examos-proctor"
 install -D -m 0755 "$ROOT/server/examos-server" "$OVERLAY_DIR/usr/local/bin/examos-server"
+install -D -m 0755 "$ROOT/server/examos-db-migrate" "$OVERLAY_DIR/usr/local/bin/examos-db-migrate"
+install -D -m 0755 "$IMAGE_DIR/scripts/tpm-seal-secrets.sh" "$OVERLAY_DIR/usr/local/sbin/tpm-seal-secrets.sh"
+install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$OVERLAY_DIR/usr/local/sbin/examos-setup-postgres-tls"
+install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$OVERLAY_DIR/usr/local/sbin/examos-provision-remote-postgres"
+install -d "$OVERLAY_DIR/usr/share/examos/migrations"
+install -m 0644 "$ROOT"/server/migrations/*.sql "$OVERLAY_DIR/usr/share/examos/migrations/"
 find "$OVERLAY_DIR" -type d -exec chmod 0755 {} +
 find "$OVERLAY_DIR" -type f -exec chmod 0644 {} +
 find "$OVERLAY_DIR/usr/local/bin" -type f -exec chmod 0755 {} +
+find "$OVERLAY_DIR/usr/local/sbin" -type f -exec chmod 0755 {} +
 
 # 3. Execute mkosi build
 echo "[3/4] Running mkosi image synthesis..."
@@ -59,6 +66,9 @@ required_image_paths=(
   /usr/local/bin/examos-agent
   /usr/local/bin/examos-proctor
   /usr/local/bin/examos-server
+  /usr/local/sbin/tpm-seal-secrets.sh
+  /usr/local/sbin/examos-setup-postgres-tls
+  /usr/local/sbin/examos-provision-remote-postgres
   /etc/systemd/system/examos-agent.service
   /etc/systemd/system/examos-kiosk.service
   /etc/systemd/system/examos-proctor.service
@@ -82,6 +92,18 @@ for binary in examos-kiosk-launcher examos-agent examos-proctor examos-server; d
     exit 1
   fi
 done
+if [[ ! -x "$VERIFY_DIR/usr/local/sbin/tpm-seal-secrets.sh" ]]; then
+  echo "ERROR: TPM provisioning script is not executable in the image." >&2
+  exit 1
+fi
+if [[ ! -x "$VERIFY_DIR/usr/local/sbin/examos-setup-postgres-tls" ]]; then
+  echo "ERROR: PostgreSQL provisioning script is not executable in the image." >&2
+  exit 1
+fi
+if [[ ! -x "$VERIFY_DIR/usr/local/sbin/examos-provision-remote-postgres" ]]; then
+  echo "ERROR: Remote PostgreSQL provisioning script is not executable in the image." >&2
+  exit 1
+fi
 sha256sum "$IMAGE_FILE" > "$ARTIFACT_DIR/image.sha256"
 stat --printf='size_bytes=%s\n' "$IMAGE_FILE" > "$ARTIFACT_DIR/image-size.txt"
 echo "SUCCESS: ExamOS Image built: $IMAGE_FILE"

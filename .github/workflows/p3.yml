@@ -12,7 +12,7 @@ env:
 
 jobs:
   p3-gate:
-    name: P3 Gate — Attestation Engine + 18-Case Test Matrix
+    name: P3 Gate — Signed Registries + Software TPM Checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -106,6 +106,7 @@ jobs:
           EXAMOS_SERVER_PORT=8000 \
           EXAMOS_LEDGER_PATH=/tmp/examos_smoke_ledger.log \
           EXAMOS_TPM_MODE=development \
+          EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
           EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
           EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
           EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
@@ -139,10 +140,11 @@ jobs:
         run: python3 tests/p3/startup-fail-closed.py
 
       # -----------------------------------------------------------------------
-      - name: Run P3 18-case attestation test suite
+      - name: Run P3 signed-registry and software TPM checks
         run: |
           mkdir -p artifacts/p3
-          bash tests/p3/attestation-suite.sh
+          bash tests/p3/production-registry.sh
+          bash tests/p3/swtpm-quote-smoke.sh
         env:
           EXAMOS_DEVICES_CONFIG: ${{ env.EXAMOS_DEVICES_CONFIG }}
           EXAMOS_RELEASES_CONFIG: ${{ env.EXAMOS_RELEASES_CONFIG }}
@@ -164,8 +166,8 @@ jobs:
           echo "================================================================"
           cat artifacts/p3/results.json 2>/dev/null || echo "results.json not generated"
           echo ""
-          echo "--- summary.md ---"
-          cat artifacts/p3/summary.md 2>/dev/null || echo "summary.md not generated"
+          echo "--- summary.txt ---"
+          cat artifacts/p3/summary.txt 2>/dev/null || echo "summary.txt not generated"
           echo ""
           echo "--- Test ledger (last 10 blocks) ---"
           tail -10 artifacts/p3/test-ledger.log 2>/dev/null || echo "ledger not generated"

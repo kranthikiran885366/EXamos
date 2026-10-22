@@ -2,24 +2,24 @@
 set -euo pipefail
 
 WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
-SERVER_BIN=${EXAMOS_P3_SERVER_BIN:-"$WORKSPACE/server/examos-server"}
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/examos-p3-production-registry.XXXXXX")
+REGISTRY_CHECK="$TMP_DIR/attestation-config-check"
 
 cleanup() {
     rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
-if [ ! -x "$SERVER_BIN" ]; then
-    echo "[P3-PRODUCTION] FAIL: server binary is missing or not executable: $SERVER_BIN" >&2
-    exit 1
-fi
-for command_name in openssl python3; do
+for command_name in cc openssl python3; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "[P3-PRODUCTION] FAIL: required command is missing: $command_name" >&2
         exit 1
     fi
 done
+cc -Wall -Wextra -Werror -I"$WORKSPACE/server/include" \
+    "$WORKSPACE/tests/server/attestation_config_test.c" \
+    "$WORKSPACE/server/attestation/attestation_config.c" \
+    -lssl -lcrypto -o "$REGISTRY_CHECK"
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
     -out "$TMP_DIR/release-registry-test.key" 2>/dev/null
@@ -29,6 +29,11 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
     -out "$TMP_DIR/device-registry-test.key" 2>/dev/null
 openssl pkey -in "$TMP_DIR/device-registry-test.key" -pubout \
     -out "$TMP_DIR/device-registry-test.pub" 2>/dev/null
+EXAMOS_DEVICES_PUBLIC_KEY_SHA256=$(openssl pkey -pubin -in "$TMP_DIR/device-registry-test.pub" \
+    -outform DER | sha256sum | cut -d' ' -f1)
+EXAMOS_RELEASES_PUBLIC_KEY_SHA256=$(openssl pkey -pubin -in "$TMP_DIR/release-registry-test.pub" \
+    -outform DER | sha256sum | cut -d' ' -f1)
+export EXAMOS_DEVICES_PUBLIC_KEY_SHA256 EXAMOS_RELEASES_PUBLIC_KEY_SHA256
 DEVICE_PUBLIC_HASH=$(openssl pkey -pubin -in "$TMP_DIR/device-registry-test.pub" \
     -outform DER | sha256sum | cut -d' ' -f1)
 AGENT_TEST_TOKEN=$(openssl rand -hex 32)
@@ -72,8 +77,9 @@ devices = {
     "devices": [{
         "device_id": "production-registry-test-device",
         "ek_fingerprint": "b" * 64,
-        "ak_name": "000b" + "c" * 64,
+        "ak_qualified_name": "000b" + "c" * 64,
         "ak_pub_sha256": ak_pub_sha256,
+        "ak_public_pem": (root / "device-registry-test.pub").read_text(encoding="ascii"),
         "status": "ENROLLED",
         "allowed_release": "examos-test-production",
     }],
@@ -91,110 +97,50 @@ openssl dgst -sha256 -sign "$TMP_DIR/release-registry-test.key" \
 openssl dgst -sha256 -sign "$TMP_DIR/device-registry-test.key" \
     -out "$TMP_DIR/devices.json.sig" "$TMP_DIR/devices.json"
 cp "$TMP_DIR/devices.json" "$TMP_DIR/valid-devices.json"
+python3 - "$TMP_DIR/empty-devices.json" <<'PY'
+import json
+import pathlib
+import sys
 
-next_port() {
-    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "_schema": "examos-device-registry-v1",
+    "environment": "production",
+    "version": "1",
+    "devices": [],
+}, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+openssl dgst -sha256 -sign "$TMP_DIR/device-registry-test.key" \
+    -out "$TMP_DIR/empty-devices.json.sig" "$TMP_DIR/empty-devices.json"
 
 production_env() {
     env \
         EXAMOS_TPM_MODE=production \
-        EXAMOS_SERVER_PORT="$1" \
-        EXAMOS_LEDGER_PATH="$TMP_DIR/ledger-$1.log" \
-        EXAMOS_SESSION_JOURNAL="$TMP_DIR/session-$1.log" \
-        EXAMOS_AGENT_API_TOKEN="$AGENT_TEST_TOKEN" \
-        EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TEST_TOKEN" \
-        EXAMOS_EVENT_SIGNING_KEY="$EVENT_TEST_KEY" \
-        EXAMOS_VARIANT_SECRET="$VARIANT_TEST_SECRET" \
-        EXAMOS_LEDGER_HMAC_KEY="$LEDGER_TEST_KEY" \
         EXAMOS_DEVICES_CONFIG="${EXAMOS_DEVICES_CONFIG:-$TMP_DIR/devices.json}" \
         EXAMOS_RELEASES_CONFIG="${EXAMOS_RELEASES_CONFIG:-$TMP_DIR/releases.json}" \
         EXAMOS_DEVICES_SIGNATURE="${EXAMOS_DEVICES_SIGNATURE:-$TMP_DIR/devices.json.sig}" \
         EXAMOS_RELEASES_SIGNATURE="${EXAMOS_RELEASES_SIGNATURE:-$TMP_DIR/releases.json.sig}" \
         EXAMOS_DEVICES_PUBLIC_KEY="$TMP_DIR/device-registry-test.pub" \
         EXAMOS_RELEASES_PUBLIC_KEY="$TMP_DIR/release-registry-test.pub" \
-        "$SERVER_BIN"
+        EXAMOS_DEVICES_PUBLIC_KEY_SHA256="$EXAMOS_DEVICES_PUBLIC_KEY_SHA256" \
+        EXAMOS_RELEASES_PUBLIC_KEY_SHA256="$EXAMOS_RELEASES_PUBLIC_KEY_SHA256" \
+        "$REGISTRY_CHECK"
 }
 
 echo "[P3-PRODUCTION] Checking signed production manifests..."
-if ! python3 - "$SERVER_BIN" "$TMP_DIR" <<'PY'
-import os
-import pathlib
-import socket
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
-
-server = sys.argv[1]
-root = pathlib.Path(sys.argv[2])
-with socket.socket() as sock:
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-
-env = os.environ.copy()
-env.update({
-    "EXAMOS_TPM_MODE": "production",
-    "EXAMOS_SERVER_PORT": str(port),
-    "EXAMOS_LEDGER_PATH": str(root / "valid-ledger.log"),
-    "EXAMOS_SESSION_JOURNAL": str(root / "valid-session.log"),
-    "EXAMOS_AGENT_API_TOKEN": os.environ["EXAMOS_AGENT_API_TOKEN"],
-    "EXAMOS_PROCTOR_API_TOKEN": os.environ["EXAMOS_PROCTOR_API_TOKEN"],
-    "EXAMOS_EVENT_SIGNING_KEY": os.environ["EXAMOS_EVENT_SIGNING_KEY"],
-    "EXAMOS_VARIANT_SECRET": os.environ["EXAMOS_VARIANT_SECRET"],
-    "EXAMOS_LEDGER_HMAC_KEY": os.environ["EXAMOS_LEDGER_HMAC_KEY"],
-    "EXAMOS_DEVICES_CONFIG": str(root / "devices.json"),
-    "EXAMOS_RELEASES_CONFIG": str(root / "releases.json"),
-    "EXAMOS_DEVICES_SIGNATURE": str(root / "devices.json.sig"),
-    "EXAMOS_RELEASES_SIGNATURE": str(root / "releases.json.sig"),
-    "EXAMOS_DEVICES_PUBLIC_KEY": str(root / "device-registry-test.pub"),
-    "EXAMOS_RELEASES_PUBLIC_KEY": str(root / "release-registry-test.pub"),
-})
-with (root / "valid-startup.log").open("w", encoding="utf-8") as log:
-    process = subprocess.Popen([server], env=env, stdout=log, stderr=subprocess.STDOUT)
-    try:
-        ready = False
-        for _ in range(15):
-            if process.poll() is not None:
-                break
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/v1/health", timeout=1
-                ) as response:
-                    ready = response.status == 200
-                    break
-            except (urllib.error.URLError, TimeoutError):
-                time.sleep(0.2)
-        if not ready:
-            raise SystemExit("valid signed production registries did not reach healthy startup")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-if not ready:
-    raise SystemExit("valid signed production registries did not start")
-PY
-then
+if ! production_env >"$TMP_DIR/valid-startup.log" 2>&1; then
     cat "$TMP_DIR/valid-startup.log" >&2
-    echo "[P3-PRODUCTION] FAIL: valid signed production registries did not reach healthy startup." >&2
+    echo "[P3-PRODUCTION] FAIL: valid signed production registries were rejected." >&2
     exit 1
 fi
 echo "[P3-PRODUCTION] PASS: valid signed production registries accepted."
 
 expect_rejection() {
     local label=$1
-    local port
-    port=$(next_port)
-    if production_env "$port" >"$TMP_DIR/$label.log" 2>&1; then
-        echo "[P3-PRODUCTION] FAIL: $label unexpectedly started successfully." >&2
+    if production_env >"$TMP_DIR/$label.log" 2>&1; then
+        echo "[P3-PRODUCTION] FAIL: $label unexpectedly passed verification." >&2
         exit 1
     fi
-    if ! grep -Eq 'FATAL:|Refusing unsigned|signature verification failed|lacks approved identity|device entry is incomplete' \
+    if ! grep -Eq 'FATAL:|Refusing unsigned|signature verification failed|pinned SHA-256 fingerprint|trusted-key fingerprint|lacks approved identity|device entry is incomplete' \
         "$TMP_DIR/$label.log"; then
         cat "$TMP_DIR/$label.log" >&2
         echo "[P3-PRODUCTION] FAIL: $label exited without an explicit trust rejection." >&2
@@ -202,6 +148,12 @@ expect_rejection() {
     fi
     echo "[P3-PRODUCTION] PASS: $label rejected."
 }
+
+EXAMOS_RELEASES_PUBLIC_KEY_SHA256=$(printf '%064d' 0) \
+    expect_rejection mismatched-external-release-key-pin
+EXAMOS_DEVICES_CONFIG="$TMP_DIR/empty-devices.json" \
+EXAMOS_DEVICES_SIGNATURE="$TMP_DIR/empty-devices.json.sig" \
+    expect_rejection signed-empty-production-device-registry
 
 cp "$TMP_DIR/releases.json" "$TMP_DIR/tampered-releases.json"
 python3 - "$TMP_DIR/tampered-releases.json" <<'PY'

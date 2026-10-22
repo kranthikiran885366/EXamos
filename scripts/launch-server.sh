@@ -29,14 +29,8 @@ fi
 mkdir -p /tmp/examos-logs
 sudo mkdir -p /etc/examos 2>/dev/null || true
 
-# Create default config if missing
-if [ ! -f /etc/examos/exam.conf ]; then
-    echo "[LAUNCH] Creating default exam configuration..."
-    sudo tee /etc/examos/exam.conf > /dev/null <<'CONF'
-EXAM_URL=NOT_CONFIGURED
-EXAM_NAME=ExamOS Enterprise Examination
-EXAM_DURATION_MINUTES=120
-CONF
+if [ ! -s /etc/examos/exam.conf ]; then
+    echo "[LAUNCH] No exam configuration is provisioned; exam start remains unavailable."
 fi
 
 # Never create a well-known administrator credential from a development
@@ -47,6 +41,7 @@ fi
 
 # Set environment
 export EXAMOS_SERVER_PORT=${EXAMOS_SERVER_PORT:-8000}
+export EXAMOS_ALLOW_UNPROVISIONED_DEV=${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}
 export EXAMOS_LEDGER_PATH=/tmp/examos-logs/event_ledger.log
 
 echo "[LAUNCH] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

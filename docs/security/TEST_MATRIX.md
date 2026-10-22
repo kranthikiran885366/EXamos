@@ -4,10 +4,12 @@ Verdicts: PASS | FAIL | BLOCKED | NOT TESTED. Never convert skipped/synthetic in
 
 | ID | Class | Property | Harness | Mode | Last result |
 |----|-------|----------|---------|------|-------------|
-| P3-001..018 | Integration / negative | Nonce, quote, PCR, replay, revoke, key release | `tests/p3/attestation-suite.sh` | swtpm, development | PASS 18/18 DIRTY Oct 11 (software TPM) |
+| P3-QUOTE | Integration / negative | TPM quote signature, AK name, nonce, selected PCR digest, tamper rejection | `tests/p3/swtpm-quote-smoke.sh` | swtpm | PASS in current development run; software TPM only |
+| P3-REGISTRY | Integration / tamper negative | Signed production registries and complete AK binding | `tests/p3/production-registry.sh` | ephemeral signing keys, production mode | PASS in current development run; not an organization signing ceremony |
+| P3-LEGACY-SUITE | Retired | Synthetic quote signatures | `tests/p3/attestation-suite.sh` | none | BLOCKED; cannot provide attestation evidence |
 | P3-HMAC | Config | Missing production HMAC key | `tests/p3/startup-fail-closed.py` | production | Adding this increment |
-| P3-TOFU | Negative | Enrolled AK required when names present | suite devices.json | development with pre-enroll | Adding |
-| P3-EK | Integration | Test CA verifies EK leaf | suite + openssl | swtpm | Adding |
+| P3-TOFU | Negative | Enrolled AK required when names present | `tests/p3/production-registry.sh` | development with signed fixtures | PASS current registry cases |
+| P3-EK | Integration | Test CA verifies EK leaf | `tests/production/trust-provisioning-gate.sh` | production inputs | BLOCKED; organization EK trust assets unavailable |
 | P3-GO | Unit | Empty golden PCR must FAIL | verifier.go | development | Code fix this increment |
 | P3-EVENTLOG | Negative | TCG replay | none | — | NOT TESTED / not implemented |
 | P3-HW | Hardware | Physical quote + server nonce | `hardware-tpm-preflight.sh` | physical | NOT TESTED this increment |

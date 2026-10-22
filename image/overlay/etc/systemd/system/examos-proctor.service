@@ -1,6 +1,10 @@
 [Unit]
 Description=ExamOS Native C++ Proctoring and Anomaly Detection Engine
-After=network.target sound.target examos-kiosk.service
+ConditionPathExists=/run/examos/secrets/proctor.env
+StartLimitIntervalSec=300
+StartLimitBurst=3
+Requires=examos-unseal.service
+After=network.target sound.target examos-kiosk.service examos-unseal.service
 PartOf=examos-kiosk.service
 
 [Service]
@@ -9,6 +13,7 @@ User=exam
 Group=exam
 SupplementaryGroups=audio
 EnvironmentFile=/etc/examos/proctor.env
+EnvironmentFile=/run/examos/secrets/proctor.env
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 ExecStart=/usr/local/bin/examos-proctor

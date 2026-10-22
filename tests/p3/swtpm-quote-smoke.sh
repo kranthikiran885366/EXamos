@@ -12,6 +12,7 @@ for tool in swtpm tpm2_startup tpm2_createprimary tpm2_createak \
 done
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/examos-p3-swtpm.XXXXXX")
+WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
 TPM_PID=""
 cleanup() {
     if [ -n "$TPM_PID" ]; then
@@ -70,7 +71,7 @@ tpm2_createak -C "$WORK_DIR/ek.ctx" -c "$WORK_DIR/ak.ctx" \
     -n "$WORK_DIR/ak.name" -R >/dev/null
 tpm2_flushcontext -t
 tpm2_readpublic -c "$WORK_DIR/ak.ctx" -f pem \
-    -o "$WORK_DIR/ak.pem" >/dev/null
+    -o "$WORK_DIR/ak.pem" -q "$WORK_DIR/ak.qualified-name" >/dev/null
 tpm2_flushcontext -t
 
 NONCE=$(openssl rand -hex 32)
@@ -81,6 +82,14 @@ tpm2_quote -c "$WORK_DIR/ak.ctx" -l sha256:0,4,7,11 \
 tpm2_checkquote -u "$WORK_DIR/ak.pem" -m "$WORK_DIR/quote.msg" \
     -s "$WORK_DIR/quote.sig" -f "$WORK_DIR/pcr-read.yaml" \
     -l sha256:0,4,7,11 -q "$NONCE"
+
+cc -Wall -Wextra -Werror -I"$WORKSPACE/server/include" \
+    "$WORKSPACE/tests/server/tpm_quote_verify_test.c" \
+    "$WORKSPACE/server/attestation/tpm_quote.c" \
+    -lssl -lcrypto -o "$WORK_DIR/tpm-quote-verifier-test"
+EXAMOS_TEST_TPM_NONCE="$NONCE" "$WORK_DIR/tpm-quote-verifier-test" \
+    "$WORK_DIR/quote.msg" "$WORK_DIR/quote.sig" "$WORK_DIR/ak.pem" \
+    "$WORK_DIR/ak.qualified-name"
 
 echo "[P3-SWTPM] quote message bytes: $(wc -c < "$WORK_DIR/quote.msg")"
 echo "[P3-SWTPM] quote signature bytes: $(wc -c < "$WORK_DIR/quote.sig")"

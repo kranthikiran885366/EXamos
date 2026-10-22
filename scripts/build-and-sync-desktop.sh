@@ -20,6 +20,12 @@ sudo mount "${LOOPDEV}p2" /mnt/examos_root
 echo "=== 3. Installing Rebuilt Binaries ==="
 sudo install -d /mnt/examos_root/usr/local/bin
 sudo install -m 755 "$WORKSPACE/server/examos-server" /mnt/examos_root/usr/local/bin/
+sudo install -m 755 "$WORKSPACE/server/examos-db-migrate" /mnt/examos_root/usr/local/bin/
+sudo install -D -m 755 "$WORKSPACE/image/scripts/tpm-seal-secrets.sh" /mnt/examos_root/usr/local/sbin/tpm-seal-secrets.sh
+sudo install -D -m 755 "$WORKSPACE/scripts/setup-postgres-tls.sh" /mnt/examos_root/usr/local/sbin/examos-setup-postgres-tls
+sudo install -D -m 755 "$WORKSPACE/scripts/provision-remote-postgres.sh" /mnt/examos_root/usr/local/sbin/examos-provision-remote-postgres
+sudo install -d /mnt/examos_root/usr/share/examos/migrations
+sudo install -m 644 "$WORKSPACE"/server/migrations/*.sql /mnt/examos_root/usr/share/examos/migrations/
 sudo install -m 755 "$WORKSPACE/agent/examos-agent" /mnt/examos_root/usr/local/bin/
 sudo install -m 755 "$WORKSPACE/kiosk/launcher/examos-kiosk-launcher" /mnt/examos_root/usr/local/bin/
 sudo install -m 755 "$WORKSPACE/proctoring/examos-proctor" /mnt/examos_root/usr/local/bin/

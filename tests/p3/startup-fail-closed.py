@@ -54,6 +54,7 @@ def main():
         base = os.environ.copy()
         base.update({
             "EXAMOS_TPM_MODE": "development",
+            "EXAMOS_ALLOW_UNPROVISIONED_DEV": "1",
             "EXAMOS_DEVICES_CONFIG": str(devices),
             "EXAMOS_RELEASES_CONFIG": str(releases),
             "EXAMOS_LEDGER_PATH": str(root / "ledger.log"),
@@ -97,6 +98,7 @@ def main():
 
         prod_missing_hmac = base.copy()
         prod_missing_hmac["EXAMOS_TPM_MODE"] = "production"
+        prod_missing_hmac.pop("EXAMOS_ALLOW_UNPROVISIONED_DEV", None)
         prod_missing_hmac.pop(PRODUCTION_LEDGER_KEY)
         expect_rejected(
             "production missing EXAMOS_LEDGER_HMAC_KEY",
@@ -104,13 +106,29 @@ def main():
             "EXAMOS_LEDGER_HMAC_KEY",
         )
 
-        empty_devices = root / "empty-devices.json"
-        empty_devices.write_text('{"devices":[]}\n', encoding="utf-8")
-        env = base.copy()
-        env["EXAMOS_DEVICES_CONFIG"] = str(empty_devices)
+        prod_unprovisioned = base.copy()
+        prod_unprovisioned["EXAMOS_TPM_MODE"] = "production"
         expect_rejected(
-            "empty device registry", env,
-            "no valid device and release registries",
+            "production forbids unprovisioned development override",
+            prod_unprovisioned,
+            "EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden",
+        )
+
+        prod_missing_database = base.copy()
+        prod_missing_database["EXAMOS_TPM_MODE"] = "production"
+        prod_missing_database.pop("EXAMOS_ALLOW_UNPROVISIONED_DEV", None)
+        # Do not inherit a developer/host database connection into this
+        # negative test. In particular, a real TLS connection can take the
+        # libpq timeout before the expected fail-closed startup is observed.
+        # Point at a path known not to exist so this case tests the missing
+        # production credential deterministically and without touching a DB.
+        prod_missing_database["EXAMOS_DATABASE_URL_FILE"] = str(
+            root / "missing-production-database-url"
+        )
+        expect_rejected(
+            "production refuses to start without provisioned PostgreSQL TLS and attestation state",
+            prod_missing_database,
+            "PostgreSQL TLS connection or required schema unavailable",
         )
 
         # Runtime resource-control regression: one incomplete request must not
@@ -118,7 +136,7 @@ def main():
         # overload response, and capacity is restored after the first closes.
         runtime = base.copy()
         runtime["EXAMOS_SERVER_PORT"] = str(free_port())
-        runtime["EXAMOS_MAX_ACTIVE_CONNECTIONS"] = "1"
+        runtime["EXAMOS_MAX_CLIENTS"] = "1"
         process = subprocess.Popen(
             [str(SERVER)], env=runtime, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True,

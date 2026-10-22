@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../include/admin_dashboard.h"
 #include "../include/config_manager.h"
+#include "../include/admin_auth_store.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,32 +48,75 @@ static int base64_decode(const char *input, char *output, size_t max_out) {
     return (int)output_length;
 }
 
+static int html_escape(const char *input, char *output, size_t capacity) {
+    size_t used = 0;
+    if (!input || !output || capacity == 0) return -1;
+    for (const unsigned char *p = (const unsigned char *)input; *p; ++p) {
+        const char *replacement = NULL;
+        switch (*p) {
+            case '&': replacement = "&amp;"; break;
+            case '<': replacement = "&lt;"; break;
+            case '>': replacement = "&gt;"; break;
+            case '\"': replacement = "&quot;"; break;
+            case '\'': replacement = "&#39;"; break;
+            default: break;
+        }
+        size_t n = replacement ? strlen(replacement) : 1;
+        if (used + n >= capacity || *p < 0x20 || *p == 0x7f) return -1;
+        if (replacement) {
+            memcpy(output + used, replacement, n);
+            used += n;
+        } else output[used++] = (char)*p;
+    }
+    output[used] = '\0';
+    return 0;
+}
+
 int admin_check_auth(const char *auth_header) {
-    if (!auth_header || strlen(auth_header) < 6) return 0;
-    if (strncmp(auth_header, "Basic ", 6) != 0) return 0;
+    if (!auth_header) return 0;
+    const char *dev_mode = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    if (dev_mode && strcmp(dev_mode, "1") == 0) {
+        if (strlen(auth_header) < 6 || strncmp(auth_header, "Basic ", 6) != 0) return 0;
 
-    const char *b64 = auth_header + 6;
-    while (*b64 == ' ') b64++;
+        const char *b64 = auth_header + 6;
+        while (*b64 == ' ') b64++;
 
-    char decoded[256] = {0};
-    if (base64_decode(b64, decoded, sizeof(decoded)) <= 0) {
+        char decoded[256] = {0};
+        if (base64_decode(b64, decoded, sizeof(decoded)) <= 0) {
+            OPENSSL_cleanse(decoded, sizeof(decoded));
+            return 0;
+        }
+
+        char *colon = strchr(decoded, ':');
+        if (!colon) {
+            OPENSSL_cleanse(decoded, sizeof(decoded));
+            return 0;
+        }
+
+        *colon = '\0';
+        int valid = config_verify_admin_credentials(decoded, colon + 1);
         OPENSSL_cleanse(decoded, sizeof(decoded));
-        return 0;
+        return valid;
     }
 
-    char *colon = strchr(decoded, ':');
-    if (!colon) {
-        OPENSSL_cleanse(decoded, sizeof(decoded));
-        return 0;
-    }
-
-    *colon = '\0';
-    char *user = decoded;
-    char *pass = colon + 1;
-
-    int valid = config_verify_admin_credentials(user, pass);
-    OPENSSL_cleanse(decoded, sizeof(decoded));
+    static const char prefix[] = "Bearer ";
+    if (strncmp(auth_header, prefix, sizeof(prefix) - 1) != 0) return 0;
+    auth_session_t session;
+    int valid = admin_auth_store_verify(auth_header + sizeof(prefix) - 1, &session) == 0;
+    OPENSSL_cleanse(&session, sizeof(session));
     return valid;
+}
+
+int admin_check_permission(const char *auth_header, uint32_t permission) {
+    const char *dev_mode = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    if (dev_mode && strcmp(dev_mode, "1") == 0) return admin_check_auth(auth_header);
+    static const char prefix[] = "Bearer ";
+    if (!auth_header || strncmp(auth_header, prefix, sizeof(prefix) - 1) != 0) return 0;
+    auth_session_t session;
+    int allowed = admin_auth_store_authorize(auth_header + sizeof(prefix) - 1,
+                                             permission, &session) == 0;
+    OPENSSL_cleanse(&session, sizeof(session));
+    return allowed;
 }
 
 const char *admin_login_html(void) {
@@ -109,11 +153,15 @@ const char *admin_login_html(void) {
            "    <form onsubmit=\"event.preventDefault(); auth();\">\n"
            "      <div class=\"form-group\">\n"
            "        <label>Username</label>\n"
-           "        <input type=\"text\" id=\"u\" required autocomplete=\"off\" value=\"admin\">\n"
+           "        <input type=\"text\" id=\"u\" required autocomplete=\"username\">\n"
            "      </div>\n"
            "      <div class=\"form-group\">\n"
            "        <label>Admin Password</label>\n"
            "        <input type=\"password\" id=\"p\" required autocomplete=\"off\" placeholder=\"••••••••••••\">\n"
+           "      </div>\n"
+           "      <div class=\"form-group\">\n"
+           "        <label>MFA Code (if enrolled)</label>\n"
+           "        <input type=\"text\" id=\"mfa\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{6}\" maxlength=\"6\">\n"
            "      </div>\n"
            "      <button type=\"submit\" class=\"btn\">Authenticate</button>\n"
            "    </form>\n"
@@ -123,16 +171,13 @@ const char *admin_login_html(void) {
            "    function auth() {\n"
            "      const u = document.getElementById('u').value;\n"
            "      const p = document.getElementById('p').value;\n"
-           "      const token = btoa(u + ':' + p);\n"
-           "      fetch('/admin', {\n"
-           "        headers: { 'Authorization': 'Basic ' + token }\n"
-           "      }).then(r => {\n"
-           "        if (r.ok) {\n"
-           "          sessionStorage.setItem('examos_admin_auth', token);\n"
-           "          window.location.reload();\n"
-           "        } else {\n"
-           "          alert('Invalid administrator credentials.');\n"
-           "        }\n"
+           "      const mfa = document.getElementById('mfa').value;\n"
+           "      fetch('/api/v1/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },\n"
+           "        body: JSON.stringify({ username: u, password: p, mfa_code: mfa })\n"
+           "      }).then(async r => { const data = await r.json(); if (r.ok && data.token) {\n"
+           "          sessionStorage.setItem('examos_admin_auth', data.token); window.location.reload();\n"
+           "        } else if (data.status === 'MFA_REQUIRED') { alert('Enter your MFA code and sign in again.'); document.getElementById('mfa').focus();\n"
+           "        } else { alert('Invalid administrator credentials.'); }\n"
            "      }).catch(() => alert('Network error connecting to ExamOS server.'));\n"
            "    }\n"
            "  </script>\n"
@@ -141,10 +186,13 @@ const char *admin_login_html(void) {
 }
 
 const char *admin_dashboard_html(const char *current_url, const char *current_name, int duration_minutes) {
-    static char buf[65536];
-    const char *url_val = (current_url && strlen(current_url) > 0) ? current_url : "NOT_CONFIGURED";
-    const char *name_val = (current_name && strlen(current_name) > 0) ? current_name : "ExamOS Final Examination";
-    int dur_val = (duration_minutes > 0) ? duration_minutes : 120;
+    static _Thread_local char buf[65536];
+    char escaped_url[4096], escaped_name[1024];
+    const char *url_val = (current_url && strlen(current_url) > 0) ? current_url : "";
+    const char *name_val = (current_name && strlen(current_name) > 0) ? current_name : "";
+    int dur_val = (duration_minutes > 0) ? duration_minutes : 0;
+    if (html_escape(url_val, escaped_url, sizeof(escaped_url)) != 0 ||
+        html_escape(name_val, escaped_name, sizeof(escaped_name)) != 0) return "";
 
     snprintf(buf, sizeof(buf),
              "<!DOCTYPE html>\n"
@@ -226,18 +274,14 @@ const char *admin_dashboard_html(const char *current_url, const char *current_na
              "          <p style=\"font-size: 13px; color: #94a3b8; margin-bottom: 16px;\">Restart the kiosk runtime supervisor or isolate the appliance.</p>\n"
              "          <div style=\"display: flex; gap: 12px;\">\n"
              "            <button onclick=\"reloadKiosk()\" class=\"btn-primary\" style=\"background: #475569;\">Restart Kiosk Browser</button>\n"
-             "            <button onclick=\"lockAppliance()\" class=\"btn-danger\">Emergency Lock Device</button>\n"
+             "            <button onclick=\"adminLogout()\" class=\"btn-primary\">Sign Out</button>\n"
              "          </div>\n"
              "        </div>\n"
              "      </div>\n"
              "      <div>\n"
              "        <div class=\"card\">\n"
-             "          <div class=\"card-title\">System Telemetry</div>\n"
-             "          <div class=\"metric-row\"><span class=\"metric-name\">OS Version</span><span class=\"metric-val\">ExamOS v0.2.0 (Debian 13)</span></div>\n"
-             "          <div class=\"metric-row\"><span class=\"metric-name\">Security Profile</span><span class=\"metric-val\">AppArmor + nftables</span></div>\n"
-             "          <div class=\"metric-row\"><span class=\"metric-name\">Kernel Hardening</span><span class=\"metric-val\">Lockdown (Integrity)</span></div>\n"
-             "          <div class=\"metric-row\"><span class=\"metric-name\">USB Port Lockdown</span><span class=\"metric-val\">HID Only (Class 08 Blocked)</span></div>\n"
-             "          <div class=\"metric-row\"><span class=\"metric-name\">Kiosk Engine</span><span class=\"metric-val\">Cage / Wayland + Chromium</span></div>\n"
+             "          <div class=\"card-title\">Hardware and Runtime Status</div>\n"
+             "          <p role=\"status\">Live platform telemetry is unavailable. Device posture and active security controls have not been verified by this server.</p>\n"
              "        </div>\n"
              "      </div>\n"
              "    </div>\n"
@@ -253,7 +297,7 @@ const char *admin_dashboard_html(const char *current_url, const char *current_na
              "      try {\n"
              "        const res = await fetch('/api/v1/admin/config', {\n"
              "          method: 'POST',\n"
-             "          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },\n"
+             "          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + auth },\n"
              "          body: JSON.stringify({ exam_url: url, exam_name: name, exam_duration_minutes: dur })\n"
              "        });\n"
              "        const data = await res.json();\n"
@@ -268,19 +312,18 @@ const char *admin_dashboard_html(const char *current_url, const char *current_na
              "    });\n"
              "    async function reloadKiosk() {\n"
              "      const auth = sessionStorage.getItem('examos_admin_auth');\n"
-             "      await fetch('/api/v1/admin/reload', { method: 'POST', headers: { 'Authorization': 'Basic ' + auth } });\n"
+             "      await fetch('/api/v1/admin/reload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + auth } });\n"
              "      alert('Kiosk restart command issued.');\n"
              "    }\n"
-             "    async function lockAppliance() {\n"
-             "      if (confirm('Are you sure you want to lock this ExamOS device into rescue target?')) {\n"
-             "        const auth = sessionStorage.getItem('examos_admin_auth');\n"
-             "        await fetch('/api/v1/admin/lock', { method: 'POST', headers: { 'Authorization': 'Basic ' + auth } });\n"
-             "      }\n"
+             "    async function adminLogout() {\n"
+             "      const token = sessionStorage.getItem('examos_admin_auth');\n"
+             "      try { await fetch('/api/v1/admin/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }); }\n"
+             "      finally { sessionStorage.removeItem('examos_admin_auth'); window.location.href = '/admin'; }\n"
              "    }\n"
              "  </script>\n"
              "</body>\n"
              "</html>\n",
-             url_val, name_val, dur_val);
+             escaped_url, escaped_name, dur_val);
 
     return buf;
 }

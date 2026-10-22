@@ -116,7 +116,7 @@ int candidate_session_create(const char *candidate_id, char *out_token) {
         slot = 0;
     }
 
-    strncpy(g_sessions[slot].token, token, SESSION_TOKEN_LEN);
+    memcpy(g_sessions[slot].token, token, sizeof(g_sessions[slot].token));
     g_sessions[slot].token[SESSION_TOKEN_LEN] = '\0';
     strncpy(g_sessions[slot].candidate_id, candidate_id, MAX_CANDIDATE_ID_LEN - 1);
     g_sessions[slot].candidate_id[MAX_CANDIDATE_ID_LEN - 1] = '\0';
@@ -251,7 +251,7 @@ const char *candidate_login_html(void) {
            "      <button type=\"submit\" class=\"btn\" id=\"submit-btn\">Proceed to Verification</button>\n"
            "    </form>\n"
            "    <div class=\"footer\">\n"
-           "      ExamOS v0.4.0 • TPM Measured: TRUSTED • WebRTC SFU: READY<br>\n"
+           "      ExamOS v0.4.0 • TPM Attestation: UNAVAILABLE • Proctoring Media: NOT CONFIGURED<br>\n"
            "      <a href=\"/admin\" style=\"color: #475569; text-decoration: none; font-size: 10px; margin-top: 8px; display: inline-block;\">Admin Portal</a>\n"
            "    </div>\n"
            "  </div>\n"
@@ -262,18 +262,18 @@ const char *candidate_login_html(void) {
            "      <div class=\"modal-title\">Proctoring & Privacy Consent Notice</div>\n"
            "      <div class=\"consent-text\">\n"
            "        <strong>Examination Proctoring Disclosure:</strong><br>\n"
-           "        This secure session requires continuous proctoring verification under the ExamOS policy.\n"
+           "        Proctoring is not configured in this build. Exam entry is disabled until a qualified service is provisioned.\n"
            "        <ul class=\"consent-list\">\n"
-           "          <li><strong>Primary Camera & Microphone:</strong> Video/audio will be monitored for presence verification.</li>\n"
+           "          <li>Camera and microphone access will not be requested by this unavailable proctoring flow.</li>\n"
            "          <li><strong>Derived Events Only:</strong> Only signals (face presence, head pose, phone detection) are sent to the risk engine — raw video is not sent to the risk engine.</li>\n"
-           "          <li><strong>Tamper-Evident Hash Chain:</strong> All events are cryptographically SHA-256 chained.</li>\n"
-           "          <li><strong>Data Retention:</strong> Evidence is held for 30 days under strict examination policy.</li>\n"
+           "          <li>No inference events or proctoring evidence are being collected.</li>\n"
+           "          <li>Evidence retention policy is not configured for this build.</li>\n"
            "        </ul>\n"
            "      </div>\n"
            "      <div class=\"preview-box\">\n"
            "        <video id=\"preview-cam\" autoplay playsinline muted></video>\n"
            "      </div>\n"
-           "      <button class=\"btn\" id=\"consent-btn\" onclick=\"acceptConsent()\">I Consent & Begin Exam</button>\n"
+           "      <button class=\"btn\" id=\"consent-btn\" disabled>Proctoring Unavailable</button>\n"
            "      <button class=\"btn btn-secondary\" onclick=\"closeConsent()\">Cancel</button>\n"
            "    </div>\n"
            "  </div>\n"
@@ -316,12 +316,6 @@ const char *candidate_login_html(void) {
            "\n"
            "    async function openConsent() {\n"
            "      document.getElementById('consent-modal').style.display = 'flex';\n"
-           "      try {\n"
-           "        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });\n"
-           "        document.getElementById('preview-cam').srcObject = localStream;\n"
-           "      } catch (err) {\n"
-           "        console.warn('Camera preview notice:', err.message);\n"
-           "      }\n"
            "    }\n"
            "\n"
            "    function closeConsent() {\n"

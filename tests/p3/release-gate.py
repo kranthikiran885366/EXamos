@@ -143,12 +143,14 @@ def audit_credential_image_inputs():
         service = service_path.read_text(encoding="utf-8")
         required_service_settings = (
             "Environment=EXAMOS_TPM_MODE=production",
-            "EnvironmentFile=/etc/examos/agent.env",
+            "EnvironmentFile=/run/examos/secrets/runtime.env",
+            "EnvironmentFile=/run/examos/secrets/agent.env",
             "EnvironmentFile=/etc/examos/proctor.env",
+            "EnvironmentFile=/run/examos/secrets/proctor.env",
             'ExecStartPre=/usr/bin/test "${EXAMOS_TPM_MODE}" = production',
         )
         if any(setting not in service for setting in required_service_settings):
-            errors.append("server unit must require production mode and both external secret files")
+            errors.append("server unit must require production mode and TPM-unsealed runtime secrets")
 
         if (examos_config / "agent.env").exists():
             errors.append("agent.env must not be baked into the release image")
@@ -163,7 +165,6 @@ def audit_credential_image_inputs():
         "ExamOS@Admin2025!",
         "ExamOS@2026!",
         "CAND-2026-001",
-        "EXAMOS_AK_TEST_KEY_SIGNATURE",
         "ADMIN_PASSWORD_SHA256=",
         "examos-p3-ci-agent-token",
         "examos-p3-ci-proctor-token",
@@ -283,46 +284,39 @@ def main():
         checks["source_tree"] = "CLEAN"
 
     p3_results_path = ARTIFACT_DIR / "results.json"
-    suite_results_path = ARTIFACT_DIR / "attestation-suite-results.json"
     try:
         p3_results = read_json(p3_results_path)
-        suite_results = read_json(suite_results_path)
     except FileNotFoundError as error:
-        p3_results = suite_results = None
+        p3_results = None
         checks["development_p3_gate"] = "BLOCKED"
         blocked.append(f"required P3 test evidence is missing: {error.filename}")
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        p3_results = suite_results = None
+        p3_results = None
         checks["development_p3_gate"] = "FAIL"
         failures.append(f"cannot parse P3 test evidence: {error}")
 
-    if p3_results is not None and suite_results is not None and not (
-        isinstance(p3_results, dict) and isinstance(suite_results, dict)
-    ):
+    if p3_results is not None and not isinstance(p3_results, dict):
         checks["development_p3_gate"] = "FAIL"
-        failures.append("P3 test evidence must contain JSON objects")
-    elif p3_results is not None and suite_results is not None:
-        p3_commit = p3_results.get("source_commit")
-        gate_clean = p3_results.get("source_tree_state_at_start") == "CLEAN"
-        suite_clean = suite_results.get("source_tree_state_at_start") == "CLEAN"
-        checks["development_p3_gate"] = (
-            "PASS"
-            if p3_results.get("gate") == "PASS"
-            and p3_commit == commit
-            and suite_results.get("source_commit") == commit
-            and gate_clean
-            and suite_clean
-            and suite_results.get("total") == 18
-            and suite_results.get("correct_outcomes") == 18
-            and suite_results.get("incorrect_outcomes") == 0
-            and suite_results.get("gate") == "PASS"
-            else "FAIL"
+        failures.append("P3 test evidence must be a JSON object")
+    elif p3_results is not None:
+        bound_to_clean_commit = (
+            p3_results.get("source_commit") == commit
+            and p3_results.get("source_tree_state_at_start") == "CLEAN"
         )
-        if checks["development_p3_gate"] != "PASS":
-            failures.append(
-                "P3 test evidence must be a complete 18/18 PASS tied to this "
-                "commit and a clean worktree"
-            )
+        if not bound_to_clean_commit:
+            checks["development_p3_gate"] = "FAIL"
+            failures.append("P3 software-check evidence is not bound to the current clean commit")
+        elif p3_results.get("gate") == "FAIL":
+            checks["development_p3_gate"] = "FAIL"
+            failures.append("P3 software checks reported a failure")
+        elif p3_results.get("gate") == "PASS":
+            checks["development_p3_gate"] = "PASS"
+        elif p3_results.get("gate") == "BLOCKED":
+            checks["development_p3_gate"] = "BLOCKED"
+            blocked.append("P3 software checks are blocked")
+        else:
+            checks["development_p3_gate"] = "FAIL"
+            failures.append("P3 software-check evidence has an invalid gate verdict")
 
     if not MANIFEST or not SIGNATURE or not PUBLIC_KEY:
         checks["signed_production_manifest"] = "BLOCKED"

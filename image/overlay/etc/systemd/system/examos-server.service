@@ -1,12 +1,17 @@
 [Unit]
 Description=ExamOS Examination Control Server (Admin Dashboard + Candidate Login)
 Documentation=https://examos.example.edu/docs/server
-After=network.target
+ConditionPathExists=/run/examos/secrets/runtime.env
+StartLimitIntervalSec=300
+StartLimitBurst=3
+Requires=examos-unseal.service postgresql.service
+After=network.target examos-unseal.service postgresql.service
 Before=examos-kiosk.service
 
 [Service]
 Type=simple
 User=root
+Environment=EXAMOS_TPM_MODE=production
 ExecStart=/usr/local/bin/examos-server
 Restart=always
 RestartSec=3
@@ -15,17 +20,33 @@ StandardError=journal
 Environment=EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
 Environment=EXAMOS_SERVER_PORT=8000
 EnvironmentFile=/etc/examos/proctor.env
+EnvironmentFile=-/etc/examos/attestation-trust.conf
+EnvironmentFile=/run/examos/secrets/runtime.env
+EnvironmentFile=/run/examos/secrets/agent.env
+EnvironmentFile=/run/examos/secrets/proctor.env
+Environment=EXAMOS_DATABASE_URL_FILE=/run/examos/secrets/database-url
 Environment=EXAMOS_CANDIDATE_STORE=/etc/examos/candidates.conf
+ExecStartPre=/usr/bin/test "${EXAMOS_TPM_MODE}" = production
+ExecStartPre=/usr/bin/env -i EXAMOS_DATABASE_URL_FILE=/run/examos/secrets/database-url /usr/local/bin/examos-db-migrate /usr/share/examos/migrations
 
 # Hardening
 ProtectSystem=full
 ProtectHome=yes
+StateDirectory=examos
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

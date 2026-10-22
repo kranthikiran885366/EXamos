@@ -125,39 +125,33 @@ echo ""
 # -----------------------------------------------------------------------
 echo "[P4-GATE] Gate P4.5: P0-P3 Regression..."
 REGRESSION_STATUS="BLOCKED"
-# Accept either:
-#   a) p3/results.json with gate=PASS and source_tree_state_at_start=CLEAN
-#      (written by gate.sh on a clean tree), OR
-#   b) p3/attestation-suite-results.json with gate=PASS and correct_outcomes=18
-#      (written by attestation-suite.sh — the authoritative P3 oracle, no
-#       dirty-tree restriction because it generates all credentials at runtime)
+# P3 results must identify the current commit and attest that the source tree
+# was clean when evidence was collected. The retired synthetic suite result is
+# deliberately ignored; it cannot qualify a production regression.
 P3_RESULTS="$WORKSPACE/artifacts/p3/results.json"
-P3_SUITE_RESULTS="$WORKSPACE/artifacts/p3/attestation-suite-results.json"
+P3_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)"
+if [ -f "$P3_RESULTS" ]; then
+    REGRESSION_STATUS="$(python3 - "$P3_RESULTS" "$P3_COMMIT" <<'PY'
+import json
+import sys
 
-_p3_pass=0
-if [ -f "$P3_RESULTS" ] && python3 -c "
-import json, sys
-d = json.load(open(sys.argv[1]))
-if d.get('gate') == 'PASS' and d.get('source_tree_state_at_start') == 'CLEAN':
-    print('PASS')
-" "$P3_RESULTS" 2>/dev/null | grep -q "PASS"; then
-    _p3_pass=1
-elif [ -f "$P3_SUITE_RESULTS" ] && python3 -c "
-import json, sys
-d = json.load(open(sys.argv[1]))
-# Suite results: gate=PASS and all 18 cases correct
-if (d.get('gate') == 'PASS' and
-        int(d.get('correct_outcomes', 0)) >= 18 and
-        int(d.get('incorrect_outcomes', 1)) == 0):
-    print('PASS')
-" "$P3_SUITE_RESULTS" 2>/dev/null | grep -q "PASS"; then
-    _p3_pass=1
-fi
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        result = json.load(stream)
+except (OSError, json.JSONDecodeError):
+    print("FAIL")
+    raise SystemExit(0)
 
-if [ "$_p3_pass" -eq 1 ]; then
-    REGRESSION_STATUS="PASS"
-elif [ -f "$P3_RESULTS" ] || [ -f "$P3_SUITE_RESULTS" ]; then
-    REGRESSION_STATUS="FAIL"
+if result.get("gate") == "FAIL":
+    print("FAIL")
+elif (result.get("gate") == "PASS" and
+      result.get("source_tree_state_at_start") == "CLEAN" and
+      result.get("source_commit") == sys.argv[2]):
+    print("PASS")
+else:
+    print("BLOCKED")
+PY
+)"
 fi
 echo "[P4-GATE] P4.5 P0-P3 Regression: $REGRESSION_STATUS"
 echo ""

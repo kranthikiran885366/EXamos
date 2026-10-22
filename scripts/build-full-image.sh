@@ -23,7 +23,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "Install on Ubuntu/Debian WSL2:"
     echo "  sudo apt-get update"
     echo "  sudo apt-get install -y mkosi qemu-system-x86 qemu-utils ovmf \\"
-    echo "    build-essential pkg-config libssl-dev libcap-dev"
+    echo "    build-essential pkg-config libssl-dev libpq-dev libcap-dev"
     echo ""
     echo "Install mkosi (latest):"
     echo "  pip3 install --user mkosi"
@@ -66,10 +66,7 @@ ADMIN_PASSWORD_PBKDF2=NOT_PROVISIONED
 EOF
 : > "$STAGE_DIR/etc/examos/candidates.conf"
 cat > "$STAGE_DIR/etc/examos/proctor.env" <<'EOF'
-# Provision unique deployment secrets after installation.
-EXAMOS_PROCTOR_API_TOKEN=NOT_PROVISIONED
-EXAMOS_EVENT_SIGNING_KEY=NOT_PROVISIONED
-EXAMOS_VARIANT_SECRET=NOT_PROVISIONED
+# Runtime secrets are unsealed from this device's TPM at boot.
 EOF
 rm -f "$STAGE_DIR/etc/examos/agent.env"
 mkdir -p "$STAGE_DIR/usr/local/bin"
@@ -77,10 +74,17 @@ install -m 0755 "$ROOT/kiosk/launcher/examos-kiosk-launcher" "$STAGE_DIR/usr/loc
 install -m 0755 "$ROOT/agent/examos-agent"                   "$STAGE_DIR/usr/local/bin/"
 install -m 0755 "$ROOT/proctoring/examos-proctor"            "$STAGE_DIR/usr/local/bin/"
 install -m 0755 "$ROOT/server/examos-server"                 "$STAGE_DIR/usr/local/bin/"
+install -m 0755 "$ROOT/server/examos-db-migrate"              "$STAGE_DIR/usr/local/bin/"
+install -D -m 0755 "$ROOT/image/scripts/tpm-seal-secrets.sh" "$STAGE_DIR/usr/local/sbin/tpm-seal-secrets.sh"
+install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE_DIR/usr/local/sbin/examos-setup-postgres-tls"
+install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE_DIR/usr/local/sbin/examos-provision-remote-postgres"
+install -d "$STAGE_DIR/usr/share/examos/migrations"
+install -m 0644 "$ROOT"/server/migrations/*.sql "$STAGE_DIR/usr/share/examos/migrations/"
 # Normalize permissions
 find "$STAGE_DIR" -type d -exec chmod 0755 {} +
 find "$STAGE_DIR" -type f -exec chmod 0644 {} +
 find "$STAGE_DIR/usr/local/bin" -type f -exec chmod 0755 {} +
+find "$STAGE_DIR/usr/local/sbin" -type f -exec chmod 0755 {} +
 # Sensitive config files
 [[ -f "$STAGE_DIR/etc/examos/admin.conf" ]]      && chmod 0600 "$STAGE_DIR/etc/examos/admin.conf"
 [[ -f "$STAGE_DIR/etc/examos/candidates.conf" ]] && chmod 0640 "$STAGE_DIR/etc/examos/candidates.conf"

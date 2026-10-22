@@ -1,7 +1,11 @@
 [Unit]
 Description=ExamOS Security Attestation and Hardware Guard Agent
 Documentation=https://examos.example.edu/docs/agent
-After=network.target dbus.service examos-server.service
+ConditionPathExists=/run/examos/secrets/agent.env
+StartLimitIntervalSec=300
+StartLimitBurst=3
+Requires=examos-unseal.service tpm2-abrmd.service
+After=network.target dbus.service tpm2-abrmd.service examos-server.service examos-unseal.service
 Wants=examos-server.service
 
 [Service]
@@ -14,9 +18,11 @@ StandardOutput=journal
 StandardError=journal
 EnvironmentFile=/etc/examos/proctor.env
 EnvironmentFile=/etc/examos/agent.conf
+EnvironmentFile=/run/examos/secrets/agent.env
 ExecStartPre=/usr/bin/test "${EXAMOS_SERVER_BASE_URL}" != NOT_PROVISIONED
 ExecStartPre=/usr/bin/test "${EXAMOS_DEVICE_ID}" != NOT_PROVISIONED
 ExecStartPre=/usr/bin/test "${EXAMOS_AGENT_API_TOKEN}" != NOT_PROVISIONED
+ExecStartPre=/usr/bin/test "${EXAMOS_TPM_AK_HANDLE}" != NOT_PROVISIONED
 
 ProtectSystem=full
 ProtectHome=yes
@@ -25,9 +31,21 @@ NoNewPrivileges=yes
 ProtectHome=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictRealtime=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+DevicePolicy=closed
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/zero rw
+DeviceAllow=/dev/random r
+DeviceAllow=/dev/urandom r
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
 
 [Install]
 WantedBy=multi-user.target

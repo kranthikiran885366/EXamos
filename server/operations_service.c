@@ -109,10 +109,10 @@ int operations_service_init(void) {
     g_confirmation_count = 0;
     g_telemetry_cache_count = 0;
     
-    g_network_health.server_healthy = 1;
-    g_network_health.server_last_check = time(NULL);
-    g_network_health.database_connected = 1;
-    g_network_health.database_last_check = time(NULL);
+    g_network_health.server_healthy = 0;
+    g_network_health.server_last_check = 0;
+    g_network_health.database_connected = 0;
+    g_network_health.database_last_check = 0;
     g_network_health.last_update = time(NULL);
     
     g_service_initialized = 1;
@@ -204,9 +204,11 @@ int operations_update_device_telemetry(const char *device_id,
     if (!device_id || !device_id[0]) return -1;
     
     /* Update platform device record */
-    platform_record_device_heartbeat(device_id, battery_pct, battery_charging,
-                                     disk_free_mb, mem_used_mb, network_state,
-                                     policy_version, image_digest, session_state);
+    if (platform_record_device_heartbeat(device_id, battery_pct, battery_charging,
+                                         disk_free_mb, mem_used_mb, network_state,
+                                         policy_version, image_digest, session_state) != 0) {
+        return -1;
+    }
     
     pthread_mutex_lock(&g_ops_lock);
     
@@ -265,21 +267,12 @@ int operations_get_devices_telemetry_json(const char *institution_id,
                                           const char *campus_id,
                                           const char *room_id,
                                           char *out_json, size_t max_len) {
-    /* Use platform's fleet JSON as base, add telemetry fields */
-    char fleet_json[65536];
-    if (platform_get_fleet_json(institution_id, fleet_json, sizeof(fleet_json)) != 0) {
-        return -1;
-    }
-    
-    /* For production, this would parse fleet_json and add telemetry fields
-     * For now, return the platform JSON with a note about telemetry integration */
-    snprintf(out_json, max_len,
-             "{\"status\":\"TELEMETRY_INTEGRATED\","
-             "\"fleet_data\":%s,"
-             "\"note\":\"Telemetry fields (latency, staleness, last_update) added via operations layer\"}",
-             fleet_json);
-    
-    return 0;
+    (void)institution_id;
+    (void)campus_id;
+    (void)room_id;
+    (void)out_json;
+    (void)max_len;
+    return -1;
 }
 
 int operations_get_candidate_telemetry(const char *candidate_id,
@@ -288,30 +281,14 @@ int operations_get_candidate_telemetry(const char *candidate_id,
     
     memset(out_telemetry, 0, sizeof(candidate_session_telemetry_t));
     
-    /* Get roster entry from platform - would need platform_get_candidate_by_id */
-    /* For now, this is a placeholder that would integrate with platform's roster API */
-    
-    out_telemetry->last_activity = time(NULL);
-    out_telemetry->is_stale = 0;
-    
-    return 0;
+    return -1;
 }
 
 int operations_get_candidates_telemetry_json(const char *exam_id, char *out_json, size_t max_len) {
-    /* Use platform's roster JSON as base */
-    char roster_json[65536];
-    if (platform_get_roster_json(exam_id, roster_json, sizeof(roster_json)) != 0) {
-        snprintf(out_json, max_len, "{\"error\":\"Roster not found for exam: %s\"}", exam_id);
-        return -1;
-    }
-    
-    snprintf(out_json, max_len,
-             "{\"status\":\"TELEMETRY_INTEGRATED\","
-             "\"roster_data\":%s,"
-             "\"note\":\"Candidate telemetry (session_state, last_activity, security_events_count) added via operations layer\"}",
-             roster_json);
-    
-    return 0;
+    (void)exam_id;
+    (void)out_json;
+    (void)max_len;
+    return -1;
 }
 
 int operations_record_security_event(const char *candidate_id,
@@ -323,7 +300,8 @@ int operations_record_security_event(const char *candidate_id,
      * Device disconnects, process crashes, and security signals are logged
      * but do NOT automatically disqualify the candidate */
     
-    if (!event_type || !event_type[0]) return -1;
+    if (!event_type || !event_type[0] || severity < SEV_INFO || severity > SEV_CRITICAL ||
+        ((!candidate_id || !candidate_id[0]) && (!device_id || !device_id[0]))) return -1;
     
     /* Create incident if severity is HIGH or CRITICAL */
     if (severity >= SEV_HIGH) {
@@ -338,7 +316,7 @@ int operations_record_security_event(const char *candidate_id,
         if (description) strncpy(inc.summary, description, sizeof(inc.summary) - 1);
         inc.created_at = time(NULL);
         
-        platform_create_incident(&inc);
+        if (platform_create_incident(&inc) != 0) return -1;
     }
     
     /* Log to ledger */
@@ -350,9 +328,7 @@ int operations_record_security_event(const char *candidate_id,
              device_id ? device_id : "N/A", severity);
     
     ledger_block_t blk;
-    ledger_append_event("SECURITY_EVENT_RECORDED", candidate_id ? candidate_id : device_id, details, &blk);
-    
-    return 0;
+    return ledger_append_event("SECURITY_EVENT_RECORDED", candidate_id ? candidate_id : device_id, details, &blk);
 }
 
 /* -----------------------------------------------------------------------
@@ -672,21 +648,15 @@ int operations_confirm_device_replacement(const char *confirmation_token,
  * ----------------------------------------------------------------------- */
 int operations_get_room_status(const char *room_id, room_operations_status_t *out_status) {
     if (!room_id || !room_id[0] || !out_status) return -1;
-    
     memset(out_status, 0, sizeof(room_operations_status_t));
-    
-    /* Would need platform_get_room_by_id - placeholder for integration */
-    strncpy(out_status->room.room_id, room_id, sizeof(out_status->room.room_id) - 1);
-    out_status->last_update = time(NULL);
-    
-    return 0;
+    return -1;
 }
 
 int operations_get_rooms_status_json(const char *campus_id, char *out_json, size_t max_len) {
-    snprintf(out_json, max_len,
-             "{\"status\":\"INTEGRATION_REQUIRED\","
-             "\"note\":\"Room status integration with platform_get_rooms_json needed\"}");
-    return 0;
+    (void)campus_id;
+    (void)out_json;
+    (void)max_len;
+    return -1;
 }
 
 /* -----------------------------------------------------------------------
@@ -694,13 +664,9 @@ int operations_get_rooms_status_json(const char *campus_id, char *out_json, size
  * ----------------------------------------------------------------------- */
 int operations_create_incident(const security_incident_t *incident, const char *operator_id) {
     if (!incident || !operator_id || !operator_id[0]) return -1;
-    
-    platform_create_incident(incident);
-    
-    operations_audit_log("INCIDENT_CREATED", operator_id, incident->incident_id,
-                       incident->summary, NULL);
-    
-    return 0;
+    if (platform_create_incident(incident) != 0) return -1;
+    return operations_audit_log("INCIDENT_CREATED", operator_id, incident->incident_id,
+                                incident->summary, NULL);
 }
 
 int operations_acknowledge_incident(const char *incident_id, const char *operator_id) {
@@ -795,50 +761,14 @@ int operations_update_network_health(int devices_online,
  * Operations summary
  * ----------------------------------------------------------------------- */
 int operations_get_summary(const char *exam_id, operations_summary_t *out_summary) {
+    (void)exam_id;
     if (!out_summary) return -1;
-    
-    memset(out_summary, 0, sizeof(operations_summary_t));
-    
-    /* Get exam status */
-    exam_operations_status_t exam_status;
-    if (exam_id && operations_get_exam_status(exam_id, &exam_status) == 0) {
-        out_summary->exam_state = exam_status.current_state;
-    }
-    
-    /* Get fleet data for device counts */
-    char fleet_json[65536];
-    if (platform_get_fleet_json(NULL, fleet_json, sizeof(fleet_json)) == 0) {
-        /* Parse fleet_json to extract counts - placeholder */
-        out_summary->total_devices = 0;
-        out_summary->compliant_devices = 0;
-        out_summary->failed_devices = 0;
-        out_summary->online_devices = 0;
-    }
-    
-    /* Get roster data for candidate counts */
-    if (exam_id) {
-        char roster_json[65536];
-        if (platform_get_roster_json(exam_id, roster_json, sizeof(roster_json)) == 0) {
-            /* Parse roster_json to extract counts - placeholder */
-            out_summary->total_candidates = 0;
-            out_summary->checked_in = 0;
-            out_summary->in_exam = 0;
-            out_summary->submitted = 0;
-        }
-    }
-    
-    /* Get incidents */
-    char incidents_json[65536];
-    if (platform_get_incidents_json(NULL, incidents_json, sizeof(incidents_json)) == 0) {
-        /* Parse to extract incident counts - placeholder */
-        out_summary->open_incidents = 0;
-        out_summary->critical_incidents = 0;
-    }
-    
+    memset(out_summary, 0, sizeof(*out_summary));
     out_summary->last_update = time(NULL);
-    out_summary->system_healthy = 1;
-    
-    return 0;
+    out_summary->system_healthy = 0;
+    /* Fleet, roster, and incident summary parsers are not implemented. A
+       successful all-zero summary would report missing data as empty. */
+    return -1;
 }
 
 int operations_get_dashboard_json(const char *exam_id, char *out_json, size_t max_len) {
@@ -936,23 +866,22 @@ int operations_check_permission(const char *user_id,
                                  user_role_t required_role,
                                  const char *action_type,
                                  const char *target_id) {
-    if (!user_id || !user_id[0]) return -1;
-    
-    /* Would need to verify user's role from platform auth session
-     * For now, this is a placeholder that would integrate with platform_auth_verify_token */
-    
-    /* Placeholder: allow all actions for development */
-    return 0;
+    (void)user_id;
+    (void)required_role;
+    (void)action_type;
+    (void)target_id;
+    return -1;
 }
 
 int operations_check_resource_permission(const char *user_id,
                                           const char *resource_type,
                                           const char *resource_id,
                                           const char *action) {
-    if (!user_id || !user_id[0]) return -1;
-    
-    /* Placeholder for resource-level permission checking */
-    return 0;
+    (void)resource_type;
+    (void)resource_id;
+    (void)action;
+    (void)user_id;
+    return -1;
 }
 
 /* -----------------------------------------------------------------------
@@ -963,29 +892,24 @@ int operations_audit_log(const char *action_type,
                          const char *target_id,
                          const char *details,
                          const char *confirmation_token) {
+    if (!action_type || !action_type[0] || !operator_id || !operator_id[0] ||
+        !target_id || !target_id[0]) return -1;
     char log_details[512];
     snprintf(log_details, sizeof(log_details),
-             "Action: %s | Operator: %s | Target: %s | Details: %s | Token: %s",
-             action_type ? action_type : "N/A",
-             operator_id ? operator_id : "N/A",
-             target_id ? target_id : "N/A",
-             details ? details : "N/A",
-             confirmation_token ? confirmation_token : "N/A");
+             "Action: %s | Operator: %s | Target: %s | Details: %s | Confirmation: %s",
+             action_type, operator_id, target_id, details ? details : "",
+             confirmation_token && confirmation_token[0] ? "supplied" : "absent");
     
     ledger_block_t blk;
-    ledger_append_event("OPERATIONS_AUDIT", operator_id ? operator_id : "SYSTEM", log_details, &blk);
-    
-    return 0;
+    return ledger_append_event("OPERATIONS_AUDIT", operator_id, log_details, &blk);
 }
 
 int operations_get_audit_log_json(const char *exam_id,
                                   time_t since,
                                   char *out_json, size_t max_len) {
-    /* Would need to query ledger for operations audit entries
-     * For now, placeholder */
-    snprintf(out_json, max_len,
-             "{\"exam_id\":\"%s\",\"since\":%ld,\"note\":\"Audit log integration with ledger needed\"}",
-             exam_id ? exam_id : "ALL", (long)since);
-    
-    return 0;
+    (void)exam_id;
+    (void)since;
+    (void)out_json;
+    (void)max_len;
+    return -1;
 }
