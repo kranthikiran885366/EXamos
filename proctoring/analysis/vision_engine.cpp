@@ -28,8 +28,8 @@
  *   face-cascade OpenCV's frontal-face Haar cascade, which is bundled with
  *                the installed OpenCV package. A cascade yields no
  *                calibrated probability, so the confidence stays at zero.
- *   object-dnn   YOLOv8n (ONNX) trained on COCO. Provides the "cell phone"
- *                and "book" classes used by the proctoring taxonomy.
+ *   object-dnn   YOLOX-S (ONNX, Apache-2.0) trained on COCO. Provides the
+ *                "cell phone" and "book" classes used by the taxonomy.
  *   landmarks    LBF 68-point facial landmark model, which makes head pose
  *                estimation possible; without it head pose is reported as
  *                unavailable rather than derived from unrelated measurements.
@@ -315,11 +315,11 @@ struct ObjectDetection {
 
 /* Object detector for the COCO "cell phone" and "book" classes.
  *
- * The provisioned model is YOLOv8n exported to ONNX.  The graph is loaded
- * with OpenCV's DNN module, which keeps the runtime dependency set unchanged.
- * A Caffe SSD model is still accepted when the manifest pairs a prototxt with
- * the weights, so an appliance that has not yet rotated to the ONNX model
- * keeps working.
+ * The provisioned model is YOLOX-S exported to ONNX (Apache-2.0, OpenCV Zoo).
+ * The graph is loaded with OpenCV's DNN module, which keeps the runtime
+ * dependency set unchanged.  A Caffe SSD model is still accepted when the
+ * manifest pairs a prototxt with the weights, so an appliance that has not
+ * yet rotated to the ONNX model keeps working.
  */
 class CocoObjectDetector {
 public:
@@ -358,8 +358,9 @@ public:
     }
 
 private:
-    /* YOLOv8 letterboxes the input to a square while preserving aspect
-       ratio.  The same transform is inverted for every output box. */
+    /* YOLOX letterboxes the input to a square while preserving aspect
+       ratio, anchoring the resized image at the top-left corner.  The same
+       transform is inverted for every output box. */
     static void letterbox(const cv::Mat &frame, cv::Mat &out,
                           float &scale, int &pad_x, int &pad_y) {
         const int target = OBJECT_INPUT_SIZE;
@@ -367,13 +368,13 @@ private:
                          static_cast<float>(target) / frame.rows);
         const int width  = std::max(1, static_cast<int>(std::round(frame.cols * scale)));
         const int height = std::max(1, static_cast<int>(std::round(frame.rows * scale)));
-        pad_x = (target - width) / 2;
-        pad_y = (target - height) / 2;
+        pad_x = 0;
+        pad_y = 0;
 
         cv::Mat resized;
         cv::resize(frame, resized, cv::Size(width, height));
         out = cv::Mat(target, target, CV_8UC3, cv::Scalar(114, 114, 114));
-        resized.copyTo(out(cv::Rect(pad_x, pad_y, width, height)));
+        resized.copyTo(out(cv::Rect(0, 0, width, height)));
     }
 
     void detect_yolo(const cv::Mat &frame, std::vector<ObjectDetection> &found) {
@@ -382,61 +383,80 @@ private:
         int pad_x = 0, pad_y = 0;
         letterbox(frame, input, scale, pad_x, pad_y);
 
-        cv::Mat blob = cv::dnn::blobFromImage(input, 1.0 / 255.0,
+        /* YOLOX consumes RGB pixels in the 0..255 range; its normalisation is
+           baked into the exported graph. */
+        cv::Mat blob = cv::dnn::blobFromImage(input, 1.0,
                                               cv::Size(OBJECT_INPUT_SIZE, OBJECT_INPUT_SIZE),
                                               cv::Scalar(), true, false);
         net_.setInput(blob);
         cv::Mat output = net_.forward();
 
-        /* YOLOv8 output is [1, 4 + classes, anchors].  Some OpenCV builds
-           return the transposed layout, so both are handled. */
+        /* YOLOX output is [1, anchors, 5 + classes].  The first four values
+           are raw cx, cy, width, height offsets, the fifth is objectness and
+           the remainder are per-class probabilities. */
         if (output.dims != 3) return;
-        const int dim_a = output.size[1];
-        const int dim_b = output.size[2];
-        const bool channels_first = dim_a < dim_b;
-        const int attrs   = channels_first ? dim_a : dim_b;
-        const int anchors = channels_first ? dim_b : dim_a;
-        if (attrs < 5) return;
+        const int anchors = output.size[1];
+        const int attrs   = output.size[2];
+        if (attrs < 6) return;
+        const int class_count = attrs - 5;
 
-        const int class_count = attrs - 4;
+        std::vector<cv::Rect> boxes;
+        std::vector<float> scores;
+        std::vector<int> class_ids;
+        boxes.reserve(anchors);
+        scores.reserve(anchors);
+        class_ids.reserve(anchors);
 
-        std::vector<ObjectDetection> candidates;
-        for (int i = 0; i < anchors; ++i) {
-            int best_class = -1;
-            float best_score = 0.0f;
-            for (int c = 0; c < class_count; ++c) {
-                const float score = channels_first ? output.ptr<float>(0, 4 + c)[i]
-                                                   : output.ptr<float>(0, i)[4 + c];
-                if (score > best_score) {
-                    best_score = score;
-                    best_class = c;
+        int anchor_index = 0;
+        for (int stride : {8, 16, 32}) {
+            const int cells = OBJECT_INPUT_SIZE / stride;
+            for (int y = 0; y < cells; ++y) {
+                for (int x = 0; x < cells; ++x, ++anchor_index) {
+                    if (anchor_index >= anchors) break;
+                    const float *row = output.ptr<float>(0, anchor_index);
+                    const float objectness = row[4];
+                    if (objectness < 0.05f) continue;
+
+                    int best_class = -1;
+                    float best_score = 0.0f;
+                    for (int c = 0; c < class_count; ++c) {
+                        const float score = objectness * row[5 + c];
+                        if (score > best_score) {
+                            best_score = score;
+                            best_class = c;
+                        }
+                    }
+                    if (best_score < OBJECT_SCORE_THRESHOLD) continue;
+                    if (best_class != COCO_CELL_PHONE && best_class != COCO_BOOK) continue;
+
+                    const float cx = (row[0] + x) * stride;
+                    const float cy = (row[1] + y) * stride;
+                    const float w  = std::exp(row[2]) * stride;
+                    const float h  = std::exp(row[3]) * stride;
+
+                    cv::Rect box(static_cast<int>((cx - w / 2.0f - pad_x) / scale),
+                                 static_cast<int>((cy - h / 2.0f - pad_y) / scale),
+                                 static_cast<int>(w / scale),
+                                 static_cast<int>(h / scale));
+                    box &= cv::Rect(0, 0, frame.cols, frame.rows);
+                    if (box.width <= 0 || box.height <= 0) continue;
+                    boxes.push_back(box);
+                    scores.push_back(best_score);
+                    class_ids.push_back(best_class);
                 }
             }
-            if (best_score < OBJECT_SCORE_THRESHOLD) continue;
-            if (best_class != COCO_CELL_PHONE && best_class != COCO_BOOK) continue;
-
-            const float cx = channels_first ? output.ptr<float>(0, 0)[i]
-                                            : output.ptr<float>(0, i)[0];
-            const float cy = channels_first ? output.ptr<float>(0, 1)[i]
-                                            : output.ptr<float>(0, i)[1];
-            const float w  = channels_first ? output.ptr<float>(0, 2)[i]
-                                            : output.ptr<float>(0, i)[2];
-            const float h  = channels_first ? output.ptr<float>(0, 3)[i]
-                                            : output.ptr<float>(0, i)[3];
-
-            ObjectDetection detection;
-            detection.class_id = best_class;
-            detection.score = best_score;
-            detection.box = cv::Rect(static_cast<int>((cx - w / 2.0f - pad_x) / scale),
-                                     static_cast<int>((cy - h / 2.0f - pad_y) / scale),
-                                     static_cast<int>(w / scale),
-                                     static_cast<int>(h / scale)) &
-                            cv::Rect(0, 0, frame.cols, frame.rows);
-            if (detection.box.width > 0 && detection.box.height > 0) {
-                candidates.push_back(detection);
-            }
         }
-        apply_nms(candidates, found);
+
+        std::vector<int> keep;
+        cv::dnn::NMSBoxesBatched(boxes, scores, class_ids,
+                                 OBJECT_SCORE_THRESHOLD, OBJECT_NMS_THRESHOLD, keep);
+        for (int index : keep) {
+            ObjectDetection detection;
+            detection.class_id = class_ids[index];
+            detection.box = boxes[index];
+            detection.score = scores[index];
+            found.push_back(detection);
+        }
     }
 
     void detect_ssd(const cv::Mat &frame, std::vector<ObjectDetection> &found) {
