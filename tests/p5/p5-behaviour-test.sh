@@ -32,6 +32,22 @@ SERVER_PID=""
 RUN_DIR="$(mktemp -d /tmp/examos-p5-behaviour.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
+# Dynamic test configuration - no hardcoded values
+CANDIDATE_UID_BASE="${EXAMOS_CANDIDATE_UID_BASE:-100000}"
+PBKDF2_ITERATIONS="${EXAMOS_PBKDF2_ITERATIONS:-100000}"
+EXAM_DURATION_MINUTES="${EXAMOS_EXAM_DURATION_MINUTES:-60}"
+PRACTICE_SESSION_COUNT="${EXAMOS_PRACTICE_SESSION_COUNT:-6}"
+WARMUP_SECONDS="${EXAMOS_WARMUP_SECONDS:-1}"
+
+# Production mode validation
+if [ "$EXAMOS_TEST_MODE" = "production" ]; then
+    TEST_DEV_FLAG=0
+    TEST_TPM_MODE="production"
+else
+    TEST_DEV_FLAG=1
+    TEST_TPM_MODE="development"
+fi
+
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 record() {
