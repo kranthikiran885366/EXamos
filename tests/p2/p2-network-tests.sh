@@ -65,7 +65,8 @@ elif command -v curl >/dev/null 2>&1; then
         record "P2-01" "FAIL" "Non-exam URL was reachable: ${BLOCKED_TARGET} — firewall not enforcing"
     fi
 else
-record "P2-01" "BLOCKED" "BLOCKED_ENVIRONMENT: curl not available in release image"
+    record "P2-01" "BLOCKED" "BLOCKED_ENVIRONMENT: curl not available in release image"
+fi
 
 # ---------------------------------------------------------------------------
 # P2-02: Alternate scheme / IP literal / redirect escape blocked

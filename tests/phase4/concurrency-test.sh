@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-ARTIFACT_DIR="$WORKSPACE/artifacts/phase4"
+ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 SERVER_URL="${EXAMOS_TEST_SERVER_URL:-http://127.0.0.1:9099}"
 NUM_SESSIONS="${EXAMOS_TEST_SESSIONS:-50}"
 EVENTS_PER_SESSION="${EXAMOS_TEST_EVENTS_PER_SESSION:-10}"

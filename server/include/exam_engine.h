@@ -38,6 +38,7 @@ typedef struct {
     int duration_seconds;
     int is_paused;
     int is_submitted;
+    int is_submitting;
     char submission_receipt_hash[65];
     char seat_number[32];
     int anomaly_count;

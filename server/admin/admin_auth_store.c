@@ -208,7 +208,7 @@ static int load_database_url(char **out_conninfo) {
 static int verify_schema(PGconn *connection) {
     PGresult *result = PQexec(connection,
         "SELECT "
-        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='admin_auth'),0)>=7,"
+        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='admin_auth'),0)>=8,"
         "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='exam_lifecycle'),0)>=4,"
         "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='device_fleet'),0)>=9");
     int valid = 0;
@@ -345,19 +345,38 @@ void admin_auth_store_shutdown(void) {
 }
 
 int admin_role_has_permission(user_role_t role, uint32_t permission) {
-    if (role == ROLE_PLATFORM_OWNER) return 1;
+    if (role < ROLE_PLATFORM_OWNER || role > ROLE_SUPPORT_ENGINEER) return 0;
 
     switch (permission) {
         case AUTH_PERM_READ:
-            return (role >= ROLE_PLATFORM_OWNER && role <= ROLE_SUPPORT_ENGINEER);
+            return 1;
         case AUTH_PERM_EXAM_MUTATION:
-            return (role == ROLE_INSTITUTION_ADMIN || role == ROLE_EXAM_MANAGER);
+            return (role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN ||
+                    role == ROLE_EXAM_MANAGER);
         case AUTH_PERM_FLEET_MUTATION:
-            return (role == ROLE_INSTITUTION_ADMIN || role == ROLE_TECH_OPERATOR);
+            return (role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN ||
+                    role == ROLE_TECH_OPERATOR);
         case AUTH_PERM_SECURITY_ADMIN:
-            return (role == ROLE_INSTITUTION_ADMIN || role == ROLE_SECURITY_ADMIN);
+            return (role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN ||
+                    role == ROLE_SECURITY_ADMIN);
         case AUTH_PERM_USER_MANAGEMENT:
             return (role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN);
+        case AUTH_PERM_INSTITUTION_ADMIN:
+            return role == ROLE_PLATFORM_OWNER;
+        case AUTH_PERM_EXAM_READ:
+            return role == ROLE_PLATFORM_OWNER ||
+                   (role >= ROLE_INSTITUTION_ADMIN && role <= ROLE_INCIDENT_INVESTIGATOR) ||
+                   role == ROLE_READONLY_AUDITOR || role == ROLE_SUPPORT_ENGINEER;
+        case AUTH_PERM_INCIDENT_READ:
+            return role == ROLE_PLATFORM_OWNER || role == ROLE_SECURITY_ADMIN ||
+                   role == ROLE_INCIDENT_INVESTIGATOR || role == ROLE_READONLY_AUDITOR;
+        case AUTH_PERM_MFA_ADMIN:
+            return role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN;
+        case AUTH_PERM_LOCATION_ADMIN:
+            return role == ROLE_PLATFORM_OWNER || role == ROLE_INSTITUTION_ADMIN;
+        case AUTH_PERM_INCIDENT_MUTATION:
+            return role == ROLE_PLATFORM_OWNER || role == ROLE_SECURITY_ADMIN ||
+                   role == ROLE_INCIDENT_INVESTIGATOR;
         default:
             return 0;
     }
@@ -687,17 +706,28 @@ int admin_auth_store_create_initial_owner(const user_account_t *user) {
     if (!conn) return -1;
 
     PGresult *result = PQexec(conn, "BEGIN");
+    int transaction_started = result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
+    if (!transaction_started) {
+        release_connection(conn, 1);
+        return -1;
+    }
 
     result = PQexec(conn, "SELECT pg_advisory_xact_lock(613024951)");
+    int lock_acquired = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                        PQntuples(result) == 1;
     if (result) PQclear(result);
 
-    result = PQexec(conn, "SELECT 1 FROM examos_admin_users LIMIT 1");
-    int empty = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 0;
-    if (result) PQclear(result);
+    int empty = 0;
+    if (lock_acquired) {
+        result = PQexec(conn, "SELECT 1 FROM examos_admin_users LIMIT 1");
+        empty = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                PQntuples(result) == 0;
+        if (result) PQclear(result);
+    }
 
     int ok = 0;
-    if (empty) {
+    if (lock_acquired && empty) {
         char role[16];
         snprintf(role, sizeof(role), "%d", (int)user->role);
         const char *params[] = {
@@ -719,6 +749,8 @@ int admin_auth_store_create_initial_owner(const user_account_t *user) {
         result = PQexecParams(conn,
             "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
             2, NULL, audit_params, NULL, NULL, 0);
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
+             strcmp(PQcmdTuples(result), "1") == 0;
         if (result) PQclear(result);
     }
 
@@ -726,12 +758,23 @@ int admin_auth_store_create_initial_owner(const user_account_t *user) {
     int committed = ok && result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
 
+    if (!committed) {
+        result = PQexec(conn, "ROLLBACK");
+        int rollback_ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+        release_connection(conn, rollback_ok ? 0 : 1);
+        return -1;
+    }
+
     release_connection(conn, 0);
-    return committed ? 0 : -1;
+    return 0;
 }
 
 int admin_auth_store_create_user(const user_account_t *user, const char *actor_user_id) {
-    if (valid_user_record(user) != 0 || !actor_user_id || !actor_user_id[0]) return -1;
+    if (valid_user_record(user) != 0 || !actor_user_id || !actor_user_id[0] ||
+        user->role == ROLE_PLATFORM_OWNER ||
+        (user->role == ROLE_INSTITUTION_ADMIN && !user->institution_id[0]) ||
+        (user->role != ROLE_INSTITUTION_ADMIN && user->institution_id[0])) return -1;
 
     PGconn *conn = acquire_connection();
     if (!conn) return -1;
@@ -751,8 +794,13 @@ int admin_auth_store_create_user(const user_account_t *user, const char *actor_u
         "INSERT INTO examos_admin_users "
         "(user_id, username, password_hash, full_name, email, institution_id, role, active) "
         "SELECT $1, $2, $3, $4, $5, NULLIF($6, ''), $7::smallint, true "
-        "WHERE EXISTS (SELECT 1 FROM examos_admin_users "
-        "WHERE user_id = $8 AND active AND role IN (1, 2)) "
+        "WHERE EXISTS (SELECT 1 FROM examos_admin_users actor "
+        "WHERE actor.user_id = $8 AND actor.active AND ("
+        "  (actor.role = 1 AND $7::smallint BETWEEN 2 AND 9 "
+        "   AND (($7::smallint = 2 AND $6 <> '') OR ($7::smallint <> 2 AND $6 = ''))) "
+        "  OR (actor.role = 2 AND actor.institution_id = NULLIF($6, '') "
+        "      AND $7::smallint BETWEEN 3 AND 9)"
+        ")) "
         "RETURNING user_id",
         8, NULL, params, NULL, NULL, 0);
 

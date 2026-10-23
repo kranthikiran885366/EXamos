@@ -6,12 +6,17 @@
 #include <unistd.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
+#include <openssl/evp.h>
+#include <openssl/crypto.h>
 
 #define EVENT_CHAIN_GENESIS_HASH "0000000000000000000000000000000000000000000000000000000000000000"
 #define HASH_HEX_LEN 65
+#define SIG_HEX_LEN 129
+
+#define EVENT_SESSION_ID_LEN 128
 
 typedef struct {
-    char     session_id[64];
+    char     session_id[EVENT_SESSION_ID_LEN];
     uint64_t sequence;
     char     server_timestamp[32];
     char     source_timestamp[32];
@@ -31,6 +36,126 @@ static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
         sprintf(out_hex + (i * 2), "%02x", hash[i]);
     }
     out_hex[64] = '\0';
+}
+
+static int hmac_sha256_hex(const char *key, const unsigned char *data, size_t len,
+                           char out_hex[HASH_HEX_LEN]) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    if (!key || !data || !out_hex ||
+        !HMAC(EVP_sha256(), key, (int)strlen(key), data, len, digest, &digest_len) ||
+        digest_len != SHA256_DIGEST_LENGTH) {
+        return -1;
+    }
+    for (unsigned int i = 0; i < digest_len; i++) {
+        sprintf(out_hex + (i * 2), "%02x", digest[i]);
+    }
+    out_hex[HASH_HEX_LEN - 1] = '\0';
+    return 0;
+}
+
+static const char *json_string_field(const char *json, const char *key,
+                                     char *out, size_t out_size) {
+    if (!json || !key || !out || out_size == 0) return NULL;
+    out[0] = '\0';
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') return NULL;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != '"') return NULL;
+    p++;
+    const char *end = strchr(p, '"');
+    if (!end || (size_t)(end - p) >= out_size) return NULL;
+    memcpy(out, p, (size_t)(end - p));
+    out[end - p] = '\0';
+    return out;
+}
+
+static int verify_checkpoint(const char *checkpoint_path) {
+    const char *signing_key = getenv("EXAMOS_EVENT_SIGNING_KEY");
+    if (!signing_key || strlen(signing_key) < 32) {
+        printf("CHECKPOINT: UNVERIFIABLE\n");
+        printf("FAILURE_TYPE: SIGNING_KEY_UNAVAILABLE\n");
+        printf("RESULT: BLOCKED\n");
+        return 2;
+    }
+
+    FILE *fp = fopen(checkpoint_path, "r");
+    if (!fp) {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: CHECKPOINT_UNAVAILABLE\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+    char json[8192];
+    size_t used = fread(json, 1, sizeof(json) - 1, fp);
+    fclose(fp);
+    json[used] = '\0';
+
+    char key_id[128] = {0}, session_id[EVENT_SESSION_ID_LEN] = {0};
+    char latest_hash[HASH_HEX_LEN] = {0}, server_timestamp[64] = {0};
+    char signature[SIG_HEX_LEN] = {0};
+    if (!json_string_field(json, "key_id", key_id, sizeof(key_id)) ||
+        !json_string_field(json, "session_id", session_id, sizeof(session_id)) ||
+        !json_string_field(json, "latest_hash", latest_hash, sizeof(latest_hash)) ||
+        !json_string_field(json, "server_timestamp", server_timestamp, sizeof(server_timestamp)) ||
+        !json_string_field(json, "signature", signature, sizeof(signature))) {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: CHECKPOINT_FIELDS_MISSING\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+
+    const char *p_seq = strstr(json, "\"sequence\"");
+    if (!p_seq) {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: CHECKPOINT_FIELDS_MISSING\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+    p_seq += strlen("\"sequence\"");
+    while (*p_seq == ' ' || *p_seq == '\t' || *p_seq == '\r' || *p_seq == '\n') p_seq++;
+    if (*p_seq != ':') {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: CHECKPOINT_FIELDS_MISSING\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+    p_seq++;
+    while (*p_seq == ' ' || *p_seq == '\t' || *p_seq == '\r' || *p_seq == '\n') p_seq++;
+    unsigned long long sequence = strtoull(p_seq, NULL, 10);
+
+    char sign_input[512];
+    int sign_len = snprintf(sign_input, sizeof(sign_input), "%s:%s:%llu:%s:%s",
+                            key_id, session_id, sequence, latest_hash,
+                            server_timestamp);
+    char expected[SIG_HEX_LEN] = {0};
+    if (sign_len < 0 || (size_t)sign_len >= sizeof(sign_input) ||
+        hmac_sha256_hex(signing_key, (const unsigned char *)sign_input,
+                        (size_t)sign_len, expected) != 0) {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: CHECKPOINT_CANONICALIZATION_FAIL\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+
+    if (strlen(signature) != 64 ||
+        CRYPTO_memcmp(signature, expected, 64) != 0) {
+        printf("CHECKPOINT: INVALID\n");
+        printf("FAILURE_TYPE: SIGNATURE_INVALID\n");
+        printf("RESULT: FAIL\n");
+        return 1;
+    }
+
+    printf("CHECKPOINT: VALID\n");
+    printf("SEQUENCE: %llu\n", sequence);
+    printf("RESULT: PASS\n");
+    return 0;
 }
 
 static int canonicalize_event(const parsed_event_t *ev, char *out_canonical, size_t max_out) {
@@ -55,22 +180,33 @@ static int canonicalize_event(const parsed_event_t *ev, char *out_canonical, siz
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "ExamOS Phase 4 — Independent Event Chain Verifier\n");
-    fprintf(stderr, "Usage: %s --session <SESSION_ID> --store <PATH_TO_LOG_FILE>\n", prog);
+    fprintf(stderr,
+            "Usage: %s --session <SESSION_ID> --store <PATH_TO_LOG_FILE>\n"
+            "       %s --checkpoint <CHECKPOINT_JSON_FILE>\n"
+            "Checkpoint verification reads EXAMOS_EVENT_SIGNING_KEY from the environment.\n",
+            prog, prog);
 }
 
 int main(int argc, char *argv[]) {
     const char *session_id = NULL;
     const char *store_path = "/var/log/examos/proctoring_events.log";
+    const char *checkpoint_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--session") == 0 && i + 1 < argc) {
             session_id = argv[++i];
         } else if (strcmp(argv[i], "--store") == 0 && i + 1 < argc) {
             store_path = argv[++i];
+        } else if (strcmp(argv[i], "--checkpoint") == 0 && i + 1 < argc) {
+            checkpoint_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
         }
+    }
+
+    if (checkpoint_path) {
+        return verify_checkpoint(checkpoint_path);
     }
 
     if (!session_id) {

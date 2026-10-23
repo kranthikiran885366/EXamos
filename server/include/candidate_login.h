@@ -33,6 +33,9 @@ int candidate_session_identity(const char *token, char *out_candidate_id, size_t
 /* Invalidate (logout) a session token. */
 void candidate_session_invalidate(const char *token);
 
+/* Restore a session from the durable journal (called during replay). */
+int candidate_session_restore(const char *token, const char *candidate_id, time_t created_at);
+
 /* Returns the HTML for the candidate login page (static string). */
 const char *candidate_login_html(void);
 

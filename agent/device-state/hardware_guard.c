@@ -9,6 +9,9 @@
 #include <signal.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
+#include <sys/ioctl.h>
+#include <linux/videodev2.h>
 
 static const char *g_blacklisted_processes[] = {
     "gdb", "strace", "ltrace", "wireshark", "tshark", "tcpdump",
@@ -120,6 +123,95 @@ static int check_usb_mass_storage(void) {
     return storage_found;
 }
 
+/*
+ * Enumerates V4L2 capture devices and verifies that each one is a real
+ * video-capture device by issuing a VIDIOC_QUERYCAP ioctl. Presence of a
+ * /dev/videoN node is not enough: the node may be a metadata or output
+ * device, or may be busy.
+ */
+static int detect_cameras(int *out_count) {
+    if (out_count) *out_count = 0;
+    DIR *dev_dir = opendir("/dev");
+    if (!dev_dir) return -1;
+
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dev_dir)) != NULL) {
+        if (strncmp(entry->d_name, "video", 5) != 0) continue;
+        if (!isdigit((unsigned char)entry->d_name[5])) continue;
+
+        char path[256];
+        if (snprintf(path, sizeof(path), "/dev/%s", entry->d_name) >= (int)sizeof(path))
+            continue;
+
+        int fd = open(path, O_RDWR | O_NONBLOCK);
+        if (fd < 0) fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+
+        struct v4l2_capability cap;
+        memset(&cap, 0, sizeof(cap));
+        if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 &&
+            (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+            count++;
+        }
+        close(fd);
+    }
+    closedir(dev_dir);
+    if (out_count) *out_count = count;
+    return 0;
+}
+
+/*
+ * Measures network reachability from the kernel's own view of the link
+ * state. Every non-loopback interface is inspected; the device is ONLINE
+ * when at least one of them is up. This deliberately does not assume a
+ * particular interface name, address scheme, or gateway.
+ */
+device_network_state_t hardware_guard_detect_network(void) {
+    DIR *net_dir = opendir("/sys/class/net");
+    if (!net_dir) return DEVICE_NETWORK_UNKNOWN;
+
+    device_network_state_t state = DEVICE_NETWORK_UNKNOWN;
+    int usable_interfaces = 0;
+    int up_interfaces = 0;
+
+    struct dirent *entry;
+    while ((entry = readdir(net_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        if (strcmp(entry->d_name, "lo") == 0) continue;
+
+        usable_interfaces++;
+
+        char operstate_path[512];
+        if (snprintf(operstate_path, sizeof(operstate_path),
+                     "/sys/class/net/%s/operstate", entry->d_name) >= (int)sizeof(operstate_path))
+            continue;
+
+        FILE *f = fopen(operstate_path, "r");
+        if (!f) continue;
+        char operstate[32] = {0};
+        if (fgets(operstate, sizeof(operstate), f)) {
+            char *newline = strchr(operstate, '\n');
+            if (newline) *newline = '\0';
+            if (strcmp(operstate, "up") == 0) up_interfaces++;
+        }
+        fclose(f);
+    }
+    closedir(net_dir);
+
+    if (up_interfaces > 0) state = DEVICE_NETWORK_ONLINE;
+    else if (usable_interfaces > 0) state = DEVICE_NETWORK_OFFLINE;
+    return state;
+}
+
+const char *hardware_guard_network_state_name(device_network_state_t state) {
+    switch (state) {
+        case DEVICE_NETWORK_ONLINE:  return "ONLINE";
+        case DEVICE_NETWORK_OFFLINE: return "OFFLINE";
+        default:                     return "UNKNOWN";
+    }
+}
+
 int hardware_guard_scan(hardware_state_t *state) {
     if (!state) return -1;
     memset(state, 0, sizeof(hardware_state_t));
@@ -131,6 +223,12 @@ int hardware_guard_scan(hardware_state_t *state) {
     state->process_violation_detected = scan_and_terminate_prohibited_processes();
     state->audio_input_available = (access("/dev/snd/pcmC0D0c", F_OK) == 0 || access("/dev/snd", F_OK) == 0);
     state->audio_output_available = (access("/dev/snd/pcmC0D0p", F_OK) == 0 || access("/dev/snd", F_OK) == 0);
+
+    state->camera_count = 0;
+    detect_cameras(&state->camera_count);
+    state->camera_available = (state->camera_count > 0);
+
+    state->network_state = (int)hardware_guard_detect_network();
 
     state->unauthorized_device_flag = (state->external_display_detected ||
                                        state->usb_storage_detected ||
@@ -150,6 +248,9 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              "\"process_violation\":%s,"
              "\"audio_in\":%s,"
              "\"audio_out\":%s,"
+             "\"camera_available\":%s,"
+             "\"camera_count\":%d,"
+             "\"network_state\":\"%s\","
              "\"unauthorized_hardware\":%s"
              "}",
              state->display_count,
@@ -158,6 +259,9 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              state->process_violation_detected ? "true" : "false",
              state->audio_input_available ? "true" : "false",
              state->audio_output_available ? "true" : "false",
+             state->camera_available ? "true" : "false",
+             state->camera_count,
+             hardware_guard_network_state_name((device_network_state_t)state->network_state),
              state->unauthorized_device_flag ? "true" : "false");
 
     return 0;

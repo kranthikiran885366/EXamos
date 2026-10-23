@@ -1,6 +1,5 @@
 [Unit]
 Description=ExamOS Secure Examination Kiosk Session (Cage + Chromium)
-Documentation=https://examos.example.edu/docs/kiosk
 After=network.target sound.target systemd-user-sessions.service examos-server.service nftables.service
 Wants=examos-server.service
 
@@ -28,8 +27,10 @@ LimitNOFILE=65536
 # Sandboxing
 ProtectSystem=strict
 ProtectHome=yes
+NoNewPrivileges=true
 ReadWritePaths=/run/user/1000 /tmp
-PrivateTmp=yes
+PrivateTmp=true
+LockPersonality=true
 CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
 
 [Install]

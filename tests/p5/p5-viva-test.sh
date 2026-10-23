@@ -21,6 +21,7 @@ SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9105}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
+RUN_DIR="$(mktemp -d /tmp/examos-p5-viva.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -46,23 +47,28 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
         -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
-    CAND_FILE="/tmp/examos-p5-viva-candidates.conf"
+    CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p5-viva-ledger.log" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_BEHAVIOUR_STORE="/tmp/examos-p5-viva-behaviour" \
-    EXAMOS_VIVA_STORE="/tmp/examos-p5-viva-store" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
+    EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
+    EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
+    EXAMOS_DATA_DIR="$RUN_DIR/data" \
     EXAMOS_TPM_MODE=development \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
-    EXAMOS_SESSION_JOURNAL="/tmp/examos-p5-viva-sessions.log" \
+    EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
         "$SERVER_BIN" &
     SERVER_PID=$!
     for i in $(seq 1 15); do
@@ -77,7 +83,10 @@ if [ -x "$SERVER_BIN" ]; then
     REVIEWER_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_REVIEWER_TOKEN | cut -d= -f2)
 fi
 
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true; }
+cleanup() {
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$RUN_DIR"
+}
 trap cleanup EXIT
 
 if [ -z "$CANDIDATE_TOKEN" ]; then
@@ -87,6 +96,10 @@ if [ -z "$CANDIDATE_TOKEN" ]; then
 fi
 
 SESSION_ID="viva-test-session-$(date +%s)"
+# Provisioned examination identity (no server-side default is fabricated).
+EXAM_ID="P5-VIVA-$(date +%s)"
+# A receipt hash that is not bound to a server-held submission. The route must
+# refuse to generate viva questions from client-supplied context text.
 RECEIPT_HASH=$(echo -n "${SESSION_ID}-submission" | sha256sum | cut -d' ' -f1)
 
 # -----------------------------------------------------------------------
@@ -96,17 +109,42 @@ echo "  VI1: Generating viva questions..."
 VIVA_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/viva/generate" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
-    -d "{\"session_id\":\"${SESSION_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"exam_id\":\"EXAM-MAIN\",\"submission_receipt_hash\":\"${RECEIPT_HASH}\"}" 2>/dev/null)
+    -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"exam_id\":\"${EXAM_ID}\",\"submission_receipt_hash\":\"${RECEIPT_HASH}\"}" 2>/dev/null)
 
 VIVA_ID=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('viva_id',''))" 2>/dev/null || echo "")
 VIVA_STATUS=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
 VIVA_ERR=$(echo "$VIVA_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "")
 VIVA_Q_COUNT=$(echo "$VIVA_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('questions',[])))" 2>/dev/null || echo "0")
 
+if [ "$VIVA_ERR" = "VIVA_SUBMISSION_NOT_FOUND_OR_RECEIPT_MISMATCH" ]; then
+    # The route intentionally refuses client-supplied viva context. A real
+    # submission must exist in the exam engine before viva can be generated.
+    record "VI1" "PASS" "BLOCKED" "Viva requires a server-held submitted exam; no submission is provisioned in this environment"
+    for vid in VI2 VI3 VI4 VI5 VI6 VI7; do
+        record "$vid" "PASS" "BLOCKED" "Requires a provisioned, submitted exam"
+    done
+    OVERALL="BLOCKED"
+    cat > "$ARTIFACT_DIR/viva-results.json" <<EOF2
+{
+  "phase": "P5",
+  "test": "viva_engine",
+  "passed": $PASS,
+  "failed": $FAIL,
+  "blocked": $BLOCKED,
+  "overall": "$OVERALL",
+  "note": "No server-held submitted exam is available. Viva context is derived server-side and client-supplied context is rejected.",
+  "timestamp": "$(ts)"
+}
+EOF2
+    echo ""
+    echo "=== [P5-VIVA] PASS=$PASS FAIL=$FAIL BLOCKED=$BLOCKED OVERALL=$OVERALL ==="
+    exit 2
+fi
+
 if [ "$VIVA_STATUS" = "VIVA_PROVIDER_UNAVAILABLE" ] || [ "$VIVA_ERR" = "VIVA_PROVIDER_UNAVAILABLE" ]; then
     # No LLM configured — this is expected in CI. The engine correctly
     # reports UNAVAILABLE rather than fabricating questions.
-    record "VI1" "PASS" "PASS" "Viva engine correctly reports PROVIDER_UNAVAILABLE (no LLM in CI)"
+    record "VI1" "PASS" "BLOCKED" "Viva engine correctly reports PROVIDER_UNAVAILABLE (no LLM in CI)"
     # Skip remaining tests that require actual generated questions
     for vid in VI2 VI3 VI4 VI5 VI6 VI7; do
         record "$vid" "PASS" "BLOCKED" "Requires LLM provider — not available in CI"
@@ -131,7 +169,7 @@ EOF2
 fi
 
 if [ -n "$VIVA_ID" ] && [ "$VIVA_Q_COUNT" -ge 2 ]; then
-    record "VI1" "PASS" "PASS" "Viva generated: $VIVA_ID ($VIVA_Q_COUNT questions)"
+    record "VI1" "PASS" "BLOCKED" "Viva generated: $VIVA_ID ($VIVA_Q_COUNT questions)"
 else
     record "VI1" "PASS" "FAIL" "Viva generation failed: status=$VIVA_STATUS resp=$VIVA_RESP"
     # If generation fails, mark remaining as blocked

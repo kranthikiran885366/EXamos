@@ -20,6 +20,7 @@ SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9104}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
+RUN_DIR="$(mktemp -d /tmp/examos-p5-variant.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -45,25 +46,39 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
         -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
-    CAND_FILE="/tmp/examos-p5-variant-candidates.conf"
+    CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
+    # Provision a real examination identity; the server no longer fabricate one.
+    EXAM_ID="P5-VARIANT-$(date +%s)"
+    cat > "$RUN_DIR/exam.conf" <<EXAMCONF
+EXAM_URL=https://exam.university.edu/test
+EXAM_NAME=ExamOS Variant Test
+EXAM_ID=${EXAM_ID}
+ALLOWED_ORIGINS=https://exam.university.edu
+EXAM_DURATION_MINUTES=60
+EXAMCONF
+
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p5-variant-ledger.log" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_VARIANT_STORE="/tmp/examos-p5-variant-store" \
-    EXAMOS_EVENT_CHAIN_PATH="/tmp/examos-p5-variant-events.log" \
-    EXAMOS_BEHAVIOUR_STORE="/tmp/examos-p5-variant-behaviour" \
-    EXAMOS_VIVA_STORE="/tmp/examos-p5-variant-viva" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
+    EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
+    EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
+    EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
+    EXAMOS_DATA_DIR="$RUN_DIR/data" \
     EXAMOS_TPM_MODE=development \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
-    EXAMOS_SESSION_JOURNAL="/tmp/examos-p5-variant-sessions.log" \
+    EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
         "$SERVER_BIN" &
     SERVER_PID=$!
     for i in $(seq 1 15); do
@@ -78,7 +93,10 @@ if [ -x "$SERVER_BIN" ]; then
     REVIEWER_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_REVIEWER_TOKEN | cut -d= -f2)
 fi
 
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true; }
+cleanup() {
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$RUN_DIR"
+}
 trap cleanup EXIT
 
 if [ -z "$CANDIDATE_TOKEN" ]; then

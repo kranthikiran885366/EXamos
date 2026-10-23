@@ -1,7 +1,7 @@
 [Unit]
 Description=ExamOS Examination Control Server (Admin Dashboard + Candidate Login)
-Documentation=https://examos.example.edu/docs/server
 ConditionPathExists=/run/examos/secrets/runtime.env
+ConditionPathExists=/etc/examos/appliance-identity
 StartLimitIntervalSec=300
 StartLimitBurst=3
 Requires=examos-unseal.service postgresql.service
@@ -12,46 +12,75 @@ Before=examos-kiosk.service
 Type=simple
 User=root
 Environment=EXAMOS_TPM_MODE=production
+Environment=EXAMOS_ADMIN_COOKIE_SECURE=1
 ExecStart=/usr/local/bin/examos-server
 Restart=always
 RestartSec=3
 StandardOutput=journal
 StandardError=journal
-Environment=EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
+
+# Durable state. Every path below is provisioned; none of them is a
+# compiled-in default.
 Environment=EXAMOS_SERVER_PORT=8000
+Environment=EXAMOS_DATA_DIR=/var/lib/examos
+Environment=EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
+Environment=EXAMOS_SESSION_JOURNAL=/var/log/examos/session_journal.log
+Environment=EXAMOS_EVENT_CHAIN_PATH=/var/log/examos/proctoring_events.log
+Environment=EXAMOS_BROWSER_POLICY_CATALOG=/etc/examos/browser_policies.json
+Environment=EXAMOS_CANDIDATE_STORE=/etc/examos/candidates.conf
+Environment=EXAMOS_DATABASE_URL_FILE=/run/examos/secrets/database-url
+
 EnvironmentFile=/etc/examos/proctor.env
 EnvironmentFile=-/etc/examos/attestation-trust.conf
 EnvironmentFile=/run/examos/secrets/runtime.env
 EnvironmentFile=/run/examos/secrets/agent.env
 EnvironmentFile=/run/examos/secrets/proctor.env
-Environment=EXAMOS_DATABASE_URL_FILE=/run/examos/secrets/database-url
-Environment=EXAMOS_CANDIDATE_STORE=/etc/examos/candidates.conf
+
+# The schema is migrated before the service is allowed to serve. The
+# migration is the only writer that may run concurrently with the server.
 ExecStartPre=/usr/bin/test "${EXAMOS_TPM_MODE}" = production
 ExecStartPre=/usr/bin/env -i EXAMOS_DATABASE_URL_FILE=/run/examos/secrets/database-url /usr/local/bin/examos-db-migrate /usr/share/examos/migrations
 
 # Hardening
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=yes
 StateDirectory=examos
+StateDirectoryMode=0750
+LogsDirectory=examos
+LogsDirectoryMode=0750
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
 PrivateDevices=yes
+PrivateUsers=yes
+PrivateGroups=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictSUIDSGID=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictFileSystems=@nodev @notlownoexec
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadOnlyPaths=/etc/examos/admin.conf
-ReadWritePaths=/var/log/examos /etc/examos/exam.conf
+ReadOnlyPaths=/etc/examos/admin.conf /etc/examos/browser_policies.json
+ReadWritePaths=/var/log/examos /etc/examos/exam.conf /var/lib/examos
+UMask=0077
+KeyringMode=private
+ProtectProc=invisible
+ProtectHostname=yes
 
 [Install]
 WantedBy=multi-user.target

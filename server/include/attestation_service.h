@@ -79,6 +79,9 @@ typedef struct {
 int  attestation_service_init(void);
 int  attestation_store_init(void);
 
+/* Read-only health probe for the attestation store. Returns 0 when healthy. */
+int  attestation_store_health(void);
+
 /* --- Device & Release Registry --- */
 int  attestation_register_device(const char *device_id, const char *ek_fingerprint,
                                   const char *allowed_release);

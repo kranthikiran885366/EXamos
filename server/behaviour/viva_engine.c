@@ -213,8 +213,8 @@ static int find_existing_viva(const char *session_id,
     char line[4096];
     int found = 0;
     while (fgets(line, sizeof(line), f) && !found) {
-        char ftype[16]={0}, fvid[64]={0}, fsess[64]={0}, frh[65]={0};
-        if (sscanf(line, "%15[^|]|%63[^|]|%63[^|]", ftype, fvid, fsess) < 3) continue;
+        char ftype[16]={0}, fvid[64]={0}, fsess[128]={0}, frh[65]={0};
+        if (sscanf(line, "%15[^|]|%63[^|]|%127[^|]", ftype, fvid, fsess) < 3) continue;
         if (strcmp(ftype,"VIVA")!=0) continue;
         if (strcmp(fsess,session_id)!=0) continue;
         /* Extract receipt hash field (field 5) */
@@ -768,7 +768,9 @@ int viva_generate(const char *session_id,
         memcpy(out_viva->questions, questions, sizeof(viva_question_t) * (size_t)qcount);
         out_viva->question_count = qcount;
         for (int i = 0; i < out_viva->question_count; i++) {
-            strncpy(out_viva->questions[i].source_question_id, session_id,
+            /* The viva questions are derived from the whole submitted exam;
+               do not leak the candidate session token into reviewer evidence. */
+            strncpy(out_viva->questions[i].source_question_id, "SUBMITTED_EXAM",
                     sizeof(out_viva->questions[i].source_question_id)-1);
             strncpy(out_viva->questions[i].source_answer_version, submission_receipt_hash,
                     sizeof(out_viva->questions[i].source_answer_version)-1);

@@ -10,9 +10,31 @@
 set -uo pipefail
 
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-ARTIFACT_DIR="$WORKSPACE/artifacts/p0"
+ARTIFACT_DIR="${EXAMOS_P0_ARTIFACT_DIR:-}"
+if [ -z "$ARTIFACT_DIR" ]; then
+    mkdir -p "$WORKSPACE/artifacts/p0/runs"
+    ARTIFACT_DIR="$(mktemp -d "$WORKSPACE/artifacts/p0/runs/enterprise-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+fi
 ENT_DIR="$ARTIFACT_DIR/enterprise"
 mkdir -p "$ENT_DIR"
+export EXAMOS_P0_ARTIFACT_DIR="$ARTIFACT_DIR"
+export EXAMOS_P0_ENTERPRISE_ARTIFACT_DIR="$ENT_DIR"
+BUILD_ROOT="$(mktemp -d /tmp/examos-p0-native-build.XXXXXX)"
+cleanup_native_build() {
+    case "$BUILD_ROOT" in
+        /tmp/examos-p0-native-build.*)
+            [ -d "$BUILD_ROOT" ] && [ ! -L "$BUILD_ROOT" ] && rm -rf -- "$BUILD_ROOT" ;;
+        *) echo "Refusing to remove unexpected native build path: $BUILD_ROOT" >&2 ;;
+    esac
+}
+trap cleanup_native_build EXIT
+SOURCE_COMMIT="$(git -C "$WORKSPACE" rev-parse HEAD)"
+SOURCE_TREE_STATE="CLEAN"
+if [ -n "$(git -C "$WORKSPACE" status --porcelain=v1 --untracked-files=all -- . \
+    ':(exclude)artifacts/**' ':(exclude)image/p0/output/**' \
+    ':(exclude)build/**' ':(exclude)cache/**')" ]; then
+    SOURCE_TREE_STATE="DIRTY"
+fi
 
 TOTAL=0; PASSED=0; FAILED=0; WARNED=0; BLOCKED=0
 
@@ -26,8 +48,8 @@ log_check() {
     case "$status" in
         PASS) PASSED=$((PASSED + 1)); DOMAIN_PASSED[$domain]=$(( ${DOMAIN_PASSED[$domain]:-0} + 1 )) ;;
         FAIL) FAILED=$((FAILED + 1)) ;;
-        WARN) WARNED=$((WARNED + 1)); DOMAIN_PASSED[$domain]=$(( ${DOMAIN_PASSED[$domain]:-0} + 1 )) ;;
-        BLOCKED) BLOCKED=$((BLOCKED + 1)); DOMAIN_PASSED[$domain]=$(( ${DOMAIN_PASSED[$domain]:-0} + 1 )) ;;
+        WARN) WARNED=$((WARNED + 1)) ;;
+        BLOCKED) BLOCKED=$((BLOCKED + 1)) ;;
     esac
     printf "  [%-8s] %-40s %s\n" "$status" "$name" "$detail"
 }
@@ -372,17 +394,11 @@ else
     log_check "build" "Root Makefile exists" "FAIL" "Missing"
 fi
 
-# Clean
-if make -C "$WORKSPACE" clean >/dev/null 2>&1; then
-    log_check "build" "make clean" "PASS" "Exit 0"
-else
-    log_check "build" "make clean" "FAIL" "Non-zero exit"
-fi
-
-# Build with timing
+# Build into the run evidence directory. Never clean or overwrite developer
+# binaries and objects in the source checkout.
 BUILD_START=$(date +%s)
 BUILD_LOG="$ENT_DIR/build-output.log"
-if make -C "$WORKSPACE" all > "$BUILD_LOG" 2>&1; then
+if BUILD_ROOT="$BUILD_ROOT" make -C "$WORKSPACE" all > "$BUILD_LOG" 2>&1; then
     BUILD_END=$(date +%s)
     BUILD_TIME=$((BUILD_END - BUILD_START))
     log_check "build" "make all" "PASS" "${BUILD_TIME}s"
@@ -397,7 +413,7 @@ BINARIES="server/examos-server agent/examos-agent kiosk/launcher/examos-kiosk-la
 BIN_COUNT=0; BIN_FOUND=0
 for bin in $BINARIES; do
     BIN_COUNT=$((BIN_COUNT + 1))
-    if [ -f "$WORKSPACE/$bin" ]; then BIN_FOUND=$((BIN_FOUND + 1)); fi
+    if [ -f "$BUILD_ROOT/$bin" ]; then BIN_FOUND=$((BIN_FOUND + 1)); fi
 done
 if [ "$BIN_FOUND" -eq "$BIN_COUNT" ]; then
     log_check "build" "All binaries produced ($BIN_COUNT)" "PASS" "All present"
@@ -408,8 +424,8 @@ fi
 # ELF x86-64 check
 ELF_OK=true
 for bin in $BINARIES; do
-    if [ -f "$WORKSPACE/$bin" ]; then
-        FILE_OUT=$(file "$WORKSPACE/$bin" 2>/dev/null || echo "")
+    if [ -f "$BUILD_ROOT/$bin" ]; then
+        FILE_OUT=$(file "$BUILD_ROOT/$bin" 2>/dev/null || echo "")
         if ! echo "$FILE_OUT" | grep -q 'ELF 64-bit.*x86-64'; then
             ELF_OK=false
         fi
@@ -424,7 +440,7 @@ fi
 # Stack protector in any binary
 STACK_CHK=false
 for bin in $BINARIES; do
-    if [ -f "$WORKSPACE/$bin" ] && readelf -s "$WORKSPACE/$bin" 2>/dev/null | grep -q '__stack_chk_fail'; then
+    if [ -f "$BUILD_ROOT/$bin" ] && readelf -s "$BUILD_ROOT/$bin" 2>/dev/null | grep -q '__stack_chk_fail'; then
         STACK_CHK=true; break
     fi
 done
@@ -442,8 +458,8 @@ cat > "$ENT_DIR/build-audit.json" <<EOF
   "binaries_found": $BIN_FOUND,
   "binary_sizes": {
 $(for bin in $BINARIES; do
-    if [ -f "$WORKSPACE/$bin" ]; then
-        SIZE=$(stat -c%s "$WORKSPACE/$bin" 2>/dev/null || echo 0)
+    if [ -f "$BUILD_ROOT/$bin" ]; then
+        SIZE=$(stat -c%s "$BUILD_ROOT/$bin" 2>/dev/null || echo 0)
         echo "    \"$(basename $bin)\": $SIZE,"
     fi
 done | sed '$ s/,$//')
@@ -463,7 +479,7 @@ BIN_SEC_JSON='{"binaries":['
 BIN_SEC_FIRST=true
 
 for bin in $BINARIES; do
-    FULL_PATH="$WORKSPACE/$bin"
+    FULL_PATH="$BUILD_ROOT/$bin"
     BIN_NAME="$(basename "$bin")"
     if [ ! -f "$FULL_PATH" ]; then
         log_check "binsec" "$BIN_NAME hardening" "BLOCKED" "Binary not found"
@@ -559,7 +575,7 @@ if [ -f "$BOOT_LOG" ] && [ -s "$BOOT_LOG" ]; then
         log_check "boot" "No kernel panics/errors" "FAIL" "$PANIC_COUNT critical errors found"
     fi
 else
-    log_check "boot" "Boot log exists" "FAIL" "Missing or empty"
+    log_check "boot" "Boot log exists" "BLOCKED" "No boot log was bound to this P0 run"
     log_check "boot" "UEFI firmware" "BLOCKED" "No boot log"
     log_check "boot" "Kernel loaded" "BLOCKED" "No boot log"
     log_check "boot" "systemd init" "BLOCKED" "No boot log"
@@ -585,9 +601,11 @@ echo ""
 echo "━━━ Domain 9: Server Runtime Smoke Test ━━━━━━━━━━━━━━━━━━━━"
 
 SMOKE_SCRIPT="$WORKSPACE/tests/p0/server-smoke-test.sh"
-if [ -f "$SMOKE_SCRIPT" ] && [ -f "$WORKSPACE/server/examos-server" ]; then
-    if bash "$SMOKE_SCRIPT" > "$ENT_DIR/smoke-test-output.log" 2>&1; then
-        SMOKE_PASSED=$(grep -c '\[SMOKE\].*PASS' "$ENT_DIR/smoke-test-output.log" || echo 0)
+if [ -f "$SMOKE_SCRIPT" ] && [ -x "$BUILD_ROOT/server/examos-server" ]; then
+    if EXAMOS_SERVER_BIN="$BUILD_ROOT/server/examos-server" \
+       EXAMOS_P0_ENTERPRISE_ARTIFACT_DIR="$ENT_DIR" \
+       bash "$SMOKE_SCRIPT" > "$ENT_DIR/smoke-test-output.log" 2>&1; then
+        SMOKE_PASSED=$(grep -c '^\[SMOKE\] [^:]*: PASS (expected=' "$ENT_DIR/smoke-test-output.log" || echo 0)
         SMOKE_TOTAL_T=$(grep -c '\[SMOKE\].*expected=' "$ENT_DIR/smoke-test-output.log" || echo 0)
         log_check "runtime" "Server smoke test suite" "PASS" "$SMOKE_PASSED/$SMOKE_TOTAL_T endpoints OK"
 
@@ -736,6 +754,10 @@ for domain in $DOMAINS; do
 done
 
 CERT_DOMAINS_JSON="$CERT_DOMAINS_JSON}"
+if [ "$SOURCE_TREE_STATE" = "DIRTY" ] && [ "$GATE" = "PASS" ]; then
+    GATE="BLOCKED"
+    GATE_REASON="source tree is dirty; results are diagnostic and not release evidence"
+fi
 
 echo "╠══════════════════════════════════════════════════════════════╣"
 
@@ -772,6 +794,9 @@ if [ "$GATE" = "PASS" ]; then
     echo "║   ExamOS P0 Enterprise Certification: PASS                   ║"
     echo "║   Grade: $CERT_GRADE  Score: ${PASSED}/${TOTAL} (${PERCENTAGE}%)                     ║"
     echo "║                                                              ║"
+elif [ "$GATE" = "BLOCKED" ]; then
+    echo "â•‘   ExamOS P0 Enterprise Certification: BLOCKED                â•‘"
+    echo "â•‘   Reason: $GATE_REASON"
 else
     echo "║                                                              ║"
     echo "║   ███████╗ █████╗ ██╗██╗                                     ║"
@@ -789,7 +814,7 @@ fi
 echo "╚══════════════════════════════════════════════════════════════╝"
 
 # --- Generate certification JSON ---
-GIT_COMMIT=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "UNKNOWN")
+GIT_COMMIT="$SOURCE_COMMIT"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 cat > "$ENT_DIR/certification.json" <<CERTEOF
@@ -799,6 +824,7 @@ cat > "$ENT_DIR/certification.json" <<CERTEOF
   "certification_level": "ENTERPRISE",
   "timestamp": "$TIMESTAMP",
   "git_commit": "$GIT_COMMIT",
+  "source_tree_state": "$SOURCE_TREE_STATE",
   "grade": "$CERT_GRADE",
   "score": {
     "total": $TOTAL,
@@ -819,4 +845,8 @@ echo "Enterprise certification report: $ENT_DIR/certification.json"
 echo "All evidence artifacts:          $ENT_DIR/"
 echo ""
 
-exit $([ "$GATE" = "PASS" ] && echo 0 || echo 1)
+case "$GATE" in
+    PASS) exit 0 ;;
+    BLOCKED) exit 2 ;;
+    *) exit 1 ;;
+esac

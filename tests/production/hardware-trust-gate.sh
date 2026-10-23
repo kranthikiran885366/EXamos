@@ -60,7 +60,7 @@ EK_HANDLE="${EXAMOS_TPM_EK_HANDLE:-}"
 AK_HANDLE="${EXAMOS_TPM_AK_HANDLE:-}"
 if [ -z "$EK_HANDLE" ] || [ "$EK_HANDLE" = "NOT_PROVISIONED" ] ||
    [ -z "$AK_HANDLE" ] || [ "$AK_HANDLE" = "NOT_PROVISIONED" ]; then
-    block "enrolled persistent EK/AK handles are not provisioned; refusing tpm2_createek"
+    block "enrolled persistent EK/AK handles are not provisioned; refusing transient EK creation"
 fi
 SERVER="${EXAMOS_SERVER_BASE_URL:-}"
 TOKEN="${EXAMOS_AGENT_API_TOKEN:-}"

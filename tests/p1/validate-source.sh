@@ -67,8 +67,8 @@ grep -q "^Bootable=yes"     "$MKOSI" 2>/dev/null && pass "mkosi.conf: Bootable=y
 
 # ── kiosk service: User=exam (not root) ───────────────────────────────────────
 KIOSK_SVC="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"
-grep -q "^User=exam$" "$KIOSK_SVC" 2>/dev/null && pass "kiosk service: User=exam" || fail "kiosk service: User must be exam, not root"
-grep -q "^ExecStart=.*cage" "$KIOSK_SVC" 2>/dev/null && pass "kiosk service: ExecStart references cage" || fail "kiosk service: ExecStart must reference cage"
+tr -d '\r' < "$KIOSK_SVC" 2>/dev/null | grep -q "^User=exam$" && pass "kiosk service: User=exam" || fail "kiosk service: User must be exam, not root"
+tr -d '\r' < "$KIOSK_SVC" 2>/dev/null | grep -q "^ExecStart=.*cage" && pass "kiosk service: ExecStart references cage" || fail "kiosk service: ExecStart must reference cage"
 grep -q "examos-kiosk-launcher" "$KIOSK_SVC" 2>/dev/null && pass "kiosk service: references examos-kiosk-launcher" || fail "kiosk service: missing examos-kiosk-launcher reference"
 
 # ── launcher.c: no sandbox-disabling flags ────────────────────────────────────

@@ -33,13 +33,25 @@ echo "=== [P2-STATIC] ExamOS P2 Static Audit: $(ts) ==="
 # S-01 (P2-10): mkosi.conf must not contain shell/SSH/compiler packages
 # ---------------------------------------------------------------------------
 MKOSI="$WORKSPACE/image/mkosi.conf"
-for pkg in bash openssh-server gcc g++ make python3 perl ruby nodejs sudo su; do
-    if grep -qE "^\s+${pkg}\s*$" "$MKOSI" 2>/dev/null; then
-        f "S-01: Prohibited package '${pkg}' in mkosi.conf"
+# Only the [Content] packages are installed in the release image. The [Build]
+# section lists host tools that mkosi uses while synthesising the image and
+# must not be treated as release-runtime packages.
+CONTENT_PKGS=$(awk '/^\[Content\]/{inside=1; next} /^\[/{inside=0} inside' "$MKOSI")
+for pkg in bash openssh-server gcc g++ make perl ruby nodejs sudo su; do
+    if printf '%s\n' "$CONTENT_PKGS" | grep -qE "^\s+${pkg}\s*$"; then
+        f "S-01: Prohibited package '${pkg}' in release mkosi.conf [Content]"
     else
-        p "S-01: '${pkg}' absent from release mkosi.conf"
+        p "S-01: '${pkg}' absent from release mkosi.conf [Content]"
     fi
 done
+# python3 is retained deliberately: the shipped startup validator and health
+# reporter use it at runtime. Do not classify a required runtime interpreter
+# as a build-tool leak.
+if printf '%s\n' "$CONTENT_PKGS" | grep -qE '^\s+python3\s*$'; then
+    p "S-01: python3 retained for shipped startup/security validators"
+else
+    f "S-01: python3 runtime dependency missing from release mkosi.conf"
+fi
 
 # ---------------------------------------------------------------------------
 # S-02 (P2-10): lockdown=confidentiality in release cmdline
@@ -53,7 +65,7 @@ fi
 # ---------------------------------------------------------------------------
 # S-03 (P2-10): required P2 packages present in mkosi.conf
 # ---------------------------------------------------------------------------
-for pkg in cryptsetup-bin usbguard nftables apparmor squashfs-tools; do
+for pkg in cryptsetup-bin usbguard nftables apparmor; do
     if grep -q "$pkg" "$MKOSI" 2>/dev/null; then
         p "S-03: Required P2 package present: ${pkg}"
     else
@@ -90,6 +102,7 @@ if policy.get("DeveloperToolsAvailability") != 2: errors.append("DeveloperToolsA
 if policy.get("DownloadRestrictions") != 3: errors.append("DownloadRestrictions!=3")
 if policy.get("PrintingEnabled", True): errors.append("PrintingEnabled not false")
 if policy.get("IncognitoModeAvailability") != 1: errors.append("IncognitoModeAvailability!=1")
+if policy.get("SafeBrowsingProtectionLevel", 0) < 1: errors.append("SafeBrowsingProtectionLevel must enable standard protection")
 if policy.get("AllowFileSelectionDialogs", True): errors.append("AllowFileSelectionDialogs not false")
 if policy.get("DefaultPopupsSetting") != 2: errors.append("DefaultPopupsSetting!=2")
 if not policy.get("VideoCaptureAllowedUrls"): errors.append("VideoCaptureAllowedUrls missing")

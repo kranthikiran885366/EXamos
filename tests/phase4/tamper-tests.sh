@@ -9,8 +9,8 @@
 set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-ARTIFACT_DIR="$WORKSPACE/artifacts/phase4"
-VERIFIER_BIN="$WORKSPACE/tools/exam-event-verify"
+ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
+VERIFIER_BIN="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
 TMP_STORE=$(mktemp)
 
 mkdir -p "$ARTIFACT_DIR"
@@ -18,7 +18,10 @@ mkdir -p "$ARTIFACT_DIR"
 trap 'rm -f "$TMP_STORE"' EXIT
 
 echo "[TAMPER-TEST] Building CLI event verifier..."
-gcc -Wall -Wextra -O2 "$WORKSPACE/tools/exam-event-verify.c" -o "$VERIFIER_BIN" -lssl -lcrypto
+if [ ! -x "$VERIFIER_BIN" ]; then
+    echo "[TAMPER-TEST] BLOCKED: prebuilt event verifier is unavailable: $VERIFIER_BIN" >&2
+    exit 2
+fi
 
 echo "[TAMPER-TEST] Generating synthetic baseline hash-chained event stream..."
 # Build 5 valid chained events for session 'tamper-sess-01'

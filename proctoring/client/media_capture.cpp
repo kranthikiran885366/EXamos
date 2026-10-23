@@ -136,10 +136,8 @@ bool MediaCapture::capture_frame(FrameStats &stats) {
     }
     stats.width = m_width;
     stats.height = m_height;
-    stats.mean_luminance = pixels ? static_cast<float>(luminance) / pixels : 0.0f;
-    stats.detected_faces = 0;
-    stats.gaze_angle_x = 0.0f;
-    stats.gaze_angle_y = 0.0f;
+    (void)luminance;
+    (void)pixels;
     bool queued = ioctl(m_video_fd, VIDIOC_QBUF, &buf) == 0;
     return queued;
 }
@@ -148,12 +146,6 @@ const uint8_t *MediaCapture::frame_data() const { return m_rgb_frame.data(); }
 size_t MediaCapture::frame_size() const { return m_rgb_frame.size(); }
 uint32_t MediaCapture::frame_stride() const { return m_width * 3; }
 uint32_t MediaCapture::frame_channels() const { return 3; }
-
-/* P4-SCOPE: ALSA/PipeWire audio capture and energy computation. */
-bool MediaCapture::capture_audio(AudioStats &stats) {
-    (void)stats;
-    return false;
-}
 
 void MediaCapture::close_devices() {
     if (m_video_fd >= 0) {

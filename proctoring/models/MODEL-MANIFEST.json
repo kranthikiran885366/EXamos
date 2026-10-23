@@ -1,0 +1,21 @@
+{
+  "_schema": "examos-model-manifest-v2",
+  "_comment": "Detector artefacts used by the proctoring worker. Every artefact is recorded with its SHA-256 digest and verified before it is used, so a substituted or corrupted model cannot become examination evidence. The cascade below is the detector bundled with the OpenCV package; it yields no calibrated probability, so the confidence it reports is zero.",
+  "environment": "repository",
+  "version": "2",
+  "models": [
+    {
+      "name": "opencv-haarcascade-frontalface",
+      "role": "face-cascade",
+      "version": "4.10.0",
+      "file": "haarcascade_frontalface_default.xml",
+      "sha256": "0f7d4527844eb514d4a4948e822da90fbb16a34a0bbbbc6adc6498747a5aafb0",
+      "size_bytes": 930127,
+      "source": "https://raw.githubusercontent.com/opencv/opencv/4.10.0/data/haarcascades/haarcascade_frontalface_default.xml",
+      "licence": "BSD-3-Clause (OpenCV project)",
+      "class": "face",
+      "scorer": "binary_cascade",
+      "produces_calibrated_confidence": false
+    }
+  ]
+}

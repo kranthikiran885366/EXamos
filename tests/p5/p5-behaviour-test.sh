@@ -20,6 +20,7 @@ SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9103}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
+RUN_DIR="$(mktemp -d /tmp/examos-p5-behaviour.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -49,21 +50,36 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
         -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
-    CAND_FILE="/tmp/examos-p5-behaviour-candidates.conf"
+    CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
     AGENT_TOKEN="$(openssl rand -hex 32)"
     PROCTOR_TOKEN="$(openssl rand -hex 32)"
+    # Provision a real examination identity; the server no longer fabricates one.
+    EXAM_ID="P5-BEHAVIOUR-$(date +%s)"
+    cat > "$RUN_DIR/exam.conf" <<EXAMCONF
+EXAM_URL=https://exam.university.edu/test
+EXAM_NAME=ExamOS Behaviour Test
+EXAM_ID=${EXAM_ID}
+ALLOWED_ORIGINS=https://exam.university.edu
+EXAM_DURATION_MINUTES=60
+EXAMCONF
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p5-behaviour-ledger.log" \
-    EXAMOS_EVENT_CHAIN_PATH="/tmp/examos-p5-behaviour-events.log" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
+    EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_AGENT_API_TOKEN="$AGENT_TOKEN" \
     EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
-    EXAMOS_BEHAVIOUR_STORE="/tmp/examos-p5-behaviour-store" \
-    EXAMOS_VIVA_STORE="/tmp/examos-p5-viva-store" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
+    EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
+    EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
+    EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
+    EXAMOS_DATA_DIR="$RUN_DIR/data" \
     EXAMOS_TPM_MODE=development \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
@@ -85,6 +101,7 @@ fi
 
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$RUN_DIR"
 }
 trap cleanup EXIT
 
@@ -97,6 +114,18 @@ fi
 SESSION_ID="${CANDIDATE_TOKEN}"
 
 # -----------------------------------------------------------------------
+# B0: Seed the proctoring event chain. Behaviour features are only accepted
+#     when they can be corroborated by events for the same authenticated
+#     session, so the fixture must produce a real chain entry first.
+# -----------------------------------------------------------------------
+echo "  B0: Seeding proctoring event chain..."
+B0_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/proctoring/events" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${PROCTOR_TOKEN}" \
+    -d "{\"session_id\":\"${SESSION_ID}\",\"source_type\":\"VISION\",\"event_type\":\"FACE_PRESENT\",\"model_name\":\"exam-face-detector\",\"model_version\":\"p4-v1\",\"payload\":{\"confidence\":0.99}}" 2>/dev/null)
+echo "$B0_RESP" | grep -q '"status":"RECORDED"' || echo "  [BEH-WARN] Event chain seed failed: $B0_RESP"
+
+# -----------------------------------------------------------------------
 # B1: Ingest per-question behaviour features
 # -----------------------------------------------------------------------
 echo "  B1: Ingesting per-question features..."
@@ -105,6 +134,7 @@ INGEST_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/behaviour/events" \
     -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
     -d "{
         \"session_id\": \"${SESSION_ID}\",
+        \"exam_id\": \"${EXAM_ID}\",
         \"question_id\": 1,
         \"question_presented_server_ts_ms\": 1700000000000,
         \"first_input_server_ts_ms\": 1700000005000,
@@ -168,7 +198,7 @@ echo "  B4: Computing risk score..."
 SCORE_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/behaviour/score/compute" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
-    -d "{\"session_id\":\"${SESSION_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"exam_id\":\"EXAM-MAIN\"}" 2>/dev/null)
+    -d "{\"session_id\":\"${SESSION_ID}\",\"candidate_id\":\"${CANDIDATE_ID}\",\"exam_id\":\"${EXAM_ID}\"}" 2>/dev/null)
 RISK_SCORE=$(echo "$SCORE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('risk_score',''))" 2>/dev/null || echo "")
 CONF_STATUS=$(echo "$SCORE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('confidence_status', d.get('status','')))" 2>/dev/null || echo "")
 if [ -n "$RISK_SCORE" ] || [ "$CONF_STATUS" = "SCORE_INSUFFICIENT_EVIDENCE" ] || [ "$CONF_STATUS" = "INSUFFICIENT_EVIDENCE" ]; then
@@ -181,19 +211,24 @@ fi
 # B5: Feature export (reviewer-only)
 # -----------------------------------------------------------------------
 echo "  B5: Exporting features for reviewer..."
-FEATURES_RESP=$(curl -s "${SERVER_URL}/api/v1/behaviour/features?session_id=${SESSION_ID}" \
-    -H "Authorization: Basic $(echo -n "admin:${CANDIDATE_PIN}" | base64)" 2>/dev/null)
-if echo "$FEATURES_RESP" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    record "B5" "PASS" "PASS" "Features exported as valid JSON"
+# Feature export is reviewer-only. Legacy Basic credentials must not be
+# treated as reviewer authentication.
+BASIC_RESP=$(curl -s -o /dev/null -w '%{http_code}' \
+    "${SERVER_URL}/api/v1/behaviour/features?session_id=${SESSION_ID}" \
+    -H "Authorization: Basic $(echo -n "admin:${CANDIDATE_PIN}" | base64)" 2>/dev/null || true)
+[ -n "$BASIC_RESP" ] || BASIC_RESP=000
+if [ "$BASIC_RESP" = "403" ] || [ "$BASIC_RESP" = "401" ]; then
+    record "B5a" "REJECTED" "REJECTED" "Legacy Basic credentials rejected for feature export"
 else
-    # Admin auth may not work without a proper admin.conf — try reviewer token
-    FEATURES_RESP=$(curl -s "${SERVER_URL}/api/v1/behaviour/features?session_id=${SESSION_ID}" \
-        -H "Authorization: Bearer ${REVIEWER_TOKEN}" 2>/dev/null)
-    if echo "$FEATURES_RESP" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-        record "B5" "PASS" "PASS" "Features exported via reviewer token"
-    else
-        record "B5" "PASS" "BLOCKED" "Cannot export features — auth issue"
-    fi
+    record "B5a" "REJECTED" "FAIL" "Legacy Basic credentials returned $BASIC_RESP"
+fi
+
+FEATURES_RESP=$(curl -s "${SERVER_URL}/api/v1/behaviour/features?session_id=${SESSION_ID}" \
+    -H "Authorization: Bearer ${REVIEWER_TOKEN}" 2>/dev/null)
+if echo "$FEATURES_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if 'features' in d else 1)" 2>/dev/null; then
+    record "B5" "PASS" "PASS" "Features exported via reviewer token"
+else
+    record "B5" "PASS" "BLOCKED" "Cannot export features - auth or store issue"
 fi
 
 # -----------------------------------------------------------------------

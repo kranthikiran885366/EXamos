@@ -1,0 +1,62 @@
+{
+  "_schema": "examos-browser-policy-catalog-v1",
+  "_comment": "Provisioned kiosk/browser policy templates. An exam must reference one of these by name; the server stores the resolved policy body. Production deployments must ship a catalog reviewed and signed through the normal release process.",
+  "environment": "development",
+  "version": "1",
+  "policies": [
+    {
+      "name": "kiosk-strict",
+      "description": "Single-purpose kiosk: no downloads, no printing, no developer tools, clipboard disabled, fullscreen enforced.",
+      "policy": {
+        "mode": "kiosk",
+        "allow_file_upload": false,
+        "allow_downloads": false,
+        "allow_printing": false,
+        "allow_dev_tools": false,
+        "allow_clipboard": false,
+        "allow_popups": false,
+        "enforce_fullscreen": true,
+        "allow_extensions": false,
+        "allowed_navigations": ["self"],
+        "block_private_network": true,
+        "idle_timeout_seconds": 300
+      }
+    },
+    {
+      "name": "kiosk-standard",
+      "description": "Kiosk with controlled clipboard and navigation, used for exams that permit pasting a worked answer.",
+      "policy": {
+        "mode": "kiosk",
+        "allow_file_upload": false,
+        "allow_downloads": false,
+        "allow_printing": false,
+        "allow_dev_tools": false,
+        "allow_clipboard": true,
+        "allow_popups": false,
+        "enforce_fullscreen": true,
+        "allow_extensions": false,
+        "allowed_navigations": ["self", "exam-origin"],
+        "block_private_network": true,
+        "idle_timeout_seconds": 600
+      }
+    },
+    {
+      "name": "supervised-browser",
+      "description": "Supervised browser with the extension installed and popup-free navigation.",
+      "policy": {
+        "mode": "supervised",
+        "allow_file_upload": false,
+        "allow_downloads": false,
+        "allow_printing": false,
+        "allow_dev_tools": false,
+        "allow_clipboard": true,
+        "allow_popups": false,
+        "enforce_fullscreen": false,
+        "allow_extensions": true,
+        "allowed_navigations": ["self", "exam-origin"],
+        "block_private_network": true,
+        "idle_timeout_seconds": 900
+      }
+    }
+  ]
+}

@@ -125,6 +125,11 @@ if d.get("DefaultPopupsSetting") != 2:
 if d.get("IncognitoModeAvailability") != 1:
     errors.append(f"IncognitoModeAvailability={d.get('IncognitoModeAvailability')} (must be 1)")
 
+# Keep Chromium's phishing/malware protection enabled while kiosk restrictions
+# disable unrelated data collection and browsing features.
+if d.get("SafeBrowsingProtectionLevel", 0) < 1:
+    errors.append("SafeBrowsingProtectionLevel must enable at least standard protection")
+
 # AllowFileSelectionDialogs=false
 if d.get("AllowFileSelectionDialogs", True) is not False:
     errors.append("AllowFileSelectionDialogs not false")

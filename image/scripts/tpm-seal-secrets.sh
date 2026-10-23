@@ -35,6 +35,7 @@
 #   EXAMOS_EVENT_SIGNING_KEY=<key> \
 #   EXAMOS_VARIANT_SECRET=<secret> \
 #   EXAMOS_LEDGER_HMAC_KEY=<key> \
+#   EXAMOS_EXAM_KEY_KEK=<key> \
 #   EXAMOS_DATABASE_PASSWORD_FILE=/run/examos/db_password \
 #   bash /usr/local/sbin/tpm-seal-secrets.sh
 #
@@ -129,11 +130,13 @@ declare -A SECRETS=(
     ["event-signing-key"]="${EXAMOS_EVENT_SIGNING_KEY:-}"
     ["variant-secret"]="${EXAMOS_VARIANT_SECRET:-}"
     ["ledger-hmac-key"]="${EXAMOS_LEDGER_HMAC_KEY:-}"
+    ["exam-key-kek"]="${EXAMOS_EXAM_KEY_KEK:-}"
 )
 unset DB_PASSWORD_FILE DB_PASSWORD_ENV val
 DB_PASSWORD_ENV="${EXAMOS_DATABASE_PASSWORD:-}"
 unset EXAMOS_AGENT_API_TOKEN EXAMOS_PROCTOR_API_TOKEN EXAMOS_EVENT_SIGNING_KEY
 unset EXAMOS_VARIANT_SECRET EXAMOS_LEDGER_HMAC_KEY EXAMOS_DATABASE_PASSWORD
+unset EXAMOS_EXAM_KEY_KEK
 DB_PASSWORD_FILE="${EXAMOS_DATABASE_PASSWORD_FILE:-}"
 unset EXAMOS_DATABASE_PASSWORD_FILE
 if [ -n "$DB_PASSWORD_FILE" ]; then
@@ -460,6 +463,7 @@ declare -A ENV_NAMES=(
     [event-signing-key]=EXAMOS_EVENT_SIGNING_KEY
     [variant-secret]=EXAMOS_VARIANT_SECRET
     [ledger-hmac-key]=EXAMOS_LEDGER_HMAC_KEY
+    [exam-key-kek]=EXAMOS_EXAM_KEY_KEK
     [database-password]=EXAMOS_DATABASE_PASSWORD
 )
 DB_CONFIG_FILE="/etc/examos/db-connection.conf"

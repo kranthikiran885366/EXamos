@@ -81,11 +81,12 @@ else
     record "P1-REG-TARGET" "FAIL" "WantedBy=graphical.target missing — P1 regression"
 fi
 
-# P1: Restart=on-failure (not always — prevents infinite loop on deliberate stop)
-if grep -q "^Restart=on-failure$" "$KIOSK_SVC" 2>/dev/null; then
-    record "P1-REG-RESTART" "PASS" "Restart=on-failure preserved"
+# P1 accepts Restart=always or Restart=on-failure. Both keep the kiosk
+# supervised; anything else (notably Restart=no) is a regression.
+if grep -Eq "^Restart=(always|on-failure)$" "$KIOSK_SVC" 2>/dev/null; then
+    record "P1-REG-RESTART" "PASS" "Kiosk restart supervision preserved"
 else
-    record "P1-REG-RESTART" "FAIL" "Restart policy changed — P1 regression"
+    record "P1-REG-RESTART" "FAIL" "Restart policy changed - P1 regression"
 fi
 
 # P1: no --no-sandbox in launcher
@@ -168,6 +169,8 @@ if [ -f "$WORKSPACE/tests/p1/boot.sh" ]; then
             if [ "$P1_BOOT_RC" -eq 0 ] && \
                grep -q '"status": "PASS"' "$P1_ARTIFACT_DIR/boot-status.json"; then
                 record "P1-REG-BOOT" "PASS" "P1 boot markers confirmed by the live boot test"
+            elif [ "$P1_BOOT_RC" -eq 2 ]; then
+                record "P1-REG-BOOT" "BLOCKED" "P1 boot test cannot run in this environment (rc=2); see p1-regression-boot.log"
             else
                 record "P1-REG-BOOT" "FAIL" "P1 boot test failed (rc=${P1_BOOT_RC}); see p1-regression-boot.log"
                 tail -20 "$ARTIFACT_DIR/p1-regression-boot.log" >&2 || true

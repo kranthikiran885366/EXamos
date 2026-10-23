@@ -12,9 +12,9 @@
 #include <sys/stat.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
-static int configured_exam_host(const char *host) {
-    const char *allowlist = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
+static int configured_exam_host(const char *host, const char *allowlist) {
     if (!allowlist || !allowlist[0] || !host || !host[0]) return 0;
     const char *entry = allowlist;
     while (*entry) {
@@ -29,7 +29,7 @@ static int configured_exam_host(const char *host) {
     return 0;
 }
 
-int config_validate_exam_url(const char *url) {
+static int validate_exam_url_against_hosts(const char *url, const char *allowed_hosts) {
     if (!url || !url[0] || strlen(url) >= EXAM_URL_MAX ||
         strchr(url, '@') || strchr(url, '*') || strstr(url, "..") ||
         strpbrk(url, "\\\r\n\t ")) return 0;
@@ -85,7 +85,108 @@ int config_validate_exam_url(const char *url) {
         return strcasecmp(host, "localhost") == 0 ||
                strcmp(host, "127.0.0.1") == 0 || strcmp(host, "[::1]") == 0;
     }
-    return configured_exam_host(host);
+    return configured_exam_host(host, allowed_hosts);
+}
+
+int config_validate_exam_url(const char *url) {
+    return validate_exam_url_against_hosts(url, getenv("EXAMOS_ALLOWED_EXAM_HOSTS"));
+}
+
+int config_validate_exam_id(const char *exam_id) {
+    if (!exam_id) return 0;
+    size_t length = strnlen(exam_id, EXAM_ID_MAX);
+    if (length == 0 || length >= EXAM_ID_MAX) return 0;
+    /* Restrict to a conservative identifier alphabet so the value can never
+       smuggle separators, control characters or path tokens into downstream
+       stores, ledger details or reviewer evidence. */
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)exam_id[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'))
+            return 0;
+    }
+    return 1;
+}
+
+int config_active_exam_id(char *out_exam_id, size_t out_size) {
+    if (!out_exam_id || out_size == 0) return -1;
+    out_exam_id[0] = '\0';
+    exam_config_t cfg;
+    if (config_load(&cfg) != 0) return -1;
+    if (!config_validate_exam_id(cfg.exam_id)) return -1;
+    size_t length = strnlen(cfg.exam_id, EXAM_ID_MAX);
+    if (length + 1 > out_size) return -1;
+    memcpy(out_exam_id, cfg.exam_id, length + 1);
+    return 0;
+}
+
+int config_validate_allowed_origins(const char *origins) {
+    if (!origins) return 0;
+    size_t total_length = strnlen(origins, EXAM_ALLOWED_ORIGINS_MAX);
+    if (total_length >= EXAM_ALLOWED_ORIGINS_MAX) return 0;
+    if (total_length == 0) return 1;
+    const char *allowed_hosts = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
+    if (!allowed_hosts || !allowed_hosts[0]) return 0;
+
+    size_t count = 0;
+    const char *entry = origins;
+    while (*entry) {
+        const char *end = strchr(entry, ',');
+        size_t length = end ? (size_t)(end - entry) : strlen(entry);
+        while (length && isspace((unsigned char)*entry)) { entry++; length--; }
+        while (length && isspace((unsigned char)entry[length - 1])) length--;
+        if (!length || length >= EXAM_URL_MAX || ++count > 32) return 0;
+
+        char origin[EXAM_URL_MAX];
+        memcpy(origin, entry, length);
+        origin[length] = '\0';
+        const char *authority = NULL;
+        int loopback_http = 0;
+        if (strncasecmp(origin, "https://", 8) == 0) {
+            authority = origin + 8;
+        } else if (strncasecmp(origin, "http://", 7) == 0) {
+            authority = origin + 7;
+            loopback_http = 1;
+        } else {
+            return 0;
+        }
+        if (strpbrk(authority, "/?#@\\\r\n\t *")) return 0;
+        if (loopback_http) {
+            if (!validate_exam_url_against_hosts(origin, allowed_hosts)) return 0;
+        } else {
+            size_t host_length = strlen(authority);
+            if (!host_length || host_length >= 256) return 0;
+            char host_port[256];
+            memcpy(host_port, authority, host_length + 1);
+            char *port = NULL;
+            char *host = host_port;
+            if (*host == '[') {
+                char *close = strchr(host, ']');
+                if (!close || (close[1] && close[1] != ':')) return 0;
+                if (close[1] == ':') port = close + 2;
+                close[1] = '\0';
+            } else {
+                char *colon = strrchr(host, ':');
+                if (colon) {
+                    if (strchr(host, ':') != colon) return 0;
+                    *colon = '\0';
+                    port = colon + 1;
+                }
+            }
+            if (!host[0] || !configured_exam_host(host, allowed_hosts)) return 0;
+            if (port) {
+                char *number_end = NULL;
+                errno = 0;
+                long number = strtol(port, &number_end, 10);
+                if (errno || number_end == port || *number_end ||
+                    number < 1 || number > 65535) return 0;
+            }
+        }
+        if (!end) break;
+        entry = end + 1;
+        if (!*entry) return 0;
+    }
+    return count > 0;
 }
 
 int config_load(exam_config_t *cfg) {
@@ -93,8 +194,19 @@ int config_load(exam_config_t *cfg) {
     memset(cfg, 0, sizeof(exam_config_t));
     cfg->exam_duration_minutes = 0;
 
-    FILE *f = fopen(EXAM_CONF_PATH, "r");
-    if (!f) return -1;
+    const char *configured_path = getenv("EXAMOS_EXAM_CONFIG");
+    const char *path = configured_path && configured_path[0]
+        ? configured_path : EXAM_CONF_PATH;
+    int config_fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (config_fd < 0) return -1;
+    struct stat config_status;
+    if (fstat(config_fd, &config_status) != 0 || !S_ISREG(config_status.st_mode) ||
+        config_status.st_size < 0 || config_status.st_size > 16384) {
+        close(config_fd);
+        return -1;
+    }
+    FILE *f = fdopen(config_fd, "r");
+    if (!f) { close(config_fd); return -1; }
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -119,6 +231,18 @@ int config_load(exam_config_t *cfg) {
             size_t length = strlen(v);
             if (length >= sizeof(cfg->exam_name)) { fclose(f); return -1; }
             memcpy(cfg->exam_name, v, length + 1);
+        } else if (strncmp(line, "EXAM_ID=", 8) == 0) {
+            char *v = line + 8;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t length = strlen(v);
+            if (length >= sizeof(cfg->exam_id)) { fclose(f); return -1; }
+            memcpy(cfg->exam_id, v, length + 1);
+        } else if (strncmp(line, "ALLOWED_ORIGINS=", 16) == 0) {
+            char *v = line + 16;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t length = strlen(v);
+            if (length >= sizeof(cfg->allowed_origins)) { fclose(f); return -1; }
+            memcpy(cfg->allowed_origins, v, length + 1);
         } else if (strncmp(line, "EXAM_DURATION_MINUTES=", 22) == 0) {
             char *v = line + 22;
             char *end = NULL;
@@ -133,37 +257,96 @@ int config_load(exam_config_t *cfg) {
     fclose(f);
 
     cfg->configured = config_validate_exam_url(cfg->exam_url) &&
+                      config_validate_allowed_origins(cfg->allowed_origins) &&
                       cfg->exam_name[0] && cfg->exam_duration_minutes > 0;
     return 0;
 }
 
 int config_save(const exam_config_t *cfg) {
     if (!cfg || !config_validate_exam_url(cfg->exam_url) || !cfg->exam_name[0] ||
+        strnlen(cfg->exam_name, sizeof(cfg->exam_name)) >= sizeof(cfg->exam_name) ||
+        !config_validate_allowed_origins(cfg->allowed_origins) ||
         cfg->exam_duration_minutes < 1) return -1;
+    /* exam_id is optional here so a URL/name-only config still saves, but if
+       present it must be a well-formed identifier. */
+    if (cfg->exam_id[0] && !config_validate_exam_id(cfg->exam_id)) return -1;
+    for (const unsigned char *p = (const unsigned char *)cfg->exam_name; *p; ++p) {
+        if (*p < 0x20 || *p == 0x7f) return -1;
+    }
 
-    char tmp_path[512];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", EXAM_CONF_PATH, getpid());
+    const char *configured_path = getenv("EXAMOS_EXAM_CONFIG");
+    char config_directory[PATH_MAX];
+    const char *config_filename = "exam.conf";
+    const char *directory_path = "/etc/examos";
+    if (configured_path && configured_path[0]) {
+        size_t path_length = strnlen(configured_path, sizeof(config_directory));
+        if (path_length == 0 || path_length >= sizeof(config_directory)) return -1;
+        memcpy(config_directory, configured_path, path_length + 1);
+        char *separator = strrchr(config_directory, '/');
+        if (!separator || strcmp(separator + 1, config_filename) != 0) return -1;
+        if (separator == config_directory) separator[1] = '\0';
+        else *separator = '\0';
+        directory_path = config_directory;
+    }
 
-    FILE *f = fopen(tmp_path, "w");
-    if (!f) return -1;
+    /* Pin the trusted configuration directory, and create an unpredictable,
+     * exclusive temporary file there. This avoids following a pre-created
+     * symlink at a predictable PID-based temporary pathname. */
+    int directory_fd = open(directory_path, O_RDONLY | O_DIRECTORY |
+                            O_CLOEXEC | O_NOFOLLOW);
+    if (directory_fd < 0) return -1;
 
-    fprintf(f, "# ExamOS Examination Configuration\n");
-    fprintf(f, "# Managed automatically by ExamOS Admin Dashboard\n");
-    fprintf(f, "EXAM_URL=%s\n", cfg->exam_url);
-    fprintf(f, "EXAM_NAME=%s\n", cfg->exam_name);
-    fprintf(f, "EXAM_DURATION_MINUTES=%d\n", cfg->exam_duration_minutes);
-
-    if (fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
-        unlink(tmp_path);
+    char temporary_name[48];
+    int file_fd = -1;
+    for (unsigned int attempt = 0; attempt < 8; ++attempt) {
+        unsigned char nonce[16];
+        if (RAND_bytes(nonce, sizeof(nonce)) != 1) {
+            OPENSSL_cleanse(nonce, sizeof(nonce));
+            break;
+        }
+        static const char digits[] = "0123456789abcdef";
+        memcpy(temporary_name, ".exam.conf.tmp.", 15);
+        for (size_t i = 0; i < sizeof(nonce); ++i) {
+            temporary_name[15 + i * 2] = digits[nonce[i] >> 4];
+            temporary_name[16 + i * 2] = digits[nonce[i] & 0x0f];
+        }
+        temporary_name[47] = '\0';
+        OPENSSL_cleanse(nonce, sizeof(nonce));
+        file_fd = openat(directory_fd, temporary_name,
+                         O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                         0600);
+        if (file_fd >= 0 || errno != EEXIST) break;
+    }
+    if (file_fd < 0) {
+        close(directory_fd);
         return -1;
     }
 
-    chmod(tmp_path, 0644);
-    if (rename(tmp_path, EXAM_CONF_PATH) != 0) {
-        unlink(tmp_path);
+    FILE *file = fdopen(file_fd, "w");
+    if (!file) {
+        close(file_fd);
+        unlinkat(directory_fd, temporary_name, 0);
+        close(directory_fd);
         return -1;
     }
-    return 0;
+    int ok = fprintf(file,
+                     "# ExamOS Examination Configuration\n"
+                     "# Managed automatically by ExamOS Admin Dashboard\n"
+                     "EXAM_URL=%s\nEXAM_NAME=%s\nEXAM_ID=%s\nALLOWED_ORIGINS=%s\nEXAM_DURATION_MINUTES=%d\n",
+                     cfg->exam_url, cfg->exam_name, cfg->exam_id, cfg->allowed_origins,
+                     cfg->exam_duration_minutes) >= 0 &&
+             fflush(file) == 0 && fchmod(fileno(file), 0644) == 0 &&
+             fsync(fileno(file)) == 0;
+    if (fclose(file) != 0) ok = 0;
+    if (ok && renameat(directory_fd, temporary_name,
+                       directory_fd, "exam.conf") == 0) {
+        ok = fsync(directory_fd) == 0;
+    } else {
+        ok = 0;
+    }
+    if (!ok) unlinkat(directory_fd, temporary_name, 0);
+    close(directory_fd);
+    return ok ? 0 : -1;
 }
 
 static int hex_value(char c) {
@@ -182,6 +365,51 @@ static int decode_hex(const char *text, unsigned char *out, size_t out_size) {
         out[i] = (unsigned char)((high << 4) | low);
     }
     return 0;
+}
+
+int config_create_password_hash(const char *plaintext_password,
+                                char *out_credential, size_t credential_size) {
+    enum { SALT_BYTES = 16, HASH_BYTES = 32, ITERATIONS = 310000 };
+    if (!plaintext_password || !out_credential || credential_size == 0) return -1;
+
+    size_t password_length = strnlen(plaintext_password, 257);
+    if (password_length < 12 || password_length > 256) return -1;
+
+    unsigned char salt[SALT_BYTES] = {0};
+    unsigned char hash[HASH_BYTES] = {0};
+    char salt_text[SALT_BYTES * 2 + 1] = {0};
+    char hash_text[HASH_BYTES * 2 + 1] = {0};
+    static const char digits[] = "0123456789abcdef";
+    int result = -1;
+
+    if (RAND_bytes(salt, sizeof(salt)) != 1 ||
+        PKCS5_PBKDF2_HMAC(plaintext_password, (int)password_length,
+                          salt, sizeof(salt), ITERATIONS, EVP_sha256(),
+                          sizeof(hash), hash) != 1) {
+        goto cleanup;
+    }
+    for (size_t i = 0; i < sizeof(salt); ++i) {
+        salt_text[i * 2] = digits[salt[i] >> 4];
+        salt_text[i * 2 + 1] = digits[salt[i] & 0x0f];
+    }
+    for (size_t i = 0; i < sizeof(hash); ++i) {
+        hash_text[i * 2] = digits[hash[i] >> 4];
+        hash_text[i * 2 + 1] = digits[hash[i] & 0x0f];
+    }
+    int written = snprintf(out_credential, credential_size, "%d:%s:%s",
+                           ITERATIONS, salt_text, hash_text);
+    if (written < 0 || (size_t)written >= credential_size) {
+        out_credential[0] = '\0';
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    OPENSSL_cleanse(salt, sizeof(salt));
+    OPENSSL_cleanse(hash, sizeof(hash));
+    OPENSSL_cleanse(salt_text, sizeof(salt_text));
+    OPENSSL_cleanse(hash_text, sizeof(hash_text));
+    return result;
 }
 
 int config_verify_password_hash(const char *plaintext_password,

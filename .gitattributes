@@ -10,3 +10,9 @@
 *.mount text eol=lf
 *.target text eol=lf
 *.bat text eol=crlf
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.md text eol=lf
+*.sql text eol=lf

@@ -4,13 +4,24 @@
 #include "include/exam_manager.h"
 #include "include/config_manager.h"
 #include "include/candidate_login.h"
+#include "include/session_store.h"
 #include "include/admin_dashboard.h"
 #include "include/attestation_service.h"
 #include "include/attestation_config.h"
 #include "include/event_chain.h"
 #include "include/second_camera.h"
+#include "include/firewall_service.h"
 #include "include/enterprise_platform.h"
 #include "include/admin_auth_store.h"
+#include "include/policy_catalog.h"
+#include "include/key_release.h"
+#include "include/e1_consent.h"
+#include "include/environment_engine.h"
+#include "include/exam_engine.h"
+#include "include/behaviour_engine.h"
+#include "include/variant_engine.h"
+#include "include/viva_engine.h"
+#include "../common/include/examos_appliance.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,17 +40,41 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <spawn.h>
 #include <openssl/crypto.h>
+#include <openssl/rand.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 extern char **environ;
 
 #define BUFFER_SIZE 65536
-#define MAX_HTTP_CLIENTS 512
+#define MAX_HTTP_CLIENTS 1024
 
 static volatile sig_atomic_t g_server_running = 1;
 static sem_t g_client_slots;
-static unsigned int g_max_clients = 128;
+static unsigned int g_max_clients = 64;
+
+static int g_tls_enabled = 0;
+#if defined(USE_OPENSSL_TLS)
+static SSL_CTX *g_tls_ctx = NULL;
+/* Per-connection TLS handle. The listener is threaded, so this must never be
+ * a process-global value shared between clients. */
+static __thread SSL *g_conn_ssl = NULL;
+#endif
+
+typedef struct {
+    int fd;
+#if defined(USE_OPENSSL_TLS)
+    SSL *ssl;
+#endif
+} client_connection_t;
+
+/* Set exactly once during startup from EXAMOS_TPM_MODE, before the listener
+ * begins accepting. Request handlers must never infer deployment mode from
+ * ambient state; this is the single authoritative flag. */
+static int g_production_mode = 0;
 
 static void sig_handler(int sig) {
     (void)sig;
@@ -123,6 +158,51 @@ static int extract_authorization_header(const char *buffer, char *out, size_t ou
     return 0;
 }
 
+static int extract_admin_session_cookie(const char *buffer, char *out, size_t out_size) {
+    if (!buffer || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    const char *headers_end = strstr(buffer, "\r\n\r\n");
+    const char *line = strstr(buffer, "\r\n");
+    if (!headers_end || !line || line > headers_end) return -1;
+    line += 2;
+    int cookie_header_seen = 0;
+    int session_seen = 0;
+    while (line < headers_end) {
+        const char *line_end = strstr(line, "\r\n");
+        if (!line_end || line_end > headers_end) return -1;
+        const char *colon = memchr(line, ':', (size_t)(line_end - line));
+        if (!colon || colon == line) return -1;
+        if ((size_t)(colon - line) == sizeof("Cookie") - 1 &&
+            strncasecmp(line, "Cookie", sizeof("Cookie") - 1) == 0) {
+            if (cookie_header_seen++) return -1;
+            const char *item = colon + 1;
+            while (item < line_end) {
+                while (item < line_end && (*item == ' ' || *item == '\t' || *item == ';')) item++;
+                const char *item_end = memchr(item, ';', (size_t)(line_end - item));
+                if (!item_end) item_end = line_end;
+                const char *equals = memchr(item, '=', (size_t)(item_end - item));
+                if (equals && (size_t)(equals - item) == sizeof("admin_session") - 1 &&
+                    strncmp(item, "admin_session", sizeof("admin_session") - 1) == 0) {
+                    if (session_seen++) return -1;
+                    const char *value = equals + 1;
+                    size_t length = (size_t)(item_end - value);
+                    if (!length || length >= out_size) return -1;
+                    for (size_t i = 0; i < length; ++i) {
+                        unsigned char c = (unsigned char)value[i];
+                        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                              (c >= '0' && c <= '9') || c == '-' || c == '_')) return -1;
+                    }
+                    memcpy(out, value, length);
+                    out[length] = '\0';
+                }
+                item = item_end < line_end ? item_end + 1 : line_end;
+            }
+        }
+        line = line_end + 2;
+    }
+    return 0;
+}
+
 static const char *status_text(int status_code) {
     switch (status_code) {
         case 200: return "OK";
@@ -133,6 +213,11 @@ static const char *status_text(int status_code) {
         case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
+        case 409: return "Conflict";
+        case 413: return "Payload Too Large";
+        case 415: return "Unsupported Media Type";
+        case 429: return "Too Many Requests";
+        case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
         default: return "Internal Server Error";
     }
@@ -141,8 +226,25 @@ static const char *status_text(int status_code) {
 static int send_all(int client_fd, const char *data, size_t length) {
     size_t sent_total = 0;
     while (sent_total < length) {
-        ssize_t sent = send(client_fd, data + sent_total, length - sent_total, MSG_NOSIGNAL);
-        if (sent < 0 && errno == EINTR) continue;
+        ssize_t sent = -1;
+#if defined(USE_OPENSSL_TLS)
+        if (g_conn_ssl) {
+            if (length - sent_total > (size_t)INT_MAX) return -1;
+            int written = SSL_write(g_conn_ssl, data + sent_total,
+                                    (int)(length - sent_total));
+            if (written <= 0) {
+                int ssl_error = SSL_get_error(g_conn_ssl, written);
+                if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+                    continue;
+                return -1;
+            }
+            sent = (ssize_t)written;
+        } else
+#endif
+        {
+            sent = send(client_fd, data + sent_total, length - sent_total, MSG_NOSIGNAL);
+            if (sent < 0 && errno == EINTR) continue;
+        }
         if (sent <= 0) return -1;
         sent_total += (size_t)sent;
     }
@@ -153,8 +255,25 @@ static ssize_t receive_http_request(int fd, char *buffer, size_t capacity) {
     size_t used = 0, expected = 0;
     int headers_complete = 0;
     while (used + 1 < capacity) {
-        ssize_t n = recv(fd, buffer + used, capacity - used - 1, 0);
-        if (n < 0 && errno == EINTR) continue;
+        ssize_t n = -1;
+#if defined(USE_OPENSSL_TLS)
+        if (g_conn_ssl) {
+            if (capacity - used - 1 > (size_t)INT_MAX) return -2;
+            int received = SSL_read(g_conn_ssl, buffer + used,
+                                    (int)(capacity - used - 1));
+            if (received <= 0) {
+                int ssl_error = SSL_get_error(g_conn_ssl, received);
+                if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+                    continue;
+                break;
+            }
+            n = (ssize_t)received;
+        } else
+#endif
+        {
+            n = recv(fd, buffer + used, capacity - used - 1, 0);
+            if (n < 0 && errno == EINTR) continue;
+        }
         if (n <= 0) break;
         used += (size_t)n;
         buffer[used] = '\0';
@@ -171,21 +290,35 @@ static ssize_t receive_http_request(int fd, char *buffer, size_t capacity) {
 }
 
 static void send_http_response_ex(int client_fd, int status_code, const char *content_type, const char *body, const char *extra_headers) {
-    char header[1024];
+    char header[2048];
     size_t body_len = body ? strlen(body) : 0;
+    const char *hsts = "";
+#if defined(USE_OPENSSL_TLS)
+    if (g_conn_ssl) {
+        hsts = "Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n";
+    }
+#endif
     int header_length = snprintf(header, sizeof(header),
              "HTTP/1.1 %d %s\r\n"
              "Content-Type: %s\r\n"
              "Content-Length: %zu\r\n"
-             "Cache-Control: no-store\r\n"
+             "Cache-Control: no-store, no-cache, must-revalidate\r\n"
+             "Pragma: no-cache\r\n"
              "X-Content-Type-Options: nosniff\r\n"
              "X-Frame-Options: DENY\r\n"
              "X-XSS-Protection: 1; mode=block\r\n"
+             "X-Permitted-Cross-Domain-Policies: none\r\n"
+             "Referrer-Policy: no-referrer\r\n"
+             "Cross-Origin-Opener-Policy: same-origin\r\n"
+             "Cross-Origin-Resource-Policy: same-origin\r\n"
+             "Permissions-Policy: camera=(self), microphone=(self), geolocation=(), payment=(), usb=()\r\n"
+             "Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'\r\n"
+             "%s"
              "Connection: close\r\n"
              "%s"
              "\r\n",
              status_code, status_text(status_code), content_type, body_len,
-             extra_headers ? extra_headers : "");
+             hsts, extra_headers ? extra_headers : "");
 
     if (header_length < 0 || (size_t)header_length >= sizeof(header)) return;
     if (send_all(client_fd, header, (size_t)header_length) == 0 && body_len > 0) {
@@ -332,6 +465,26 @@ static int json_escape(const char *input, char *output, size_t capacity) {
     return 0;
 }
 
+static int create_platform_id(const char *prefix, char *output, size_t capacity) {
+    unsigned char random_bytes[16];
+    static const char hex[] = "0123456789abcdef";
+    if (!prefix || !output || capacity == 0 || RAND_bytes(random_bytes, sizeof(random_bytes)) != 1)
+        return -1;
+    int written = snprintf(output, capacity, "%s-", prefix);
+    if (written < 0 || (size_t)written + sizeof(random_bytes) * 2 + 1 > capacity) {
+        OPENSSL_cleanse(random_bytes, sizeof(random_bytes));
+        return -1;
+    }
+    size_t offset = (size_t)written;
+    for (size_t i = 0; i < sizeof(random_bytes); ++i) {
+        output[offset++] = hex[random_bytes[i] >> 4];
+        output[offset++] = hex[random_bytes[i] & 15];
+    }
+    output[offset] = '\0';
+    OPENSSL_cleanse(random_bytes, sizeof(random_bytes));
+    return 0;
+}
+
 static const char *bearer_token(const char *authorization) {
     static const char prefix[] = "Bearer ";
     if (!authorization || strncasecmp(authorization, prefix, sizeof(prefix) - 1) != 0)
@@ -370,6 +523,98 @@ static int parse_json_int(const char *buf, const char *key, int default_val) {
     return (int)value;
 }
 
+static int parse_json_int64(const char *buf, const char *key, int64_t *out) {
+    if (!buf || !key || !out) return -1;
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *pos = strstr(buf, pattern);
+    if (!pos) return -1;
+
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == ':' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    errno = 0;
+    char *end = NULL;
+    long long value = strtoll(pos, &end, 10);
+    if (errno != 0 || end == pos) return -1;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != ',' && *end != '}' && *end != '\0') return -1;
+    *out = (int64_t)value;
+    return 0;
+}
+
+static int parse_json_double(const char *buf, const char *key, double *out) {
+    if (!buf || !key || !out) return -1;
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *pos = strstr(buf, pattern);
+    if (!pos) return -1;
+
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == ':' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    errno = 0;
+    char *end = NULL;
+    double value = strtod(pos, &end);
+    if (errno != 0 || end == pos) return -1;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != ',' && *end != '}' && *end != '\0') return -1;
+    *out = value;
+    return 0;
+}
+
+/* Parse a JSON array of integer samples. Returns the number of values parsed,
+ * or -1 when the key is absent or the array is malformed/oversized. */
+static int parse_json_int_array(const char *buf, const char *key,
+                                int32_t *out, int max_values) {
+    if (!buf || !key || !out || max_values <= 0) return -1;
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *pos = strstr(buf, pattern);
+    if (!pos) return -1;
+
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    if (*pos != ':') return -1;
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    if (*pos != '[') return -1;
+    pos++;
+
+    int count = 0;
+    for (;;) {
+        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+        if (*pos == ']') {
+            pos++;
+            break;
+        }
+        if (*pos == '\0') return -1;
+        errno = 0;
+        char *end = NULL;
+        long value = strtol(pos, &end, 10);
+        if (errno != 0 || end == pos || value < INT32_MIN || value > INT32_MAX)
+            return -1;
+        if (count >= max_values) return -1;
+        out[count++] = (int32_t)value;
+        pos = end;
+        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+        if (*pos == ',') {
+            pos++;
+            continue;
+        }
+        if (*pos == ']') {
+            pos++;
+            break;
+        }
+        return -1;
+    }
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
+    if (*pos != ',' && *pos != '}' && *pos != '\0') return -1;
+    return count;
+}
+
+static int reviewer_authorized(const char *authorization) {
+    return bearer_secret_authorized(authorization, "EXAMOS_REVIEWER_TOKEN");
+}
+
 static int parse_query_id(const char *path, const char *name, char *out, size_t out_size) {
     if (!path || !name || !out || out_size == 0) return -1;
     out[0] = '\0';
@@ -399,8 +644,158 @@ static int parse_query_id(const char *path, const char *name, char *out, size_t 
     return -1;
 }
 
+static int route_path_matches(const char *request_path, const char *route) {
+    if (!request_path || !route) return 0;
+    size_t route_len = strlen(route);
+    return strncmp(request_path, route, route_len) == 0 &&
+           (request_path[route_len] == '\0' || request_path[route_len] == '?');
+}
+
+/*
+ * Session risk state.
+ *
+ * The proctoring evidence is the only input to the risk engine, so the
+ * indicators are accumulated per session from the events the detectors
+ * actually reported. Nothing here infers a violation that no detector
+ * reported.
+ */
+#define RISK_MAX_SESSIONS 256
+
+typedef struct {
+    char                   session_id[64];
+    time_t                 updated_at;
+    violation_indicators_t indicators;
+    risk_assessment_t      assessment;
+} session_risk_state_t;
+
+static session_risk_state_t g_risk_states[RISK_MAX_SESSIONS];
+static pthread_mutex_t      g_risk_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void risk_engine_assess_session(const char *session_id, const char *event_type,
+                                        risk_assessment_t *out_assessment) {
+    if (out_assessment) memset(out_assessment, 0, sizeof(*out_assessment));
+
+    if (!session_id || !session_id[0] || !event_type) return;
+
+    pthread_mutex_lock(&g_risk_lock);
+
+    session_risk_state_t *state = NULL;
+    for (int i = 0; i < RISK_MAX_SESSIONS; i++) {
+        if (g_risk_states[i].updated_at &&
+            strcmp(g_risk_states[i].session_id, session_id) == 0) {
+            state = &g_risk_states[i];
+            break;
+        }
+    }
+    if (!state) {
+        for (int i = 0; i < RISK_MAX_SESSIONS; i++) {
+            if (!g_risk_states[i].updated_at) {
+                state = &g_risk_states[i];
+                memset(state, 0, sizeof(*state));
+                snprintf(state->session_id, sizeof(state->session_id), "%s", session_id);
+                break;
+            }
+        }
+    }
+
+    if (state) {
+        if (strcmp(event_type, "NO_FACE") == 0) {
+            state->indicators.face_absent_count++;
+        } else if (strcmp(event_type, "MULTIPLE_FACES") == 0) {
+            state->indicators.multiple_faces_count++;
+        }
+        state->updated_at = time(NULL);
+        risk_engine_evaluate(&state->indicators, &state->assessment);
+        if (out_assessment) *out_assessment = state->assessment;
+    }
+
+    pthread_mutex_unlock(&g_risk_lock);
+}
+
+/*
+ * Extracts the resource identifier from "/api/v1/platform/exams/<id>/<action>".
+ * The identifier is the single path segment between the collection and the
+ * action. Matching the action exactly (rather than searching for a substring
+ * anywhere in the path) prevents one action from matching another action
+ * whose name merely contains it, and prevents query-string content from
+ * being mistaken for the action.
+ */
+static int platform_route_id(const char *path, const char *action,
+                             char *out_id, size_t max_len) {
+    if (!path || !action || !out_id || max_len == 0) return -1;
+    static const char prefix[] = "/api/v1/platform/exams/";
+    if (strncmp(path, prefix, sizeof(prefix) - 1) != 0) return -1;
+
+    const char *rest = path + sizeof(prefix) - 1;
+    const char *slash = strchr(rest, '/');
+    if (!slash) return -1;
+
+    size_t id_len = (size_t)(slash - rest);
+    if (id_len == 0 || id_len >= max_len) return -1;
+    memcpy(out_id, rest, id_len);
+    out_id[id_len] = '\0';
+
+    if (strcmp(slash + 1, action) != 0) return -1;
+    return 0;
+}
+
+/*
+ * Extracts the device identifier from "/api/v1/admin/fleet/<id>/<action>".
+ * The action must match exactly, so that one action cannot be matched by
+ * another whose name merely contains it.
+ */
+static int fleet_route_id(const char *path, const char *action,
+                         char *out_id, size_t max_len) {
+    if (!path || !action || !out_id || max_len == 0) return -1;
+    static const char prefix[] = "/api/v1/admin/fleet/";
+    if (strncmp(path, prefix, sizeof(prefix) - 1) != 0) return -1;
+
+    const char *rest = path + sizeof(prefix) - 1;
+    const char *slash = strchr(rest, '/');
+    if (!slash) return -1;
+
+    size_t id_len = (size_t)(slash - rest);
+    if (id_len == 0 || id_len >= max_len) return -1;
+    memcpy(out_id, rest, id_len);
+    out_id[id_len] = '\0';
+
+    if (strcmp(slash + 1, action) != 0) return -1;
+    return 0;
+}
+
+/*
+ * Administrative authorization for route handlers.
+ *
+ * Every administrative route resolves its permission from the durable role
+ * and permission store through the administrator's bearer token. A single
+ * helper is used so that no route can accidentally fall back to a weaker
+ * check.
+ */
+static int admin_route_authorized(const char *auth_header, uint32_t permission) {
+    const char *token = bearer_token(auth_header);
+    if (!token || !token[0]) return 0;
+    auth_session_t session;
+    memset(&session, 0, sizeof(session));
+    int allowed = admin_auth_store_authorize(token, permission, &session) == 0;
+    OPENSSL_cleanse(&session, sizeof(session));
+    return allowed;
+}
+
 static void* handle_client(void *arg) {
-    int client_fd = (int)(intptr_t)arg;
+
+    client_connection_t *conn = (client_connection_t *)arg;
+    int client_fd = conn->fd;
+#if defined(USE_OPENSSL_TLS)
+    g_conn_ssl = conn->ssl;
+#endif
+    free(conn);
+
+#if defined(USE_OPENSSL_TLS)
+    if (g_conn_ssl && SSL_accept(g_conn_ssl) <= 0) {
+        goto client_done;
+    }
+#endif
+
     char buffer[BUFFER_SIZE] = {0};
 
     struct timeval timeout = {5, 0};
@@ -419,6 +814,17 @@ static void* handle_client(void *arg) {
         goto client_done;
     }
 
+    /*
+     * Routing compares the path without its query string. The original
+     * path is kept so that query parameters can still be parsed.
+     */
+    char route_path[256] = {0};
+    snprintf(route_path, sizeof(route_path), "%s", path);
+    {
+        char *query_delimiter = strchr(route_path, '?');
+        if (query_delimiter) *query_delimiter = '\0';
+    }
+
     // Extract Authorization only from the parsed header block, never from the body.
     char auth_header[512] = {0};
     if (extract_authorization_header(buffer, auth_header, sizeof(auth_header)) != 0) {
@@ -430,12 +836,17 @@ static void* handle_client(void *arg) {
     const char *body_pos = strstr(buffer, "\r\n\r\n");
     const char *req_body = body_pos ? body_pos + 4 : "";
 
+    /* Resource identifier for /api/v1/platform/exams/<id>/<action> routes. */
+    char exam_route_id[128] = {0};
+    /* Resource identifier for /api/v1/admin/fleet/<id>/<action> routes. */
+    char fleet_route_device[128] = {0};
+
     /* Route: GET / -> Candidate Login UI */
-    if (strcmp(path, "/") == 0 && strcmp(method, "GET") == 0) {
+    if (strcmp(route_path, "/") == 0 && strcmp(method, "GET") == 0) {
         send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
     }
     /* Route: POST /api/v1/candidate/login */
-    else if (strcmp(path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
         char cid[64] = {0}, pin[64] = {0};
         parse_json_string(req_body, "candidate_id", cid, sizeof(cid));
         parse_json_string(req_body, "pin", pin, sizeof(pin));
@@ -449,6 +860,15 @@ static void* handle_client(void *arg) {
         } else {
             char token[SESSION_TOKEN_LEN + 1];
             if (candidate_session_create(cid, token) == 0) {
+                /* Journal the new session for crash-safe restart recovery */
+                session_journal_record_t jrec;
+                memset(&jrec, 0, sizeof(jrec));
+                jrec.event_type = SESSION_EVENT_CREATE;
+                memcpy(jrec.token, token, SESSION_TOKEN_LEN + 1);
+                snprintf(jrec.candidate_id, sizeof(jrec.candidate_id), "%s", cid);
+                jrec.created_at = time(NULL);
+                jrec.expires_at = jrec.created_at + 28800;
+                session_store_record(&jrec);
                 exam_config_t cfg;
                 config_load(&cfg);
                 char resp[4096], safe_url[3072], safe_name[768];
@@ -476,8 +896,9 @@ static void* handle_client(void *arg) {
             }
         }
     }
-    /* Route: POST /api/v1/admin/login -> PostgreSQL-backed admin session */
-    else if (strcmp(path, "/api/v1/admin/login") == 0 && strcmp(method, "POST") == 0) {
+    /* Canonical dashboard route plus the established API login alias. */
+    else if ((strcmp(route_path, "/api/v1/admin/login") == 0 ||
+              strcmp(route_path, "/api/v1/auth/login") == 0) && strcmp(method, "POST") == 0) {
         char username[64] = {0}, password[256] = {0}, mfa_code[16] = {0};
         parse_json_string(req_body, "username", username, sizeof(username));
         parse_json_string(req_body, "password", password, sizeof(password));
@@ -490,10 +911,19 @@ static void* handle_client(void *arg) {
         OPENSSL_cleanse(mfa_code, sizeof(mfa_code));
         if (login_status == AUTH_LOGIN_SUCCESS) {
             char response[512];
+            char cookie_header[192];
+            const char *secure_cookie = getenv("EXAMOS_ADMIN_COOKIE_SECURE");
+            int cookie_length = snprintf(cookie_header, sizeof(cookie_header),
+                "Set-Cookie: admin_session=%s; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=28800%s\r\n",
+                session.session_token,
+                secure_cookie && strcmp(secure_cookie, "1") == 0 ? "; Secure" : "");
             snprintf(response, sizeof(response),
                 "{\"status\":\"AUTHENTICATED\",\"token\":\"%s\",\"mfa_required\":false}",
                 session.session_token);
-            send_http_response(client_fd, 200, "application/json", response);
+            if (cookie_length < 0 || (size_t)cookie_length >= sizeof(cookie_header))
+                send_http_response(client_fd, 500, "application/json", "{\"error\":\"Session response could not be created\"}");
+            else
+                send_http_response_ex(client_fd, 200, "application/json", response, cookie_header);
         } else if (login_status == AUTH_LOGIN_MFA_REQUIRED) {
             send_http_response(client_fd, 401, "application/json",
                 "{\"status\":\"MFA_REQUIRED\",\"error\":\"MFA code required\"}");
@@ -503,45 +933,268 @@ static void* handle_client(void *arg) {
         }
         OPENSSL_cleanse(&session, sizeof(session));
     }
-    else if (strcmp(path, "/api/v1/admin/logout") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/admin/logout") == 0 && strcmp(method, "POST") == 0) {
         static const char prefix[] = "Bearer ";
         if (strncmp(auth_header, prefix, sizeof(prefix) - 1) != 0 ||
             admin_auth_store_revoke(auth_header + sizeof(prefix) - 1) != 0) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
-            send_http_response(client_fd, 200, "application/json", "{\"status\":\"SIGNED_OUT\"}");
+            send_http_response_ex(client_fd, 200, "application/json", "{\"status\":\"SIGNED_OUT\"}",
+                "Set-Cookie: admin_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0\r\n");
         }
     }
-    /* Route: GET /admin -> Admin Dashboard (requires auth) */
-    else if (strcmp(path, "/admin") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+    /* Organization reads are session-scoped; only the platform owner can enumerate tenants. */
+    else if (strcmp(route_path, "/api/v1/admin/institutions") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *token = strncmp(auth_header, prefix, sizeof(prefix) - 1) == 0
+            ? auth_header + sizeof(prefix) - 1 : NULL;
+        auth_session_t session;
+        memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token, AUTH_PERM_INSTITUTION_ADMIN, &session) != 0 ||
+            session.role != ROLE_PLATFORM_OWNER) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Platform owner authorization required\"}");
+        } else {
+            char response[32768];
+            if (platform_get_institutions_json(response, sizeof(response)) == 0)
+                send_http_response(client_fd, 200, "application/json", response);
+            else
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Institution service unavailable\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (strncmp(route_path, "/api/v1/admin/institutions/", 27) == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *token = strncmp(auth_header, prefix, sizeof(prefix) - 1) == 0
+            ? auth_header + sizeof(prefix) - 1 : NULL;
+        auth_session_t session;
+        memset(&session, 0, sizeof(session));
+        const char *institution_id = path + 27;
+        int id_valid = institution_id[0] != '\0' && !strpbrk(institution_id, "/?&#");
+        int authorized = token && admin_auth_store_authorize(token, AUTH_PERM_EXAM_READ, &session) == 0;
+        if (!authorized || !id_valid ||
+            (session.role != ROLE_PLATFORM_OWNER &&
+             strcmp(session.institution_id, institution_id) != 0)) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Institution scope denied\"}");
+        } else {
+            char response[4096];
+            if (platform_get_institution_json(institution_id, response, sizeof(response)) == 0)
+                send_http_response(client_fd, 200, "application/json", response);
+            else
+                send_http_response(client_fd, 404, "application/json", "{\"error\":\"Institution not found\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (strcmp(route_path, "/api/v1/admin/exams") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *token = strncmp(auth_header, prefix, sizeof(prefix) - 1) == 0
+            ? auth_header + sizeof(prefix) - 1 : NULL;
+        auth_session_t session;
+        memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token, AUTH_PERM_EXAM_READ, &session) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char response[65536];
+            if (platform_get_exams_for_admin(&session, response, sizeof(response)) == 0)
+                send_http_response(client_fd, 200, "application/json", response);
+            else
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Exam service unavailable\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    /* Campus and room records are tenant scoped and persisted by the platform store. */
+    else if (route_path_matches(route_path, "/api/v1/admin/campuses") &&
+             (strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0)) {
+        const char *token = bearer_token(auth_header);
+        auth_session_t session; memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token,
+                strcmp(method, "GET") == 0 ? AUTH_PERM_EXAM_READ : AUTH_PERM_LOCATION_ADMIN,
+                &session) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Institution access denied\"}");
+        } else if (strcmp(method, "GET") == 0) {
+            char institution_id[128] = {0};
+            parse_query_id(path, "institution_id", institution_id, sizeof(institution_id));
+            if ((session.role != ROLE_PLATFORM_OWNER && !session.institution_id[0]) ||
+                (session.role != ROLE_PLATFORM_OWNER && institution_id[0] &&
+                 strcmp(session.institution_id, institution_id) != 0)) {
+                send_http_response(client_fd, 403, "application/json", "{\"error\":\"Institution scope denied\"}");
+            } else {
+                const char *scope = session.role == ROLE_PLATFORM_OWNER ? institution_id : session.institution_id;
+                char response[65536];
+                if (platform_get_campuses_json(scope, response, sizeof(response)) == 0)
+                    send_http_response(client_fd, 200, "application/json", response);
+                else send_http_response(client_fd, 503, "application/json", "{\"error\":\"Campus service unavailable\"}");
+            }
+        } else {
+            campus_t campus; memset(&campus, 0, sizeof(campus));
+            parse_json_string(req_body, "institution_id", campus.institution_id, sizeof(campus.institution_id));
+            parse_json_string(req_body, "name", campus.name, sizeof(campus.name));
+            parse_json_string(req_body, "address", campus.address, sizeof(campus.address));
+            if (session.role != ROLE_PLATFORM_OWNER) {
+                if (session.institution_id[0]) snprintf(campus.institution_id, sizeof(campus.institution_id), "%s", session.institution_id);
+                else campus.institution_id[0] = '\0';
+            }
+            if (!campus.institution_id[0] || !campus.name[0] ||
+                create_platform_id("campus", campus.campus_id, sizeof(campus.campus_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"Valid institution_id and name are required\"}");
+            } else if (platform_create_campus(&campus) == 0) {
+                char response[192]; snprintf(response, sizeof(response), "{\"status\":\"created\",\"campus_id\":\"%s\"}", campus.campus_id);
+                send_http_response(client_fd, 201, "application/json", response);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (route_path_matches(route_path, "/api/v1/admin/rooms") &&
+             (strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0)) {
+        const char *token = bearer_token(auth_header);
+        auth_session_t session; memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token,
+                strcmp(method, "GET") == 0 ? AUTH_PERM_EXAM_READ : AUTH_PERM_LOCATION_ADMIN,
+                &session) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Room access denied\"}");
+        } else if (strcmp(method, "GET") == 0) {
+            char campus_id[128] = {0}; parse_query_id(path, "campus_id", campus_id, sizeof(campus_id));
+            if (!campus_id[0]) send_http_response(client_fd, 400, "application/json", "{\"error\":\"campus_id query parameter required\"}");
+            else if (session.role != ROLE_PLATFORM_OWNER && !session.institution_id[0]) send_http_response(client_fd, 403, "application/json", "{\"error\":\"Institution scope required\"}");
+            else {
+                char response[65536];
+                const char *scope = session.role == ROLE_PLATFORM_OWNER ? NULL : session.institution_id;
+                if (platform_get_rooms_for_institution_json(campus_id, scope, response, sizeof(response)) == 0)
+                    send_http_response(client_fd, 200, "application/json", response);
+                else send_http_response(client_fd, 503, "application/json", "{\"error\":\"Room service unavailable\"}");
+            }
+        } else {
+            room_t room; memset(&room, 0, sizeof(room));
+            parse_json_string(req_body, "campus_id", room.campus_id, sizeof(room.campus_id));
+            parse_json_string(req_body, "institution_id", room.institution_id, sizeof(room.institution_id));
+            parse_json_string(req_body, "name", room.name, sizeof(room.name));
+            parse_json_string(req_body, "supervisor", room.supervisor, sizeof(room.supervisor));
+            room.capacity = parse_json_int(req_body, "capacity", 0);
+            if (session.role != ROLE_PLATFORM_OWNER) {
+                if (session.institution_id[0]) snprintf(room.institution_id, sizeof(room.institution_id), "%s", session.institution_id);
+                else room.institution_id[0] = '\0';
+            }
+            if (!room.campus_id[0] || !room.institution_id[0] || !room.name[0] || room.capacity < 1 ||
+                create_platform_id("room", room.room_id, sizeof(room.room_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"Valid scoped campus, institution, name and positive capacity are required\"}");
+            } else if (platform_create_room(&room) == 0) {
+                char response[192]; snprintf(response, sizeof(response), "{\"status\":\"created\",\"room_id\":\"%s\"}", room.room_id);
+                send_http_response(client_fd, 201, "application/json", response);
+            } else send_http_response(client_fd, 400, "application/json", "{\"error\":\"Room creation failed\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (strcmp(route_path, "/api/v1/admin/roles") == 0 && strcmp(method, "GET") == 0) {
+        const char *token = bearer_token(auth_header); auth_session_t session; memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token, AUTH_PERM_USER_MANAGEMENT, &session) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"User management permission required\"}");
+        } else {
+            static const user_role_t roles[] = { ROLE_PLATFORM_OWNER, ROLE_INSTITUTION_ADMIN, ROLE_EXAM_MANAGER,
+                ROLE_SECURITY_ADMIN, ROLE_INVIGILATOR, ROLE_TECH_OPERATOR, ROLE_INCIDENT_INVESTIGATOR,
+                ROLE_READONLY_AUDITOR, ROLE_SUPPORT_ENGINEER };
+            static const uint32_t permissions[] = { AUTH_PERM_READ, AUTH_PERM_EXAM_READ, AUTH_PERM_EXAM_MUTATION,
+                AUTH_PERM_FLEET_MUTATION, AUTH_PERM_SECURITY_ADMIN, AUTH_PERM_USER_MANAGEMENT,
+                AUTH_PERM_INSTITUTION_ADMIN, AUTH_PERM_INCIDENT_READ, AUTH_PERM_MFA_ADMIN,
+                AUTH_PERM_LOCATION_ADMIN, AUTH_PERM_INCIDENT_MUTATION };
+            static const char *permission_names[] = { "read", "exam_read", "exam_mutation", "fleet_mutation",
+                "security_admin", "user_management", "institution_admin", "incident_read", "mfa_admin",
+                "location_admin", "incident_mutation" };
+            char response[8192]; size_t used = (size_t)snprintf(response, sizeof(response), "{\"roles\":[");
+            for (size_t i = 0; i < sizeof(roles)/sizeof(roles[0]); ++i) {
+                int n = snprintf(response + used, sizeof(response) - used, "%s{\"role\":\"%s\",\"permissions\":[",
+                    i ? "," : "", admin_role_to_string(roles[i]));
+                if (n < 0 || (size_t)n >= sizeof(response) - used) { used = sizeof(response); break; } used += (size_t)n;
+                int first = 1;
+                for (size_t j = 0; j < sizeof(permissions)/sizeof(permissions[0]); ++j) if (admin_role_has_permission(roles[i], permissions[j])) {
+                    n = snprintf(response + used, sizeof(response) - used, "%s\"%s\"", first ? "" : ",", permission_names[j]);
+                    if (n < 0 || (size_t)n >= sizeof(response) - used) { used = sizeof(response); break; } used += (size_t)n; first = 0;
+                }
+                if (used >= sizeof(response)) break;
+                n = snprintf(response + used, sizeof(response) - used, "]}");
+                if (n < 0 || (size_t)n >= sizeof(response) - used) { used = sizeof(response); break; } used += (size_t)n;
+            }
+            if (used < sizeof(response) - 2) { snprintf(response + used, sizeof(response) - used, "]}"); send_http_response(client_fd, 200, "application/json", response); }
+            else send_http_response(client_fd, 500, "application/json", "{\"error\":\"Role matrix response overflow\"}");
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (route_path_matches(route_path, "/api/v1/admin/roster") && strcmp(method, "GET") == 0) {
+        const char *token = bearer_token(auth_header); auth_session_t session; memset(&session, 0, sizeof(session));
+        enterprise_exam_t exam; memset(&exam, 0, sizeof(exam));
+        if (!token || admin_auth_store_authorize(token, AUTH_PERM_EXAM_READ, &session) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char exam_id[128] = {0}; parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
+            if (!exam_id[0]) send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_id query parameter required\"}");
+            else if (platform_get_exam_by_id(exam_id, &exam) != 0 ||
+                     (session.role != ROLE_PLATFORM_OWNER && strcmp(session.institution_id, exam.institution_id) != 0))
+                send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam scope denied\"}");
+            else {
+                static char roster_response[131072];
+                char audit_details[192]; ledger_block_t audit_block;
+                snprintf(audit_details, sizeof(audit_details), "actor=%s resource=exam_roster", session.user_id);
+                if (ledger_append_event("ADMIN_CANDIDATE_ROSTER_READ", exam_id, audit_details, &audit_block) != 0)
+                    send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster access audit unavailable\"}");
+                else if (platform_get_roster_json(exam_id, roster_response, sizeof(roster_response)) == 0)
+                    send_http_response(client_fd, 200, "application/json", roster_response);
+                else send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster service unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&session, sizeof(session)); OPENSSL_cleanse(&exam, sizeof(exam));
+    }
+    /* Dashboard route for /admin and its subpaths (requires authentication). */
+    else if ((strcmp(route_path, "/admin") == 0 || strncmp(route_path, "/admin/", 7) == 0) && strcmp(method, "GET") == 0) {
+        char cookie_token[256] = {0};
+        char cookie_auth[sizeof(cookie_token) + sizeof("Bearer ")];
+        int cookie_status = extract_admin_session_cookie(buffer, cookie_token, sizeof(cookie_token));
+        const char *page_auth = auth_header;
+        if (cookie_status == 0 && cookie_token[0]) {
+            snprintf(cookie_auth, sizeof(cookie_auth), "Bearer %s", cookie_token);
+            if (!page_auth[0]) page_auth = cookie_auth;
+        }
+        if (cookie_status != 0 || !admin_route_authorized(page_auth, AUTH_PERM_READ)) {
             send_http_response(client_fd, 200, "text/html; charset=utf-8", admin_login_html());
         } else {
-            exam_config_t cfg;
-            config_load(&cfg);
-            const char *dash = admin_dashboard_html(cfg.exam_url, cfg.exam_name, cfg.exam_duration_minutes);
-            send_http_response(client_fd, 200, "text/html; charset=utf-8", dash);
+            exam_config_t dashboard_config = {0};
+            int config_loaded = config_load(&dashboard_config) == 0;
+            send_http_response(client_fd, 200, "text/html; charset=utf-8",
+                admin_dashboard_html(config_loaded ? dashboard_config.exam_url : "",
+                                     config_loaded ? dashboard_config.exam_name : "",
+                                     config_loaded ? dashboard_config.allowed_origins : "",
+                                     config_loaded ? dashboard_config.exam_duration_minutes : 0));
         }
+        OPENSSL_cleanse(cookie_token, sizeof(cookie_token));
+        OPENSSL_cleanse(cookie_auth, sizeof(cookie_auth));
     }
     /* Route: POST /api/v1/admin/config -> Update Exam URL / Config */
-    else if (strcmp(path, "/api/v1/admin/config") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_EXAM_MUTATION)) {
+    else if (strcmp(route_path, "/api/v1/admin/config") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_EXAM_MUTATION)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
             exam_config_t cfg;
             memset(&cfg, 0, sizeof(cfg));
             parse_json_string(req_body, "exam_url", cfg.exam_url, sizeof(cfg.exam_url));
             parse_json_string(req_body, "exam_name", cfg.exam_name, sizeof(cfg.exam_name));
+            parse_json_string(req_body, "exam_id", cfg.exam_id, sizeof(cfg.exam_id));
+            parse_json_string(req_body, "allowed_origins", cfg.allowed_origins,
+                              sizeof(cfg.allowed_origins));
             cfg.exam_duration_minutes = parse_json_int(req_body, "exam_duration_minutes", 0);
 
-            if (!config_validate_exam_url(cfg.exam_url)) {
+            if (!config_validate_exam_url(cfg.exam_url) ||
+                !config_validate_allowed_origins(cfg.allowed_origins)) {
                 send_http_response(client_fd, 400, "application/json", "{\"error\":\"Exam URL must be HTTPS and its host must be in EXAMOS_ALLOWED_EXAM_HOSTS; loopback HTTP requires explicit development opt-in\"}");
             } else if (!cfg.exam_name[0] || cfg.exam_duration_minutes < 1) {
                 send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_name and a positive exam_duration_minutes are required\"}");
+            } else if (cfg.exam_id[0] && !config_validate_exam_id(cfg.exam_id)) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_id must be 1-63 characters of [A-Za-z0-9._-]\"}");
             } else if (config_save(&cfg) == 0) {
                 ledger_block_t blk;
                 char details[512];
-                snprintf(details, sizeof(details), "Exam URL updated to: %s", cfg.exam_url);
+                snprintf(details, sizeof(details), "Exam configuration updated for URL host: %s",
+                         cfg.exam_url);
                 ledger_append_event("ADMIN_CONFIG_UPDATED", "ADMIN_CONSOLE", details, &blk);
                 send_http_response(client_fd, 200, "application/json", "{\"status\":\"SAVED\",\"exam_url\":\"saved\"}");
             } else {
@@ -550,7 +1203,7 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/attestation/nonce -> Issue challenge */
-    else if (strcmp(path, "/api/v1/attestation/nonce") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/attestation/nonce") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
             goto client_done;
@@ -587,20 +1240,25 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/attestation/verify -> Verify TPM Evidence */
-    else if (strcmp(path, "/api/v1/attestation/verify") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/attestation/verify") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
             goto client_done;
         }
         char reason[64] = {0}, exam_key[65] = {0};
         if (attestation_verify_evidence(req_body, reason, exam_key) == 0) {
+            /* The exam key is deliberately not echoed here. It is bound to
+               the trusted session and delivered only through the audited
+               key-release path, which enforces session and device binding. */
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
             char resp[512];
             snprintf(resp, sizeof(resp),
                      "{\"status\":\"TRUSTED\",\"verified\":true,\"reason\":\"%s\","
-                     "\"exam_key\":\"%s\"}",
-                     reason, exam_key);
+                     "\"key_release_required\":true}",
+                     reason);
             send_http_response(client_fd, 200, "application/json", resp);
         } else {
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
             char resp[512];
             snprintf(resp, sizeof(resp),
                      "{\"status\":\"FAILED\",\"verified\":false,"
@@ -614,7 +1272,7 @@ static void* handle_client(void *arg) {
      * Now issues a NEW fresh nonce so the client can produce a fresh quote.
      * Test flow: POST re-attest -> get new_nonce -> POST verify -> TRUSTED again.
      */
-    else if (strcmp(path, "/api/v1/attestation/re-attest") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/attestation/re-attest") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
             goto client_done;
@@ -640,9 +1298,9 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: GET /api/v1/attestation/status */
-    else if (strncmp(path, "/api/v1/attestation/status", 26) == 0 &&
+    else if (strncmp(route_path, "/api/v1/attestation/status", 26) == 0 &&
              (path[26] == '\0' || path[26] == '?') && strcmp(method, "GET") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
         } else {
             char attestation_id[64] = {0}, status[32] = {0};
@@ -664,8 +1322,8 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/admin/revoke/release */
-    else if (strcmp(path, "/api/v1/admin/revoke/release") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+    else if (strcmp(route_path, "/api/v1/admin/revoke/release") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
             char release_id[64] = {0};
@@ -677,8 +1335,8 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/admin/revoke/device */
-    else if (strcmp(path, "/api/v1/admin/revoke/device") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+    else if (strcmp(route_path, "/api/v1/admin/revoke/device") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized: Admin credentials required\"}");
         } else {
             char device_id[64] = {0};
@@ -690,8 +1348,8 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/admin/reload -> Restart Kiosk */
-    else if (strcmp(path, "/api/v1/admin/reload") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+    else if (strcmp(route_path, "/api/v1/admin/reload") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
             char *const argv[] = {"systemctl", "restart", "examos-kiosk.service", NULL};
@@ -707,15 +1365,15 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/admin/lock -> Emergency lock */
-    else if (strcmp(path, "/api/v1/admin/lock") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+    else if (strcmp(route_path, "/api/v1/admin/lock") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
             send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Appliance isolation is not integrated with the system service manager\"}");
         }
     }
     /* Route: GET /exam -> Redirect to Configured Exam URL or candidate portal */
-    else if (strcmp(path, "/exam") == 0 && strcmp(method, "GET") == 0) {
+    else if (strcmp(route_path, "/exam") == 0 && strcmp(method, "GET") == 0) {
         exam_config_t cfg;
         config_load(&cfg);
         if (cfg.configured && strlen(cfg.exam_url) > 0) {
@@ -727,7 +1385,7 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/heartbeat -> Telemetry */
-    else if (strcmp(path, "/api/v1/heartbeat") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/heartbeat") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_AGENT_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid agent token required\"}");
             goto client_done;
@@ -762,8 +1420,8 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: GET /api/v1/ledger -> Audit Log */
-    else if (strcmp(path, "/api/v1/ledger") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+    else if (strcmp(route_path, "/api/v1/ledger") == 0 && strcmp(method, "GET") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
             goto client_done;
         }
@@ -776,8 +1434,8 @@ static void* handle_client(void *arg) {
         send_http_response(client_fd, 200, "application/json", resp);
     }
     /* Route: GET /api/v1/status */
-    else if (strcmp(path, "/api/v1/status") == 0 && strcmp(method, "GET") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+    else if (strcmp(route_path, "/api/v1/status") == 0 && strcmp(method, "GET") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
             goto client_done;
         }
@@ -791,12 +1449,15 @@ static void* handle_client(void *arg) {
             goto client_done;
         }
         snprintf(resp, sizeof(resp),
-                 "{\"exam_url_configured\":%s,\"exam_url\":\"%s\",\"exam_name\":\"%s\",\"attestation_status\":\"NOT_PRODUCTION_READY\"}",
-                 cfg.configured ? "true" : "false", safe_url, safe_name);
+                 "{\"exam_url_configured\":%s,\"exam_url\":\"%s\",\"exam_name\":\"%s\","
+                 "\"attestation_status\":\"%s\",\"tpm_mode\":\"%s\"}",
+                 cfg.configured ? "true" : "false", safe_url, safe_name,
+                 g_production_mode ? "PRODUCTION" : "DEVELOPMENT",
+                 g_production_mode ? "production" : "development");
         send_http_response(client_fd, 200, "application/json", resp);
     }
     /* Route: POST /api/v1/exam/key-release -> Release session decryption key */
-    else if (strcmp(path, "/api/v1/exam/key-release") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/exam/key-release") == 0 && strcmp(method, "POST") == 0) {
         char authenticated_candidate[64] = {0};
         if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
@@ -809,21 +1470,65 @@ static void* handle_client(void *arg) {
             parse_json_string(req_body, "attestation_id", sess_id, sizeof(sess_id));
         }
 
-        if (attestation_get_exam_key(sess_id, dev_id, exam_key, sizeof(exam_key)) == 0) {
+        /*
+         * The release goes through the key-release gateway, which applies
+         * the trust, device-binding and revocation checks. Releasing the key
+         * straight from the attestation store would bypass those checks.
+         */
+        char release_error[64] = {0};
+        if (key_release_get_session_key(sess_id, exam_key, sizeof(exam_key),
+                                        dev_id, release_error) == 0) {
             char resp[512];
             snprintf(resp, sizeof(resp),
                      "{\"status\":\"KEY_RELEASED\",\"session_id\":\"%s\",\"session_key\":\"%s\"}",
                      sess_id, exam_key);
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
             send_http_response(client_fd, 200, "application/json", resp);
         } else {
-            send_http_response(client_fd, 403, "application/json",
-                               "{\"status\":\"REJECTED\",\"error_code\":\"P3_SESSION_INVALID\",\"reason\":\"Session untrusted or unverified\"}");
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
+            char resp[512];
+            snprintf(resp, sizeof(resp),
+                     "{\"status\":\"REJECTED\",\"error_code\":\"%s\",\"reason\":\"Session untrusted or unverified\"}",
+                     release_error[0] ? release_error : "P3_SESSION_INVALID");
+            send_http_response(client_fd, 403, "application/json", resp);
+        }
+    }
+    /* Route: GET /api/v1/exam/key-release/eligibility -> Non-destructive eligibility check */
+    else if (strcmp(route_path, "/api/v1/exam/key-release/eligibility") == 0 && strcmp(method, "GET") == 0) {
+        char sess_id[64] = {0}, dev_id[64] = {0}, reason[64] = {0};
+        const char *q = strchr(path, '?');
+        if (q) {
+            const char *p_s = strstr(q, "session_id=");
+            if (p_s) {
+                p_s += 11;
+                int i = 0;
+                while (*p_s && *p_s != '&' && i < 63) sess_id[i++] = *p_s++;
+                sess_id[i] = '\0';
+            }
+            const char *p_d = strstr(q, "device_id=");
+            if (p_d) {
+                p_d += 10;
+                int i = 0;
+                while (*p_d && *p_d != '&' && i < 63) dev_id[i++] = *p_d++;
+                dev_id[i] = '\0';
+            }
+        }
+        if (!sess_id[0]) {
+            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id is required\"}");
+        } else if (key_release_check_eligibility(sess_id, dev_id[0] ? dev_id : NULL, reason) == 0) {
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"ELIGIBLE\"}");
+        } else {
+            char ineligible[256];
+            snprintf(ineligible, sizeof(ineligible),
+                     "{\"status\":\"INELIGIBLE\",\"reason\":\"%s\"}",
+                     reason[0] ? reason : "P3_SESSION_INVALID");
+            send_http_response(client_fd, 403, "application/json", ineligible);
         }
     }
     /* Route: POST /api/v1/consent -> Record candidate consent before camera/mic access */
-    else if (strcmp(path, "/api/v1/consent") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/consent") == 0 && strcmp(method, "POST") == 0) {
         char sess_id[64] = {0}, cand_id[64] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
+        parse_json_string(req_body, "session_id",   sess_id, sizeof(sess_id));
         parse_json_string(req_body, "candidate_id", cand_id, sizeof(cand_id));
 
         char authenticated_candidate[64] = {0};
@@ -832,27 +1537,99 @@ static void* handle_client(void *arg) {
         } else if (!sess_id[0] || !cand_id[0] || strcmp(cand_id, authenticated_candidate) != 0) {
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id and authenticated candidate identity are required\"}");
         } else {
-            send_http_response(client_fd, 503, "application/json",
-                               "{\"status\":\"NOT_CONFIGURED\",\"error\":\"Proctoring consent cannot be recorded because no qualified proctoring service is configured\"}");
+            ledger_block_t blk;
+            char details[192];
+            snprintf(details, sizeof(details),
+                "candidate_id=%s session_id=%s consent=GRANTED", cand_id, sess_id);
+            if (ledger_append_event("CANDIDATE_CONSENT_GRANTED", cand_id, details, &blk) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                    "{\"status\":\"CONSENT_RECORDED\",\"session_id\":\"%s\","
+                    "\"block_index\":%ld}", sess_id, blk.block_index);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                send_http_response(client_fd, 503, "application/json",
+                    "{\"error\":\"Consent could not be durably recorded to the tamper-evident ledger\"}");
+            }
         }
     }
     /* Route: POST /api/v1/proctoring/events -> Ingest normalized detection into hash chain */
-    else if (strcmp(path, "/api/v1/proctoring/events") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/proctoring/events") == 0 && strcmp(method, "POST") == 0) {
         if (!bearer_secret_authorized(auth_header, "EXAMOS_PROCTOR_API_TOKEN")) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid proctor service token required\"}");
             goto client_done;
         }
-        send_http_response(client_fd, 503, "application/json",
-                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated inference producer is configured; client submitted events are not accepted as proctoring evidence\"}");
+        char sess_id[EVENT_SESSION_ID_LEN] = {0}, source_type[64] = {0}, event_type[64] = {0};
+        char model_name[64] = {0}, model_version[64] = {0};
+        parse_json_string(req_body, "session_id",    sess_id,      sizeof(sess_id));
+        parse_json_string(req_body, "source_type",   source_type,  sizeof(source_type));
+        parse_json_string(req_body, "event_type",    event_type,   sizeof(event_type));
+        parse_json_string(req_body, "model_name",    model_name,   sizeof(model_name));
+        parse_json_string(req_body, "model_version", model_version,sizeof(model_version));
+        /* Extract raw payload object */
+        const char *payload_start = strstr(req_body, "\"payload\":");
+        char payload_json[4096] = {0};
+        if (payload_start) {
+            payload_start += 10;
+            while (*payload_start == ' ' || *payload_start == '\t') payload_start++;
+            if (*payload_start == '{' || *payload_start == '[') {
+                int depth = 0; size_t pi = 0;
+                for (const char *pc = payload_start; *pc && pi < sizeof(payload_json) - 1; pc++) {
+                    if (*pc == '{' || *pc == '[') depth++;
+                    else if (*pc == '}' || *pc == ']') depth--;
+                    payload_json[pi++] = *pc;
+                    if (depth == 0) break;
+                }
+                payload_json[pi] = '\0';
+            }
+        }
+        if (!payload_json[0]) snprintf(payload_json, sizeof(payload_json), "{}");
+        if (!sess_id[0] || !source_type[0] || !event_type[0]) {
+            send_http_response(client_fd, 400, "application/json",
+                "{\"error\":\"session_id, source_type and event_type are required\"}");
+            goto client_done;
+        }
+        if (!model_name[0] || !model_version[0]) {
+            /* Provenance must be stated by the producer. Inventing a model
+               name here would attribute an event to a detector that may
+               never have run. */
+            send_http_response(client_fd, 400, "application/json",
+                "{\"error\":\"model_name and model_version are required and must identify the detector that produced this event\"}");
+            goto client_done;
+        }
+        if (strlen(model_name) >= sizeof(model_name) ||
+            strlen(model_version) >= sizeof(model_version)) {
+            send_http_response(client_fd, 400, "application/json",
+                "{\"error\":\"model_name and model_version are too long\"}");
+            goto client_done;
+        }
+        proctoring_event_t ev;
+        if (event_chain_append(sess_id, source_type, event_type, payload_json,
+                               model_name, model_version, &ev) == 0) {
+            risk_assessment_t assessment;
+            risk_engine_assess_session(sess_id, event_type, &assessment);
+            char resp[320];
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"RECORDED\",\"sequence\":%lu,\"event_hash\":\"%s\","
+                "\"risk_score\":%.2f,\"risk_level\":\"%s\",\"terminate_recommended\":%s}",
+                (unsigned long)ev.sequence, ev.event_hash,
+                assessment.composite_risk_score,
+                assessment.risk_level ? assessment.risk_level : "UNKNOWN",
+                assessment.should_terminate_exam ? "true" : "false");
+            send_http_response(client_fd, 202, "application/json", resp);
+        } else {
+            send_http_response(client_fd, 503, "application/json",
+                "{\"error\":\"Event chain append failed; storage may be unavailable\"}");
+        }
     }
     /* Route: GET /api/v1/proctoring/events */
-    else if (strncmp(path, "/api/v1/proctoring/events", 25) == 0 &&
+    else if (strncmp(route_path, "/api/v1/proctoring/events", 25) == 0 &&
              (path[25] == '\0' || path[25] == '?') && strcmp(method, "GET") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
         } else {
             char export_buf[65536];
-            char sess_id[64] = {0};
+            char sess_id[EVENT_SESSION_ID_LEN] = {0};
             if (parse_query_id(path, "session_id", sess_id, sizeof(sess_id)) != 0) {
                 send_http_response(client_fd, 400, "application/json", "{\"error\":\"valid session_id query parameter required\"}");
             } else if (event_chain_export_json(sess_id, export_buf, sizeof(export_buf)) != 0) {
@@ -863,34 +1640,40 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/proctoring/checkpoint -> Sign checkpoint */
-    else if (strcmp(path, "/api/v1/proctoring/checkpoint") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
-            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
+    else if (strcmp(route_path, "/api/v1/proctoring/checkpoint") == 0 && strcmp(method, "POST") == 0) {
+        /* The proctoring service owns the evidence stream and may checkpoint
+           it directly; a human administrator may also request a checkpoint. */
+        if (!bearer_secret_authorized(auth_header, "EXAMOS_PROCTOR_API_TOKEN") &&
+            !admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Proctor service or admin credentials required\"}");
             goto client_done;
         }
-        char sess_id[64] = {0};
+        char sess_id[EVENT_SESSION_ID_LEN] = {0};
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         event_checkpoint_t cp;
         if (!sess_id[0]) {
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id required\"}");
         } else if (event_chain_sign_checkpoint(sess_id, &cp) == 0) {
-            char resp[512];
+            char resp[1024];
             snprintf(resp, sizeof(resp),
-                     "{\"status\":\"CHECKPOINT_SIGNED\",\"sequence\":%lu,\"latest_hash\":\"%s\",\"key_id\":\"%s\",\"signature\":\"%s\"}",
-                     (unsigned long)cp.checkpoint_sequence, cp.latest_event_hash,
-                     cp.signing_key_id, cp.signature_hex);
+                     "{\"status\":\"CHECKPOINT_SIGNED\",\"session_id\":\"%s\","
+                     "\"sequence\":%lu,\"latest_hash\":\"%s\",\"key_id\":\"%s\","
+                     "\"server_timestamp\":\"%s\",\"signature\":\"%s\"}",
+                     cp.session_id, (unsigned long)cp.checkpoint_sequence,
+                     cp.latest_event_hash, cp.signing_key_id,
+                     cp.server_timestamp, cp.signature_hex);
             send_http_response(client_fd, 200, "application/json", resp);
         } else {
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"No events found to checkpoint\"}");
         }
     }
     /* Route: POST /api/v1/proctoring/verify -> Verify hash chain */
-    else if (strcmp(path, "/api/v1/proctoring/verify") == 0 && strcmp(method, "POST") == 0) {
-        if (!admin_check_permission(auth_header, AUTH_PERM_READ)) {
+    else if (strcmp(route_path, "/api/v1/proctoring/verify") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
             goto client_done;
         }
-        char sess_id[64] = {0};
+        char sess_id[EVENT_SESSION_ID_LEN] = {0};
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         uint64_t total = 0, corrupt_seq = 0;
         char reason[128] = {0};
@@ -911,22 +1694,50 @@ static void* handle_client(void *arg) {
         }
     }
     /* Route: POST /api/v1/second-camera/request -> Generate QR token */
-    else if (strcmp(path, "/api/v1/second-camera/request") == 0 && strcmp(method, "POST") == 0) {
+    else if (strcmp(route_path, "/api/v1/second-camera/request") == 0 && strcmp(method, "POST") == 0) {
         char authenticated_candidate[64] = {0};
         if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
             goto client_done;
         }
-        send_http_response(client_fd, 503, "application/json",
-                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No candidate-bound session authority or authenticated media transport is configured\"}");
+        /* The pairing token is bound to the authenticated candidate session
+           and is single-use with a short expiry. */
+        char pairing_token[QR_TOKEN_LEN + 1] = {0};
+        if (second_camera_create_pairing_token(authenticated_candidate, pairing_token,
+                                               sizeof(pairing_token)) != 0) {
+            send_http_response(client_fd, 503, "application/json",
+                "{\"status\":\"UNAVAILABLE\",\"error\":\"Second-camera pairing could not be created\"}");
+        } else {
+            char resp[256];
+            snprintf(resp, sizeof(resp),
+                     "{\"status\":\"PAIRING_REQUESTED\",\"session_id\":\"%s\","
+                     "\"pairing_token\":\"%s\",\"expires_in_seconds\":300}",
+                     authenticated_candidate, pairing_token);
+            OPENSSL_cleanse(pairing_token, sizeof(pairing_token));
+            send_http_response(client_fd, 201, "application/json", resp);
+        }
     }
     /* Route: POST /api/v1/second-camera/pair -> Validate QR pairing */
-    else if (strcmp(path, "/api/v1/second-camera/pair") == 0 && strcmp(method, "POST") == 0) {
-        send_http_response(client_fd, 503, "application/json",
-                           "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated media transport is configured; pairing is unavailable\"}");
+    else if (strcmp(route_path, "/api/v1/second-camera/pair") == 0 && strcmp(method, "POST") == 0) {
+        char sess_id[64] = {0}, token[128] = {0};
+        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
+        parse_json_string(req_body, "token",     token,  sizeof(token));
+        if (!sess_id[0] || !token[0]) {
+            send_http_response(client_fd, 400, "application/json",
+                "{\"error\":\"session_id and token are required\"}");
+        } else if (second_camera_validate_pairing(sess_id, token) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Pairing token is invalid, expired, or already used\"}");
+        } else {
+            char resp[192];
+            snprintf(resp, sizeof(resp),
+                     "{\"status\":\"PAIRED\",\"session_id\":\"%s\"}", sess_id);
+            OPENSSL_cleanse(token, sizeof(token));
+            send_http_response(client_fd, 200, "application/json", resp);
+        }
     }
     /* Route: GET /second-camera -> Mobile phone camera capture web page */
-    else if (strncmp(path, "/second-camera", 14) == 0 && strcmp(method, "GET") == 0) {
+    else if (strncmp(route_path, "/second-camera", 14) == 0 && strcmp(method, "GET") == 0) {
         char sess_id[64] = {0}, token[128] = {0};
         const char *q = strchr(path, '?');
         if (q) {
@@ -948,22 +1759,1822 @@ static void* handle_client(void *arg) {
         if (!sess_id[0] || !token[0]) {
             send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id and token are required\"}");
         } else {
-            send_http_response(client_fd, 503, "application/json",
-                               "{\"status\":\"NOT_CONFIGURED\",\"error\":\"No authenticated media transport is configured\"}");
+            /* The portal is served only for a session/token pair that is
+               actually in the pairing flow; it is not a public page. */
+            second_cam_state_t state = second_camera_get_status(sess_id);
+            if (state == SECOND_CAM_STATE_UNPAIRED || state == SECOND_CAM_STATE_EXPIRED) {
+                send_http_response(client_fd, 403, "application/json",
+                    "{\"error\":\"No active pairing request exists for this session\"}");
+            } else {
+                const char *page = second_camera_portal_html(sess_id, token);
+                send_http_response(client_fd, 200, "text/html; charset=utf-8",
+                                   page ? page : "<!DOCTYPE html><html><body>Second camera portal unavailable</body></html>");
+            }
         }
     }
     /* Route: GET /api/v1/health */
-    else if (strcmp(path, "/api/v1/health") == 0 && strcmp(method, "GET") == 0) {
-        send_http_response(client_fd, 200, "application/json",
-                           "{\"status\":\"ok\",\"liveness\":\"LIVE\","
-                           "\"readiness\":\"NOT_PRODUCTION_READY\","
-                           "\"service\":\"examos-server\",\"phase\":\"P4\"}");
+    else if (strcmp(route_path, "/api/v1/health") == 0 && strcmp(method, "GET") == 0) {
+        /*
+         * Readiness reflects every dependency the service needs to serve a
+         * request: the authenticated evidence ledger, the durable platform
+         * store, and the attestation store. Reporting READY from the ledger
+         * alone would hide a platform-store outage.
+         */
+        int ledger_ok = ledger_verify_integrity();
+        int ledger_authenticated = ledger_is_authenticated();
+        int database_ok = (platform_database_health() == 0);
+        int attestation_ok = (attestation_store_health() == 0);
+
+        const char *readiness;
+        if (!g_production_mode) {
+            readiness = "DEVELOPMENT";
+        } else if (ledger_ok && ledger_authenticated && database_ok && attestation_ok) {
+            readiness = "READY";
+        } else {
+            readiness = "NOT_READY";
+        }
+
+        char health_resp[512];
+        snprintf(health_resp, sizeof(health_resp),
+            "{\"status\":\"ok\",\"liveness\":\"LIVE\","
+            "\"readiness\":\"%s\","
+            "\"ledger_integrity\":\"%s\","
+            "\"ledger_authenticated\":%s,"
+            "\"database\":%s,"
+            "\"attestation_store\":%s,"
+            "\"service\":\"examos-server\","
+            "\"tpm_mode\":\"%s\"}",
+            readiness,
+            ledger_ok ? "INTACT" : "TAMPERED",
+            ledger_authenticated ? "true" : "false",
+            database_ok ? "true" : "false",
+            attestation_ok ? "true" : "false",
+            g_production_mode ? "production" : "development");
+        send_http_response(client_fd, 200, "application/json", health_resp);
+    }
+    /* ================================================================
+     * Enterprise Platform API Routes
+     * ================================================================ */
+
+    /* POST /api/v1/admin/institutions -> Create institution (Platform Owner only) */
+    else if (strcmp(route_path, "/api/v1/admin/institutions") == 0 && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_INSTITUTION_ADMIN, &sess) != 0
+                 || sess.role != ROLE_PLATFORM_OWNER) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Platform owner required to create institutions\"}");
+        } else {
+            institution_t inst; memset(&inst, 0, sizeof(inst));
+            parse_json_string(req_body, "name",          inst.name,          sizeof(inst.name));
+            parse_json_string(req_body, "code",          inst.code,          sizeof(inst.code));
+            parse_json_string(req_body, "contact_email", inst.contact_email, sizeof(inst.contact_email));
+            inst.retention_days = parse_json_int(req_body, "retention_days", 0);
+            inst.active = 1;
+            if (create_platform_id("inst", inst.institution_id, sizeof(inst.institution_id)) != 0) {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Secure ID generation unavailable\"}");
+            } else if (!inst.name[0] || !inst.code[0] || inst.retention_days <= 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"name, code and retention_days are required\"}");
+            } else if (platform_create_institution(&inst) == 0) {
+                char resp[512];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"institution_id\":\"%s\"}", inst.institution_id);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* Return only the authenticated administrator's own role and scope. */
+    else if (strcmp(route_path, "/api/v1/admin/session") == 0 && strcmp(method, "GET") == 0) {
+        const char *token = bearer_token(auth_header);
+        auth_session_t session;
+        memset(&session, 0, sizeof(session));
+        if (!token || admin_auth_store_authorize(token, AUTH_PERM_READ, &session) != 0) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Authenticated administrator session required\"}");
+        } else {
+            char user_id[160], username[160], institution_id[160];
+            if (json_escape(session.user_id, user_id, sizeof(user_id)) != 0 ||
+                json_escape(session.username, username, sizeof(username)) != 0 ||
+                json_escape(session.institution_id, institution_id, sizeof(institution_id)) != 0) {
+                send_http_response(client_fd, 500, "application/json", "{\"error\":\"Session profile could not be encoded\"}");
+            } else {
+                char response[640];
+                snprintf(response, sizeof(response),
+                    "{\"user_id\":\"%s\",\"username\":\"%s\",\"institution_id\":\"%s\",\"role\":\"%s\",\"session_expires_at\":%lld}",
+                    user_id, username, institution_id, admin_role_to_string(session.role),
+                    (long long)session.expires_at);
+                send_http_response(client_fd, 200, "application/json", response);
+            }
+        }
+        OPENSSL_cleanse(&session, sizeof(session));
+    }
+    else if (strcmp(route_path, "/api/v1/admin/users") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_USER_MANAGEMENT, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"User management permission required\"}");
+        } else {
+            static char users_buf[65536];
+            if (admin_auth_store_list_users_json(users_buf, sizeof(users_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", users_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"User service unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/users -> Create admin user */
+    else if (strcmp(route_path, "/api/v1/admin/users") == 0 && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_USER_MANAGEMENT, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"User management permission required\"}");
+        } else {
+            user_account_t u; memset(&u, 0, sizeof(u));
+            parse_json_string(req_body, "username",       u.username,           sizeof(u.username));
+            parse_json_string(req_body, "full_name",      u.full_name,          sizeof(u.full_name));
+            parse_json_string(req_body, "email",          u.email,              sizeof(u.email));
+            char plaintext_password[257] = {0};
+            char password_hash[256] = {0};
+            parse_json_string(req_body, "password", plaintext_password, sizeof(plaintext_password));
+            parse_json_string(req_body, "institution_id", u.institution_id,     sizeof(u.institution_id));
+            u.role = (user_role_t)parse_json_int(req_body, "role", 0);
+            u.active = 1;
+            if (create_platform_id("admin", u.user_id, sizeof(u.user_id)) != 0) {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Secure ID generation unavailable\"}");
+            } else if (!u.username[0] || !plaintext_password[0] ||
+                       config_create_password_hash(plaintext_password, password_hash,
+                                                   sizeof(password_hash)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"username and a valid strong password are required\"}");
+            } else {
+                snprintf(u.password_hash, sizeof(u.password_hash), "%s", password_hash);
+                if (admin_auth_store_create_user(&u, sess.user_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"username\":\"%s\"}", u.username);
+                send_http_response(client_fd, 200, "application/json", resp);
+                } else {
+                    send_http_response(client_fd, 409, "application/json",
+                                       "{\"error\":\"User creation failed (duplicate or authorization denied)\"}");
+                }
+            }
+            OPENSSL_cleanse(plaintext_password, sizeof(plaintext_password));
+            OPENSSL_cleanse(password_hash, sizeof(password_hash));
+            OPENSSL_cleanse(&u, sizeof(u));
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/telemetry -> Platform telemetry overview */
+    else if (strcmp(route_path, "/api/v1/admin/telemetry") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
+        } else {
+            static char tel_buf[16384];
+            if (platform_get_telemetry_json(tel_buf, sizeof(tel_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", tel_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Telemetry unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/fleet -> Device fleet list */
+    else if (strcmp(route_path, "/api/v1/admin/fleet") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
+        } else {
+            static char fleet_buf[131072];
+            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+            if (platform_get_fleet_json(inst, fleet_buf, sizeof(fleet_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", fleet_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Fleet service unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/fleet/compliance -> Fleet compliance summary */
+    else if (strcmp(route_path, "/api/v1/admin/fleet/compliance") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
+        } else {
+            static char comp_buf[65536];
+            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+            if (platform_get_fleet_compliance_json(inst, comp_buf, sizeof(comp_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", comp_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Compliance service unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/incidents -> Security incidents */
+    else if (strcmp(route_path, "/api/v1/admin/incidents") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_INCIDENT_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Incident read permission required\"}");
+        } else {
+            static char inc_buf[131072];
+            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+            if (platform_get_incidents_json(inst, inc_buf, sizeof(inc_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", inc_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Incident service unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/policies -> Policy list (optional ?exam_id=) */
+    else if (strcmp(route_path, "/api/v1/admin/policies") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
+            static char pol_buf[65536];
+            if (platform_get_policies_json(exam_id[0] ? exam_id : NULL, pol_buf, sizeof(pol_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", pol_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Policy service unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/policies/catalog -> Provisioned browser policy catalog */
+    else if (strcmp(route_path, "/api/v1/admin/policies/catalog") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            static char catalog_json[16384];
+            if (policy_catalog_names_json(catalog_json, sizeof(catalog_json)) != 0 ||
+                !catalog_json[0]) {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Browser policy catalog is unavailable\"}");
+            } else {
+                send_http_response(client_fd, 200, "application/json", catalog_json);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/create -> Create exam draft */
+    else if (strcmp(route_path, "/api/v1/platform/exams/create") == 0 && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            enterprise_exam_t exam; memset(&exam, 0, sizeof(exam));
+            parse_json_string(req_body, "title",           exam.title,           sizeof(exam.title));
+            parse_json_string(req_body, "institution_id",  exam.institution_id,  sizeof(exam.institution_id));
+            parse_json_string(req_body, "exam_url",        exam.exam_url,        sizeof(exam.exam_url));
+            parse_json_string(req_body, "allowed_origins", exam.allowed_origins, sizeof(exam.allowed_origins));
+            parse_json_string(req_body, "timezone",        exam.timezone,        sizeof(exam.timezone));
+            parse_json_string(req_body, "permitted_device_group", exam.permitted_device_group, sizeof(exam.permitted_device_group));
+            exam.duration_minutes = parse_json_int(req_body, "duration_minutes", 0);
+            exam.retention_days = parse_json_int(req_body, "retention_days", 0);
+            exam.scheduled_start = (time_t)parse_json_int(req_body, "scheduled_start", 0);
+            exam.scheduled_end = (time_t)parse_json_int(req_body, "scheduled_end", 0);
+            if (sess.role != ROLE_PLATFORM_OWNER && sess.institution_id[0])
+                snprintf(exam.institution_id, sizeof(exam.institution_id), "%s", sess.institution_id);
+
+            /*
+             * Every policy-relevant field must be supplied explicitly. The
+             * platform does not invent a timezone, device group, browser
+             * policy, retention window, or schedule: those are administrative
+             * decisions and must be explicit and auditable.
+             */
+            char browser_policy_name[64] = {0};
+            parse_json_string(req_body, "browser_policy", browser_policy_name,
+                              sizeof(browser_policy_name));
+
+            char resolved_policy[POLICY_JSON_MAX] = {0};
+            int policy_resolved = 0;
+            if (browser_policy_name[0] &&
+                policy_catalog_get(browser_policy_name, resolved_policy,
+                                   sizeof(resolved_policy)) == 0) {
+                policy_resolved = 1;
+                snprintf(exam.browser_policy_json, sizeof(exam.browser_policy_json),
+                         "%s", resolved_policy);
+            }
+
+            char url_error[256] = {0};
+            int timezone_valid = 0;
+            if (exam.timezone[0]) {
+                char zone_path[256];
+                snprintf(zone_path, sizeof(zone_path), "/usr/share/zoneinfo/%s", exam.timezone);
+                if (access(zone_path, F_OK) == 0) timezone_valid = 1;
+            }
+
+            if (create_platform_id("exam", exam.exam_id, sizeof(exam.exam_id)) != 0) {
+                OPENSSL_cleanse(&sess, sizeof(sess));
+                send_http_response(client_fd, 503, "application/json",
+                    "{\"error\":\"Secure ID generation unavailable\"}");
+                goto client_done;
+            }
+            snprintf(exam.code, sizeof(exam.code), "%.8s", exam.exam_id + 5);
+            snprintf(exam.owner_user_id, sizeof(exam.owner_user_id), "%s", sess.user_id);
+            exam.state = EXAM_STATE_DRAFT;
+            if (!exam.title[0] || !exam.institution_id[0] || exam.duration_minutes < 1) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"title, institution_id and a positive duration_minutes are required\"}");
+            } else if (!exam.exam_url[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_url is required\"}");
+            } else if (platform_validate_exam_url(exam.exam_url, url_error, sizeof(url_error)) != 0) {
+                send_http_response(client_fd, 422, "application/json",
+                                   url_error[0] ? url_error
+                                                : "{\"error\":\"exam_url is not an approved exam origin\"}");
+            } else if (!timezone_valid) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"timezone must be a valid IANA time zone name\"}");
+            } else if (!exam.permitted_device_group[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"permitted_device_group is required and must name an enrolled device group\"}");
+            } else if (!policy_resolved) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"browser_policy must name a policy from the provisioned browser policy catalog\"}");
+            } else if (exam.retention_days < 1 || exam.retention_days > 36500) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"retention_days must be between 1 and 36500\"}");
+            } else if (exam.scheduled_start <= 0 || exam.scheduled_end <= 0 ||
+                       exam.scheduled_end <= exam.scheduled_start) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"scheduled_start and scheduled_end are required, and scheduled_end must be after scheduled_start\"}");
+            } else if (platform_create_exam(&exam) == 0) {
+                char resp[512];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"exam_id\":\"%s\"}", exam.exam_id);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/validate */
+    else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
+             strstr(route_path + 23, "/validate") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            const char *id_end = strstr(route_path + 23, "/validate");
+            size_t id_len = id_end ? (size_t)(id_end - (route_path + 23)) : 0;
+            if (id_len > 0 && id_len < sizeof(exam_id)) memcpy(exam_id, route_path + 23, id_len);
+            char err_msg[512] = {0};
+            if (!exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id required in path\"}");
+            } else if (platform_validate_exam_config(exam_id, err_msg, sizeof(err_msg)) == 0) {
+                send_http_response(client_fd, 200, "application/json", "{\"status\":\"VALID\"}");
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"status\":\"INVALID\",\"error\":\"%s\"}", err_msg);
+                send_http_response(client_fd, 422, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/approve */
+    else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
+             strstr(route_path + 23, "/approve") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            const char *id_end = strstr(route_path + 23, "/approve");
+            size_t id_len = id_end ? (size_t)(id_end - (route_path + 23)) : 0;
+            if (id_len > 0 && id_len < sizeof(exam_id)) memcpy(exam_id, route_path + 23, id_len);
+            if (!exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id required in path\"}");
+            } else if (platform_approve_exam(exam_id, sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json", "{\"status\":\"approved\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Approval failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/sessions -> Create an in-memory exam session */
+    else if (strcmp(route_path, "/api/v1/platform/exams/sessions") == 0 && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+            OPENSSL_cleanse(&sess, sizeof(sess));
+        } else {
+            char candidate_id[64] = {0}, exam_code[32] = {0};
+            long max_duration = parse_json_int(req_body, "max_duration_seconds", 0);
+            parse_json_string(req_body, "candidate_id", candidate_id, sizeof(candidate_id));
+            parse_json_string(req_body, "exam_code", exam_code, sizeof(exam_code));
+            exam_session_t es; memset(&es, 0, sizeof(es));
+            if (!candidate_id[0] || !exam_code[0] || max_duration <= 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"candidate_id, exam_code and max_duration_seconds are required\"}");
+            } else if (exam_manager_create_session(candidate_id, exam_code, max_duration, &es) != 0) {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Failed to create exam session\"}");
+            } else {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"SESSION_CREATED\",\"session_id\":\"%s\",\"candidate_id\":\"%s\",\"exam_code\":\"%s\",\"state\":%d,\"start_time\":%ld,\"max_duration_seconds\":%ld}",
+                         es.session_id, es.candidate_id, es.exam_code, (int)es.state, es.start_time, es.max_duration_seconds);
+                send_http_response(client_fd, 201, "application/json", resp);
+            }
+            OPENSSL_cleanse(&sess, sizeof(sess));
+        }
+    }
+    /* POST /api/v1/platform/exams/sessions/:id/state -> Update exam session state */
+    else if (strncmp(route_path, "/api/v1/platform/exams/sessions/", 32) == 0 &&
+             strstr(route_path + 32, "/state") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+            OPENSSL_cleanse(&sess, sizeof(sess));
+        } else {
+            char session_id[64] = {0};
+            const char *id_start = route_path + 32;
+            const char *id_end = strstr(id_start, "/state");
+            size_t id_len = id_end ? (size_t)(id_end - id_start) : 0;
+            if (id_len == 0 || id_len >= sizeof(session_id)) {
+                send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id required in path\"}");
+            } else {
+                memcpy(session_id, id_start, id_len);
+                session_id[id_len] = '\0';
+                int new_state = parse_json_int(req_body, "state", -1);
+                exam_session_t es; memset(&es, 0, sizeof(es));
+                if (exam_manager_get_session(session_id, &es) != 0) {
+                    send_http_response(client_fd, 404, "application/json",
+                                       "{\"error\":\"Exam session not found\"}");
+                } else if (new_state < EXAM_STATE_REGISTERED || new_state > EXAM_STATE_FLAGGED_TERMINATED) {
+                    send_http_response(client_fd, 400, "application/json",
+                                       "{\"error\":\"Invalid state value\"}");
+                } else if (exam_manager_update_state(session_id, (exam_session_state_t)new_state) != 0) {
+                    send_http_response(client_fd, 500, "application/json",
+                                       "{\"error\":\"Failed to update exam session state\"}");
+                } else {
+                    char resp[256];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"STATE_UPDATED\",\"session_id\":\"%s\",\"state\":%d}",
+                             session_id, new_state);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+            OPENSSL_cleanse(&sess, sizeof(sess));
+        }
+    }
+    else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
+             strstr(route_path + 23, "/url") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            const char *id_end = strstr(route_path + 23, "/url");
+            size_t id_len = id_end ? (size_t)(id_end - (route_path + 23)) : 0;
+            if (id_len > 0 && id_len < sizeof(exam_id)) memcpy(exam_id, route_path + 23, id_len);
+            char new_url[4096] = {0}, allowed_origins[2048] = {0};
+            parse_json_string(req_body, "exam_url",        new_url,         sizeof(new_url));
+            parse_json_string(req_body, "allowed_origins", allowed_origins, sizeof(allowed_origins));
+            if (!exam_id[0] || !new_url[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id (path) and exam_url required\"}");
+            } else if (platform_update_exam_url(exam_id, new_url, allowed_origins, sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"url_updated\"}");
+            } else {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"URL update failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/schedule */
+    else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
+             strstr(route_path + 23, "/schedule") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            const char *id_end = strstr(route_path + 23, "/schedule");
+            size_t id_len = id_end ? (size_t)(id_end - (route_path + 23)) : 0;
+            if (id_len > 0 && id_len < sizeof(exam_id)) memcpy(exam_id, route_path + 23, id_len);
+            char timezone[64] = {0};
+            parse_json_string(req_body, "timezone", timezone, sizeof(timezone));
+            int start_ts = parse_json_int(req_body, "start_time", 0);
+            int end_ts   = parse_json_int(req_body, "end_time",   0);
+            if (!exam_id[0] || start_ts <= 0 || end_ts <= 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id, start_time and end_time required\"}");
+            } else if (platform_schedule_exam(exam_id, (time_t)start_ts, (time_t)end_ts,
+                                              timezone[0] ? timezone : "UTC", sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"scheduled\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Schedule failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/policy/rollback */
+    else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
+             strstr(route_path + 23, "/policy/rollback") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Security admin permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            const char *id_end = strstr(route_path + 23, "/policy/rollback");
+            size_t id_len = id_end ? (size_t)(id_end - (route_path + 23)) : 0;
+            if (id_len > 0 && id_len < sizeof(exam_id)) memcpy(exam_id, route_path + 23, id_len);
+            int target_version = parse_json_int(req_body, "target_version", 0);
+            if (!exam_id[0] || target_version <= 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id and target_version required\"}");
+            } else if (platform_rollback_policy(exam_id, (unsigned int)target_version, sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"rolled_back\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Rollback failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/state -> Advance the exam lifecycle */
+    else if (platform_route_id(route_path, "state", exam_route_id, sizeof(exam_route_id)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char state_name[64] = {0};
+            parse_json_string(req_body, "state", state_name, sizeof(state_name));
+            exam_state_t next_state = string_to_exam_state(state_name);
+            if (!state_name[0] ||
+                (next_state == EXAM_STATE_DRAFT && strcmp(state_name, "DRAFT") != 0)) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"state must be one of DRAFT, VALIDATED, APPROVED, SCHEDULED, OPEN, ACTIVE, PAUSED, SUBMISSION, CLOSED, RECONCILED\"}");
+            } else if (platform_update_exam_state(exam_route_id, next_state, sess.user_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"updated\",\"exam_id\":\"%s\",\"state\":\"%s\"}",
+                         exam_route_id, exam_state_to_string(next_state));
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                send_http_response(client_fd, 409, "application/json",
+                    "{\"error\":\"Exam state transition is not permitted from the current state\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/roster -> Add or update a roster entry */
+    else if (platform_route_id(route_path, "roster", exam_route_id, sizeof(exam_route_id)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            candidate_roster_entry_t entry; memset(&entry, 0, sizeof(entry));
+            parse_json_string(req_body, "candidate_id", entry.candidate_id, sizeof(entry.candidate_id));
+            parse_json_string(req_body, "full_name",    entry.full_name,    sizeof(entry.full_name));
+            parse_json_string(req_body, "email",        entry.email,        sizeof(entry.email));
+            parse_json_string(req_body, "room_id",      entry.room_id,      sizeof(entry.room_id));
+            parse_json_string(req_body, "assigned_seat", entry.assigned_seat, sizeof(entry.assigned_seat));
+            parse_json_string(req_body, "assigned_device_id", entry.assigned_device_id, sizeof(entry.assigned_device_id));
+            entry.accommodation_extra_time_mins =
+                parse_json_int(req_body, "accommodation_extra_time_mins", 0);
+
+            /* The candidate PIN is never stored; only a PBKDF2 hash is kept. */
+            char pin[64] = {0};
+            parse_json_string(req_body, "pin", pin, sizeof(pin));
+            int pin_ok = 0;
+            if (pin[0] && config_create_password_hash(pin, entry.pin_hash,
+                                                      sizeof(entry.pin_hash)) == 0) {
+                pin_ok = 1;
+            }
+            OPENSSL_cleanse(pin, sizeof(pin));
+
+            snprintf(entry.exam_id, sizeof(entry.exam_id), "%s", exam_route_id);
+            entry.status = CANDIDATE_ELIGIBLE;
+
+            if (!entry.candidate_id[0] || !entry.full_name[0] || !entry.email[0] || !pin_ok ||
+                entry.accommodation_extra_time_mins < 0) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"candidate_id, full_name, email and pin are required; accommodation_extra_time_mins must not be negative\"}");
+            } else if (platform_add_candidate_roster(&entry) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"exam_id\":\"%s\",\"candidate_id\":\"%s\"}",
+                         exam_route_id, entry.candidate_id);
+                send_http_response(client_fd, 201, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/checkin -> Check a candidate in */
+    else if (platform_route_id(route_path, "checkin", exam_route_id, sizeof(exam_route_id)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char candidate_id[64] = {0}, device_id[64] = {0};
+            parse_json_string(req_body, "candidate_id", candidate_id, sizeof(candidate_id));
+            parse_json_string(req_body, "device_id",    device_id,    sizeof(device_id));
+            if (!candidate_id[0] || !device_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"candidate_id and device_id are required\"}");
+            } else if (platform_checkin_candidate(exam_route_id, candidate_id, device_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"CHECKED_IN\",\"exam_id\":\"%s\",\"candidate_id\":\"%s\",\"device_id\":\"%s\"}",
+                         exam_route_id, candidate_id, device_id);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                send_http_response(client_fd, 409, "application/json",
+                    "{\"error\":\"Candidate could not be checked in for this exam and device\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/:id/submissions -> Record a submission */
+    else if (platform_route_id(route_path, "submissions", exam_route_id, sizeof(exam_route_id)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            durable_submission_t submission; memset(&submission, 0, sizeof(submission));
+            parse_json_string(req_body, "submission_id",  submission.submission_id,  sizeof(submission.submission_id));
+            parse_json_string(req_body, "candidate_id",   submission.candidate_id, sizeof(submission.candidate_id));
+            parse_json_string(req_body, "session_id",     submission.session_id,   sizeof(submission.session_id));
+            parse_json_string(req_body, "receipt_hash",   submission.receipt_hash, sizeof(submission.receipt_hash));
+            parse_json_string(req_body, "status",         submission.status,       sizeof(submission.status));
+            snprintf(submission.exam_id, sizeof(submission.exam_id), "%s", exam_route_id);
+
+            /* The submitted answer payload is hashed server-side; the
+               answers themselves are never retained in the platform store. */
+            const char *answers = strstr(req_body, "\"answers\"");
+            size_t answers_len = answers ? strlen(answers) : 0;
+            submission.payload_bytes = answers_len;
+
+            if (!submission.candidate_id[0] || !submission.session_id[0] ||
+                !submission.receipt_hash[0] || strlen(submission.receipt_hash) != 64) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"candidate_id, session_id and a 64-character receipt_hash are required\"}");
+            } else if (platform_record_submission(&submission, answers ? answers : "") == 0) {
+                char resp[320];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"ACCEPTED\",\"submission_id\":\"%s\",\"exam_id\":\"%s\",\"candidate_id\":\"%s\"}",
+                         submission.submission_id[0] ? submission.submission_id : "",
+                         exam_route_id, submission.candidate_id);
+                send_http_response(client_fd, 201, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/platform/exams/:id/readiness?device_id= */
+    else if (platform_route_id(route_path, "readiness", exam_route_id, sizeof(exam_route_id)) == 0 &&
+             strcmp(method, "GET") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char device_id[64] = {0};
+            if (parse_query_id(path, "device_id", device_id, sizeof(device_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"device_id query parameter required\"}");
+            } else {
+                char readiness_json[1024] = {0};
+                int ready = platform_check_readiness(exam_route_id, device_id,
+                                                      readiness_json, sizeof(readiness_json));
+                if (readiness_json[0]) {
+                    send_http_response(client_fd, ready == 0 ? 200 : 200,
+                                       "application/json", readiness_json);
+                } else {
+                    send_http_response(client_fd, 503, "application/json",
+                        "{\"error\":\"Readiness evidence is unavailable\"}");
+                }
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/platform/exams/purge -> Purge exams past their retention window */
+    else if (strcmp(route_path, "/api/v1/platform/exams/purge") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Security admin permission required\"}");
+        } else {
+            char summary[2048] = {0};
+            int retention_days = parse_json_int(req_body, "retention_days", 0);
+            if (retention_days <= 0) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"retention_days must be a positive number of days\"}");
+            } else if (platform_purge_expired_exams(retention_days, summary, sizeof(summary)) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   summary[0] ? summary : "{\"status\":\"purged\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                    "{\"error\":\"Retention purge failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/fleet/bulk -> Apply a bulk device action */
+    else if (strcmp(route_path, "/api/v1/admin/fleet/bulk") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Security admin permission required\"}");
+        } else {
+            char action_type[64] = {0}, target_group[64] = {0}, target_inst[64] = {0};
+            char target_campus[64] = {0}, target_room[64] = {0}, param[256] = {0};
+            parse_json_string(req_body, "action_type",   action_type,   sizeof(action_type));
+            parse_json_string(req_body, "target_group",  target_group,  sizeof(target_group));
+            parse_json_string(req_body, "institution_id", target_inst,  sizeof(target_inst));
+            parse_json_string(req_body, "campus_id",     target_campus, sizeof(target_campus));
+            parse_json_string(req_body, "room_id",       target_room,   sizeof(target_room));
+            parse_json_string(req_body, "parameter",     param,         sizeof(param));
+            int preview = parse_json_int(req_body, "preview_only", 0);
+
+            char bulk_json[4096] = {0};
+            if (!action_type[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"action_type is required\"}");
+            } else if (platform_bulk_device_action(action_type, target_group, target_inst,
+                                                   target_campus, target_room, param,
+                                                   preview ? 1 : 0, sess.user_id,
+                                                   bulk_json, sizeof(bulk_json)) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   bulk_json[0] ? bulk_json : "{\"status\":\"ok\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                    "{\"error\":\"Bulk device action failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/incidents -> Raise a security incident */
+    else if (strcmp(route_path, "/api/v1/admin/incidents") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_INCIDENT_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Incident management permission required\"}");
+        } else {
+            security_incident_t incident; memset(&incident, 0, sizeof(incident));
+            parse_json_string(req_body, "title",           incident.title,           sizeof(incident.title));
+            parse_json_string(req_body, "institution_id",  incident.institution_id,  sizeof(incident.institution_id));
+            parse_json_string(req_body, "device_id",       incident.device_id,       sizeof(incident.device_id));
+            parse_json_string(req_body, "candidate_id",    incident.candidate_id,    sizeof(incident.candidate_id));
+            parse_json_string(req_body, "exam_id",         incident.exam_id,         sizeof(incident.exam_id));
+            parse_json_string(req_body, "summary",         incident.summary,         sizeof(incident.summary));
+            parse_json_string(req_body, "assigned_to",     incident.assigned_to,     sizeof(incident.assigned_to));
+
+            char severity_name[32] = {0};
+            parse_json_string(req_body, "severity", severity_name, sizeof(severity_name));
+            incident.severity = SEV_INFO;
+            if (strcasecmp(severity_name, "LOW") == 0) incident.severity = SEV_LOW;
+            else if (strcasecmp(severity_name, "MEDIUM") == 0) incident.severity = SEV_MEDIUM;
+            else if (strcasecmp(severity_name, "HIGH") == 0) incident.severity = SEV_HIGH;
+            else if (strcasecmp(severity_name, "CRITICAL") == 0) incident.severity = SEV_CRITICAL;
+            else if (severity_name[0] && strcasecmp(severity_name, "INFO") != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"severity must be one of INFO, LOW, MEDIUM, HIGH, CRITICAL\"}");
+                OPENSSL_cleanse(&sess, sizeof(sess));
+                goto client_done;
+            }
+            snprintf(incident.status, sizeof(incident.status), "OPEN");
+
+            if (!incident.title[0] || !incident.summary[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"title and summary are required\"}");
+            } else if (platform_create_incident(&incident) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"incident_id\":\"%s\"}", incident.incident_id);
+                send_http_response(client_fd, 201, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/releases -> Publish a software release record */
+    else if (strcmp(route_path, "/api/v1/admin/releases") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Security admin permission required\"}");
+        } else {
+            enterprise_release_t release; memset(&release, 0, sizeof(release));
+            parse_json_string(req_body, "release_id",    release.release_id,    sizeof(release.release_id));
+            parse_json_string(req_body, "version_name",  release.version_name,  sizeof(release.version_name));
+            parse_json_string(req_body, "image_digest",  release.image_digest,  sizeof(release.image_digest));
+            parse_json_string(req_body, "uki_digest",    release.uki_digest,    sizeof(release.uki_digest));
+            parse_json_string(req_body, "sbom_digest",   release.sbom_digest,   sizeof(release.sbom_digest));
+
+            char ring_name[32] = {0};
+            parse_json_string(req_body, "target_ring", ring_name, sizeof(ring_name));
+            release.target_ring = RING_CANARY;
+            if (strcasecmp(ring_name, "PILOT") == 0) release.target_ring = RING_PILOT;
+            else if (strcasecmp(ring_name, "GENERAL") == 0) release.target_ring = RING_GENERAL;
+            else if (ring_name[0] && strcasecmp(ring_name, "CANARY") != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"target_ring must be one of CANARY, PILOT, GENERAL\"}");
+                OPENSSL_cleanse(&sess, sizeof(sess));
+                goto client_done;
+            }
+            snprintf(release.status, sizeof(release.status), "DRAFT");
+            snprintf(release.signed_by, sizeof(release.signed_by), "%s", sess.user_id);
+            release.release_date = time(NULL);
+
+            char requested_status[32] = {0};
+            parse_json_string(req_body, "status", requested_status, sizeof(requested_status));
+            if (requested_status[0]) {
+                if (strcmp(requested_status, "DRAFT") == 0 ||
+                    strcmp(requested_status, "PUBLISHED") == 0) {
+                    snprintf(release.status, sizeof(release.status), "%s", requested_status);
+                } else {
+                    send_http_response(client_fd, 400, "application/json",
+                        "{\"error\":\"status must be DRAFT or PUBLISHED\"}");
+                    OPENSSL_cleanse(&sess, sizeof(sess));
+                    goto client_done;
+                }
+            }
+
+            if (!release.release_id[0] || !release.version_name[0] ||
+                strlen(release.image_digest) != 64 || strlen(release.uki_digest) != 64 ||
+                strlen(release.sbom_digest) != 64) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"release_id, version_name and 64-character image_digest, uki_digest and sbom_digest are required\"}");
+            } else if (platform_create_release(&release) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"created\",\"release_id\":\"%s\"}", release.release_id);
+                send_http_response(client_fd, 201, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/fleet/enroll -> Enrol a device into the fleet */
+    else if (strcmp(route_path, "/api/v1/admin/fleet/enroll") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Security admin permission required\"}");
+        } else {
+            fleet_device_record_t device; memset(&device, 0, sizeof(device));
+            parse_json_string(req_body, "device_id",      device.device_id,      sizeof(device.device_id));
+            parse_json_string(req_body, "hostname",       device.hostname,       sizeof(device.hostname));
+            parse_json_string(req_body, "institution_id", device.institution_id, sizeof(device.institution_id));
+            parse_json_string(req_body, "campus_id",      device.campus_id,      sizeof(device.campus_id));
+            parse_json_string(req_body, "room_id",        device.room_id,        sizeof(device.room_id));
+            parse_json_string(req_body, "group_name",     device.group_name,     sizeof(device.group_name));
+            char ring_name[32] = {0};
+            parse_json_string(req_body, "deployment_ring", ring_name, sizeof(ring_name));
+            device.ring = RING_CANARY;
+            if (strcasecmp(ring_name, "PILOT") == 0) device.ring = RING_PILOT;
+            else if (strcasecmp(ring_name, "GENERAL") == 0) device.ring = RING_GENERAL;
+            parse_json_string(req_body, "hardware_platform", device.hardware_platform, sizeof(device.hardware_platform));
+            parse_json_string(req_body, "crypto_identity_ref", device.crypto_identity_ref, sizeof(device.crypto_identity_ref));
+            parse_json_string(req_body, "os_release",     device.os_release,     sizeof(device.os_release));
+            parse_json_string(req_body, "image_digest",   device.image_digest,   sizeof(device.image_digest));
+            parse_json_string(req_body, "uki_digest",     device.uki_digest,     sizeof(device.uki_digest));
+
+            if (!device.device_id[0] || !device.hostname[0] || !device.group_name[0] ||
+                !device.hardware_platform[0] || !device.crypto_identity_ref[0] ||
+                strlen(device.image_digest) != 64 || strlen(device.uki_digest) != 64) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"device_id, hostname, group_name, hardware_platform, crypto_identity_ref and 64-character image_digest and uki_digest are required\"}");
+            } else if (platform_enroll_device(&device, sess.user_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"enrolled\",\"device_id\":\"%s\"}", device.device_id);
+                send_http_response(client_fd, 201, "application/json", resp);
+            } else {
+                send_http_response(client_fd, 409, "application/json",
+                    "{\"error\":\"Device enrolment was refused\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/policies/distribute -> Produce the signed policy bundle for a device */
+    else if (strcmp(route_path, "/api/v1/admin/policies/distribute") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char exam_id[64] = {0}, device_id[64] = {0};
+            parse_json_string(req_body, "exam_id",   exam_id,   sizeof(exam_id));
+            parse_json_string(req_body, "device_id", device_id, sizeof(device_id));
+            if (!exam_id[0] || !device_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"exam_id and device_id are required\"}");
+            } else {
+                char bundle[8192] = {0};
+                if (platform_distribute_policy_bundle_json(exam_id, device_id,
+                                                            bundle, sizeof(bundle)) == 0) {
+                    send_http_response(client_fd, 200, "application/json", bundle);
+                } else {
+                    send_http_response(client_fd, 503, "application/json",
+                        "{\"error\":\"No active signed policy is available for this exam and device\"}");
+                }
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/policies/verify -> Verify a client-supplied policy */
+    else if (strcmp(route_path, "/api/v1/admin/policies/verify") == 0 && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char expected_exam_id[64] = {0}, device_id[64] = {0};
+            parse_json_string(req_body, "exam_id",   expected_exam_id, sizeof(expected_exam_id));
+            parse_json_string(req_body, "device_id", device_id,        sizeof(device_id));
+            const char *policy_json = strstr(req_body, "\"policy\"");
+            char policy_text[8192] = {0};
+            if (policy_json) {
+                const char *colon = strchr(policy_json, ':');
+                if (colon) {
+                    const char *start = colon + 1;
+                    while (*start == ' ' || *start == '"') start++;
+                    size_t n = 0;
+                    while (start[n] && start[n] != '"' && n + 1 < sizeof(policy_text)) n++;
+                    memcpy(policy_text, start, n);
+                    policy_text[n] = '\0';
+                }
+            }
+            if (!expected_exam_id[0] || !device_id[0] || !policy_text[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                    "{\"error\":\"exam_id, device_id and policy are required\"}");
+            } else {
+                char err_msg[512] = {0};
+                if (platform_verify_client_policy(policy_text, expected_exam_id, device_id,
+                                                  err_msg, sizeof(err_msg)) == 0) {
+                    send_http_response(client_fd, 200, "application/json",
+                        "{\"status\":\"VERIFIED\",\"exam_id\":\"expected\"}");
+                } else {
+                    char resp[640];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"REJECTED\",\"error\":\"%s\"}", err_msg);
+                    send_http_response(client_fd, 403, "application/json", resp);
+                }
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/audit -> Administrative audit trail */
+    else if (strcmp(route_path, "/api/v1/admin/audit") == 0 && strcmp(method, "GET") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Read permission required\"}");
+        } else {
+            char exam_id[64] = {0};
+            parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
+            int limit = parse_json_int(path, "limit", 100);
+            static char audit_buf[65536];
+            if (platform_get_audit_json(exam_id[0] ? exam_id : NULL, limit,
+                                        audit_buf, sizeof(audit_buf)) == 0) {
+                send_http_response(client_fd, 200, "application/json", audit_buf);
+            } else {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Audit trail is unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/operations -> Live examination operations */
+    else if (strcmp(route_path, "/api/v1/admin/operations") == 0 && strcmp(method, "GET") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            static char ops_buf[32768];
+            if (platform_get_operations_json(ops_buf, sizeof(ops_buf)) == 0) {
+                send_http_response(client_fd, 200, "application/json", ops_buf);
+            } else {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Operational summary is unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/fleet/groups -> Device groups and deployment rings */
+    else if (strcmp(route_path, "/api/v1/admin/fleet/groups") == 0 && strcmp(method, "GET") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Fleet permission required\"}");
+        } else {
+            static char groups_buf[32768];
+            if (platform_get_device_groups_json(groups_buf, sizeof(groups_buf)) == 0) {
+                send_http_response(client_fd, 200, "application/json", groups_buf);
+            } else {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Device group summary is unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/institutions/:id -> Update institution settings */
+    else if (strncmp(route_path, "/api/v1/admin/institutions/", 27) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_INSTITUTION_ADMIN, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Institution administration permission required\"}");
+        } else {
+            char institution_id[64] = {0};
+            const char *id_end = route_path + 27;
+            const char *slash = strchr(id_end, '/');
+            size_t id_len = slash ? (size_t)(slash - id_end) : strlen(id_end);
+            if (id_len > 0 && id_len < sizeof(institution_id)) {
+                memcpy(institution_id, id_end, id_len);
+                institution_id[id_len] = '\0';
+            }
+            char name[128] = {0}, contact_email[128] = {0};
+            parse_json_string(req_body, "name", name, sizeof(name));
+            parse_json_string(req_body, "contact_email", contact_email, sizeof(contact_email));
+            int retention_days = parse_json_int(req_body, "retention_days", 0);
+            if (!institution_id[0] || !name[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"institution_id in the path and name are required\"}");
+            } else if (platform_update_institution(institution_id, name, contact_email,
+                                                   retention_days, sess.user_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"updated\",\"institution_id\":\"%s\",\"retention_days\":%d}",
+                         institution_id, retention_days);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/reconciliation?exam_id= */
+    else if (strcmp(route_path, "/api/v1/admin/reconciliation") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
+            if (!exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id query parameter required\"}");
+            } else {
+                static char rec_buf[65536];
+                if (platform_get_reconciliation_json(exam_id, rec_buf, sizeof(rec_buf)) == 0)
+                    send_http_response(client_fd, 200, "application/json", rec_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Reconciliation unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/submissions?exam_id= */
+    else if (strcmp(route_path, "/api/v1/admin/submissions") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam read permission required\"}");
+        } else {
+            char exam_id[128] = {0};
+            parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
+            if (!exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id query parameter required\"}");
+            } else {
+                static char sub_buf[131072];
+                if (platform_get_submissions_json(exam_id, sub_buf, sizeof(sub_buf)) == 0)
+                    send_http_response(client_fd, 200, "application/json", sub_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Submissions unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/incidents/:id/status */
+    else if (strncmp(route_path, "/api/v1/admin/incidents/", 24) == 0 &&
+             strstr(path + 24, "/status") != NULL && strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_INCIDENT_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Incident permission required\"}");
+        } else {
+            char inc_id[128] = {0};
+            const char *id_end = strstr(path + 24, "/status");
+            size_t id_len = id_end ? (size_t)(id_end - (path + 24)) : 0;
+            if (id_len > 0 && id_len < sizeof(inc_id)) memcpy(inc_id, path + 24, id_len);
+            char new_status[64] = {0}, notes[512] = {0};
+            parse_json_string(req_body, "status", new_status, sizeof(new_status));
+            parse_json_string(req_body, "notes",  notes,      sizeof(notes));
+            if (sess.role != ROLE_PLATFORM_OWNER && !sess.institution_id[0]) {
+                send_http_response(client_fd, 403, "application/json", "{\"error\":\"Incident institution scope required\"}");
+            } else if (!inc_id[0] || !new_status[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"incident id (path) and status required\"}");
+            } else if (platform_update_incident_status_scoped(inc_id,
+                       sess.role == ROLE_PLATFORM_OWNER ? NULL : sess.institution_id,
+                       new_status, notes, sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"updated\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Status update failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/fleet/:id/approve */
+    else if (fleet_route_id(route_path, "approve", fleet_route_device, sizeof(fleet_route_device)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Fleet mutation permission required\"}");
+        } else {
+            char dev_id[128] = {0};
+            snprintf(dev_id, sizeof(dev_id), "%s", fleet_route_device);
+            if (!dev_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"device_id required in path\"}");
+            } else if (platform_approve_device_enrollment(dev_id, sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"approved\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Device approval failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/fleet/:id/quarantine */
+    else if (fleet_route_id(route_path, "quarantine", fleet_route_device, sizeof(fleet_route_device)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Fleet mutation permission required\"}");
+        } else {
+            char dev_id[128] = {0};
+            snprintf(dev_id, sizeof(dev_id), "%s", fleet_route_device);
+            char reason[256] = {0};
+            parse_json_string(req_body, "reason", reason, sizeof(reason));
+            if (!dev_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"device_id required in path\"}");
+            } else if (platform_quarantine_device(dev_id, reason[0] ? reason : "admin_action", sess.user_id) == 0) {
+                send_http_response(client_fd, 200, "application/json",
+                                   "{\"status\":\"quarantined\"}");
+            } else {
+                send_http_response(client_fd, 500, "application/json",
+                                   "{\"error\":\"Quarantine failed\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* POST /api/v1/admin/fleet/:id/assign -> Assign a device to an exam */
+    else if (fleet_route_id(route_path, "assign", fleet_route_device, sizeof(fleet_route_device)) == 0 &&
+             strcmp(method, "POST") == 0) {
+        const char *prefix[] = { "Bearer " };
+        const char *tok = strncmp(auth_header, prefix[0], sizeof(prefix[0]) - 1) == 0
+                          ? auth_header + sizeof(prefix[0]) - 1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Fleet mutation permission required\"}");
+        } else {
+            char exam_id[64] = {0};
+            parse_json_string(req_body, "exam_id", exam_id, sizeof(exam_id));
+            if (!exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id is required\"}");
+            } else if (platform_assign_device_to_exam(fleet_route_device, exam_id, sess.user_id) == 0) {
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"assigned\",\"device_id\":\"%s\",\"exam_id\":\"%s\"}",
+                         fleet_route_device, exam_id);
+                send_http_response(client_fd, 200, "application/json", resp);
+            } else {
+                char resp[640];
+                snprintf(resp, sizeof(resp), "{\"error\":\"%s\"}", platform_last_error());
+                send_http_response(client_fd, 409, "application/json", resp);
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/releases -> Software releases */
+    else if (strcmp(route_path, "/api/v1/admin/releases") == 0 && strcmp(method, "GET") == 0) {
+        static const char prefix[] = "Bearer ";
+        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
+                          ? auth_header + sizeof(prefix)-1 : NULL;
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
+        } else {
+            static char rel_buf[65536];
+            if (platform_get_releases_json(rel_buf, sizeof(rel_buf)) == 0)
+                send_http_response(client_fd, 200, "application/json", rel_buf);
+            else
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Releases unavailable\"}");
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* =====================================================================
+     * Phase 5: behaviour evidence, variant delivery and post-exam viva.
+     * Every route binds the candidate identity to the authenticated session
+     * token; client-supplied candidate identifiers are never trusted.
+     * ===================================================================== */
+    else if (strcmp(route_path, "/api/v1/behaviour/events") == 0 && strcmp(method, "POST") == 0) {
+        const char *candidate_token = bearer_token(auth_header);
+        char candidate_id[64] = {0};
+        if (!candidate_token ||
+            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            behaviour_raw_input_t in;
+            memset(&in, 0, sizeof(in));
+            parse_json_string(req_body, "exam_id", in.exam_id, sizeof(in.exam_id));
+            in.question_id = parse_json_int(req_body, "question_id", -1);
+            int64_t presented = 0, first_input = 0, submitted = 0;
+            int has_presented = parse_json_int64(req_body, "question_presented_server_ts_ms", &presented) == 0;
+            int has_first = parse_json_int64(req_body, "first_input_server_ts_ms", &first_input) == 0;
+            int has_submitted = parse_json_int64(req_body, "answer_submitted_server_ts_ms", &submitted) == 0;
+            in.question_presented_server_ts_ms = has_presented ? presented : 0;
+            in.first_input_server_ts_ms = has_first ? first_input : 0;
+            in.answer_submitted_server_ts_ms = has_submitted ? submitted : 0;
+            in.question_char_length = parse_json_int(req_body, "question_char_length", 0);
+            in.edit_count = parse_json_int(req_body, "edit_count", 0);
+
+            int interval_count = parse_json_int_array(req_body, "typing_intervals_ms",
+                                                      in.typing_intervals_ms, 256);
+            if (interval_count < 0) interval_count = 0;
+            in.typing_interval_count = interval_count;
+
+            double value = 0.0;
+            in.focus_fraction = parse_json_double(req_body, "focus_fraction", &value) == 0
+                                ? (float)value : 0.0f;
+            in.gaze_fraction = parse_json_double(req_body, "gaze_fraction", &value) == 0
+                               ? (float)value : 0.0f;
+            in.gaze_confidence_pct = parse_json_int(req_body, "gaze_confidence_pct", -1);
+            in.camera_available = parse_json_int(req_body, "camera_available", 0);
+            in.question_score = parse_json_double(req_body, "question_score", &value) == 0
+                                ? (float)value : -1.0f;
+            in.question_max_marks = parse_json_int(req_body, "question_max_marks", 0);
+            snprintf(in.session_id, sizeof(in.session_id), "%s", candidate_token);
+            snprintf(in.candidate_id, sizeof(in.candidate_id), "%s", candidate_id);
+
+            if (in.question_id < 0 || !in.exam_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id and a non-negative question_id are required\"}");
+            } else {
+                behaviour_feature_record_t record;
+                if (behaviour_ingest_question(&in, &record) != 0) {
+                    send_http_response(client_fd, 409, "application/json",
+                                       "{\"error\":\"BEHAVIOUR_SOURCE_EVENT_UNVERIFIED\"}");
+                } else {
+                    char resp[512];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"FEATURES_INGESTED\",\"session_id\":\"%s\","
+                             "\"question_id\":%d,\"f1_quality\":%d,\"f2_quality\":%d,"
+                             "\"f3_quality\":%d,\"f4_quality\":%d,\"f5_quality\":%d,\"f6_quality\":%d}",
+                             candidate_token, in.question_id, (int)record.f1_quality,
+                             (int)record.f2_quality, (int)record.f3_quality,
+                             (int)record.f4_quality, (int)record.f5_quality,
+                             (int)record.f6_quality);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/behaviour/practice") == 0 && strcmp(method, "POST") == 0) {
+        const char *candidate_token = bearer_token(auth_header);
+        char candidate_id[64] = {0};
+        if (!candidate_token ||
+            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            char practice_session_id[128] = {0};
+            parse_json_string(req_body, "practice_session_id", practice_session_id,
+                              sizeof(practice_session_id));
+            if (!practice_session_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"practice_session_id is required\"}");
+            } else {
+                char reason[128] = {0};
+                int rc = behaviour_record_practice_quiz(candidate_id, practice_session_id,
+                                                        reason, sizeof(reason));
+                int count = behaviour_get_practice_count(candidate_id);
+                char resp[384];
+                snprintf(resp, sizeof(resp),
+                         "{\"status\":\"%s\",\"candidate_id\":\"%s\","
+                         "\"eligible_count\":%d,\"minimum_required\":%d%s%s%s}",
+                         rc == 0 ? "RECORDED" : "NOT_ELIGIBLE",
+                         candidate_id, count, BEHAVIOUR_MIN_PRACTICE_QUIZZES,
+                         reason[0] ? ",\"reason\":\"" : "",
+                         reason[0] ? reason : "",
+                         reason[0] ? "\"" : "");
+                send_http_response(client_fd, rc == 0 ? 200 : 409,
+                                   "application/json", resp);
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/behaviour/baseline") == 0 && strcmp(method, "GET") == 0) {
+        char requested_candidate[64] = {0};
+        char authenticated_candidate[64] = {0};
+        int is_reviewer = reviewer_authorized(auth_header) ||
+                          admin_route_authorized(auth_header, AUTH_PERM_READ);
+        int is_candidate = candidate_authorized(auth_header, authenticated_candidate,
+                                                sizeof(authenticated_candidate));
+        if (!is_reviewer && !is_candidate) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Candidate or reviewer authentication required\"}");
+        } else if (parse_query_id(path, "candidate_id", requested_candidate,
+                                  sizeof(requested_candidate)) != 0) {
+            if (is_candidate) {
+                snprintf(requested_candidate, sizeof(requested_candidate), "%s",
+                         authenticated_candidate);
+            } else {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"candidate_id is required\"}");
+                goto p5_baseline_done;
+            }
+        } else if (is_candidate && !is_reviewer &&
+                   strcmp(requested_candidate, authenticated_candidate) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Candidates may only read their own baseline\"}");
+        } else {
+            char resp[8192];
+            int rc = behaviour_export_baseline_json(requested_candidate, resp, sizeof(resp));
+            send_http_response(client_fd, rc == 0 ? 200 : 200,
+                               "application/json", resp);
+        }
+p5_baseline_done:
+        ;
+    }
+    else if (strcmp(route_path, "/api/v1/behaviour/score/compute") == 0 && strcmp(method, "POST") == 0) {
+        const char *candidate_token = bearer_token(auth_header);
+        char candidate_id[64] = {0};
+        if (!candidate_token ||
+            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            char exam_id[128] = {0};
+            parse_json_string(req_body, "exam_id", exam_id, sizeof(exam_id));
+            if (!exam_id[0]) {
+                /* No caller-supplied identity: fall back to the provisioned
+                   examination identity. Never fabricate a default exam id. */
+                if (config_active_exam_id(exam_id, sizeof(exam_id)) != 0) {
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"EXAM_IDENTITY_NOT_PROVISIONED\"}");
+                    goto p5_score_done;
+                }
+            }
+            behaviour_risk_score_t score;
+            (void)behaviour_compute_risk_score(candidate_token, candidate_id, exam_id, &score);
+            char resp[8192];
+            if (behaviour_export_score_json(candidate_token, resp, sizeof(resp)) != 0) {
+                snprintf(resp, sizeof(resp),
+                         "{\"session_id\":\"%s\",\"candidate_id\":\"%s\","
+                         "\"risk_score\":-1,\"confidence_status\":\"SCORE_INSUFFICIENT_EVIDENCE\"}",
+                         candidate_token, candidate_id);
+            }
+            send_http_response(client_fd, 200, "application/json", resp);
+        }
+p5_score_done:
+        ;
+    }
+    else if (strcmp(route_path, "/api/v1/behaviour/features") == 0 && strcmp(method, "GET") == 0) {
+        if (!reviewer_authorized(auth_header) &&
+            !admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Reviewer authentication required\"}");
+        } else {
+            char session_id[128] = {0};
+            if (parse_query_id(path, "session_id", session_id, sizeof(session_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"session_id is required\"}");
+            } else {
+                char resp[16384];
+                if (behaviour_export_features_json(session_id, resp, sizeof(resp)) != 0) {
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"BEHAVIOUR_STORE_UNAVAILABLE\"}");
+                } else {
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/exam/variant") == 0 && strcmp(method, "GET") == 0) {
+        char candidate_id[64] = {0};
+        if (!candidate_authorized(auth_header, candidate_id, sizeof(candidate_id))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            question_template_t tmpl;
+            question_variant_t variant;
+            char exam_id[128] = {0};
+            if (config_active_exam_id(exam_id, sizeof(exam_id)) != 0) {
+                /* No provisioned examination identity: refuse to fabricate one. */
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"EXAM_IDENTITY_NOT_PROVISIONED\"}");
+            } else if (variant_get_template(NULL, &tmpl) != 0 ||
+                variant_generate(candidate_id, exam_id, &tmpl, &variant) != 0) {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"VARIANT_GENERATION_FAILED\"}");
+            } else {
+                char resp[8192];
+                if (variant_export_candidate_json(variant.variant_id, resp,
+                                                  sizeof(resp)) != 0) {
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"VARIANT_NOT_AVAILABLE\"}");
+                } else {
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/reviewer/variant") == 0 && strcmp(method, "GET") == 0) {
+        if (!reviewer_authorized(auth_header) &&
+            !admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Reviewer authentication required\"}");
+        } else {
+            char variant_id[64] = {0};
+            if (parse_query_id(path, "variant_id", variant_id, sizeof(variant_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"variant_id is required\"}");
+            } else {
+                char resp[8192];
+                if (variant_export_reviewer_json(variant_id, resp, sizeof(resp)) != 0) {
+                    send_http_response(client_fd, 404, "application/json",
+                                       "{\"error\":\"VARIANT_NOT_FOUND\"}");
+                } else {
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/reviewer/watermark/trace") == 0 && strcmp(method, "POST") == 0) {
+        if (!reviewer_authorized(auth_header) &&
+            !admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Reviewer authentication required\"}");
+        } else {
+            char fragment[256] = {0};
+            parse_json_string(req_body, "watermark_fragment", fragment, sizeof(fragment));
+            if (!fragment[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"watermark_fragment is required\"}");
+            } else {
+                char candidate_ref[64] = {0}, variant_id[64] = {0};
+                if (variant_trace_watermark(fragment, candidate_ref, sizeof(candidate_ref),
+                                            variant_id, sizeof(variant_id)) != 0) {
+                    send_http_response(client_fd, 404, "application/json",
+                                       "{\"status\":\"NOT_FOUND\",\"error\":\"Watermark is not traceable\"}");
+                } else {
+                    char resp[384];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"TRACED\",\"candidate_ref\":\"%s\","
+                             "\"variant_id\":\"%s\"}", candidate_ref, variant_id);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/viva/generate") == 0 && strcmp(method, "POST") == 0) {
+        const char *candidate_token = bearer_token(auth_header);
+        char authenticated_candidate[64] = {0};
+        if (!candidate_token ||
+            !candidate_session_identity(candidate_token, authenticated_candidate,
+                                        sizeof(authenticated_candidate))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            char exam_id[128] = {0}, receipt[65] = {0};
+            char requested_candidate[64] = {0};
+            char submitted_candidate[64] = {0};
+            char question_context[4096] = {0}, answer_context[4096] = {0};
+            parse_json_string(req_body, "candidate_id", requested_candidate,
+                              sizeof(requested_candidate));
+            parse_json_string(req_body, "exam_id", exam_id, sizeof(exam_id));
+            parse_json_string(req_body, "submission_receipt_hash", receipt, sizeof(receipt));
+            if (requested_candidate[0] &&
+                strcmp(requested_candidate, authenticated_candidate) != 0) {
+                send_http_response(client_fd, 403, "application/json",
+                                   "{\"error\":\"Candidate identity mismatch\"}");
+            } else if (!exam_id[0] || !receipt[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"exam_id and submission_receipt_hash are required\"}");
+            } else if (exam_engine_get_submitted_context(
+                           candidate_token, receipt, submitted_candidate,
+                           sizeof(submitted_candidate), question_context,
+                           sizeof(question_context), answer_context,
+                           sizeof(answer_context)) != 0) {
+                /* Viva context is never accepted from the client. It must be
+                   the server-held, receipt-bound submission. */
+                send_http_response(client_fd, 409, "application/json",
+                                   "{\"error\":\"VIVA_SUBMISSION_NOT_FOUND_OR_RECEIPT_MISMATCH\"}");
+            } else if (strcmp(submitted_candidate, authenticated_candidate) != 0) {
+                send_http_response(client_fd, 403, "application/json",
+                                   "{\"error\":\"Submitted work does not belong to this candidate\"}");
+            } else {
+                viva_generation_t generation;
+                int rc = viva_generate(candidate_token, authenticated_candidate, exam_id,
+                                       receipt, question_context, answer_context,
+                                       &generation);
+                if (rc != 0) {
+                    char resp[768];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"%s\",\"viva_id\":\"%s\","
+                             "\"error\":\"%s\"}",
+                             generation.status_str[0] ? generation.status_str
+                                                      : "VIVA_GENERATION_FAILED",
+                             generation.viva_id,
+                             generation.status_str[0] ? generation.status_str
+                                                      : "VIVA_GENERATION_FAILED");
+                    send_http_response(client_fd, 503, "application/json", resp);
+                } else {
+                    char resp[16384];
+                    if (viva_export_candidate_json(generation.viva_id,
+                                                   authenticated_candidate,
+                                                   resp, sizeof(resp)) != 0) {
+                        send_http_response(client_fd, 503, "application/json",
+                                           "{\"error\":\"VIVA_EXPORT_FAILED\"}");
+                    } else {
+                        send_http_response(client_fd, 200, "application/json", resp);
+                    }
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/viva/response") == 0 && strcmp(method, "POST") == 0) {
+        char authenticated_candidate[64] = {0};
+        if (!candidate_authorized(auth_header, authenticated_candidate,
+                                  sizeof(authenticated_candidate))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+        } else {
+            char viva_id[64] = {0}, question_id[64] = {0};
+            char response_text[4096] = {0}, requested_candidate[64] = {0};
+            parse_json_string(req_body, "viva_id", viva_id, sizeof(viva_id));
+            parse_json_string(req_body, "question_id", question_id, sizeof(question_id));
+            parse_json_string(req_body, "response_text", response_text,
+                              sizeof(response_text));
+            parse_json_string(req_body, "candidate_id", requested_candidate,
+                              sizeof(requested_candidate));
+            if (requested_candidate[0] &&
+                strcmp(requested_candidate, authenticated_candidate) != 0) {
+                send_http_response(client_fd, 403, "application/json",
+                                   "{\"error\":\"Candidate identity mismatch\"}");
+            } else if (!viva_id[0] || !question_id[0] || !response_text[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"viva_id, question_id and response_text are required\"}");
+            } else {
+                viva_response_t response;
+                int rc = viva_submit_response(viva_id, question_id,
+                                              authenticated_candidate,
+                                              response_text, &response);
+                if (rc == 0) {
+                    char resp[384];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"RESPONSE_RECORDED\",\"response_id\":\"%s\","
+                             "\"viva_id\":\"%s\",\"question_id\":\"%s\"}",
+                             response.response_id, viva_id, question_id);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                } else if (rc == -2) {
+                    send_http_response(client_fd, 409, "application/json",
+                                       "{\"status\":\"DUPLICATE_REJECTED\"}");
+                } else {
+                    send_http_response(client_fd, 403, "application/json",
+                                       "{\"status\":\"REJECTED\",\"error\":\"Viva response is not permitted\"}");
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/reviewer/viva") == 0 && strcmp(method, "GET") == 0) {
+        if (!reviewer_authorized(auth_header) &&
+            !admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Reviewer authentication required\"}");
+        } else {
+            char viva_id[64] = {0};
+            if (parse_query_id(path, "viva_id", viva_id, sizeof(viva_id)) != 0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"viva_id is required\"}");
+            } else {
+                char resp[16384];
+                if (viva_export_reviewer_json(viva_id, resp, sizeof(resp)) != 0) {
+                    send_http_response(client_fd, 404, "application/json",
+                                       "{\"error\":\"VIVA_NOT_FOUND\"}");
+                } else {
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+    }
+    else if (strcmp(route_path, "/api/v1/reviewer/viva/decide") == 0 && strcmp(method, "POST") == 0) {
+        if (!reviewer_authorized(auth_header) &&
+            !admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Reviewer authentication required\"}");
+        } else {
+            char viva_id[64] = {0}, reviewer_id[64] = {0}, reason[32] = {0};
+            char rationale[1024] = {0};
+            parse_json_string(req_body, "viva_id", viva_id, sizeof(viva_id));
+            parse_json_string(req_body, "reviewer_id", reviewer_id, sizeof(reviewer_id));
+            parse_json_string(req_body, "reason_code", reason, sizeof(reason));
+            parse_json_string(req_body, "written_rationale", rationale, sizeof(rationale));
+            int state = parse_json_int(req_body, "state", -1);
+            double final_score = -1.0;
+            (void)parse_json_double(req_body, "final_score", &final_score);
+            if (final_score > 1.0 && final_score <= 100.0) final_score /= 100.0;
+            if (!viva_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"viva_id is required\"}");
+            } else if (state < 0 || state > 3 || final_score < 0.0 || final_score > 1.0) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"state must be 0-3 and final_score must be 0-1 or 0-100\"}");
+            } else if (!reviewer_id[0]) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"reviewer_id is required\"}");
+            } else {
+                reviewer_decision_t decision;
+                if (viva_reviewer_decide(viva_id, reviewer_id, (review_state_t)state,
+                                         final_score, reason, rationale, &decision) == 0) {
+                    char resp[512];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"DECISION_RECORDED\",\"decision_id\":\"%s\","
+                             "\"viva_id\":\"%s\",\"state\":\"%s\"}",
+                             decision.decision_id, viva_id, decision.state_str);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                } else {
+                    send_http_response(client_fd, 409, "application/json",
+                                       "{\"error\":\"Decision rejected\"}");
+                }
+            }
+        }
     }
     else {
         send_http_response(client_fd, 404, "application/json", "{\"error\":\"Not Found\"}");
     }
 
 client_done:
+#if defined(USE_OPENSSL_TLS)
+    if (g_conn_ssl) {
+        (void)SSL_shutdown(g_conn_ssl);
+        SSL_free(g_conn_ssl);
+        g_conn_ssl = NULL;
+    }
+#endif
     close(client_fd);
     sem_post(&g_client_slots);
     return NULL;
@@ -1001,17 +3612,58 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     const int production_mode = strcmp(tpm_mode, "production") == 0;
+    g_production_mode = production_mode;
+
+    /*
+     * In production the service only runs on an ExamOS appliance. The
+     * examination evidence, the attestation state and the sealed secrets
+     * this server handles are meaningful only on a measured, Secure Boot
+     * verified, dm-verity sealed image.
+     */
+    {
+        char appliance_reason[256] = {0};
+        if (examos_appliance_verify(appliance_reason, sizeof(appliance_reason)) != 0) {
+            if (production_mode) {
+                fprintf(stderr,
+                        "[ExamOS-Server] FATAL: %s. This server only runs on an ExamOS appliance.\n",
+                        appliance_reason);
+                return 2;
+            }
+            fprintf(stderr,
+                    "[ExamOS-Server] WARNING: %s. Development mode continues without the appliance posture.\n",
+                    appliance_reason);
+        }
+    }
     const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
     if (production_mode && allow_unprovisioned) {
         fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
         return 2;
     }
+    /* The evidence ledger is authenticated with HMAC-SHA256, so its key is
+       mandatory in every mode: a ledger that cannot be authenticated is not
+       evidence, and silently running unauthenticated would be a fallback. */
     if (!valid_startup_secret("EXAMOS_AGENT_API_TOKEN", 1) ||
         !valid_startup_secret("EXAMOS_PROCTOR_API_TOKEN", 1) ||
         !valid_startup_secret("EXAMOS_EVENT_SIGNING_KEY", 1) ||
         !valid_startup_secret("EXAMOS_VARIANT_SECRET", 1) ||
-        !valid_startup_secret("EXAMOS_LEDGER_HMAC_KEY", production_mode)) {
+        !valid_startup_secret("EXAMOS_LEDGER_HMAC_KEY", 1)) {
         return 2;
+    }
+
+    /* The exam key-encryption key seals released exam keys. It must be
+       provisioned before the service can accept any attestation. */
+    if (production_mode) {
+        const char *kek = getenv("EXAMOS_EXAM_KEY_KEK");
+        if (!kek || strlen(kek) < 32) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK must be provisioned with at least 32 characters in production mode.\n");
+            return 2;
+        }
+        for (size_t i = 0; i < strlen(kek); i++) {
+            if (isspace((unsigned char)kek[i]) || (unsigned char)kek[i] < 0x20) {
+                fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK contains unsupported characters.\n");
+                return 2;
+            }
+        }
     }
 
     int server_port = 0;
@@ -1047,12 +3699,28 @@ int main(int argc, char *argv[]) {
 
     printf("[ExamOS-Server] Initializing ExamOS Security Server on port %d (Phase 4 Proctoring & Tamper-Evident Evidence)...\n", server_port);
 
+    /* The ledger path is provisioned explicitly in production: a shared
+       world-writable location (for example /tmp) cannot hold evidence. */
     const char *ledger_path = getenv("EXAMOS_LEDGER_PATH");
-    if (ledger_init(ledger_path && *ledger_path ? ledger_path : "/tmp/examos_event_ledger.log") != 0) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: evidence ledger is corrupt, truncated, or unreadable; refusing startup.\n");
+    if (!ledger_path || !*ledger_path) {
+        if (production_mode) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_LEDGER_PATH must be provisioned in production mode.\n");
+            return 2;
+        }
+        ledger_path = "var/examos-event-ledger.log";
+    }
+    const char *ledger_key = getenv("EXAMOS_LEDGER_HMAC_KEY");
+    if (ledger_init(ledger_path, ledger_key) != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: evidence ledger is corrupt, truncated, unauthenticated, or unreadable; refusing startup.\n");
+        return 1;
+    }
+    /* Initialise durable session journal — replay restores active sessions */
+    if (session_store_init() != 0 && production_mode) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: session journal unavailable in production mode.\n");
         return 1;
     }
     exam_manager_init();
+    exam_engine_init();
     candidate_session_init();
     if (attestation_service_init() != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: attestation service is not production-ready.\n");
@@ -1072,7 +3740,10 @@ int main(int argc, char *argv[]) {
             executable_path[0] = '\0';
     }
     int development_mode = !production_mode && allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
-    if (!development_mode && enterprise_platform_init("/var/lib/examos") != 0) {
+    /* The platform data directory is provisioned, not compiled in. */
+    const char *data_dir_env = getenv("EXAMOS_DATA_DIR");
+    const char *platform_data_dir = (data_dir_env && data_dir_env[0]) ? data_dir_env : "/var/lib/examos";
+    if (!development_mode && enterprise_platform_init(platform_data_dir) != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: PostgreSQL TLS connection or required schema unavailable; refusing service startup.\n");
         return 1;
     }
@@ -1086,8 +3757,62 @@ int main(int argc, char *argv[]) {
         if (!development_mode) admin_auth_store_shutdown();
         return 1;
     }
-    event_chain_init("/var/log/examos/proctoring_events.log");
+    /* The browser policy catalog is provisioned deployment content. Without
+       it an exam could not reference a real policy, so the service refuses
+       to start rather than inventing one. */
+    {
+        const char *catalog_env = getenv("EXAMOS_BROWSER_POLICY_CATALOG");
+        char catalog_path[1024] = {0};
+        if (catalog_env && catalog_env[0]) {
+            snprintf(catalog_path, sizeof(catalog_path), "%s", catalog_env);
+        } else if (production_mode) {
+            snprintf(catalog_path, sizeof(catalog_path), "%s",
+                     "/etc/examos/browser_policies.json");
+        } else if (executable_path[0]) {
+            snprintf(catalog_path, sizeof(catalog_path), "%s/config/browser_policies.json",
+                     executable_path);
+        }
+        if (!catalog_path[0] || policy_catalog_load(catalog_path) != 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: browser policy catalog is unavailable or invalid.\n");
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+    }
+    const char *event_chain_path = getenv("EXAMOS_EVENT_CHAIN_PATH");
+    event_chain_init(event_chain_path && event_chain_path[0]
+        ? event_chain_path : "/var/log/examos/proctoring_events.log");
     second_camera_init();
+
+    /* Phase 5 evidence engines. Their stores are provisioned directories; a
+       failure to open them is fatal in production because an engine that
+       cannot persist evidence must not accept requests. */
+    if (e1_engine_init(NULL) != 0 ||
+        behaviour_engine_init() != 0 ||
+        variant_engine_init() != 0 ||
+        viva_engine_init() != 0) {
+        fprintf(stderr, "[ExamOS-Server] %s: Phase 5 evidence stores are unavailable.\n",
+                production_mode ? "FATAL" : "WARNING");
+        if (production_mode) {
+            admin_auth_store_shutdown();
+            return 1;
+        }
+    }
+
+    /* Firewall state directory — provisioned via EXAMOS_FIREWALL_STATE_DIR. */
+    {
+        const char *fw_state_dir = getenv("EXAMOS_FIREWALL_STATE_DIR");
+        if (fw_state_dir && fw_state_dir[0]) {
+            if (firewall_init(fw_state_dir) != 0) {
+                fprintf(stderr, "[ExamOS-Server] %s: firewall state directory unavailable.\n",
+                        production_mode ? "FATAL" : "WARNING");
+                if (production_mode) {
+                    admin_auth_store_shutdown();
+                    return 1;
+                }
+            }
+        }
+    }
+
     if (development_mode) {
         fprintf(stderr, "[ExamOS-Server] WARNING: local unprovisioned development mode enabled; production APIs remain unavailable.\n");
     }
@@ -1119,11 +3844,141 @@ int main(int argc, char *argv[]) {
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
 #endif
 
+    /* Bind address is provisioned via EXAMOS_BIND_ADDR. Production defaults
+     * to loopback only; development may bind to 0.0.0.0 when explicitly set.
+     * Never bind to all interfaces in production without explicit opt-in. */
+    const char *bind_addr_env = getenv("EXAMOS_BIND_ADDR");
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = htons((uint16_t)server_port);
+
+    if (bind_addr_env && bind_addr_env[0]) {
+        if (strcmp(bind_addr_env, "0.0.0.0") == 0) {
+            address.sin_addr.s_addr = htonl(INADDR_ANY);
+        } else if (inet_pton(AF_INET, bind_addr_env, &address.sin_addr) <= 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_BIND_ADDR '%s' is not a valid IPv4 address.\n", bind_addr_env);
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 2;
+        }
+    } else {
+        /* Default: loopback only. Production appliances terminate TLS at the
+         * ingress proxy; the server itself is not exposed on the LAN. */
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    }
+
+    /* Optional in-process TLS. When EXAMOS_TLS_CERT and EXAMOS_TLS_KEY are
+     * both provisioned, the server speaks HTTPS on the same listening socket.
+     * Production deployments may terminate TLS at an ingress proxy instead. */
+#if defined(USE_OPENSSL_TLS)
+    const char *tls_cert = getenv("EXAMOS_TLS_CERT");
+    const char *tls_key  = getenv("EXAMOS_TLS_KEY");
+    if ((tls_cert && tls_cert[0]) || (tls_key && tls_key[0])) {
+        if (!tls_cert || !tls_cert[0] || !tls_key || !tls_key[0]) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_TLS_CERT and EXAMOS_TLS_KEY must both be set for TLS.\n");
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 2;
+        }
+        SSL_library_init();
+        SSL_load_error_strings();
+        g_tls_ctx = SSL_CTX_new(TLS_server_method());
+        if (!g_tls_ctx) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: cannot create TLS context.\n");
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+        if (SSL_CTX_use_certificate_file(g_tls_ctx, tls_cert, SSL_FILETYPE_PEM) <= 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: cannot load TLS certificate '%s'.\n", tls_cert);
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+        if (SSL_CTX_use_PrivateKey_file(g_tls_ctx, tls_key, SSL_FILETYPE_PEM) <= 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: cannot load TLS private key '%s'.\n", tls_key);
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+        if (!SSL_CTX_check_private_key(g_tls_ctx)) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: TLS private key does not match certificate.\n");
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+
+        struct stat key_stat;
+        if (stat(tls_key, &key_stat) != 0 || !S_ISREG(key_stat.st_mode)) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: TLS private key is not a regular file.\n");
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+        if (!development_mode && (key_stat.st_mode & 0077)) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: TLS private key must not be readable by group or other.\n");
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+
+        SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
+        SSL_CTX_set_options(g_tls_ctx,
+                            SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 |
+                            SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
+                            SSL_OP_NO_COMPRESSION);
+        SSL_CTX_set_session_cache_mode(g_tls_ctx, SSL_SESS_CACHE_OFF);
+        if (SSL_CTX_set_cipher_list(g_tls_ctx,
+                "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+                "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+                "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256") != 1 ||
+            SSL_CTX_set_ciphersuites(g_tls_ctx,
+                "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+                "TLS_AES_128_GCM_SHA256") != 1) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: cannot install the approved TLS cipher policy.\n");
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 1;
+        }
+        g_tls_enabled = 1;
+        printf("[ExamOS-Server] TLS enabled (cert=%s)\n", tls_cert);
+    }
+#endif
+
+    /* Cleartext is only acceptable on loopback. Anything reachable from the
+       network must be wrapped by TLS, either in-process or by a same-host
+       ingress proxy that binds the loopback interface. */
+    if (address.sin_addr.s_addr != htonl(INADDR_LOOPBACK) && !g_tls_enabled) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: refusing a cleartext listener on a non-loopback address.\n");
+        close(server_fd);
+        sem_destroy(&g_client_slots);
+        if (!development_mode) admin_auth_store_shutdown();
+        return 2;
+    }
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("Bind failed");
@@ -1170,14 +4025,42 @@ int main(int argc, char *argv[]) {
         struct timeval client_timeout = {5, 0};
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &client_timeout, sizeof(client_timeout));
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &client_timeout, sizeof(client_timeout));
+
+        client_connection_t *conn = calloc(1, sizeof(*conn));
+        if (!conn) {
+            close(client_fd);
+            continue;
+        }
+        conn->fd = client_fd;
+#if defined(USE_OPENSSL_TLS)
+        if (g_tls_enabled) {
+            conn->ssl = SSL_new(g_tls_ctx);
+            if (!conn->ssl || SSL_set_fd(conn->ssl, client_fd) != 1) {
+                if (conn->ssl) SSL_free(conn->ssl);
+                free(conn);
+                close(client_fd);
+                continue;
+            }
+        }
+#endif
         if (sem_trywait(&g_client_slots) != 0) {
-            send_http_response(client_fd, 503, "application/json", "{\"error\":\"Server connection capacity reached\"}");
+            if (!g_tls_enabled) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Server connection capacity reached\"}");
+            }
+#if defined(USE_OPENSSL_TLS)
+            if (conn->ssl) SSL_free(conn->ssl);
+#endif
+            free(conn);
             close(client_fd);
             continue;
         }
 
         pthread_t thread;
-        if (pthread_create(&thread, NULL, handle_client, (void *)(intptr_t)client_fd) != 0) {
+        if (pthread_create(&thread, NULL, handle_client, conn) != 0) {
+#if defined(USE_OPENSSL_TLS)
+            if (conn->ssl) SSL_free(conn->ssl);
+#endif
+            free(conn);
             close(client_fd);
             sem_post(&g_client_slots);
             continue;
@@ -1191,6 +4074,7 @@ int main(int argc, char *argv[]) {
     }
     sem_destroy(&g_client_slots);
     if (!development_mode) admin_auth_store_shutdown();
+    session_store_close();
     printf("[ExamOS-Server] Clean shutdown complete.\n");
     return 0;
 }

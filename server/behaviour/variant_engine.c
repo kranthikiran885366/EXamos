@@ -118,11 +118,15 @@ static double seed_to_uniform(const unsigned char seed[32], int param_index, int
     unsigned char buf[SHA256_DIGEST_LENGTH];
     char input[64];
     snprintf(input, sizeof(input), "%d:%d", param_index, counter);
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, seed, 32);
-    SHA256_Update(&ctx, input, strlen(input));
-    SHA256_Final(buf, &ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return 0.0;
+    unsigned int buf_len = 0;
+    int ok = EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
+             EVP_DigestUpdate(ctx, seed, 32) == 1 &&
+             EVP_DigestUpdate(ctx, input, strlen(input)) == 1 &&
+             EVP_DigestFinal_ex(ctx, buf, &buf_len) == 1;
+    EVP_MD_CTX_free(ctx);
+    if (!ok || buf_len != SHA256_DIGEST_LENGTH) return 0.0;
     /* Take first 8 bytes as uint64 */
     uint64_t val = 0;
     for (int i = 0; i < 8; i++) val = (val << 8) | buf[i];
@@ -371,6 +375,28 @@ int variant_engine_init(void) {
     printf("[VariantEngine] Phase 5 variant engine ready. Store: %s Templates: %d\n",
            g_variant_dir, g_template_count);
     pthread_mutex_unlock(&g_vlock);
+    return 0;
+}
+
+int variant_get_template(const char *template_id, question_template_t *out_template) {
+    if (!out_template) return -1;
+    if (!g_initialized && variant_engine_init() != 0) return -1;
+    if (g_template_count <= 0) return -1;
+
+    int selected = -1;
+    if (!template_id || !template_id[0]) {
+        selected = 0;
+    } else {
+        for (int i = 0; i < g_template_count; i++) {
+            if (strcmp(g_templates[i].template_id, template_id) == 0) {
+                selected = i;
+                break;
+            }
+        }
+    }
+    if (selected < 0) return -1;
+
+    memcpy(out_template, &g_templates[selected], sizeof(*out_template));
     return 0;
 }
 

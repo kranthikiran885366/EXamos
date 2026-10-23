@@ -9,6 +9,11 @@
 extern "C" {
 #endif
 
+/* The maximum length of an event-chain session identifier, including the
+   terminating null. Every component that records session-scoped evidence
+   uses this bound so that identifiers are stored in a uniform shape. */
+#define EVENT_SESSION_ID_LEN 128
+
 #define EVENT_CHAIN_GENESIS_HASH "0000000000000000000000000000000000000000000000000000000000000000"
 #define MAX_EVENT_TYPE_LEN 64
 #define MAX_SOURCE_TYPE_LEN 32
@@ -19,7 +24,7 @@ extern "C" {
 
 /* Normalized Proctoring Event Structure */
 typedef struct {
-    char     session_id[64];
+    char     session_id[EVENT_SESSION_ID_LEN];
     uint64_t sequence;
     char     server_timestamp[32];   /* ISO 8601 UTC (e.g. 2026-10-08T22:30:00.000Z) */
     char     source_timestamp[32];   /* ISO 8601 UTC */
@@ -34,7 +39,7 @@ typedef struct {
 
 /* Checkpoint Signature Record */
 typedef struct {
-    char     session_id[64];
+    char     session_id[EVENT_SESSION_ID_LEN];
     uint64_t checkpoint_sequence;
     char     latest_event_hash[HASH_HEX_LEN];
     char     signing_key_id[64];

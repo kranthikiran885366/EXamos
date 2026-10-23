@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 #define MAX_EXAM_SESSIONS 128
@@ -193,12 +194,19 @@ const char* exam_engine_get_paper_json(const char *session_token) {
 
 int exam_engine_save_answer(const char *session_token, int q_id, int selected_opt, const char *text_ans, int status) {
     candidate_exam_state_t *st = exam_engine_get_state(session_token);
-    if (!st || st->is_submitted || st->is_paused) return -1;
+    if (!st) return -1;
 
     int idx = q_id - 1;
     if (idx < 0 || idx >= MAX_QUESTIONS) return -1;
 
     pthread_mutex_lock(&g_engine_lock);
+    /* Answer mutation and the submission check must be atomic with respect to
+       submission publication; otherwise an answer could be accepted after the
+       receipt was computed and would not be covered by that receipt. */
+    if (st->is_submitted || st->is_paused || st->is_submitting) {
+        pthread_mutex_unlock(&g_engine_lock);
+        return -1;
+    }
     st->selected_options[idx] = selected_opt;
     if (text_ans) {
         strncpy(st->text_answers[idx], text_ans, sizeof(st->text_answers[idx])-1);
@@ -217,7 +225,11 @@ int exam_engine_submit(const char *session_token, char *out_receipt, size_t max_
 
     int question_count = current_question_count();
     pthread_mutex_lock(&g_engine_lock);
-    st->is_submitted = 1;
+    if (st->is_submitted || st->is_paused || st->is_submitting) {
+        pthread_mutex_unlock(&g_engine_lock);
+        return -1;
+    }
+    st->is_submitting = 1;
 
     /* Bind the receipt to every submitted answer using an unambiguous binary
      * encoding. A count and timestamp are not evidence of answer contents. */
@@ -225,12 +237,15 @@ int exam_engine_submit(const char *session_token, char *out_receipt, size_t max_
     for (int i = 0; i < question_count; i++) {
         if (st->selected_options[i] >= 0 || strlen(st->text_answers[i]) > 0) answered++;
     }
-    SHA256_CTX digest_ctx;
-    SHA256_Init(&digest_ctx);
+    EVP_MD_CTX *digest_ctx = EVP_MD_CTX_new();
+    if (!digest_ctx) { pthread_mutex_unlock(&g_engine_lock); return -1; }
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    unsigned int hash_len = 0;
+    int digest_ok = EVP_DigestInit_ex(digest_ctx, EVP_sha256(), NULL) == 1;
     static const char domain[] = "EXAMOS-SUBMISSION-V2";
-    SHA256_Update(&digest_ctx, domain, sizeof(domain));
-    SHA256_Update(&digest_ctx, st->candidate_id, strlen(st->candidate_id) + 1);
-    SHA256_Update(&digest_ctx, st->session_token, strlen(st->session_token) + 1);
+    digest_ok = digest_ok && EVP_DigestUpdate(digest_ctx, domain, sizeof(domain)) == 1;
+    digest_ok = digest_ok && EVP_DigestUpdate(digest_ctx, st->candidate_id, strlen(st->candidate_id) + 1) == 1;
+    digest_ok = digest_ok && EVP_DigestUpdate(digest_ctx, st->session_token, strlen(st->session_token) + 1) == 1;
     for (int i = 0; i < question_count; i++) {
         uint32_t question_id = (uint32_t)g_questions[i].id;
         uint32_t selected_option = (uint32_t)(int32_t)st->selected_options[i];
@@ -243,18 +258,22 @@ int exam_engine_submit(const char *session_token, char *out_receipt, size_t max_
             (unsigned char)(answer_len >> 24), (unsigned char)(answer_len >> 16),
             (unsigned char)(answer_len >> 8), (unsigned char)answer_len
         };
-        SHA256_Update(&digest_ctx, encoded_fields, sizeof(encoded_fields));
-        SHA256_Update(&digest_ctx, st->text_answers[i], answer_len);
+        digest_ok = digest_ok && EVP_DigestUpdate(digest_ctx, encoded_fields, sizeof(encoded_fields)) == 1;
+        digest_ok = digest_ok && EVP_DigestUpdate(digest_ctx, st->text_answers[i], answer_len) == 1;
     }
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_Final(hash, &digest_ctx);
+    digest_ok = digest_ok && EVP_DigestFinal_ex(digest_ctx, hash, &hash_len) == 1;
+    EVP_MD_CTX_free(digest_ctx);
+    if (!digest_ok || hash_len != SHA256_DIGEST_LENGTH) {
+        st->is_submitting = 0;
+        pthread_mutex_unlock(&g_engine_lock);
+        return -1;
+    }
 
     char hex[SHA256_DIGEST_LENGTH * 2 + 1];
     for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
         sprintf(hex + (i * 2), "%02x", hash[i]);
     }
     hex[sizeof(hex)-1] = '\0';
-    memcpy(st->submission_receipt_hash, hex, sizeof(hex));
 
     snprintf(out_receipt, max_receipt_len,
              "{\"status\":\"SUCCESS\",\"candidate_id\":\"%s\",\"receipt_hash\":\"%s\","
@@ -291,9 +310,21 @@ int exam_engine_submit(const char *session_token, char *out_receipt, size_t max_
                  "receipt=%.64s tok_sha256=%.64s answered=%d total=%d",
                  hex, tok_hex, answered, question_count);
         ledger_block_t blk;
-        ledger_append_event("EXAM_SUBMISSION_ACCEPTED", st->candidate_id, details, &blk);
+        if (ledger_append_event("EXAM_SUBMISSION_ACCEPTED", st->candidate_id,
+                                details, &blk) != 0) {
+            pthread_mutex_lock(&g_engine_lock);
+            st->is_submitting = 0;
+            pthread_mutex_unlock(&g_engine_lock);
+            return -1;
+        }
     }
 
+    /* Publish the submission only after the receipt is durable. */
+    pthread_mutex_lock(&g_engine_lock);
+    memcpy(st->submission_receipt_hash, hex, sizeof(hex));
+    st->is_submitted = 1;
+    st->is_submitting = 0;
+    pthread_mutex_unlock(&g_engine_lock);
     return 0;
 }
 

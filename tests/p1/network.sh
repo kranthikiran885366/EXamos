@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
-ARTIFACT_DIR="$WORKSPACE/artifacts/p1"
+ARTIFACT_DIR="${EXAMOS_P1_ARTIFACT_DIR:-$WORKSPACE/artifacts/p1}"
 mkdir -p "$ARTIFACT_DIR"
 
 LOG_FILE="$ARTIFACT_DIR/network.log"

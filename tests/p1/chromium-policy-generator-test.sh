@@ -34,8 +34,6 @@ with open(sys.argv[1], encoding="utf-8") as policy_file:
     policy = json.load(policy_file)
 
 expected = {
-    "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*",
     sys.argv[2] + "/*",
 }
 for key in ("URLAllowlist", "VideoCaptureAllowedUrls", "AudioCaptureAllowedUrls"):

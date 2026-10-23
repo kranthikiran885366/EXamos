@@ -18,7 +18,8 @@ LOG="$ARTIFACT_DIR/concurrency-results.json"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9101}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 VERIFIER="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
-EVENT_LOG="${EXAMOS_P4_EVENT_LOG:-/tmp/examos-p4-concurrency-events.log}"
+RUN_DIR="$(mktemp -d /tmp/examos-p4-concurrency.XXXXXX)"
+EVENT_LOG="${EXAMOS_P4_EVENT_LOG:-$RUN_DIR/events.log}"
 TARGET_SESSIONS=50
 EVENTS_PER_SESSION=10
 PROCTOR_TOKEN=""
@@ -38,16 +39,22 @@ SERVER_PID=""
 if [ -x "$SERVER_BIN" ]; then
     PROCTOR_TOKEN="$(openssl rand -hex 32)"
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p4-concurrency-ledger.log" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_CHAIN_PATH="$EVENT_LOG" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_TPM_MODE=development \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
-    EXAMOS_SESSION_JOURNAL="/tmp/examos-p4-concurrency-sessions.log" \
+    EXAMOS_SESSION_JOURNAL="$RUN_DIR/sessions.log" \
+    EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
+    EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
+    EXAMOS_DATA_DIR="$RUN_DIR/data" \
         "$SERVER_BIN" &
     SERVER_PID=$!
     for i in $(seq 1 15); do
@@ -59,6 +66,8 @@ fi
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
     [ -n "$SERVER_PID" ] && wait "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$RUN_DIR"
+    rm -f /tmp/examos-p4-conc-*.log
 }
 trap cleanup EXIT
 
@@ -89,7 +98,7 @@ send_session_events() {
             -X POST "${SERVER_URL}/api/v1/proctoring/events" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${PROCTOR_TOKEN}" \
-            -d "{\"session_id\":\"${session_id}\",\"source_type\":\"PRIMARY_CAMERA\",\"event_type\":\"${event_type}\",\"payload\":{\"frameSeq\":${seq},\"session_num\":${session_num}}}" \
+            -d "{\"session_id\":\"${session_id}\",\"source_type\":\"PRIMARY_CAMERA\",\"event_type\":\"${event_type}\",\"model_name\":\"p4-load-fixture\",\"model_version\":\"1.0.0\",\"payload\":{\"frameSeq\":${seq},\"session_num\":${session_num}}}" \
             --max-time 5 2>/dev/null
         echo ""
     done
@@ -123,7 +132,8 @@ TOTAL_EXPECTED=$((TARGET_SESSIONS * EVENTS_PER_SESSION))
 # Count events in the log
 TOTAL_EVENTS=0
 if [ -f "$EVENT_LOG" ]; then
-    TOTAL_EVENTS=$(grep -c '"session_id":"load-test-session-' "$EVENT_LOG" 2>/dev/null || echo 0)
+    TOTAL_EVENTS=$(grep -c '"session_id":"load-test-session-' "$EVENT_LOG" 2>/dev/null || true)
+    TOTAL_EVENTS=${TOTAL_EVENTS:-0}
 fi
 
 DROPPED_EVENTS=$((TOTAL_EXPECTED - TOTAL_EVENTS))
@@ -140,19 +150,33 @@ for i in $(seq 1 $TARGET_SESSIONS); do
         fi
     done
     # If any gap in this session, count it
-    SESSION_EVENTS=$(grep -c "\"session_id\":\"${SID}\"" "$EVENT_LOG" 2>/dev/null || echo 0)
+    SESSION_EVENTS=$(grep -c "\"session_id\":\"${SID}\"" "$EVENT_LOG" 2>/dev/null || true)
+    SESSION_EVENTS=${SESSION_EVENTS:-0}
     if [ "$SESSION_EVENTS" -ne "$EVENTS_PER_SESSION" ]; then
         SESSIONS_WITH_GAPS=$((SESSIONS_WITH_GAPS + 1))
     fi
 done
 
+# Verify every session's hash chain with the independent verifier.
+CHAIN_FAILURES=0
+if [ -x "$VERIFIER" ] && [ -f "$EVENT_LOG" ]; then
+    for i in $(seq 1 $TARGET_SESSIONS); do
+        SID="load-test-session-$(printf '%03d' $i)"
+        if ! "$VERIFIER" --session "$SID" --store "$EVENT_LOG" 2>&1 | grep -q "CHAIN: VALID"; then
+            CHAIN_FAILURES=$((CHAIN_FAILURES + 1))
+        fi
+    done
+else
+    CHAIN_FAILURES=$TARGET_SESSIONS
+fi
+
 THROUGHPUT=$(echo "scale=2; $TOTAL_EVENTS / ($DURATION_MS / 1000)" | bc 2>/dev/null || echo "N/A")
 
 # Determine status
-if [ "$DROPPED_EVENTS" -eq 0 ] && [ "$GAPS_FOUND" -eq 0 ]; then
+if [ "$DROPPED_EVENTS" -eq 0 ] && [ "$GAPS_FOUND" -eq 0 ] && [ "$CHAIN_FAILURES" -eq 0 ]; then
     STATUS="PASS"
     OVERALL="PASS"
-elif [ "$DROPPED_EVENTS" -eq 0 ]; then
+elif [ "$DROPPED_EVENTS" -eq 0 ] && [ "$CHAIN_FAILURES" -eq 0 ]; then
     STATUS="WARN"
     OVERALL="PASS"
 else
@@ -166,6 +190,7 @@ echo "  Total events ingested: $TOTAL_EVENTS"
 echo "  Dropped events:        $DROPPED_EVENTS"
 echo "  Sequence gaps:         $GAPS_FOUND"
 echo "  Sessions with gaps:    $SESSIONS_WITH_GAPS"
+echo "  Chain verifier failures: $CHAIN_FAILURES"
 echo "  Duration:              ${DURATION_MS}ms"
 echo "  Throughput:            $THROUGHPUT events/sec"
 echo "  Status:                $STATUS"
@@ -182,6 +207,7 @@ cat > "$LOG" <<EOF
   "total_events_dropped": $DROPPED_EVENTS,
   "sequence_gaps_found": $GAPS_FOUND,
   "sessions_with_gaps": $SESSIONS_WITH_GAPS,
+  "chain_verifier_failures": $CHAIN_FAILURES,
   "duration_ms": $DURATION_MS,
   "throughput_events_per_second": "$THROUGHPUT",
   "status": "$STATUS",
@@ -200,6 +226,7 @@ total_ingested,$TOTAL_EVENTS
 dropped,$DROPPED_EVENTS
 sequence_gaps,$GAPS_FOUND
 sessions_with_gaps,$SESSIONS_WITH_GAPS
+chain_verifier_failures,$CHAIN_FAILURES
 duration_ms,$DURATION_MS
 throughput_eps,$THROUGHPUT
 status,$STATUS

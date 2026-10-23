@@ -30,7 +30,11 @@ static const migration_t migrations[] = {
     {"008_require_explicit_exam_policy.sql", "exam_lifecycle", 4},
     {"009_require_explicit_device_group.sql", "device_fleet", 7},
     {"010_attestation_challenge_state.sql", "device_fleet", 8},
-    {"011_attestation_revocations.sql", "device_fleet", 9}
+    {"011_attestation_revocations.sql", "device_fleet", 9},
+    {"012_incidents_and_releases.sql", "operations", 1},
+    {"013_session_journal_and_audit_completions.sql", "admin_auth", 8},
+    {"014_exam_key_releases.sql", "exam_key_releases", 1},
+    {"015_audit_event_catalogue.sql", "admin_auth", 9}
 };
 
 static PGconn *connect_database(void) {

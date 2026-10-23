@@ -30,8 +30,8 @@ trap cleanup EXIT
 
 # Wait up to 5 seconds for server ready
 for i in {1..10}; do
-    if curl -s http://127.0.0.1:8899/api/v1/health | grep -q "HEALTHY"; then
-        echo "Server is UP and HEALTHY."
+    if curl -s http://127.0.0.1:8899/api/v1/health | grep -q "\"liveness\":\"LIVE\""; then
+        echo "Server is UP and reporting LIVE liveness."
         break
     fi
     sleep 0.5

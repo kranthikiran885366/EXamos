@@ -4,6 +4,7 @@
 #include "include/hardware_guard.h"
 #include "include/heartbeat.h"
 #include "include/rf_scanner.h"
+#include "../common/include/examos_appliance.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,20 @@ static void sig_handler(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+    /*
+     * The agent attests this appliance and reports its hardware state. It
+     * only has meaning on an ExamOS appliance, so it refuses to run
+     * anywhere else.
+     */
+    {
+        char appliance_reason[256] = {0};
+        if (examos_appliance_verify(appliance_reason, sizeof(appliance_reason)) != 0) {
+            fprintf(stderr, "[ExamOS-Agent] FATAL: %s. The agent only runs on an ExamOS appliance.\n",
+                    appliance_reason);
+            return 2;
+        }
+    }
+
     if (argc != 3 || !argv[1][0] || !argv[2][0] ||
         strcmp(argv[1], "NOT_PROVISIONED") == 0 || strcmp(argv[2], "NOT_PROVISIONED") == 0) {
         fprintf(stderr, "Agent requires a provisioned server URL and device identity.\n");
@@ -41,6 +56,16 @@ int main(int argc, char *argv[]) {
     if (!release_id || !*release_id || strcmp(release_id, "NOT_PROVISIONED") == 0) {
         fprintf(stderr, "Agent requires a provisioned release ID.\n");
         return 2;
+    }
+
+    /* Configurable heartbeat interval — default 5s, min 1s, max 300s */
+    int heartbeat_interval = 5;
+    const char *interval_env = getenv("EXAMOS_HEARTBEAT_INTERVAL_SECONDS");
+    if (interval_env && *interval_env) {
+        char *end = NULL;
+        long parsed = strtol(interval_env, &end, 10);
+        if (end != interval_env && *end == '\0' && parsed >= 1 && parsed <= 300)
+            heartbeat_interval = (int)parsed;
     }
 
     struct sigaction sa;
@@ -99,9 +124,19 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
+    /* Re-attest every N heartbeat cycles — default 60, configurable */
+    int reattest_every = 60;
+    const char *reattest_env = getenv("EXAMOS_REATTEST_INTERVAL_CYCLES");
+    if (reattest_env && *reattest_env) {
+        char *end = NULL;
+        long parsed = strtol(reattest_env, &end, 10);
+        if (end != reattest_env && *end == '\0' && parsed >= 1 && parsed <= 3600)
+            reattest_every = (int)parsed;
+    }
+
     int iteration = 0;
     while (g_running) {
-        if (iteration > 0 && iteration % 60 == 0) {
+        if (iteration > 0 && iteration % reattest_every == 0) {
             char re_nonce[65] = {0};
             attestation_report_t re_report;
             char re_json[4096];
@@ -135,7 +170,7 @@ int main(int argc, char *argv[]) {
 
         int heartbeat_status = heartbeat_send(&hb, hw_json, rf_json);
 
-        if (iteration % 12 == 0) {
+        if (iteration % 12 == 0 || iteration == 0) {
             char status_msg[256];
             snprintf(status_msg, sizeof(status_msg),
                      "%s | Displays: %d | Uptime: %lds | CPU: %.2f",
@@ -145,7 +180,7 @@ int main(int argc, char *argv[]) {
         }
 
         iteration++;
-        sleep(5);
+        sleep((unsigned int)heartbeat_interval);
     }
 
     log_info("ExamOS Agent shutting down cleanly.");

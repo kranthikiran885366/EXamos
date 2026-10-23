@@ -298,20 +298,62 @@ int  platform_initial_owner_create(const user_account_t *user);
 /* Multi-Tenancy */
 int  platform_get_institutions_json(char *out_buf, size_t max_len);
 int  platform_create_institution(const institution_t *inst);
+int  platform_get_institution_json(const char *institution_id, char *out_buf, size_t max_len);
 int  platform_get_campuses_json(const char *inst_id, char *out_buf, size_t max_len);
 int  platform_create_campus(const campus_t *campus);
 int  platform_get_rooms_json(const char *campus_id, char *out_buf, size_t max_len);
+int  platform_get_rooms_for_institution_json(const char *campus_id, const char *institution_id, char *out_buf, size_t max_len);
 int  platform_create_room(const room_t *room);
 
 /* Dynamic Exams & Policy */
 int  platform_get_exams_json(const char *inst_id, char *out_buf, size_t max_len);
+int  platform_get_exams_for_admin(const auth_session_t *session, char *out_buf, size_t max_len);
 int  platform_get_exam_by_id(const char *exam_id, enterprise_exam_t *out_exam);
 int  platform_create_exam(const enterprise_exam_t *exam);
 int  platform_validate_exam_config(const char *exam_id, char *err_msg, size_t err_len);
 int  platform_approve_exam(const char *exam_id, const char *approver_user_id);
 int  platform_schedule_exam(const char *exam_id, time_t start_time, time_t end_time, const char *timezone, const char *actor);
+/* Returns 0 when the durable platform store is reachable and responsive. */
+int  platform_database_health(void);
+
+/*
+ * Last-error channel.
+ *
+ * platform_last_error() returns the reason the most recent platform
+ * operation on this thread failed, or a generic message when none was
+ * recorded. platform_clear_error() resets it before a new operation.
+ */
+const char *platform_last_error(void);
+void platform_clear_error(void);
+
+/* Scoped administrative audit trail, newest first. */
+int  platform_get_audit_json(const char *exam_id, int limit, char *out_buf, size_t max_len);
+
+/* Live examination operations: state distribution and candidate progress. */
+int  platform_get_operations_json(char *out_buf, size_t max_len);
+
+/* Device groups and deployment rings with their sizes. */
+int  platform_get_device_groups_json(char *out_buf, size_t max_len);
+
+/* Updates the mutable attributes of an institution. */
+int  platform_update_institution(const char *institution_id, const char *name,
+                                 const char *contact_email, int retention_days,
+                                 const char *actor);
+
+/*
+ * Exam readiness. Each control is derived from evidence the platform holds
+ * and is reported as OK, FAILED, or UNKNOWN (no evidence either way).
+ * out_json receives the full verdict when max_len allows.
+ */
 int  platform_check_readiness(const char *exam_id, const char *device_id, char *out_json, size_t max_len);
 int  platform_update_exam_state(const char *exam_id, exam_state_t new_state, const char *actor);
+
+/*
+ * Exam lifecycle state machine.
+ * Returns 1 when the directed graph of legal exam transitions permits
+ * moving an exam from `from` to `to`, and 0 otherwise.
+ */
+int  platform_exam_state_transition_allowed(exam_state_t from, exam_state_t to);
 int  platform_update_exam_url(const char *exam_id, const char *new_url, const char *allowed_origins, const char *actor);
 int  platform_get_policies_json(const char *exam_id, char *out_buf, size_t max_len);
 int  platform_get_active_signed_policy(const char *exam_id, signed_policy_t *out_policy);
@@ -340,6 +382,19 @@ int  platform_replace_device(const char *old_device_id, const char *new_device_i
 int  platform_revoke_device_credentials(const char *device_id, const char *reason, const char *actor);
 int  platform_update_device_checkin(const char *device_id, const char *os_release, const char *image_digest, unsigned int policy_version);
 int  platform_update_device_attestation(const char *device_id, const char *attestation_status, const char *compliance_status);
+
+/*
+ * Derives the compliance status of a device from its enrolment, attestation,
+ * maintenance and quarantine state. Compliance is recomputed rather than
+ * asserted, so it cannot drift away from the evidence behind it.
+ */
+void platform_derive_compliance_status(fleet_device_record_t *dev);
+
+/*
+ * Assigns a registered device to an exam. The device and the exam must
+ * belong to the same institution.
+ */
+int  platform_assign_device_to_exam(const char *device_id, const char *exam_id, const char *actor);
 int  platform_set_device_maintenance(const char *device_id, int in_maintenance);
 int  platform_record_device_heartbeat(const char *device_id, int battery_pct, int battery_charging, int disk_free_mb, int mem_used_mb, const char *network_state, unsigned int policy_version, const char *image_digest, const char *session_state);
 int  platform_record_agent_heartbeat(const char *device_id, const char *payload_json, size_t payload_length, long *out_record_id);
@@ -349,7 +404,10 @@ int  platform_get_fleet_compliance_json(const char *inst_id, char *out_buf, size
 /* Incidents & Events */
 int  platform_get_incidents_json(const char *inst_id, char *out_buf, size_t max_len);
 int  platform_create_incident(const security_incident_t *inc);
-int  platform_update_incident_status(const char *incident_id, const char *new_status, const char *notes, const char *actor);
+int  platform_update_incident_status(const char *incident_id, const char *new_status,
+                                     const char *notes, const char *actor);
+int  platform_update_incident_status_scoped(const char *incident_id, const char *institution_scope,
+                                            const char *new_status, const char *notes, const char *actor);
 
 /* Durable Submissions */
 int  platform_record_submission(const durable_submission_t *sub, const char *answers_payload);

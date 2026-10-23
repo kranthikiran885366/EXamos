@@ -22,7 +22,7 @@ typedef struct {
 } session_capabilities_t;
 
 static pthread_mutex_t g_e1_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_data_dir[256] = "/tmp/examos_e1";
+static char g_data_dir[256] = "/var/lib/examos/e1";
 static int g_initialized = 0;
 
 static e1_consent_record_t g_consents[MAX_SESSIONS];
@@ -48,10 +48,13 @@ static void compute_sha256_hex(const char *input, char *out_hex) {
 
 int e1_engine_init(const char *data_dir) {
     pthread_mutex_lock(&g_e1_lock);
+    const char *env_dir = getenv("EXAMOS_E1_STORE");
     if (data_dir && *data_dir) {
         snprintf(g_data_dir, sizeof(g_data_dir), "%s", data_dir);
+    } else if (env_dir && *env_dir) {
+        snprintf(g_data_dir, sizeof(g_data_dir), "%s", env_dir);
     }
-    mkdir(g_data_dir, 0755);
+    mkdir(g_data_dir, 0750);
     g_initialized = 1;
     pthread_mutex_unlock(&g_e1_lock);
     return 0;
@@ -253,17 +256,17 @@ int e1_evaluate_correlations(const char *session_id, uint64_t window_ms) {
                 memset(corr, 0, sizeof(*corr));
 
                 char id_seed[256];
-                snprintf(id_seed, sizeof(id_seed), "%s:%s:%lu",
+                snprintf(id_seed, sizeof(id_seed), "%.63s:%.63s:%lu",
                          g_observations[i].event_id, g_observations[j].event_id, (unsigned long)time(NULL));
                 compute_sha256_hex(id_seed, corr->correlation_id);
 
-                snprintf(corr->session_id, sizeof(corr->session_id), "%s", session_id);
+                snprintf(corr->session_id, sizeof(corr->session_id), "%.63s", session_id);
                 snprintf(corr->rule_id, sizeof(corr->rule_id), "CORR-BLE-ROOM-OCCLUSION");
                 snprintf(corr->rule_version, sizeof(corr->rule_version), "1.0");
                 corr->window_start_ts = g_observations[j].observed_ts;
                 corr->window_end_ts = g_observations[i].observed_ts;
-                snprintf(corr->primary_event_id, sizeof(corr->primary_event_id), "%s", g_observations[i].event_id);
-                snprintf(corr->correlated_event_id, sizeof(corr->correlated_event_id), "%s", g_observations[j].event_id);
+                snprintf(corr->primary_event_id, sizeof(corr->primary_event_id), "%.63s", g_observations[i].event_id);
+                snprintf(corr->correlated_event_id, sizeof(corr->correlated_event_id), "%.63s", g_observations[j].event_id);
                 snprintf(corr->observation_summary, sizeof(corr->observation_summary),
                          "NEW_BLE_SIGNAL_OVERLAPPED_WITH_ROOM_VIEW_CHANGE");
                 corr->severity_level = 2;

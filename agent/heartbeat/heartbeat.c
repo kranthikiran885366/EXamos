@@ -128,6 +128,10 @@ int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
+    if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = options_status == CURLE_OK ? curl_easy_perform(curl) : options_status;
     long response_status = 0;

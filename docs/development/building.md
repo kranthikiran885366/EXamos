@@ -14,7 +14,7 @@ bash ./scripts/build-image.sh
 ```
 
 The builder compiles the native components, stages a permission-normalized
-copy of the root filesystem overlay, and builds `examos-production.raw`. It
+copy of the root filesystem overlay, and builds `examos.raw`. It
 validates the disk image and checks that the native binaries and systemd units
 are present before recording the build log, SHA-256, and exact size under
 `artifacts/p0`. On Linux it writes the image under `image/`. On WSL, when the

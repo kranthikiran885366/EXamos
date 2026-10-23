@@ -124,12 +124,14 @@ PROCTOR_TOKEN="$(openssl rand -hex 32)"
 if [ -x "$SERVER_BIN" ]; then
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
     EXAMOS_LEDGER_PATH="/tmp/examos-p4-detection-ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_CHAIN_PATH="$EVENT_LOG" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_TPM_MODE=development \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
         "$SERVER_BIN" &
@@ -208,27 +210,46 @@ for label_file in "$DATASET_DIR"/*.json; do
         DETECTED_BOOK=$(echo "$SESSION_EVENTS" | grep -q "BOOK_DETECTED" && echo true || echo false)
     fi
 
-    # Compare against ground truth
+    # Compare against ground truth.
+    #
+    # The face task is binary: is a face present in the frame or not.
+    # single_face / multiple_faces are positive examples; no_face is a
+    # negative example. Every clip therefore contributes to exactly one of
+    # TP, FN, FP or TN, so the false-positive rate is measured rather than
+    # assumed.
+    DETECTED_FACE=false
+    if [ "$DETECTED_FACE_COUNT" -gt 0 ] && [ "$DETECTED_NO_FACE" = "false" ]; then
+        DETECTED_FACE=true
+    fi
+
     case "$LABEL" in
-        single_face)
-            if [ "$DETECTED_FACE_COUNT" -gt 0 ] && [ "$DETECTED_MULTIPLE" = "false" ] && [ "$DETECTED_NO_FACE" = "false" ]; then
-                TP=$((TP + 1)); SINGLE_FACE_OK=$((SINGLE_FACE_OK + 1))
+        single_face|multiple_faces)
+            if [ "$DETECTED_FACE" = "true" ]; then
+                TP=$((TP + 1))
+                if [ "$LABEL" = "single_face" ]; then
+                    SINGLE_FACE_OK=$((SINGLE_FACE_OK + 1))
+                fi
+                if [ "$LABEL" = "multiple_faces" ]; then
+                    if [ "$DETECTED_MULTIPLE" = "true" ]; then
+                        MULTI_FACE_TP=$((MULTI_FACE_TP + 1))
+                    else
+                        MULTI_FACE_FN=$((MULTI_FACE_FN + 1))
+                    fi
+                fi
             else
                 FN=$((FN + 1))
-            fi
-            ;;
-        multiple_faces)
-            if [ "$DETECTED_MULTIPLE" = "true" ]; then
-                TP=$((TP + 1)); MULTI_FACE_TP=$((MULTI_FACE_TP + 1))
-            else
-                FN=$((FN + 1)); MULTI_FACE_FN=$((MULTI_FACE_FN + 1))
+                if [ "$LABEL" = "multiple_faces" ]; then
+                    MULTI_FACE_FN=$((MULTI_FACE_FN + 1))
+                fi
             fi
             ;;
         no_face)
-            if [ "$DETECTED_NO_FACE" = "true" ]; then
-                TP=$((TP + 1)); NO_FACE_TP=$((NO_FACE_TP + 1))
+            if [ "$DETECTED_FACE" = "false" ]; then
+                TN=$((TN + 1))
+                NO_FACE_TP=$((NO_FACE_TP + 1))
             else
-                FN=$((FN + 1)); NO_FACE_FN=$((NO_FACE_FN + 1))
+                FP=$((FP + 1))
+                NO_FACE_FN=$((NO_FACE_FN + 1))
             fi
             ;;
         phone_present)
@@ -246,37 +267,40 @@ for label_file in "$DATASET_DIR"/*.json; do
             fi
             ;;
         *)
-            # Unknown label — skip
+            # Unknown label - not part of the evaluated set.
             TOTAL_PROCESSED=$((TOTAL_PROCESSED - 1))
             ;;
     esac
 done
 
-# Calculate metrics
-TN=$TOTAL_PROCESSED
-# TN = clips where no false positive was raised
-# For simplicity: TN = total - TP - FN - FP (where FP=0 for now)
-# In a full evaluation, FP = detection of something when label says "normal"
-# For this gate, we count FP as MULTIPLE_FACES or NO_FACE on single_face clips
-FP=0  # Would be calculated from misclassifications
-
+# Calculate metrics.
+#
+# Precision and recall are computed from the confusion matrix. The false
+# positive rate is the proportion of genuinely negative clips in which a
+# face was reported, which is the quantity the gate actually constrains.
 if [ $((TP + FN)) -gt 0 ]; then
-    RECALL=$(echo "scale=2; $TP * 100 / ($TP + $FN)" | bc 2>/dev/null || echo "0")
+    RECALL=$(echo "scale=2; $TP * 100 / ($TP + FN)" | bc 2>/dev/null || echo "0")
 else
     RECALL="0"
 fi
 
 if [ $((TP + FP)) -gt 0 ]; then
-    PRECISION=$(echo "scale=2; $TP * 100 / ($TP + $FP)" | bc 2>/dev/null || echo "0")
+    PRECISION=$(echo "scale=2; $TP * 100 / ($TP + FP)" | bc 2>/dev/null || echo "0")
 else
     PRECISION="0"
 fi
 
-if [ $TOTAL_PROCESSED -gt 0 ]; then
-    ACCURACY=$(echo "scale=2; ($TP + $TN - $TOTAL_PROCESSED) * 100 / $TOTAL_PROCESSED" | bc 2>/dev/null || echo "0")
-    FPR=$(echo "scale=2; $FP * 100 / $TOTAL_PROCESSED" | bc 2>/dev/null || echo "0")
+NEGATIVE_TOTAL=$((TN + FP))
+if [ $NEGATIVE_TOTAL -gt 0 ]; then
+    FPR=$(echo "scale=2; $FP * 100 / $NEGATIVE_TOTAL" | bc 2>/dev/null || echo "0")
 else
-    ACCURACY="0"; FPR="0"
+    FPR="0"
+fi
+
+if [ $TOTAL_PROCESSED -gt 0 ]; then
+    ACCURACY=$(echo "scale=2; ($TP + $TN) * 100 / $TOTAL_PROCESSED" | bc 2>/dev/null || echo "0")
+else
+    ACCURACY="0"
 fi
 
 # Multi-face recall
@@ -304,6 +328,28 @@ if [ "$NOFACE_RECALL" != "N/A" ] && [ "$(echo "$NOFACE_RECALL < 90" | bc 2>/dev/
 fi
 if [ "$(echo "$FPR >= 5" | bc 2>/dev/null)" = "1" ]; then
     GATE="FAIL"; REASON="false-positive rate ${FPR}% >= 5%"
+fi
+if [ $((TP + FN + FP + TN)) -ne $TOTAL_PROCESSED ]; then
+    GATE="FAIL"; REASON="the confusion matrix does not account for every processed clip"
+fi
+
+# Dataset provenance.
+#
+# Metrics computed over synthetic test patterns describe the pipeline, not
+# the detector. A gate verdict over such a dataset would be misleading, so
+# the gate reports BLOCKED instead of PASS.
+DATASET_MANIFEST="$DATASET_DIR/DATASET-MANIFEST.json"
+if [ ! -f "$DATASET_MANIFEST" ]; then
+    GATE="BLOCKED"; REASON="the dataset has no provenance manifest; detection quality cannot be attested"
+elif python3 - "$DATASET_MANIFEST" <<'PY' 2>/dev/null
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+raise SystemExit(0 if manifest.get("synthetic") is False else 1)
+PY
+then
+    :
+else
+    GATE="BLOCKED"; REASON="the dataset is synthetic; detection quality cannot be attested from it"
 fi
 
 echo ""

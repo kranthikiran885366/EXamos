@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-ARTIFACT_DIR="$WORKSPACE/artifacts/phase4"
+ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 DATASET_MANIFEST="${EXAMOS_VISION_DATASET_MANIFEST:-$WORKSPACE/tests/phase4/dataset/manifest.csv}"
 EVALUATOR="${EXAMOS_VISION_EVALUATOR:-$WORKSPACE/tools/exam-vision-eval}"
 mkdir -p "$ARTIFACT_DIR"

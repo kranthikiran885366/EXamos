@@ -33,6 +33,14 @@ POLICY_PATHS=(
     "/etc/chromium/policies/managed/examos_policies.json"
     "/etc/opt/chrome/policies/managed/examos_policies.json"
 )
+POLICY_PATHS=()
+for candidate in \
+    /etc/chromium/policies/managed/examos_policies.json \
+    /etc/opt/chrome/policies/managed/examos_policies.json; do
+    if [ -d "$(dirname "$candidate")" ] || [ "$candidate" = "/etc/chromium/policies/managed/examos_policies.json" ]; then
+        POLICY_PATHS+=("$candidate")
+    fi
+done
 
 DRY_RUN=0
 CHECK_ONLY=0
@@ -157,32 +165,87 @@ GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 # in the trusted image overlay.
 # -----------------------------------------------------------------------
 
-# Assemble the three origin arrays as JSON fragments
-build_origin_array() {
-    # Args: $@ = additional origins beyond localhost
-    local entries='"http://127.0.0.1:8000/*"'
-    # Add localhost alias for Chrome (matches /opt/chrome path)
-    entries="${entries}, \"http://localhost:8000/*\""
-    for origin in "$@"; do
-        [ -n "$origin" ] && entries="${entries}, \"${origin}/*\""
-    done
-    echo "[ ${entries} ]"
-}
-
 ADDITIONAL_ORIGINS=()
 if [ -n "$ALLOWED_ORIGINS" ]; then
     IFS=',' read -ra ORIGIN_LIST <<< "$ALLOWED_ORIGINS"
     for o in "${ORIGIN_LIST[@]}"; do
-        o="$(echo "$o" | xargs)"
+        o="${o#"${o%%[![:space:]]*}"}"
+        o="${o%"${o##*[![:space:]]}"}"
         if [ -n "$o" ] && [ "$o" != "$EXAM_ORIGIN" ]; then
             ADDITIONAL_ORIGINS+=("$o")
         fi
     done
 fi
 
-URL_ARRAY=$(build_origin_array "${EXAM_ORIGIN}" ${ADDITIONAL_ORIGINS[@]+"${ADDITIONAL_ORIGINS[@]}"})
-CAM_ARRAY=$(build_origin_array "${EXAM_ORIGIN}" ${ADDITIONAL_ORIGINS[@]+"${ADDITIONAL_ORIGINS[@]}"})
-AUD_ARRAY=$(build_origin_array "${EXAM_ORIGIN}" ${ADDITIONAL_ORIGINS[@]+"${ADDITIONAL_ORIGINS[@]}"})
+for candidate_origin in "${ADDITIONAL_ORIGINS[@]}"; do
+    if [ "$candidate_origin" = "http://127.0.0.1:8000" ||
+         "$candidate_origin" = "http://localhost:8000" ]; then
+        fail "loopback admin origins are not valid exam media origins"
+    fi
+done
+
+# Validate every explicitly approved extra origin and serialize with a JSON
+# encoder. Never place administrator-controlled text directly into JSON.
+ORIGIN_ARRAY=$("$PYTHON_BIN" - "$EXAM_ORIGIN" "${ADDITIONAL_ORIGINS[@]}" <<'PYEOF'
+import ipaddress
+import json
+import re
+import sys
+from urllib.parse import urlsplit
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+def canonical_origin(raw):
+    if not raw or len(raw) > 512 or any(ord(c) <= 0x20 or ord(c) == 0x7f for c in raw):
+        reject("additional origin is empty, too long, or contains whitespace/control characters")
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        reject("malformed additional origin: " + str(error))
+    if scheme not in ("https", "http") or not parsed.netloc or not host:
+        reject("additional values must be absolute HTTPS origins (or loopback HTTP:8000)")
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        reject("credentials are forbidden in additional origins")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        reject("additional values must be origins without paths, queries, or fragments")
+    if port is not None and not 1 <= port <= 65535:
+        reject("additional origin port is outside the valid range")
+    try:
+        address = ipaddress.ip_address(host)
+        if getattr(address, "scope_id", None):
+            reject("scoped IPv6 addresses are not valid policy origins")
+        canonical_host = address.compressed.lower()
+        if address.version == 6:
+            canonical_host = "[" + canonical_host + "]"
+        is_loopback = address.is_loopback
+    except ValueError:
+        try:
+            canonical_host = host.encode("idna").decode("ascii").lower()
+        except UnicodeError:
+            reject("additional origin hostname is invalid")
+        label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+        if not re.fullmatch(label + r"(?:\." + label + r")*", canonical_host):
+            reject("additional origin hostname is invalid")
+        is_loopback = canonical_host == "localhost"
+    if scheme == "http" and (not is_loopback or port != 8000):
+        reject("plain HTTP is allowed only for loopback port 8000")
+    authority = canonical_host + ((":" + str(port)) if port is not None else "")
+    return scheme + "://" + authority
+
+exam_origin = sys.argv[1]
+approved = [exam_origin]
+for raw in sys.argv[2:]:
+    origin = canonical_origin(raw)
+    if origin not in approved:
+        approved.append(origin)
+print(json.dumps([origin + "/*" for origin in approved], separators=(",", ":")))
+PYEOF
+) || fail "ALLOWED_ORIGINS contains an invalid origin; policy was not written."
 
 POLICY_JSON=$(cat <<ENDPOLICY
 {
@@ -197,11 +260,11 @@ POLICY_JSON=$(cat <<ENDPOLICY
     "*"
   ],
 
-  "URLAllowlist": ${URL_ARRAY},
+  "URLAllowlist": ${ORIGIN_ARRAY},
 
-  "VideoCaptureAllowedUrls": ${CAM_ARRAY},
+  "VideoCaptureAllowedUrls": ${ORIGIN_ARRAY},
 
-  "AudioCaptureAllowedUrls": ${AUD_ARRAY},
+  "AudioCaptureAllowedUrls": ${ORIGIN_ARRAY},
 
   "ScreenCaptureAllowed": false,
   "ScreenCaptureAllowedByOrigins": [],
@@ -234,11 +297,11 @@ POLICY_JSON=$(cat <<ENDPOLICY
   "BrowserAddPersonEnabled": false,
   "BrowserGuestModeEnabled": false,
 
-  "DefaultClipboardSetting": 2,
+  "DefaultClipboardSetting": 1,
   "PromptForDownloadLocation": false,
   "AllowDinosaurEasterEgg": false,
   "ExternalProtocolDialogShowAlwaysOpenCheckbox": false,
-  "SafeBrowsingProtectionLevel": 0,
+  "SafeBrowsingProtectionLevel": 1,
   "NetworkPredictionOptions": 2,
   "AlternateErrorPagesEnabled": false,
   "SearchSuggestEnabled": false,
@@ -295,20 +358,24 @@ fi
 WRITE_ERRORS=0
 for POLICY_PATH in "${POLICY_PATHS[@]}"; do
     POLICY_DIR=$(dirname "$POLICY_PATH")
-    POLICY_TMP="${POLICY_PATH}.tmp.$$"
 
     if [ ! -d "$POLICY_DIR" ]; then
         mkdir -p "$POLICY_DIR" || { warn "Cannot create dir ${POLICY_DIR}"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
     fi
 
-    echo "$POLICY_JSON" > "$POLICY_TMP" || { warn "Cannot write tmp policy to ${POLICY_TMP}"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
+    POLICY_TMP=$(mktemp "${POLICY_PATH}.tmp.XXXXXX") || { warn "Cannot create exclusive temporary policy for ${POLICY_PATH}"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
+    printf '%s\n' "$POLICY_JSON" > "$POLICY_TMP" || { warn "Cannot write tmp policy to ${POLICY_TMP}"; rm -f -- "$POLICY_TMP"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
 
     # Validate the written tmp file before replacing the live policy
-    "$PYTHON_BIN" -c "import sys,json; json.load(open('${POLICY_TMP}'))" \
+    "$PYTHON_BIN" - "$POLICY_TMP" <<'PYEOF' \
         || { warn "Tmp file JSON re-validation failed for ${POLICY_TMP}"; rm -f "$POLICY_TMP"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as policy_file:
+    json.load(policy_file)
+PYEOF
 
-    chmod 0644 "$POLICY_TMP"
-    mv "$POLICY_TMP" "$POLICY_PATH" || { warn "Atomic rename failed for ${POLICY_PATH}"; rm -f "$POLICY_TMP"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
+    chmod 0644 "$POLICY_TMP" || { warn "Cannot set readable policy mode on ${POLICY_TMP}"; rm -f -- "$POLICY_TMP"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
+    mv -fT -- "$POLICY_TMP" "$POLICY_PATH" || { warn "Atomic rename failed for ${POLICY_PATH}"; rm -f -- "$POLICY_TMP"; WRITE_ERRORS=$((WRITE_ERRORS+1)); continue; }
 
     log "Policy written to ${POLICY_PATH}"
 done

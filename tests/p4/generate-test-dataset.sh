@@ -83,6 +83,26 @@ EOF
 }
 
 # -----------------------------------------------------------------------
+# Dataset provenance manifest
+#
+# This generator produces synthetic luminance patterns, not photographs of
+# people. Metrics computed over it describe the pipeline, not the detector,
+# so the manifest declares the dataset synthetic and the detection gate
+# reports BLOCKED rather than a quality verdict.
+# -----------------------------------------------------------------------
+cat > "$DATASET_DIR/DATASET-MANIFEST.json" <<'MANIFEST'
+{
+  "_schema": "examos-detection-dataset-manifest-v1",
+  "synthetic": true,
+  "provenance": "ffmpeg-generated luminance patterns",
+  "contains_real_faces": false,
+  "consent_recorded": false,
+  "annotation_protocol": "programmatic labels derived from the generator",
+  "note": "Pipeline integration only. Detection quality cannot be attested from this dataset."
+}
+MANIFEST
+
+# -----------------------------------------------------------------------
 # Single face: testsrc with a bright oval region (face-like luminance pattern)
 # -----------------------------------------------------------------------
 log "Generating single_face clips (20)..."

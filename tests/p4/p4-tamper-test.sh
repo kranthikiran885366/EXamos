@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ExamOS P4 — Tamper Evidence Test Matrix (T1-T8)
+# ExamOS P4 â€” Tamper Evidence Test Matrix (T1-T8)
 #
 # Tests that the event chain detects every form of manipulation:
-#   T1: payload modification → EVENT_HASH_MISMATCH
-#   T2: previous_hash modification → PREVIOUS_HASH_MISMATCH
-#   T3: event_hash modification → EVENT_HASH_MISMATCH
-#   T4: event deletion → SEQUENCE_GAP
-#   T5: event reordering → SEQUENCE_GAP_OR_REORDER
-#   T6: sequence manipulation → SEQUENCE_GAP_OR_REORDER
-#   T7: checkpoint signature modification → SIGNATURE_INVALID
-#   T8: wrong-session event insertion → CHAIN_INTEGRITY_FAILURE
+#   T1: payload modification â†’ EVENT_HASH_MISMATCH
+#   T2: previous_hash modification â†’ PREVIOUS_HASH_MISMATCH
+#   T3: event_hash modification â†’ EVENT_HASH_MISMATCH
+#   T4: event deletion â†’ SEQUENCE_GAP
+#   T5: event reordering â†’ SEQUENCE_GAP_OR_REORDER
+#   T6: sequence manipulation â†’ SEQUENCE_GAP_OR_REORDER
+#   T7: checkpoint signature modification â†’ SIGNATURE_INVALID
+#   T8: wrong-session event insertion â†’ CHAIN_INTEGRITY_FAILURE
 #
 # Uses the live examos-server + exam-event-verify CLI tool.
-# Every result is from actual execution — no hardcoded outcomes.
+# Every result is from actual execution â€” no hardcoded outcomes.
 # =============================================================================
 set -uo pipefail
 
@@ -25,8 +25,11 @@ LOG="$ARTIFACT_DIR/tamper-test-results.json"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9100}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 VERIFIER="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
-EVENT_LOG="${EXAMOS_P4_EVENT_LOG:-/tmp/examos-p4-tamper-events.log}"
+RUN_DIR="$(mktemp -d /tmp/examos-p4-tamper.XXXXXX)"
+EVENT_LOG="${EXAMOS_P4_EVENT_LOG:-$RUN_DIR/events.log}"
 SESSION_ID="tamper-test-$(date +%s)"
+PROCTOR_TOKEN="$(openssl rand -hex 32)"
+SIGNING_KEY="$(openssl rand -hex 32)"
 
 PASS=0; FAIL=0; BLOCKED=0
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -75,16 +78,23 @@ SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
 if [ -x "$SERVER_BIN" ]; then
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p4-tamper-ledger.log" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_CHAIN_PATH="$EVENT_LOG" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
+    EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
+    EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" \
+    EXAMOS_EVENT_SIGNING_KEY_ID="test-signing-key" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_TPM_MODE=development \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
-    EXAMOS_SESSION_JOURNAL="/tmp/examos-p4-tamper-sessions.log" \
+    EXAMOS_SESSION_JOURNAL="$RUN_DIR/sessions.log" \
+    EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
+    EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
+    EXAMOS_DATA_DIR="$RUN_DIR/data" \
         "$SERVER_BIN" &
     SERVER_PID=$!
     # Wait for health
@@ -94,17 +104,10 @@ if [ -x "$SERVER_BIN" ]; then
     done
 fi
 
-PROCTOR_TOKEN=""
-if [ -n "$SERVER_PID" ]; then
-    PROCTOR_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_PROCTOR_API_TOKEN | cut -d= -f2)
-fi
-if [ -z "$PROCTOR_TOKEN" ] || [ ${#PROCTOR_TOKEN} -lt 32 ]; then
-    PROCTOR_TOKEN="$(openssl rand -hex 32)"
-fi
-
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
     [ -n "$SERVER_PID" ] && wait "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$RUN_DIR"
 }
 trap cleanup EXIT
 
@@ -114,7 +117,7 @@ inject_event() {
     curl -s -X POST "${SERVER_URL}/api/v1/proctoring/events" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${PROCTOR_TOKEN}" \
-        -d "{\"session_id\":\"${SESSION_ID}\",\"source_type\":\"${seq_type}\",\"event_type\":\"${event_type}\",\"payload\":${payload}}" \
+        -d "{\"session_id\":\"${SESSION_ID}\",\"source_type\":\"${seq_type}\",\"event_type\":\"${event_type}\",\"model_name\":\"p4-tamper-fixture\",\"model_version\":\"1.0.0\",\"payload\":${payload}}" \
         >/dev/null 2>&1 || true
 }
 
@@ -124,9 +127,9 @@ verify_chain() {
 }
 
 # -----------------------------------------------------------------------
-# T0: Clean baseline — inject 5 events, verify VALID
+# T0: Clean baseline â€” inject 5 events, verify VALID
 # -----------------------------------------------------------------------
-echo "  T0: Clean baseline (5 events → VALID)..."
+echo "  T0: Clean baseline (5 events â†’ VALID)..."
 # Reset event log
 rm -f "$EVENT_LOG"
 
@@ -138,7 +141,7 @@ if [ -n "$SERVER_PID" ]; then
     # Events were appended directly to EVENT_LOG by server
     :
 else
-    # Direct file injection — write events manually using the server's format
+    # Direct file injection â€” write events manually using the server's format
     # This tests the verifier independently of the server
     PREV="0000000000000000000000000000000000000000000000000000000000000000"
     for i in 1 2 3 4 5; do
@@ -160,10 +163,10 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T1: Payload modification — change one event payload
+# T1: Payload modification â€” change one event payload
 # -----------------------------------------------------------------------
-echo "  T1: Payload modification → expect EVENT_HASH_MISMATCH..."
-T1_LOG="/tmp/examos-p4-tamper-t1.log"
+echo "  T1: Payload modification â†’ expect EVENT_HASH_MISMATCH..."
+T1_LOG="$RUN_DIR/t1.log"
 cp "$EVENT_LOG" "$T1_LOG"
 # Modify the payload of event 3
 python3 - "$T1_LOG" <<'PYEOF'
@@ -185,8 +188,8 @@ fi
 # -----------------------------------------------------------------------
 # T2: Previous hash modification
 # -----------------------------------------------------------------------
-echo "  T2: Previous hash modification → expect PREVIOUS_HASH_MISMATCH..."
-T2_LOG="/tmp/examos-p4-tamper-t2.log"
+echo "  T2: Previous hash modification â†’ expect PREVIOUS_HASH_MISMATCH..."
+T2_LOG="$RUN_DIR/t2.log"
 cp "$EVENT_LOG" "$T2_LOG"
 python3 - "$T2_LOG" <<'PYEOF'
 import sys
@@ -207,8 +210,8 @@ fi
 # -----------------------------------------------------------------------
 # T3: Event hash modification
 # -----------------------------------------------------------------------
-echo "  T3: Event hash modification → expect EVENT_HASH_MISMATCH..."
-T3_LOG="/tmp/examos-p4-tamper-t3.log"
+echo "  T3: Event hash modification â†’ expect EVENT_HASH_MISMATCH..."
+T3_LOG="$RUN_DIR/t3.log"
 cp "$EVENT_LOG" "$T3_LOG"
 python3 - "$T3_LOG" <<'PYEOF'
 import sys
@@ -227,10 +230,10 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T4: Event deletion — remove one event
+# T4: Event deletion â€” remove one event
 # -----------------------------------------------------------------------
-echo "  T4: Event deletion → expect SEQUENCE_GAP..."
-T4_LOG="/tmp/examos-p4-tamper-t4.log"
+echo "  T4: Event deletion â†’ expect SEQUENCE_GAP..."
+T4_LOG="$RUN_DIR/t4.log"
 cp "$EVENT_LOG" "$T4_LOG"
 python3 - "$T4_LOG" <<'PYEOF'
 import sys
@@ -247,10 +250,10 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T5: Event reordering — swap events 3 and 4
+# T5: Event reordering â€” swap events 3 and 4
 # -----------------------------------------------------------------------
-echo "  T5: Event reordering → expect SEQUENCE_GAP_OR_REORDER..."
-T5_LOG="/tmp/examos-p4-tamper-t5.log"
+echo "  T5: Event reordering â†’ expect SEQUENCE_GAP_OR_REORDER..."
+T5_LOG="$RUN_DIR/t5.log"
 cp "$EVENT_LOG" "$T5_LOG"
 python3 - "$T5_LOG" <<'PYEOF'
 import sys
@@ -272,10 +275,10 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T6: Sequence manipulation — change sequence number
+# T6: Sequence manipulation â€” change sequence number
 # -----------------------------------------------------------------------
-echo "  T6: Sequence manipulation → expect SEQUENCE_GAP_OR_REORDER..."
-T6_LOG="/tmp/examos-p4-tamper-t6.log"
+echo "  T6: Sequence manipulation â†’ expect SEQUENCE_GAP_OR_REORDER..."
+T6_LOG="$RUN_DIR/t6.log"
 cp "$EVENT_LOG" "$T6_LOG"
 python3 - "$T6_LOG" <<'PYEOF'
 import sys
@@ -294,32 +297,48 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T7: Checkpoint signature modification — requires server checkpoint
+# T7: Checkpoint signature modification â€” requires server checkpoint
 # -----------------------------------------------------------------------
-echo "  T7: Checkpoint signature modification → expect SIGNATURE_INVALID..."
+echo "  T7: Checkpoint signature modification â†’ expect SIGNATURE_INVALID..."
 if [ -n "$SERVER_PID" ]; then
-    # Request a checkpoint signature from the server using admin auth
-    ADMIN_B64=$(echo -n "admin:admin" | base64)
     CKPT_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/proctoring/checkpoint" \
-        -H "Authorization: Basic ${ADMIN_B64}" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${PROCTOR_TOKEN}" \
         -d "{\"session_id\":\"${SESSION_ID}\"}" 2>/dev/null || echo '{}')
     CKPT_SIG=$(echo "$CKPT_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('signature',''))" 2>/dev/null || echo "")
     if [ -n "$CKPT_SIG" ]; then
-        # Modify the signature and verify it fails
-        record "T7" "PASS" "PASS" "Checkpoint issued and signed (signature modification test requires verifier checkpoint support)"
+        CKPT_FILE="$RUN_DIR/checkpoint.json"
+        TAMPERED_FILE="$RUN_DIR/checkpoint-tampered.json"
+        printf '%s\n' "$CKPT_RESP" > "$CKPT_FILE"
+        VALID_OUT=$(EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" "$VERIFIER" --checkpoint "$CKPT_FILE" 2>&1)
+
+        python3 - "$CKPT_FILE" "$TAMPERED_FILE" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+sig = doc.get("signature", "")
+doc["signature"] = ("b" * len(sig)) if sig else "b" * 64
+open(sys.argv[2], "w").write(json.dumps(doc))
+PYEOF
+
+        TAMPER_OUT=$(EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" "$VERIFIER" --checkpoint "$TAMPERED_FILE" 2>&1)
+        if echo "$VALID_OUT" | grep -q "CHECKPOINT: VALID" && \
+           echo "$TAMPER_OUT" | grep -q "SIGNATURE_INVALID"; then
+            record "T7" "SIGNATURE_INVALID" "SIGNATURE_INVALID" "Valid checkpoint verified; modified signature rejected"
+        else
+            record "T7" "SIGNATURE_INVALID" "FAIL" "Checkpoint verification mismatch: valid=[$VALID_OUT] tampered=[$TAMPER_OUT]"
+        fi
     else
-        # In dev test without admin credential file, accept checkpoint verification via direct chain verification
-        record "T7" "PASS" "PASS" "Checkpoint capability verified via server event chain"
+        record "T7" "SIGNATURE_INVALID" "BLOCKED" "Server did not issue a checkpoint: $CKPT_RESP"
     fi
 else
-    record "T7" "PASS" "BLOCKED" "Server not running — cannot test checkpoint signing"
+    record "T7" "SIGNATURE_INVALID" "BLOCKED" "Server not running - cannot test checkpoint signing"
 fi
 
 # -----------------------------------------------------------------------
 # T8: Wrong-session event insertion
 # -----------------------------------------------------------------------
-echo "  T8: Wrong-session event insertion → expect CHAIN_INTEGRITY_FAILURE..."
-T8_LOG="/tmp/examos-p4-tamper-t8.log"
+echo "  T8: Wrong-session event insertion â†’ expect CHAIN_INTEGRITY_FAILURE..."
+T8_LOG="$RUN_DIR/t8.log"
 cp "$EVENT_LOG" "$T8_LOG"
 # Insert a valid-looking event from a different session in the middle
 python3 - "$T8_LOG" <<'PYEOF'

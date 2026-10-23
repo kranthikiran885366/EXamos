@@ -14,6 +14,10 @@ set -uo pipefail
 WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
 ARTIFACT_DIR="${EXAMOS_P2_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase2}"
 mkdir -p "$ARTIFACT_DIR"
+if [ -z "${EXAMOS_P2_ARTIFACT_DIR:-}" ]; then
+    mkdir -p "$ARTIFACT_DIR/runs"
+    ARTIFACT_DIR="$(mktemp -d "$ARTIFACT_DIR/runs/run-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+fi
 export EXAMOS_P2_ARTIFACT_DIR="$ARTIFACT_DIR"
 
 LOG="$ARTIFACT_DIR/p2-gate.log"
@@ -23,6 +27,12 @@ trap 'rm -rf "$SUITE_ARTIFACT_DIR"' EXIT
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 GIT_COMMIT=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "unknown")
+SOURCE_TREE_STATE="CLEAN"
+if [ -n "$(git -C "$WORKSPACE" status --porcelain=v1 --untracked-files=all -- . \
+    ':(exclude)artifacts/**' ':(exclude)image/p0/output/**' \
+    ':(exclude)build/**' ':(exclude)cache/**')" ]; then
+    SOURCE_TREE_STATE="DIRTY"
+fi
 echo "=== [P2-GATE] Phase 2 Gate Evaluation: $(ts) ==="
 echo "[P2-GATE] Commit: ${GIT_COMMIT}"
 
@@ -168,6 +178,9 @@ GATE="PASS"
 [ "$TOTAL_FAIL" -gt 0 ]    && GATE="FAIL"
 [ "$TOTAL_NOT_RUN" -gt 0 ] && GATE="FAIL"
 [ "$TOTAL_BLOCKED" -gt 0 ] && [ "$GATE" = "PASS" ] && GATE="BLOCKED"
+if [ "$SOURCE_TREE_STATE" = "DIRTY" ] && [ "$GATE" = "PASS" ]; then
+    GATE="BLOCKED"
+fi
 
 # ---------------------------------------------------------------------------
 # Print summary
@@ -212,6 +225,7 @@ cat > "$MANIFEST" <<MANIFESTEOF
   "phase": "P2",
   "status": "${GATE}",
   "gitCommit": "${GIT_COMMIT}",
+  "sourceTreeState": "${SOURCE_TREE_STATE}",
   "buildProfile": "release-test",
   "buildTool": "${BUILD_TOOL_VERSION}",
   "imageArtifact": "${IMAGE_ARTIFACT}",

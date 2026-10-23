@@ -33,8 +33,8 @@ cleanup() {
 trap cleanup EXIT
 
 for i in {1..10}; do
-    if curl -s http://127.0.0.1:8895/api/v1/health | grep -q "HEALTHY"; then
-        echo "[SETUP] Server is UP and HEALTHY on port 8895."
+    if curl -s http://127.0.0.1:8895/api/v1/health | grep -q "\"liveness\":\"LIVE\""; then
+        echo "[SETUP] Server is UP and reporting LIVE liveness on port 8895."
         break
     fi
     sleep 0.5

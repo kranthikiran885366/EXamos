@@ -11,6 +11,8 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <openssl/sha.h>
@@ -24,13 +26,51 @@ static firewall_status_t g_fw_status = {
     .loopback_isolated = 1,
     .dns_enforced = 1,
     .exam_endpoints_enforced = 1,
-    .rules_count = 28,
-    .status_str = "ACTIVE",
-    .last_applied_sig = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    .rules_count = 0,
+    .status_str = "NOT_APPLIED",
+    .last_applied_sig = "",
     .last_applied_time = 0
 };
 
 static char g_state_dir[512] = "/var/lib/examos/firewall";
+
+/*
+ * Runs the nftables command with a fixed argv. The previous implementation
+ * built a shell command from a state-directory path and passed it to
+ * system(3), which made the firewall service depend on /bin/sh and on PATH
+ * resolution. Paths are now arguments, never shell text.
+ *
+ * Returns the child exit status (0 success, 127 nft unavailable), or -1 when
+ * the process could not be created or reaped.
+ */
+static int firewall_run_nft_file(const char *path, int check_only) {
+    if (!path || !path[0]) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            (void)dup2(devnull, STDOUT_FILENO);
+            (void)dup2(devnull, STDERR_FILENO);
+            (void)close(devnull);
+        }
+        if (check_only) {
+            execlp("nft", "nft", "-c", "-f", path, (char *)NULL);
+        } else {
+            execlp("nft", "nft", "-f", path, (char *)NULL);
+        }
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
 
 static void firewall_log_event(const char *event_type, const char *entity, const char *details) {
     ledger_block_t blk;
@@ -102,7 +142,8 @@ int firewall_init(const char *state_dir) {
         safe_write_file(safe_path, safe_text, strlen(safe_text));
     }
 
-    g_fw_status.last_applied_time = time(NULL);
+    /* Generating the fallback file is not the same as applying it. The
+       status deliberately remains NOT_APPLIED until nft accepts a ruleset. */
     pthread_mutex_unlock(&g_firewall_lock);
     return 0;
 }
@@ -111,7 +152,11 @@ int firewall_load_deployment_conf(firewall_policy_t *policy) {
     if (!policy) return -1;
     memset(policy, 0, sizeof(firewall_policy_t));
 
-    FILE *f = fopen(DEPLOYMENT_CONF_PATH, "r");
+    const char *deployment_conf = getenv("EXAMOS_DEPLOYMENT_CONF");
+    const char *conf_path = deployment_conf && deployment_conf[0]
+        ? deployment_conf : DEPLOYMENT_CONF_PATH;
+
+    FILE *f = fopen(conf_path, "r");
     if (!f) {
         /* Default safe loopback fallback if deployment.conf not present */
         snprintf(policy->dns_primary, sizeof(policy->dns_primary), "127.0.0.53");
@@ -376,9 +421,7 @@ int firewall_validate_ruleset(const char *ruleset_text, char *err_msg, size_t er
         fwrite(ruleset_text, 1, strlen(ruleset_text), f);
         fclose(f);
 
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "nft -c -f %s >/dev/null 2>&1", tmp_path);
-        int rc = system(cmd);
+        int rc = firewall_run_nft_file(tmp_path, 1);
         unlink(tmp_path);
 
         /*
@@ -433,17 +476,16 @@ int firewall_apply_ruleset(const char *ruleset_text, const char *actor, char *er
     }
 
     /* 3. Execute atomic rule load: nft -f <file> */
-    char cmd[1280];
-    snprintf(cmd, sizeof(cmd), "nft -f %.1024s >/dev/null 2>&1", cur_path);
-    int rc = system(cmd);
+    int rc = firewall_run_nft_file(cur_path, 0);
 
-    /* If system command fails and was not due to non-root container or missing nft command (127) */
-    if (rc != 0 && rc != 127 && rc != 256) {
+    /* Fail closed. A missing nft binary (127) is not an accepted ruleset
+       either: the service must never report ACTIVE without kernel acceptance. */
+    if (rc != 0) {
         /* Automatic Fail-Safe Rollback to known safe ruleset */
         if (err_msg && err_len) snprintf(err_msg, err_len, "Ruleset execution failed; rolling back to safe baseline");
-        char roll_cmd[1280];
-        snprintf(roll_cmd, sizeof(roll_cmd), "nft -f %.480s/safe_ruleset.nft >/dev/null 2>&1", g_state_dir);
-        int roll_rc = system(roll_cmd);
+        char safe_path[1024];
+        snprintf(safe_path, sizeof(safe_path), "%.480s/safe_ruleset.nft", g_state_dir);
+        int roll_rc = firewall_run_nft_file(safe_path, 0);
         (void)roll_rc;
 
         g_fw_status.active = 1;
@@ -477,20 +519,26 @@ int firewall_rollback_to_safe(const char *actor, char *err_msg, size_t err_len) 
     char safe_path[1024];
     snprintf(safe_path, sizeof(safe_path), "%.480s/safe_ruleset.nft", g_state_dir);
 
-    char cmd[1280];
-    snprintf(cmd, sizeof(cmd), "nft -f %.1024s >/dev/null 2>&1", safe_path);
-    int rc = system(cmd);
-    (void)rc;
+    int rc = firewall_run_nft_file(safe_path, 0);
 
-    g_fw_status.active = 1;
-    snprintf(g_fw_status.status_str, sizeof(g_fw_status.status_str), "ROLLBACK_SAFE");
-    g_fw_status.last_applied_time = time(NULL);
+    if (rc == 0) {
+        g_fw_status.active = 1;
+        snprintf(g_fw_status.status_str, sizeof(g_fw_status.status_str), "ROLLBACK_SAFE");
+        g_fw_status.last_applied_time = time(NULL);
+    } else {
+        g_fw_status.active = 0;
+        snprintf(g_fw_status.status_str, sizeof(g_fw_status.status_str), "ROLLBACK_FAILED");
+        if (err_msg && err_len) {
+            snprintf(err_msg, err_len, "Safe ruleset could not be applied (exit code %d)", rc);
+        }
+    }
 
-    firewall_log_event("FIREWALL_ROLLBACK_MANUAL", actor ? actor : "system", "Reverted to safe baseline");
+    firewall_log_event("FIREWALL_ROLLBACK_MANUAL", actor ? actor : "system",
+                       rc == 0 ? "Reverted to safe baseline" : "Safe baseline rollback failed");
     pthread_mutex_unlock(&g_firewall_lock);
 
-    if (err_msg && err_len) err_msg[0] = '\0';
-    return 0;
+    if (rc == 0 && err_msg && err_len) err_msg[0] = '\0';
+    return rc == 0 ? 0 : -1;
 }
 
 int firewall_get_status(firewall_status_t *status) {

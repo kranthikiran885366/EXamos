@@ -26,19 +26,110 @@ static pthread_mutex_t g_platform_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_data_dir[512] = "data";
 static time_t g_platform_started_at = 0;
 
+/*
+ * Last-error channel.
+ *
+ * The platform functions predate a structured error type, so the most
+ * recent failure reason is recorded per thread. Callers can surface the
+ * specific reason instead of a generic "operation failed", which matters
+ * for distinguishing a duplicate record from an unreachable database.
+ */
+static __thread char g_last_error[512] = {0};
+
+const char *platform_last_error(void) {
+    return g_last_error[0] ? g_last_error : "Operation failed";
+}
+
+void platform_clear_error(void) {
+    g_last_error[0] = '\0';
+}
+
+static void platform_set_error(const char *message) {
+    snprintf(g_last_error, sizeof(g_last_error), "%s", message ? message : "Operation failed");
+}
+
+/* Records the PostgreSQL error text for a failed statement. */
+static void platform_set_db_error(PGresult *res) {
+    if (!res) {
+        platform_set_error("The durable platform store did not return a result");
+        return;
+    }
+    const char *message = PQresultErrorMessage(res);
+    if (message && message[0]) {
+        char buffer[512];
+        snprintf(buffer, sizeof(buffer), "%s", message);
+        char *newline = strchr(buffer, '\n');
+        if (newline) *newline = '\0';
+        platform_set_error(buffer);
+    } else {
+        platform_set_error("The durable platform store rejected the operation");
+    }
+}
+
+/*
+ * Records an administrative audit entry.
+ *
+ * Returns 0 on success and -1 on failure. Callers that mutate state must
+ * treat a failure here as a failure of the whole operation: a change
+ * without an audit record is not auditable, so it must not be committed.
+ */
+static int platform_audit(PGconn *conn, const char *actor, const char *event_type,
+                          const char *subject_type, const char *subject_id) {
+    if (!conn || !event_type || !event_type[0]) return -1;
+    const char *params[4] = {
+        (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL,
+        event_type,
+        subject_type ? subject_type : "",
+        subject_id ? subject_id : ""
+    };
+    PGresult *res = PQexecParams(conn,
+        "INSERT INTO examos_admin_audit (actor_user_id, event_type, subject_type, subject_id) "
+        "VALUES ($1, $2, $3, $4)",
+        4, NULL, params, NULL, NULL, 0);
+    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
+    if (res) PQclear(res);
+    return ok ? 0 : -1;
+}
+
+static int platform_json_escape(const char *input, char *output, size_t capacity) {
+    if (!input || !output || capacity == 0) return -1;
+    size_t used = 0;
+    static const char hex[] = "0123456789abcdef";
+    for (const unsigned char *p = (const unsigned char *)input; *p; ++p) {
+        char escaped[6];
+        const char *value = escaped;
+        size_t length = 0;
+        switch (*p) {
+            case '"': escaped[0] = '\\'; escaped[1] = '"'; length = 2; break;
+            case '\\': escaped[0] = '\\'; escaped[1] = '\\'; length = 2; break;
+            case '\b': escaped[0] = '\\'; escaped[1] = 'b'; length = 2; break;
+            case '\f': escaped[0] = '\\'; escaped[1] = 'f'; length = 2; break;
+            case '\n': escaped[0] = '\\'; escaped[1] = 'n'; length = 2; break;
+            case '\r': escaped[0] = '\\'; escaped[1] = 'r'; length = 2; break;
+            case '\t': escaped[0] = '\\'; escaped[1] = 't'; length = 2; break;
+            default:
+                if (*p < 0x20) {
+                    escaped[0] = '\\'; escaped[1] = 'u'; escaped[2] = '0'; escaped[3] = '0';
+                    escaped[4] = hex[*p >> 4]; escaped[5] = hex[*p & 15]; length = 6;
+                } else { value = (const char *)p; length = 1; }
+        }
+        if (used + length >= capacity) return -1;
+        memcpy(output + used, value, length);
+        used += length;
+    }
+    output[used] = '\0';
+    return 0;
+}
+
 /* Fleet and Incident records maintained in memory/ledger */
 
 static fleet_device_record_t    g_devices[MAX_DEVICES];
 static int                      g_device_count = 0;
 
-static security_incident_t      g_incidents[MAX_INCIDENTS];
-static int                      g_incident_count = 0;
-
 static durable_submission_t     g_submissions[MAX_SUBMISSIONS];
 static int                      g_submission_count = 0;
 
-static enterprise_release_t     g_releases[PLATFORM_MAX_RELEASES];
-static int                      g_release_count = 0;
 
 static int load_devices_from_db(void);
 
@@ -262,9 +353,29 @@ int enterprise_platform_init(const char *data_dir) {
 }
 
 int enterprise_platform_save_all(void) {
-    fprintf(stderr, "[EnterprisePlatform] BLOCKED: persistent platform storage is not implemented.\n");
-    errno = ENOTSUP;
-    return -1;
+    /*
+     * All durable state is persisted directly to PostgreSQL by each
+     * individual write operation, so there is no separate flush step.
+     *
+     * The operation still confirms that the durable store is reachable and
+     * readable, so that a successful return means the committed state could
+     * be verified rather than merely assumed.
+     */
+    PGconn *conn = acquire_db_connection();
+    if (!conn) {
+        errno = EIO;
+        return -1;
+    }
+    PGresult *res = PQexec(conn, "SELECT 1");
+    int ok = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1;
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
+
+    if (!ok) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -308,20 +419,35 @@ int platform_get_institutions_json(char *out_buf, size_t max_len) {
     }
 
     int rows = PQntuples(res);
-    size_t offset = snprintf(out_buf, max_len, "{\"institutions\":[");
+    size_t offset = 0;
+    int written = snprintf(out_buf, max_len, "{\"institutions\":[");
+    if (written < 0 || (size_t)written >= max_len) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
+    offset = (size_t)written;
     for (int i = 0; i < rows; ++i) {
-        offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
+        char id[256], name[512], code[128], email[512];
+        if (platform_json_escape(PQgetvalue(res, i, 0), id, sizeof(id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), name, sizeof(name)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), code, sizeof(code)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 3), email, sizeof(email)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        written = snprintf(out_buf + offset, max_len - offset,
             "%s{\"id\":\"%s\",\"name\":\"%s\",\"code\":\"%s\",\"email\":\"%s\",\"retention_days\":%d,\"active\":%s}",
             (i > 0 ? "," : ""),
-            PQgetvalue(res, i, 0),
-            PQgetvalue(res, i, 1),
-            PQgetvalue(res, i, 2),
-            PQgetvalue(res, i, 3),
+            id, name, code, email,
             atoi(PQgetvalue(res, i, 4)),
             strcmp(PQgetvalue(res, i, 5), "t") == 0 ? "true" : "false");
-        if (offset >= max_len - 100) break;
+        if (written < 0 || (size_t)written >= max_len - offset) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        offset += (size_t)written;
     }
-    snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}");
+    written = snprintf(out_buf + offset, max_len - offset, "]}");
+    if (written < 0 || (size_t)written >= max_len - offset) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
 
     PQclear(res);
     release_db_connection(conn, 0);
@@ -330,9 +456,18 @@ int platform_get_institutions_json(char *out_buf, size_t max_len) {
 
 int platform_create_institution(const institution_t *inst) {
     if (!inst || !inst->institution_id[0] || !inst->name[0] || !inst->code[0] ||
-        inst->retention_days <= 0) return -1;
+        strnlen(inst->institution_id, sizeof(inst->institution_id)) >= sizeof(inst->institution_id) ||
+        strnlen(inst->name, sizeof(inst->name)) >= sizeof(inst->name) ||
+        strnlen(inst->code, sizeof(inst->code)) >= sizeof(inst->code) ||
+        inst->retention_days <= 0 || inst->retention_days > 36500) {
+        platform_set_error("institution_id, name, code and a retention window between 1 and 36500 days are required");
+        return -1;
+    }
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
 
     char ret_str[16];
     snprintf(ret_str, sizeof(ret_str), "%d", inst->retention_days);
@@ -348,13 +483,40 @@ int platform_create_institution(const institution_t *inst) {
 
     PGresult *res = PQexecParams(conn,
         "INSERT INTO examos_institutions (institution_id, name, code, domain_email, retention_days, active) "
-        "VALUES ($1, $2, $3, $4, $5::integer, $6::boolean) "
-        "ON CONFLICT (institution_id) DO UPDATE SET "
-        "  name = EXCLUDED.name, code = EXCLUDED.code, domain_email = EXCLUDED.domain_email, "
-        "  retention_days = EXCLUDED.retention_days, active = EXCLUDED.active",
+        "VALUES ($1, $2, $3, $4, $5::integer, $6::boolean)",
         6, NULL, params, NULL, NULL, 0);
 
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
+    return ok ? 0 : -1;
+}
+
+int platform_get_institution_json(const char *institution_id, char *out_buf,
+                                  size_t max_len) {
+    if (!institution_id || !institution_id[0] || !out_buf || max_len < 128) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    const char *params[] = { institution_id };
+    PGresult *res = PQexecParams(conn,
+        "SELECT institution_id, name, code, domain_email, retention_days, active "
+        "FROM examos_institutions WHERE institution_id = $1",
+        1, NULL, params, NULL, NULL, 0);
+    int ok = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1;
+    if (ok) {
+        char id[256], name[512], code[128], email[512];
+        ok = platform_json_escape(PQgetvalue(res, 0, 0), id, sizeof(id)) == 0 &&
+             platform_json_escape(PQgetvalue(res, 0, 1), name, sizeof(name)) == 0 &&
+             platform_json_escape(PQgetvalue(res, 0, 2), code, sizeof(code)) == 0 &&
+             platform_json_escape(PQgetvalue(res, 0, 3), email, sizeof(email)) == 0;
+        int written = ok ? snprintf(out_buf, max_len,
+            "{\"id\":\"%s\",\"name\":\"%s\",\"code\":\"%s\",\"email\":\"%s\","
+            "\"retention_days\":%d,\"active\":%s}",
+            id, name, code, email, atoi(PQgetvalue(res, 0, 4)),
+            strcmp(PQgetvalue(res, 0, 5), "t") == 0 ? "true" : "false") : -1;
+        ok = ok && written >= 0 && (size_t)written < max_len;
+    }
     if (res) PQclear(res);
     release_db_connection(conn, 0);
     return ok ? 0 : -1;
@@ -385,18 +547,26 @@ int platform_get_campuses_json(const char *inst_id, char *out_buf, size_t max_le
     }
 
     int rows = PQntuples(res);
-    size_t offset = snprintf(out_buf, max_len, "{\"campuses\":[");
+    int initial = snprintf(out_buf, max_len, "{\"campuses\":[");
+    if (initial < 0 || (size_t)initial >= max_len) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    size_t offset = (size_t)initial;
     for (int i = 0; i < rows; ++i) {
-        offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
+        char id[256], institution[256], name[512], address[1024];
+        if (platform_json_escape(PQgetvalue(res, i, 0), id, sizeof(id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), institution, sizeof(institution)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), name, sizeof(name)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 3), address, sizeof(address)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        int n = snprintf(out_buf + offset, max_len - offset,
             "%s{\"id\":\"%s\",\"institution_id\":\"%s\",\"name\":\"%s\",\"address\":\"%s\"}",
-            (i > 0 ? "," : ""),
-            PQgetvalue(res, i, 0),
-            PQgetvalue(res, i, 1),
-            PQgetvalue(res, i, 2),
-            PQgetvalue(res, i, 3));
-        if (offset >= max_len - 100) break;
+            i ? "," : "", id, institution, name, address);
+        if (n < 0 || (size_t)n >= max_len - offset) { PQclear(res); release_db_connection(conn, 0); return -1; }
+        offset += (size_t)n;
     }
-    snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}");
+    if (snprintf(out_buf + offset, max_len - offset, "]}") >= (int)(max_len - offset)) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
 
     PQclear(res);
     release_db_connection(conn, 0);
@@ -404,9 +574,15 @@ int platform_get_campuses_json(const char *inst_id, char *out_buf, size_t max_le
 }
 
 int platform_create_campus(const campus_t *campus) {
-    if (!campus || !campus->campus_id[0] || !campus->institution_id[0] || !campus->name[0]) return -1;
+    if (!campus || !campus->campus_id[0] || !campus->institution_id[0] || !campus->name[0]) {
+        platform_set_error("campus_id, institution_id and name are required");
+        return -1;
+    }
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
 
     const char *params[] = {
         campus->campus_id,
@@ -423,6 +599,7 @@ int platform_create_campus(const campus_t *campus) {
         4, NULL, params, NULL, NULL, 0);
 
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
     if (res) PQclear(res);
     release_db_connection(conn, 0);
     return ok ? 0 : -1;
@@ -453,23 +630,76 @@ int platform_get_rooms_json(const char *campus_id, char *out_buf, size_t max_len
     }
 
     int rows = PQntuples(res);
-    size_t offset = snprintf(out_buf, max_len, "{\"rooms\":[");
+    int initial = snprintf(out_buf, max_len, "{\"rooms\":[");
+    if (initial < 0 || (size_t)initial >= max_len) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    size_t offset = (size_t)initial;
     for (int i = 0; i < rows; ++i) {
-        offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
+        char id[256], campus[256], name[512], supervisor[256];
+        if (platform_json_escape(PQgetvalue(res, i, 0), id, sizeof(id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), campus, sizeof(campus)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), name, sizeof(name)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 4), supervisor, sizeof(supervisor)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        int n = snprintf(out_buf + offset, max_len - offset,
             "%s{\"id\":\"%s\",\"campus_id\":\"%s\",\"name\":\"%s\",\"capacity\":%d,\"supervisor\":\"%s\"}",
-            (i > 0 ? "," : ""),
-            PQgetvalue(res, i, 0),
-            PQgetvalue(res, i, 1),
-            PQgetvalue(res, i, 2),
-            atoi(PQgetvalue(res, i, 3)),
-            PQgetvalue(res, i, 4));
-        if (offset >= max_len - 100) break;
+            i ? "," : "", id, campus, name, atoi(PQgetvalue(res, i, 3)), supervisor);
+        if (n < 0 || (size_t)n >= max_len - offset) { PQclear(res); release_db_connection(conn, 0); return -1; }
+        offset += (size_t)n;
     }
-    snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}");
+    if (snprintf(out_buf + offset, max_len - offset, "]}") >= (int)(max_len - offset)) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
 
     PQclear(res);
     release_db_connection(conn, 0);
     return 0;
+}
+
+int platform_get_rooms_for_institution_json(const char *campus_id, const char *institution_id,
+                                            char *out_buf, size_t max_len) {
+    if (!campus_id || !campus_id[0] || !out_buf || max_len < 64) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *res = NULL;
+    if (institution_id && institution_id[0]) {
+        const char *params[] = { campus_id, institution_id };
+        res = PQexecParams(conn,
+            "SELECT r.room_id, r.campus_id, r.name, r.capacity, r.supervisor "
+            "FROM examos_rooms r JOIN examos_campuses c ON c.campus_id = r.campus_id "
+            "WHERE r.campus_id = $1 AND c.institution_id = $2 ORDER BY r.name ASC",
+            2, NULL, params, NULL, NULL, 0);
+    } else {
+        const char *params[] = { campus_id };
+        res = PQexecParams(conn,
+            "SELECT room_id, campus_id, name, capacity, supervisor FROM examos_rooms "
+            "WHERE campus_id = $1 ORDER BY name ASC", 1, NULL, params, NULL, NULL, 0);
+    }
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+    size_t offset = (size_t)snprintf(out_buf, max_len, "{\"rooms\":[");
+    if (offset >= max_len) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    for (int i = 0; i < PQntuples(res); ++i) {
+        char id[256], campus[256], name[512], supervisor[256];
+        if (platform_json_escape(PQgetvalue(res, i, 0), id, sizeof(id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), campus, sizeof(campus)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), name, sizeof(name)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 4), supervisor, sizeof(supervisor)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        int n = snprintf(out_buf + offset, max_len - offset,
+            "%s{\"id\":\"%s\",\"campus_id\":\"%s\",\"name\":\"%s\",\"capacity\":%d,\"supervisor\":\"%s\"}",
+            i ? "," : "", id, campus, name, atoi(PQgetvalue(res, i, 3)), supervisor);
+        if (n < 0 || (size_t)n >= max_len - offset) { PQclear(res); release_db_connection(conn, 0); return -1; }
+        offset += (size_t)n;
+    }
+    int n = snprintf(out_buf + offset, max_len - offset, "]}");
+    int ok = n >= 0 && (size_t)n < max_len - offset;
+    PQclear(res); release_db_connection(conn, 0);
+    return ok ? 0 : -1;
 }
 
 int platform_create_room(const room_t *room) {
@@ -492,12 +722,13 @@ int platform_create_room(const room_t *room) {
 
     PGresult *res = PQexecParams(conn,
         "INSERT INTO examos_rooms (room_id, campus_id, institution_id, name, capacity, supervisor) "
-        "VALUES ($1, $2, $3, $4, $5::integer, $6) "
+        "SELECT $1, c.campus_id, c.institution_id, $4, $5::integer, $6 "
+        "FROM examos_campuses c WHERE c.campus_id = $2 AND c.institution_id = $3 "
         "ON CONFLICT (room_id) DO UPDATE SET "
         "  name = EXCLUDED.name, capacity = EXCLUDED.capacity, supervisor = EXCLUDED.supervisor",
         6, NULL, params, NULL, NULL, 0);
 
-    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK && strcmp(PQcmdTuples(res), "1") == 0;
     if (res) PQclear(res);
     release_db_connection(conn, 0);
     return ok ? 0 : -1;
@@ -537,10 +768,18 @@ int platform_create_exam(const enterprise_exam_t *exam) {
         !exam->permitted_device_group[0] || !exam->browser_policy_json[0] ||
         exam->duration_minutes <= 0 || exam->retention_days <= 0 ||
         exam->scheduled_start <= 0 || exam->scheduled_end <= exam->scheduled_start ||
-        platform_validate_exam_url(exam->exam_url, NULL, 0) != 0) return -1;
+        platform_validate_exam_url(exam->exam_url, NULL, 0) != 0) {
+        platform_set_error("title, institution_id, code, exam_url, timezone, permitted_device_group, "
+                           "browser policy, a positive duration, a positive retention window and a "
+                           "valid schedule are required, and the exam URL must be an approved origin");
+        return -1;
+    }
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
 
     char dur_str[16], start_str[32], end_str[32], ret_str[16];
     snprintf(dur_str, sizeof(dur_str), "%d", exam->duration_minutes);
@@ -570,7 +809,9 @@ int platform_create_exam(const enterprise_exam_t *exam) {
         exam->network_offline_allowed ? "true" : "false",
         exam->browser_policy_json,
         exam->incident_appeal_procedure,
-        ret_str
+        ret_str,
+        "0",
+        ""
     };
 
     PGresult *res = PQexecParams(conn,
@@ -578,16 +819,18 @@ int platform_create_exam(const enterprise_exam_t *exam) {
         "  exam_id, institution_id, owner_user_id, code, title, exam_url, "
         "  allowed_origins, additional_apis, duration_minutes, scheduled_start, "
         "  scheduled_end, timezone, state, permitted_device_group, accommodations_allowed, "
-        "  network_offline_allowed, browser_policy_json, incident_appeal_procedure, retention_days"
+        "  network_offline_allowed, browser_policy_json, incident_appeal_procedure, retention_days, "
+        "  policy_version, policy_signature"
         ") VALUES ("
         "  $1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10::bigint), "
         "  to_timestamp($11::bigint), $12, $13, $14, $15::boolean, $16::boolean, "
-        "  $17, $18, $19"
+        "  $17, $18, $19, $20::integer, $21"
         ") ON CONFLICT (exam_id) DO UPDATE SET "
         "  title = EXCLUDED.title, exam_url = EXCLUDED.exam_url, updated_at = clock_timestamp()",
-        19, NULL, params, NULL, NULL, 0);
+        21, NULL, params, NULL, NULL, 0);
 
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
     if (res) PQclear(res);
 
     if (ok) {
@@ -596,14 +839,7 @@ int platform_create_exam(const enterprise_exam_t *exam) {
                  exam->exam_id, exam->title, exam_state_to_string(exam->state));
         ledger_append("EXAM_DRAFT_CREATED", exam->exam_id, details);
 
-        const char *audit_params[] = {
-            exam->owner_user_id[0] ? exam->owner_user_id : NULL,
-            "EXAM_DRAFT_CREATED"
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, exam->owner_user_id, "EXAM_DRAFT_CREATED", "EXAM", exam->exam_id);
     }
 
     release_db_connection(conn, 0);
@@ -692,34 +928,61 @@ int platform_get_exams_json(const char *inst_id, char *out_buf, size_t max_len) 
     }
 
     int rows = PQntuples(res);
-    size_t offset = snprintf(out_buf, max_len, "{\"exams\":[");
+    int written = snprintf(out_buf, max_len, "{\"exams\":[");
+    if (written < 0 || (size_t)written >= max_len) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
+    size_t offset = (size_t)written;
 
     for (int i = 0; i < rows; ++i) {
-        offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
+        char id[256], institution_id[256], code[128], title[512], exam_url[2048];
+        char allowed_origins[1024], state[128], signature[512], device_group[256];
+        if (platform_json_escape(PQgetvalue(res, i, 0), id, sizeof(id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), institution_id, sizeof(institution_id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), code, sizeof(code)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 3), title, sizeof(title)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 4), exam_url, sizeof(exam_url)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 5), allowed_origins, sizeof(allowed_origins)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 7), state, sizeof(state)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 9), signature, sizeof(signature)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 10), device_group, sizeof(device_group)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        written = snprintf(out_buf + offset, max_len - offset,
             "%s{\"id\":\"%s\",\"institution_id\":\"%s\",\"code\":\"%s\",\"title\":\"%s\","
             "\"exam_url\":\"%s\",\"allowed_origins\":\"%s\",\"duration_minutes\":%d,"
             "\"state\":\"%s\",\"policy_version\":%u,\"policy_signature\":\"%s\","
             "\"permitted_device_group\":\"%s\",\"accommodations\":%s}",
             (i > 0 ? "," : ""),
-            PQgetvalue(res, i, 0),
-            PQgetvalue(res, i, 1),
-            PQgetvalue(res, i, 2),
-            PQgetvalue(res, i, 3),
-            PQgetvalue(res, i, 4),
-            PQgetvalue(res, i, 5),
+            id, institution_id, code, title, exam_url, allowed_origins,
             atoi(PQgetvalue(res, i, 6)),
-            PQgetvalue(res, i, 7),
+            state,
             (unsigned int)atoi(PQgetvalue(res, i, 8)),
-            PQgetvalue(res, i, 9),
-            PQgetvalue(res, i, 10),
+            signature, device_group,
             strcmp(PQgetvalue(res, i, 11), "t") == 0 ? "true" : "false");
-        if (offset >= max_len - 100) break;
+        if (written < 0 || (size_t)written >= max_len - offset) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        offset += (size_t)written;
     }
-    snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}");
+    written = snprintf(out_buf + offset, max_len - offset, "]}");
+    if (written < 0 || (size_t)written >= max_len - offset) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
 
     PQclear(res);
     release_db_connection(conn, 0);
     return 0;
+}
+
+int platform_get_exams_for_admin(const auth_session_t *session, char *out_buf,
+                                 size_t max_len) {
+    if (!session || !out_buf || max_len < 64) return -1;
+    if (session->role == ROLE_PLATFORM_OWNER) {
+        return platform_get_exams_json(NULL, out_buf, max_len);
+    }
+    if (!session->institution_id[0]) return -1;
+    return platform_get_exams_json(session->institution_id, out_buf, max_len);
 }
 
 int platform_validate_exam_config(const char *exam_id, char *err_msg, size_t err_len) {
@@ -757,11 +1020,7 @@ int platform_validate_exam_config(const char *exam_id, char *err_msg, size_t err
 
     if (ok) {
         ledger_append("EXAM_CONFIG_VALIDATED", exam_id, "Configuration structurally validated");
-        const char *audit_params[] = { exam.owner_user_id[0] ? exam.owner_user_id : NULL, "EXAM_CONFIG_VALIDATED" };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, exam.owner_user_id[0] ? exam.owner_user_id : NULL, "EXAM_CONFIG_VALIDATED", "EXAM", exam_id);
     }
 
     release_db_connection(conn, 0);
@@ -778,30 +1037,62 @@ int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
     if (exam.state != EXAM_STATE_VALIDATED && exam.state != EXAM_STATE_DRAFT) return -1;
 
     char sig[65];
-    if (compute_policy_hmac(exam_id, exam.policy_version, exam.exam_url, sig) != 0)
+    /*
+     * Approval publishes a new policy version. A draft exam carries no
+     * policy, so the version is allocated here rather than reused from the
+     * exam row.
+     */
+    unsigned int next_policy_version = 1;
+    {
+        PGconn *version_conn = acquire_db_connection();
+        if (!version_conn) {
+            platform_set_error("The durable platform store is unreachable");
+            return -1;
+        }
+        const char *version_params[1] = { exam_id };
+        PGresult *version_res = PQexecParams(version_conn,
+            "SELECT COALESCE(MAX(policy_version), 0) + 1 FROM examos_exam_policies WHERE exam_id = $1",
+            1, NULL, version_params, NULL, NULL, 0);
+        if (version_res && PQresultStatus(version_res) == PGRES_TUPLES_OK &&
+            PQntuples(version_res) == 1) {
+            next_policy_version = (unsigned int)atoi(PQgetvalue(version_res, 0, 0));
+        }
+        if (version_res) PQclear(version_res);
+        release_db_connection(version_conn, 0);
+    }
+    if (next_policy_version == 0) next_policy_version = 1;
+
+    if (compute_policy_hmac(exam_id, next_policy_version, exam.exam_url, sig) != 0) {
+        platform_set_error("Policy signature could not be computed");
         return -1;
+    }
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
 
     PGresult *res = PQexec(conn, "BEGIN");
     if (res) PQclear(res);
 
     const char *approver_clean = (approver_user_id && approver_user_id[0] && strncmp(approver_user_id, "USR-", 4) == 0) ? approver_user_id : NULL;
-    const char *upd_params[] = { approver_clean, sig, exam_id };
+    char version_str[16];
+    snprintf(version_str, sizeof(version_str), "%u", next_policy_version);
+    const char *upd_params[] = { approver_clean, sig, version_str, exam_id };
     res = PQexecParams(conn,
         "UPDATE examos_exams SET state = 'APPROVED', approved_by = $1, "
-        "  approved_at = clock_timestamp(), policy_signature = $2, updated_at = clock_timestamp() "
-        "WHERE exam_id = $3",
-        3, NULL, upd_params, NULL, NULL, 0);
+        "  approved_at = clock_timestamp(), policy_signature = $2, policy_version = $3::integer, "
+        "  updated_at = clock_timestamp() "
+        "WHERE exam_id = $4",
+        4, NULL, upd_params, NULL, NULL, 0);
     int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
     if (res) PQclear(res);
 
     if (ok) {
-        char ver_str[16];
-        snprintf(ver_str, sizeof(ver_str), "%u", exam.policy_version);
         const char *pol_params[] = {
-            exam_id, ver_str, exam.exam_url, exam.allowed_origins,
+            exam_id, version_str, exam.exam_url, exam.allowed_origins,
             sig, approver_clean
         };
         res = PQexecParams(conn,
@@ -816,11 +1107,7 @@ int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
     }
 
     if (ok) {
-        const char *audit_params[] = { approver_clean, "EXAM_APPROVED" };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, approver_clean, "EXAM_APPROVED", "EXAM", exam_id);
         ledger_append("EXAM_APPROVED", exam_id, sig);
     }
 
@@ -853,18 +1140,184 @@ int platform_schedule_exam(const char *exam_id, time_t start_time, time_t end_ti
 
     if (ok) {
         ledger_append("EXAM_SCHEDULED", exam_id, timezone);
-        const char *audit_params[] = {
-            (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL,
-            "EXAM_SCHEDULED"
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, actor, "EXAM_SCHEDULED", "EXAM", exam_id);
     }
 
     release_db_connection(conn, 0);
     return ok ? 0 : -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Dependency health
+ * ------------------------------------------------------------------------- */
+
+/* Returns 0 when the durable platform store is reachable and responsive. */
+int platform_database_health(void) {
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *res = PQexec(conn, "SELECT 1");
+    int ok = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1;
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
+    return ok ? 0 : -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Exam readiness
+ *
+ * Readiness is derived only from evidence the platform actually holds:
+ * the device's own telemetry, its attestation state, the published exam
+ * policy, and the device enrolment record.
+ *
+ * Every control is three-valued. "UNKNOWN" means the platform holds no
+ * evidence either way. Reporting that as a failure would fabricate a
+ * result; reporting it as a pass would be equally wrong.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    PLATFORM_CONTROL_OK = 0,
+    PLATFORM_CONTROL_FAILED = 1,
+    PLATFORM_CONTROL_UNKNOWN = 2
+} platform_control_t;
+
+static const char *platform_control_name(platform_control_t control) {
+    switch (control) {
+        case PLATFORM_CONTROL_OK:     return "OK";
+        case PLATFORM_CONTROL_FAILED: return "FAILED";
+        default:                      return "UNKNOWN";
+    }
+}
+
+/* Reads the most recent agent telemetry for a device. */
+static int readiness_latest_telemetry(PGconn *conn, const char *device_id,
+                                      char *out_network_state, size_t network_len,
+                                      char *out_camera_available, size_t camera_len) {
+    if (out_network_state && network_len) out_network_state[0] = '\0';
+    if (out_camera_available && camera_len) out_camera_available[0] = '\0';
+    if (!conn || !device_id || !device_id[0]) return -1;
+
+    const char *params[1] = { device_id };
+    PGresult *res = PQexecParams(conn,
+        "SELECT payload->'hardware'->>'network_state', "
+        "       payload->'hardware'->>'camera_available' "
+        "FROM examos_agent_heartbeat_records "
+        "WHERE device_id=$1 "
+        "AND reported_at > clock_timestamp() - interval '5 minutes' "
+        "ORDER BY reported_at DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    int found = 0;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+        found = 1;
+        if (out_network_state && network_len)
+            snprintf(out_network_state, network_len, "%s",
+                     PQgetisnull(res, 0, 0) ? "" : PQgetvalue(res, 0, 0));
+        if (out_camera_available && camera_len)
+            snprintf(out_camera_available, camera_len, "%s",
+                     PQgetisnull(res, 0, 1) ? "" : PQgetvalue(res, 0, 1));
+    }
+    if (res) PQclear(res);
+    return found ? 0 : -1;
+}
+
+static platform_control_t readiness_network_control(PGconn *conn, const char *device_id,
+                                                     int offline_allowed) {
+    char network_state[32] = {0};
+    if (readiness_latest_telemetry(conn, device_id, network_state, sizeof(network_state),
+                                   NULL, 0) != 0 || !network_state[0]) {
+        return PLATFORM_CONTROL_UNKNOWN;
+    }
+    if (strcmp(network_state, "ONLINE") == 0) return PLATFORM_CONTROL_OK;
+    if (strcmp(network_state, "OFFLINE") == 0)
+        return offline_allowed ? PLATFORM_CONTROL_OK : PLATFORM_CONTROL_FAILED;
+    return PLATFORM_CONTROL_UNKNOWN;
+}
+
+static platform_control_t readiness_camera_control(PGconn *conn, const char *device_id) {
+    char camera[16] = {0};
+    if (readiness_latest_telemetry(conn, device_id, NULL, 0,
+                                   camera, sizeof(camera)) != 0 || !camera[0]) {
+        return PLATFORM_CONTROL_UNKNOWN;
+    }
+    if (strcmp(camera, "true") == 0) return PLATFORM_CONTROL_OK;
+    if (strcmp(camera, "false") == 0) return PLATFORM_CONTROL_FAILED;
+    return PLATFORM_CONTROL_UNKNOWN;
+}
+
+static platform_control_t readiness_tpm_control(PGconn *conn, const char *device_id) {
+    const char *params[1] = { device_id };
+
+    /* A device or release revocation is decisive regardless of history. */
+    PGresult *revoked = PQexecParams(conn,
+        "SELECT 1 FROM examos_attestation_revocations "
+        "WHERE target_type='DEVICE' AND target_id=$1 LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+    int device_revoked = (revoked && PQresultStatus(revoked) == PGRES_TUPLES_OK &&
+                          PQntuples(revoked) == 1);
+    if (revoked) PQclear(revoked);
+    if (device_revoked) return PLATFORM_CONTROL_FAILED;
+
+    PGresult *res = PQexecParams(conn,
+        "SELECT state FROM examos_attestation_challenges "
+        "WHERE device_id=$1 "
+        "AND created_at > clock_timestamp() - interval '15 minutes' "
+        "ORDER BY created_at DESC LIMIT 5",
+        1, NULL, params, NULL, NULL, 0);
+
+    platform_control_t verdict = PLATFORM_CONTROL_UNKNOWN;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+        int saw_trusted = 0, saw_failure = 0;
+        for (int i = 0; i < PQntuples(res); i++) {
+            const char *state = PQgetvalue(res, i, 0);
+            if (strcmp(state, "TRUSTED") == 0) saw_trusted = 1;
+            else if (strcmp(state, "FAILED") == 0 || strcmp(state, "REVOKED") == 0 ||
+                     strcmp(state, "STALE") == 0) saw_failure = 1;
+        }
+        if (saw_trusted) verdict = PLATFORM_CONTROL_OK;
+        else if (saw_failure) verdict = PLATFORM_CONTROL_FAILED;
+    }
+    if (res) PQclear(res);
+    return verdict;
+}
+
+static platform_control_t readiness_kiosk_control(PGconn *conn, const char *exam_id,
+                                                   const char *device_id) {
+    const char *params[2] = { device_id, exam_id };
+    PGresult *res = PQexecParams(conn,
+        "SELECT d.enrollment_status, d.attestation_status, d.compliance_status, "
+        "       COALESCE(d.assigned_exam_id,''), "
+        "       (SELECT count(*) FROM examos_exam_policies p "
+        "         WHERE p.exam_id=$2 AND p.status='ACTIVE') "
+        "FROM examos_devices d WHERE d.device_id=$1",
+        2, NULL, params, NULL, NULL, 0);
+
+    platform_control_t verdict = PLATFORM_CONTROL_UNKNOWN;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+        const char *enrollment = PQgetvalue(res, 0, 0);
+        const char *attestation = PQgetvalue(res, 0, 1);
+        const char *compliance = PQgetvalue(res, 0, 2);
+        const char *assigned = PQgetvalue(res, 0, 3);
+        int active_policies = atoi(PQgetvalue(res, 0, 4));
+
+        if (active_policies <= 0) {
+            /* An exam without a published policy cannot be enforced. */
+            verdict = PLATFORM_CONTROL_FAILED;
+        } else if (strcmp(assigned, exam_id) != 0) {
+            /* The device is not assigned to this exam. */
+            verdict = PLATFORM_CONTROL_FAILED;
+        } else if (strcmp(enrollment, "ENROLLED") != 0) {
+            verdict = PLATFORM_CONTROL_FAILED;
+        } else if (strcmp(attestation, "TRUSTED") != 0) {
+            verdict = PLATFORM_CONTROL_FAILED;
+        } else if (strcmp(compliance, "COMPLIANT") != 0) {
+            verdict = PLATFORM_CONTROL_FAILED;
+        } else {
+            verdict = PLATFORM_CONTROL_OK;
+        }
+    } else if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 0) {
+        verdict = PLATFORM_CONTROL_FAILED;   /* device is not registered */
+    }
+    if (res) PQclear(res);
+    return verdict;
 }
 
 int platform_check_readiness(const char *exam_id, const char *device_id, char *out_json, size_t max_len) {
@@ -873,47 +1326,103 @@ int platform_check_readiness(const char *exam_id, const char *device_id, char *o
     enterprise_exam_t exam;
     if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
 
-    int net_ok = platform_validate_exam_url(exam.exam_url, NULL, 0) == 0;
-    /* The P3 quote verifier, measured kiosk-policy source, and authenticated
-       camera health producer are not integrated into this readiness path. */
-    int tpm_ok = 0;
-    int kiosk_ok = 0;
-    int cam_ok = 0;
-    int passed = (net_ok && tpm_ok && kiosk_ok && cam_ok);
-
     PGconn *conn = acquire_db_connection();
-    if (conn) {
-        const char *params[] = {
-            exam_id, device_id,
-            net_ok ? "true" : "false",
-            tpm_ok ? "true" : "false",
-            kiosk_ok ? "true" : "false",
-            cam_ok ? "true" : "false",
-            passed ? "true" : "false",
-            passed ? "All configured controls passed" :
-                     "Not ready: TPM quote verification, kiosk-policy evidence, or camera health is unavailable"
-        };
-        PGresult *res = PQexecParams(conn,
-            "INSERT INTO examos_exam_readiness_checks ("
-            "  exam_id, device_id, network_ok, tpm_attested, kiosk_policy_ready, camera_ready, passed, details"
-            ") VALUES ($1, $2, $3::boolean, $4::boolean, $5::boolean, $6::boolean, $7::boolean, $8)",
-            8, NULL, params, NULL, NULL, 0);
-        if (res) PQclear(res);
-        release_db_connection(conn, 0);
-    }
+    if (!conn) return -1;
+
+    /* The exam URL must be a usable HTTPS origin before the exam can run. */
+    char url_error[256] = {0};
+    int url_valid = (platform_validate_exam_url(exam.exam_url, url_error, sizeof(url_error)) == 0);
+
+    platform_control_t network = readiness_network_control(conn, device_id,
+                                                            exam.network_offline_allowed);
+    if (!url_valid && network == PLATFORM_CONTROL_OK)
+        network = PLATFORM_CONTROL_FAILED;
+
+    platform_control_t tpm = readiness_tpm_control(conn, device_id);
+    platform_control_t kiosk = readiness_kiosk_control(conn, exam_id, device_id);
+    platform_control_t camera = readiness_camera_control(conn, device_id);
+
+    int unknown = (network == PLATFORM_CONTROL_UNKNOWN) ||
+                  (tpm == PLATFORM_CONTROL_UNKNOWN) ||
+                  (kiosk == PLATFORM_CONTROL_UNKNOWN) ||
+                  (camera == PLATFORM_CONTROL_UNKNOWN);
+    int failed = (network == PLATFORM_CONTROL_FAILED) ||
+                 (tpm == PLATFORM_CONTROL_FAILED) ||
+                 (kiosk == PLATFORM_CONTROL_FAILED) ||
+                 (camera == PLATFORM_CONTROL_FAILED);
+    int passed = (!unknown && !failed);
+    const char *verdict = failed ? "FAIL" : (unknown ? "INDETERMINATE" : "PASS");
+
+    char details[512];
+    snprintf(details, sizeof(details),
+             "verdict=%s network=%s tpm=%s kiosk_policy=%s camera=%s url_valid=%s",
+             verdict,
+             platform_control_name(network), platform_control_name(tpm),
+             platform_control_name(kiosk), platform_control_name(camera),
+             url_valid ? "true" : "false");
+
+    const char *params[] = {
+        exam_id, device_id,
+        network == PLATFORM_CONTROL_OK ? "true" : "false",
+        tpm == PLATFORM_CONTROL_OK ? "true" : "false",
+        kiosk == PLATFORM_CONTROL_OK ? "true" : "false",
+        camera == PLATFORM_CONTROL_OK ? "true" : "false",
+        passed ? "true" : "false",
+        details
+    };
+    PGresult *res = PQexecParams(conn,
+        "INSERT INTO examos_exam_readiness_checks ("
+        "  exam_id, device_id, network_ok, tpm_attested, kiosk_policy_ready, camera_ready, passed, details"
+        ") VALUES ($1, $2, $3::boolean, $4::boolean, $5::boolean, $6::boolean, $7::boolean, $8)",
+        8, NULL, params, NULL, NULL, 0);
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
 
     if (out_json && max_len > 64) {
         snprintf(out_json, max_len,
-            "{\"exam_id\":\"%s\",\"device_id\":\"%s\",\"network\":%s,\"tpm\":%s,"
-            "\"kiosk_policy\":%s,\"camera\":%s,\"passed\":%s}",
+            "{\"exam_id\":\"%s\",\"device_id\":\"%s\","
+            "\"network\":\"%s\",\"tpm\":\"%s\",\"kiosk_policy\":\"%s\",\"camera\":\"%s\","
+            "\"passed\":%s,\"verdict\":\"%s\"}",
             exam_id, device_id,
-            net_ok ? "true" : "false",
-            tpm_ok ? "true" : "false",
-            kiosk_ok ? "true" : "false",
-            cam_ok ? "true" : "false",
-            passed ? "true" : "false");
+            platform_control_name(network), platform_control_name(tpm),
+            platform_control_name(kiosk), platform_control_name(camera),
+            passed ? "true" : "false", verdict);
     }
     return passed ? 0 : -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Exam lifecycle state machine
+ *
+ * The exam lifecycle is a directed graph. Transitions that are not part of
+ * the graph are refused, so a mis-sequenced administrative action cannot
+ * move an exam into a state it never legitimately reached.
+ * ------------------------------------------------------------------------- */
+int platform_exam_state_transition_allowed(exam_state_t from, exam_state_t to) {
+    switch (from) {
+        case EXAM_STATE_DRAFT:
+            return to == EXAM_STATE_VALIDATED;
+        case EXAM_STATE_VALIDATED:
+            return to == EXAM_STATE_APPROVED || to == EXAM_STATE_DRAFT;
+        case EXAM_STATE_APPROVED:
+            return to == EXAM_STATE_SCHEDULED;
+        case EXAM_STATE_SCHEDULED:
+            return to == EXAM_STATE_OPEN;
+        case EXAM_STATE_OPEN:
+            return to == EXAM_STATE_ACTIVE || to == EXAM_STATE_PAUSED;
+        case EXAM_STATE_ACTIVE:
+            return to == EXAM_STATE_PAUSED || to == EXAM_STATE_SUBMISSION;
+        case EXAM_STATE_PAUSED:
+            return to == EXAM_STATE_ACTIVE || to == EXAM_STATE_SUBMISSION;
+        case EXAM_STATE_SUBMISSION:
+            return to == EXAM_STATE_CLOSED;
+        case EXAM_STATE_CLOSED:
+            return to == EXAM_STATE_RECONCILED;
+        case EXAM_STATE_RECONCILED:
+            return 0;
+        default:
+            return 0;
+    }
 }
 
 int platform_update_exam_state(const char *exam_id, exam_state_t new_state, const char *actor) {
@@ -924,6 +1433,36 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
 
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
+
+    /* Read the current state so the transition can be validated. */
+    exam_state_t current_state = EXAM_STATE_DRAFT;
+    int have_current = 0;
+    {
+        const char *current_params[1] = { exam_id };
+        PGresult *current = PQexecParams(conn,
+            "SELECT state FROM examos_exams WHERE exam_id=$1 FOR UPDATE",
+            1, NULL, current_params, NULL, NULL, 0);
+        if (current && PQresultStatus(current) == PGRES_TUPLES_OK &&
+            PQntuples(current) == 1) {
+            current_state = string_to_exam_state(PQgetvalue(current, 0, 0));
+            have_current = 1;
+        }
+        if (current) PQclear(current);
+    }
+    if (!have_current) {
+        release_db_connection(conn, 1);
+        return -1;
+    }
+    if (current_state == new_state) {
+        /* Idempotent re-request of the current state is not a transition. */
+        release_db_connection(conn, 0);
+        return 0;
+    }
+    if (!platform_exam_state_transition_allowed(current_state, new_state)) {
+        release_db_connection(conn, 0);
+        errno = EINVAL;
+        return -1;
+    }
 
     const char *params[] = { state_str, exam_id };
     PGresult *res = PQexecParams(conn,
@@ -943,14 +1482,9 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
 
         ledger_append(event_type, exam_id, actor ? actor : "system");
 
-        const char *audit_params[] = {
-            (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL,
-            event_type
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        /* A lifecycle change without an audit record must not be
+           committed, so a failed audit insert fails the transition. */
+        if (platform_audit(conn, actor, event_type, "EXAM", exam_id) != 0) ok = 0;
     }
 
     release_db_connection(conn, 0);
@@ -1015,14 +1549,7 @@ int platform_update_exam_url(const char *exam_id, const char *new_url, const cha
     }
 
     if (ok) {
-        const char *audit_params[] = {
-            (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL,
-            "EXAM_POLICY_PUBLISHED"
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, actor, "EXAM_POLICY_PUBLISHED", "EXAM", exam_id);
         ledger_append("POLICY_UPDATE", exam_id, sig);
     }
 
@@ -1345,14 +1872,7 @@ int platform_rollback_policy(const char *exam_id, unsigned int target_version, c
     }
 
     if (ok) {
-        const char *audit_params[] = {
-            (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL,
-            "EXAM_POLICY_ROLLBACK"
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_admin_audit (actor_user_id, event_type) VALUES ($1, $2)",
-            2, NULL, audit_params, NULL, NULL, 0);
-        if (res) PQclear(res);
+        platform_audit(conn, actor, "EXAM_POLICY_ROLLBACK", "EXAM", exam_id);
         ledger_append("POLICY_ROLLBACK", exam_id, ver_str);
     }
 
@@ -1491,24 +2011,32 @@ int platform_get_roster_json(const char *exam_id, char *out_buf, size_t max_len)
     size_t offset = snprintf(out_buf, max_len, "{\"roster\":[");
 
     for (int i = 0; i < rows; ++i) {
-        offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
+        char roster_id[256], exam[256], candidate[256], name[512], email[512];
+        char room[256], seat[256], device[256], status[128];
+        if (platform_json_escape(PQgetvalue(res, i, 0), roster_id, sizeof(roster_id)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 1), exam, sizeof(exam)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 2), candidate, sizeof(candidate)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 3), name, sizeof(name)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 4), email, sizeof(email)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 5), room, sizeof(room)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 6), seat, sizeof(seat)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 7), device, sizeof(device)) != 0 ||
+            platform_json_escape(PQgetvalue(res, i, 8), status, sizeof(status)) != 0) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        int written = snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
             "%s{\"roster_id\":\"%s\",\"exam_id\":\"%s\",\"candidate_id\":\"%s\",\"name\":\"%s\","
             "\"email\":\"%s\",\"room_id\":\"%s\",\"seat\":\"%s\",\"device_id\":\"%s\","
             "\"status\":\"%s\",\"extra_time_mins\":%d}",
             (i > 0 ? "," : ""),
-            PQgetvalue(res, i, 0),
-            PQgetvalue(res, i, 1),
-            PQgetvalue(res, i, 2),
-            PQgetvalue(res, i, 3),
-            PQgetvalue(res, i, 4),
-            PQgetvalue(res, i, 5),
-            PQgetvalue(res, i, 6),
-            PQgetvalue(res, i, 7),
-            PQgetvalue(res, i, 8),
+            roster_id, exam, candidate, name, email, room, seat, device, status,
             atoi(PQgetvalue(res, i, 9)));
-        if (offset >= max_len - 100) break;
+        if (written < 0 || (size_t)written >= max_len - offset) { PQclear(res); release_db_connection(conn, 0); return -1; }
+        offset += (size_t)written;
     }
-    snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}");
+    if (snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0, "]}") >= (int)(max_len - offset)) {
+        PQclear(res); release_db_connection(conn, 0); return -1;
+    }
 
     PQclear(res);
     release_db_connection(conn, 0);
@@ -2247,25 +2775,103 @@ int platform_update_device_checkin(const char *device_id, const char *os_release
 
 int platform_update_device_attestation(const char *device_id, const char *attestation_status, const char *compliance_status) {
     if (!device_id || !device_id[0] || !attestation_status || !attestation_status[0] ||
-        (strcmp(attestation_status, "FAILED") != 0 &&
+        (strcmp(attestation_status, "TRUSTED") != 0 &&
+         strcmp(attestation_status, "FAILED") != 0 &&
          strcmp(attestation_status, "STALE") != 0 &&
          strcmp(attestation_status, "NOT_ATTESTED") != 0) ||
         (compliance_status && compliance_status[0] &&
          strcmp(compliance_status, "NON_COMPLIANT") != 0 &&
          strcmp(compliance_status, "MAINTENANCE") != 0 &&
-         strcmp(compliance_status, "QUARANTINED") != 0)) return -1;
-    fleet_device_record_t dev;
-    if (platform_get_device_by_id(device_id, &dev) != 0) return -1;
-
-    if (attestation_status && attestation_status[0]) {
-        snprintf(dev.attestation_status, sizeof(dev.attestation_status), "%s", attestation_status);
-        dev.last_attestation_ts = 0;
+         strcmp(compliance_status, "QUARANTINED") != 0)) {
+        platform_set_error("attestation_status must be one of TRUSTED, FAILED, STALE, NOT_ATTESTED "
+                           "and compliance_status must be one of NON_COMPLIANT, MAINTENANCE, QUARANTINED");
+        return -1;
     }
+    fleet_device_record_t dev;
+    if (platform_get_device_by_id(device_id, &dev) != 0) {
+        platform_set_error("The device is not registered in the fleet");
+        return -1;
+    }
+
+    snprintf(dev.attestation_status, sizeof(dev.attestation_status), "%s", attestation_status);
+    /* A device that just produced a verified quote is stamped with the
+       moment of that verification, not zero. */
+    dev.last_attestation_ts = (strcmp(attestation_status, "TRUSTED") == 0) ? time(NULL) : dev.last_attestation_ts;
+
     if (compliance_status && compliance_status[0]) {
         snprintf(dev.compliance_status, sizeof(dev.compliance_status), "%s", compliance_status);
+    } else {
+        platform_derive_compliance_status(&dev);
     }
 
     return platform_register_device(&dev);
+}
+
+/*
+ * Derives the compliance status of a device from the facts the platform
+ * actually holds about it. Compliance is never asserted by an operator: it
+ * is recomputed from enrolment, attestation, maintenance and quarantine
+ * state so that it cannot drift away from the underlying evidence.
+ */
+void platform_derive_compliance_status(fleet_device_record_t *dev) {
+    if (!dev) return;
+    if (dev->maintenance_mode) {
+        snprintf(dev->compliance_status, sizeof(dev->compliance_status), "MAINTENANCE");
+        return;
+    }
+    if (strcmp(dev->enrollment_status, "QUARANTINED") == 0) {
+        snprintf(dev->compliance_status, sizeof(dev->compliance_status), "QUARANTINED");
+        return;
+    }
+    if (strcmp(dev->enrollment_status, "ENROLLED") == 0 &&
+        strcmp(dev->attestation_status, "TRUSTED") == 0 &&
+        dev->enrolled) {
+        snprintf(dev->compliance_status, sizeof(dev->compliance_status), "COMPLIANT");
+        return;
+    }
+    snprintf(dev->compliance_status, sizeof(dev->compliance_status), "NON_COMPLIANT");
+}
+
+/*
+ * Assigns a registered device to an exam.
+ *
+ * The device and the exam must belong to the same institution: a device
+ * from one institution must never be able to sit an exam of another.
+ */
+int platform_assign_device_to_exam(const char *device_id, const char *exam_id, const char *actor) {
+    if (!device_id || !device_id[0] || !exam_id || !exam_id[0]) {
+        platform_set_error("device_id and exam_id are required");
+        return -1;
+    }
+    fleet_device_record_t dev;
+    if (platform_get_device_by_id(device_id, &dev) != 0) {
+        platform_set_error("The device is not registered in the fleet");
+        return -1;
+    }
+
+    enterprise_exam_t exam;
+    if (platform_get_exam_by_id(exam_id, &exam) != 0) {
+        platform_set_error("The exam does not exist");
+        return -1;
+    }
+    if (dev.institution_id[0] && exam.institution_id[0] &&
+        strcmp(dev.institution_id, exam.institution_id) != 0) {
+        platform_set_error("The device and the exam belong to different institutions");
+        return -1;
+    }
+
+    snprintf(dev.assigned_exam_id, sizeof(dev.assigned_exam_id), "%s", exam_id);
+    platform_derive_compliance_status(&dev);
+    if (platform_register_device(&dev) != 0) {
+        platform_set_error("The device assignment could not be stored");
+        return -1;
+    }
+
+    char details[256];
+    snprintf(details, sizeof(details), "device_id=%s exam_id=%s actor=%s",
+             device_id, exam_id, actor ? actor : "system");
+    ledger_append("DEVICE_ENROLLED", device_id, details);
+    return 0;
 }
 
 int platform_set_device_maintenance(const char *device_id, int in_maintenance) {
@@ -2718,71 +3324,149 @@ int platform_get_fleet_compliance_json(const char *inst_id, char *out_buf, size_
  * Security Events & Incidents JSON (Module J)
  * ------------------------------------------------------------------------- */
 int platform_get_incidents_json(const char *inst_id, char *out_buf, size_t max_len) {
-    pthread_mutex_lock(&g_platform_lock);
-    size_t offset = snprintf(out_buf, max_len, "{\"incidents\":[");
-    int first = 1;
-    for (int i = 0; i < g_incident_count; i++) {
-        if (!inst_id || strlen(inst_id) == 0 || strcmp(g_incidents[i].institution_id, inst_id) == 0) {
-            offset += snprintf(out_buf + offset, max_len - offset,
-                "%s{\"id\":\"%s\",\"title\":\"%s\",\"severity\":\"%s\",\"status\":\"%s\","
-                "\"assigned_to\":\"%s\",\"device_id\":\"%s\",\"candidate_id\":\"%s\","
-                "\"summary\":\"%s\",\"notes\":\"%s\",\"created_at\":%ld}",
-                (first ? "" : ","),
-                g_incidents[i].incident_id,
-                g_incidents[i].title,
-                severity_to_string(g_incidents[i].severity),
-                g_incidents[i].status,
-                g_incidents[i].assigned_to,
-                g_incidents[i].device_id,
-                g_incidents[i].candidate_id,
-                g_incidents[i].summary,
-                g_incidents[i].resolution_notes,
-                g_incidents[i].created_at);
-            first = 0;
-        }
-        if (offset >= max_len - 100) break;
+    if (!out_buf || max_len < 64) return -1;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *res;
+    if (inst_id) {
+        const char *params[] = { inst_id };
+        res = PQexecParams(conn,
+            "SELECT incident_id, title, severity, status, assigned_to, device_id, candidate_id, "
+            "coalesce(exam_id,''), summary, resolution_notes, extract(epoch from created_at)::bigint "
+            "FROM examos_security_incidents WHERE institution_id=$1 ORDER BY created_at DESC LIMIT 1000",
+            1, NULL, params, NULL, NULL, 0);
+    } else {
+        res = PQexec(conn,
+            "SELECT incident_id, title, severity, status, assigned_to, device_id, candidate_id, "
+            "coalesce(exam_id,''), summary, resolution_notes, extract(epoch from created_at)::bigint "
+            "FROM examos_security_incidents ORDER BY created_at DESC LIMIT 1000");
     }
-    snprintf(out_buf + offset, max_len - offset, "]}");
-    pthread_mutex_unlock(&g_platform_lock);
-    return 0;
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+    int initial = snprintf(out_buf, max_len, "{\"incidents\":[");
+    if (initial < 0 || (size_t)initial >= max_len) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    size_t used = (size_t)initial;
+    for (int i = 0; i < PQntuples(res); ++i) {
+        char id[256], title[512], severity[64], status[64], assigned[256], device[256];
+        char candidate[256], exam[256], summary[2048], notes[2048];
+        if (platform_json_escape(PQgetvalue(res,i,0),id,sizeof(id)) || platform_json_escape(PQgetvalue(res,i,1),title,sizeof(title)) ||
+            platform_json_escape(PQgetvalue(res,i,2),severity,sizeof(severity)) || platform_json_escape(PQgetvalue(res,i,3),status,sizeof(status)) ||
+            platform_json_escape(PQgetvalue(res,i,4),assigned,sizeof(assigned)) || platform_json_escape(PQgetvalue(res,i,5),device,sizeof(device)) ||
+            platform_json_escape(PQgetvalue(res,i,6),candidate,sizeof(candidate)) || platform_json_escape(PQgetvalue(res,i,7),exam,sizeof(exam)) ||
+            platform_json_escape(PQgetvalue(res,i,8),summary,sizeof(summary)) || platform_json_escape(PQgetvalue(res,i,9),notes,sizeof(notes))) {
+            PQclear(res); release_db_connection(conn, 0); return -1;
+        }
+        int n = snprintf(out_buf+used,max_len-used,
+            "%s{\"id\":\"%s\",\"title\":\"%s\",\"severity\":\"%s\",\"status\":\"%s\","
+            "\"assigned_to\":\"%s\",\"device_id\":\"%s\",\"candidate_id\":\"%s\",\"exam_id\":\"%s\","
+            "\"summary\":\"%s\",\"notes\":\"%s\",\"created_at\":%s}",
+            i ? "," : "", id,title,severity,status,assigned,device,candidate,exam,summary,notes,PQgetvalue(res,i,10));
+        if (n < 0 || (size_t)n >= max_len-used) { PQclear(res); release_db_connection(conn, 0); return -1; }
+        used += (size_t)n;
+    }
+    int n = snprintf(out_buf+used,max_len-used,"]}");
+    int ok = n >= 0 && (size_t)n < max_len-used;
+    PQclear(res); release_db_connection(conn, 0);
+    return ok ? 0 : -1;
 }
 
 int platform_create_incident(const security_incident_t *inc) {
-    if (!inc) return -1;
-    pthread_mutex_lock(&g_platform_lock);
-    if (g_incident_count >= MAX_INCIDENTS) {
-        pthread_mutex_unlock(&g_platform_lock);
-        return -1;
+    if (!inc || !inc->title[0] || !inc->status[0] || inc->severity < SEV_INFO || inc->severity > SEV_CRITICAL) return -1;
+    security_incident_t record = *inc;
+    if (!record.incident_id[0]) {
+        char random_id[EXAMOS_TOKEN_HEX_LEN + 1], random_hash[EXAMOS_TOKEN_HEX_LEN + 1];
+        if (secure_token_create(random_id, random_hash) != 0) return -1;
+        snprintf(record.incident_id, sizeof(record.incident_id), "INC-%.59s", random_id);
+        OPENSSL_cleanse(random_id, sizeof(random_id)); OPENSSL_cleanse(random_hash, sizeof(random_hash));
     }
-    memcpy(&g_incidents[g_incident_count++], inc, sizeof(security_incident_t));
-
-    char details[256];
-    snprintf(details, sizeof(details), "incident_id=%s sev=%s title=%s",
-             inc->incident_id, severity_to_string(inc->severity), inc->title);
-    ledger_append("INCIDENT_RAISED", inc->incident_id, details);
-
-    pthread_mutex_unlock(&g_platform_lock);
-    return 0;
+    PGconn *conn = acquire_db_connection(); if (!conn) return -1;
+    PGresult *begin = PQexec(conn, "BEGIN");
+    int tx_ok = begin && PQresultStatus(begin) == PGRES_COMMAND_OK;
+    if (begin) PQclear(begin);
+    if (!tx_ok) { release_db_connection(conn, 1); return -1; }
+    const char *params[] = { record.incident_id, record.institution_id[0] ? record.institution_id : NULL,
+        record.title, severity_to_string(record.severity), record.status, record.assigned_to,
+        record.device_id, record.candidate_id, record.exam_id[0] ? record.exam_id : NULL,
+        record.summary, record.resolution_notes };
+    PGresult *res = PQexecParams(conn,
+        "INSERT INTO examos_security_incidents (incident_id,institution_id,title,severity,status,assigned_to,device_id,candidate_id,exam_id,summary,resolution_notes) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", 11,NULL,params,NULL,NULL,0);
+    int ok = res && PQresultStatus(res)==PGRES_COMMAND_OK;
+    if (res) PQclear(res);
+    if (ok) {
+        const char *history[] = { record.incident_id, "CREATED", record.status, record.summary };
+        res = PQexecParams(conn,
+            "INSERT INTO examos_incident_history (incident_id,action,new_status,notes) VALUES ($1,$2,$3,$4)",
+            4,NULL,history,NULL,NULL,0);
+        ok = res && PQresultStatus(res)==PGRES_COMMAND_OK;
+        if (res) PQclear(res);
+    }
+    PGresult *finish = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
+    if (!finish || PQresultStatus(finish) != PGRES_COMMAND_OK) ok = 0;
+    if (finish) PQclear(finish);
+    release_db_connection(conn, 0);
+    if (ok) {
+        char details[128]; snprintf(details,sizeof(details),"severity=%s",severity_to_string(record.severity));
+        ledger_append("INCIDENT_RAISED",record.incident_id,details);
+    }
+    return ok ? 0 : -1;
 }
 
-int platform_update_incident_status(const char *incident_id, const char *new_status, const char *notes, const char *actor) {
-    pthread_mutex_lock(&g_platform_lock);
-    for (int i = 0; i < g_incident_count; i++) {
-        if (strcmp(g_incidents[i].incident_id, incident_id) == 0) {
-            snprintf(g_incidents[i].status, sizeof(g_incidents[i].status), "%s", new_status);
-            g_incidents[i].updated_at = time(NULL);
-            if (notes) snprintf(g_incidents[i].resolution_notes, sizeof(g_incidents[i].resolution_notes), "%s", notes);
-
-            char details[256];
-            snprintf(details, sizeof(details), "new_status=%s actor=%s", new_status, actor ? actor : "system");
-            ledger_append("INCIDENT_STATUS", incident_id, details);
-
-            pthread_mutex_unlock(&g_platform_lock);
-            return 0;
-        }
+int platform_update_incident_status_scoped(const char *incident_id, const char *institution_scope,
+                                           const char *new_status, const char *notes, const char *actor) {
+    if (!incident_id || !incident_id[0] || !new_status ||
+        (strcmp(new_status,"OPEN") && strcmp(new_status,"INVESTIGATING") &&
+         strcmp(new_status,"CONTAINED") && strcmp(new_status,"RESOLVED"))) return -1;
+    PGconn *conn = acquire_db_connection(); if (!conn) return -1;
+    PGresult *begin = PQexec(conn,"BEGIN");
+    if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+        if (begin) PQclear(begin);
+        release_db_connection(conn, 1);
+        return -1;
     }
-    pthread_mutex_unlock(&g_platform_lock);
-    return -1;
+    PQclear(begin);
+    const char *lookup_params[] = { incident_id,
+        institution_scope && institution_scope[0] ? institution_scope : NULL };
+    PGresult *res = PQexecParams(conn,
+        "SELECT status FROM examos_security_incidents WHERE incident_id=$1 "
+        "AND ($2::varchar IS NULL OR institution_id=$2) FOR UPDATE",
+        2,NULL,lookup_params,NULL,NULL,0);
+    int ok = res && PQresultStatus(res)==PGRES_TUPLES_OK && PQntuples(res)==1;
+    char prior_status[32] = {0}; if (ok) snprintf(prior_status,sizeof(prior_status),"%s",PQgetvalue(res,0,0));
+    if (res) PQclear(res);
+    if (ok) {
+        const char *update_params[] = { new_status, notes ? notes : "", incident_id,
+            institution_scope && institution_scope[0] ? institution_scope : NULL };
+        res = PQexecParams(conn,
+            "UPDATE examos_security_incidents SET status=$1,resolution_notes=$2,updated_at=clock_timestamp() "
+            "WHERE incident_id=$3 AND ($4::varchar IS NULL OR institution_id=$4)",
+            4,NULL,update_params,NULL,NULL,0);
+        ok = res && PQresultStatus(res)==PGRES_COMMAND_OK && strcmp(PQcmdTuples(res),"1")==0;
+        if (res) PQclear(res);
+    }
+    if (ok) {
+        const char *hist_params[] = { incident_id, actor && actor[0] ? actor : NULL, prior_status, new_status, notes ? notes : "" };
+        res = PQexecParams(conn,
+            "INSERT INTO examos_incident_history (incident_id,actor_user_id,action,prior_status,new_status,notes) "
+            "VALUES ($1,CASE WHEN EXISTS (SELECT 1 FROM examos_admin_users WHERE user_id=$2) THEN $2 ELSE NULL END,'STATUS_CHANGED',$3,$4,$5)",
+            5,NULL,hist_params,NULL,NULL,0);
+        ok = res && PQresultStatus(res)==PGRES_COMMAND_OK;
+        if (res) PQclear(res);
+    }
+    res = PQexec(conn,ok ? "COMMIT" : "ROLLBACK");
+    if (!res || PQresultStatus(res)!=PGRES_COMMAND_OK) ok=0;
+    if (res) PQclear(res);
+    release_db_connection(conn,0);
+    if (ok) { char details[128]; snprintf(details,sizeof(details),"status=%s actor=%s",new_status,actor?actor:"system"); ledger_append("INCIDENT_STATUS",incident_id,details); }
+    return ok ? 0 : -1;
+}
+
+int platform_update_incident_status(const char *incident_id, const char *new_status,
+                                    const char *notes, const char *actor) {
+    return platform_update_incident_status_scoped(incident_id, NULL, new_status, notes, actor);
 }
 
 /* -------------------------------------------------------------------------
@@ -2857,39 +3541,63 @@ int platform_get_submissions_json(const char *exam_id, char *out_buf, size_t max
  * Releases JSON (Module L)
  * ------------------------------------------------------------------------- */
 int platform_get_releases_json(char *out_buf, size_t max_len) {
-    pthread_mutex_lock(&g_platform_lock);
-    size_t offset = snprintf(out_buf, max_len, "{\"releases\":[");
-    for (int i = 0; i < g_release_count; i++) {
-        offset += snprintf(out_buf + offset, max_len - offset,
-            "%s{\"id\":\"%s\",\"version\":\"%s\",\"image_digest\":\"%s\",\"uki_digest\":\"%s\","
-            "\"sbom_digest\":\"%s\",\"ring\":\"%s\",\"status\":\"%s\",\"signed_by\":\"%s\",\"date\":%ld}",
-            (i > 0 ? "," : ""),
-            g_releases[i].release_id,
-            g_releases[i].version_name,
-            g_releases[i].image_digest,
-            g_releases[i].uki_digest,
-            g_releases[i].sbom_digest,
-            ring_to_string(g_releases[i].target_ring),
-            g_releases[i].status,
-            g_releases[i].signed_by,
-            g_releases[i].release_date);
-        if (offset >= max_len - 100) break;
+    if (!out_buf || max_len < 64) return -1;
+    PGconn *conn = acquire_db_connection(); if (!conn) return -1;
+    PGresult *res = PQexec(conn,
+        "SELECT r.release_id,r.version_name,r.image_digest,r.uki_digest,r.sbom_digest,r.target_ring,"
+        "CASE WHEN v.target_id IS NOT NULL THEN 'REVOKED' ELSE r.status END,r.signed_by,"
+        "extract(epoch from r.release_date)::bigint FROM examos_software_releases r "
+        "LEFT JOIN examos_attestation_revocations v ON v.target_type='RELEASE' AND v.target_id=r.release_id "
+        "ORDER BY r.release_date DESC LIMIT 1000");
+    if (!res || PQresultStatus(res)!=PGRES_TUPLES_OK) { if(res) PQclear(res); release_db_connection(conn,0); return -1; }
+    int initial=snprintf(out_buf,max_len,"{\"releases\":[");
+    if(initial<0 || (size_t)initial>=max_len) { PQclear(res); release_db_connection(conn,0); return -1; }
+    size_t used=(size_t)initial;
+    for(int i=0;i<PQntuples(res);++i) {
+        char id[256],version[256],image[128],uki[128],sbom[128],ring[64],status[64],signer[256];
+        if(platform_json_escape(PQgetvalue(res,i,0),id,sizeof(id)) || platform_json_escape(PQgetvalue(res,i,1),version,sizeof(version)) ||
+           platform_json_escape(PQgetvalue(res,i,2),image,sizeof(image)) || platform_json_escape(PQgetvalue(res,i,3),uki,sizeof(uki)) ||
+           platform_json_escape(PQgetvalue(res,i,4),sbom,sizeof(sbom)) || platform_json_escape(PQgetvalue(res,i,5),ring,sizeof(ring)) ||
+           platform_json_escape(PQgetvalue(res,i,6),status,sizeof(status)) || platform_json_escape(PQgetvalue(res,i,7),signer,sizeof(signer))) {
+            PQclear(res); release_db_connection(conn,0); return -1;
+        }
+        int n=snprintf(out_buf+used,max_len-used,
+            "%s{\"id\":\"%s\",\"version\":\"%s\",\"image_digest\":\"%s\",\"uki_digest\":\"%s\",\"sbom_digest\":\"%s\",\"ring\":\"%s\",\"status\":\"%s\",\"signed_by\":\"%s\",\"date\":%s}",
+            i?",":"",id,version,image,uki,sbom,ring,status,signer,PQgetvalue(res,i,8));
+        if(n<0 || (size_t)n>=max_len-used) { PQclear(res); release_db_connection(conn,0); return -1; }
+        used+=(size_t)n;
     }
-    snprintf(out_buf + offset, max_len - offset, "]}");
-    pthread_mutex_unlock(&g_platform_lock);
-    return 0;
+    int n=snprintf(out_buf+used,max_len-used,"]}"); int ok=n>=0 && (size_t)n<max_len-used;
+    PQclear(res); release_db_connection(conn,0); return ok?0:-1;
 }
 
 int platform_create_release(const enterprise_release_t *rel) {
-    if (!rel) return -1;
-    pthread_mutex_lock(&g_platform_lock);
-    if (g_release_count >= PLATFORM_MAX_RELEASES) {
-        pthread_mutex_unlock(&g_platform_lock);
+    if (!rel || !rel->release_id[0] || !rel->version_name[0] || !rel->release_date ||
+        rel->target_ring < RING_CANARY || rel->target_ring > RING_GENERAL ||
+        strcmp(rel->status,"DRAFT") != 0) {
+        platform_set_error("release_id, version_name, a release date, a valid target ring and a "
+                           "DRAFT status are required");
         return -1;
     }
-    memcpy(&g_releases[g_release_count++], rel, sizeof(enterprise_release_t));
-    pthread_mutex_unlock(&g_platform_lock);
-    return 0;
+    PGconn *conn=acquire_db_connection();
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
+    const char *params[]={rel->release_id,rel->version_name,rel->image_digest,rel->uki_digest,rel->sbom_digest,
+        ring_to_string(rel->target_ring),rel->status,rel->signed_by,
+        NULL};
+    char date[32]; snprintf(date,sizeof(date),"%ld",(long)rel->release_date);
+    params[8]=date;
+    PGresult *res=PQexecParams(conn,
+        "INSERT INTO examos_software_releases (release_id,version_name,image_digest,uki_digest,sbom_digest,target_ring,status,signed_by,release_date) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9::bigint))",
+        9,NULL,params,NULL,NULL,0);
+    int ok=res && PQresultStatus(res)==PGRES_COMMAND_OK;
+    if (!ok) platform_set_db_error(res);
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
+    return ok ? 0 : -1;
 }
 
 /* -------------------------------------------------------------------------
@@ -2898,56 +3606,253 @@ int platform_create_release(const enterprise_release_t *rel) {
 int platform_get_telemetry_json(char *out_buf, size_t max_len) {
     if (!out_buf || max_len < 128) return -1;
     pthread_mutex_lock(&g_platform_lock);
-    int active_terminals = 0;
     time_t now = time(NULL);
     long uptime_seconds = g_platform_started_at > 0 && now >= g_platform_started_at
                               ? (long)(now - g_platform_started_at)
                               : -1;
-    for (int i = 0; i < g_device_count; i++) {
-        if (now - g_devices[i].last_checkin < 120) active_terminals++;
-    }
-    int total_devices = g_device_count;
-    int submissions_count = g_submission_count;
-    int incidents_count = g_incident_count;
     pthread_mutex_unlock(&g_platform_lock);
 
-    int inst_count = 0, exam_count = 0, roster_count = 0;
     PGconn *conn = acquire_db_connection();
-    if (conn) {
-        PGresult *res = PQexec(conn,
-            "SELECT "
-            "  (SELECT count(*)::integer FROM examos_institutions), "
-            "  (SELECT count(*)::integer FROM examos_exams), "
-            "  (SELECT count(*)::integer FROM examos_exam_roster)");
-        if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
-            inst_count   = atoi(PQgetvalue(res, 0, 0));
-            exam_count   = atoi(PQgetvalue(res, 0, 1));
-            roster_count = atoi(PQgetvalue(res, 0, 2));
-        }
+    if (!conn) return -1;
+    PGresult *res = PQexec(conn,
+        "SELECT (SELECT count(*) FROM examos_institutions),"
+        "(SELECT count(*) FROM examos_exams),"
+        "(SELECT count(*) FROM examos_exam_roster),"
+        "(SELECT count(*) FROM examos_devices),"
+        "(SELECT count(*) FROM examos_security_incidents),"
+        "(SELECT count(*) FROM examos_exam_roster WHERE status='SUBMITTED'),"
+        "(SELECT coalesce(extract(epoch from max(reported_at))::bigint,0) FROM examos_device_heartbeats)");
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1) {
         if (res) PQclear(res);
         release_db_connection(conn, 0);
+        return -1;
     }
-
-    snprintf(out_buf, max_len,
-        "{\"status\":\"OPERATIONAL\",\"uptime_seconds\":%ld,\"institutions_count\":%d,"
-        "\"exams_count\":%d,\"active_terminals\":%d,\"total_devices\":%d,"
-        "\"roster_count\":%d,\"submissions_count\":%d,\"incidents_count\":%d,"
-        "\"storage_engine\":\"POSTGRESQL_TLS\","
-        "\"platform_registry_persistence\":\"ACTIVE\","
-        "\"submission_storage\":\"DURABLE_ATOMIC_DISK\"}",
-        uptime_seconds,
-        inst_count,
-        exam_count,
-        active_terminals,
-        total_devices,
-        roster_count,
-        submissions_count,
-        incidents_count);
-
-    return 0;
+    int written = snprintf(out_buf, max_len,
+        "{\"status\":\"AVAILABLE\",\"uptime_seconds\":%ld,\"institutions_count\":%s,"
+        "\"exams_count\":%s,\"roster_count\":%s,\"devices_count\":%s,\"incidents_count\":%s,"
+        "\"submitted_candidates_count\":%s,\"latest_device_heartbeat_epoch\":%s,"
+        "\"storage_engine\":\"POSTGRESQL_TLS\",\"submission_count_source\":\"roster_status\"}",
+        uptime_seconds, PQgetvalue(res,0,0), PQgetvalue(res,0,1), PQgetvalue(res,0,2),
+        PQgetvalue(res,0,3), PQgetvalue(res,0,4), PQgetvalue(res,0,5), PQgetvalue(res,0,6));
+    int ok = written >= 0 && (size_t)written < max_len;
+    PQclear(res); release_db_connection(conn, 0);
+    return ok ? 0 : -1;
 }
 
 int platform_get_reconciliation_json(const char *exam_id, char *out_buf, size_t max_len) {
     if (!out_buf || max_len < 128) return -1;
     return platform_reconcile_exam(exam_id ? exam_id : "", out_buf, max_len);
+}
+
+/* -------------------------------------------------------------------------
+ * Administrative reporting views
+ * ------------------------------------------------------------------------- */
+
+/* Scoped administrative audit trail. */
+int platform_get_audit_json(const char *exam_id, int limit, char *out_buf, size_t max_len) {
+    if (!out_buf || max_len < 256) return -1;
+    if (limit <= 0) limit = 100;
+    if (limit > 1000) limit = 1000;
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+
+    char limit_str[16];
+    snprintf(limit_str, sizeof(limit_str), "%d", limit);
+    const char *params[2] = { exam_id && exam_id[0] ? exam_id : NULL, limit_str };
+
+    PGresult *res = PQexecParams(conn,
+        "SELECT a.event_type, a.occurred_at, COALESCE(u.username,''), "
+        "       a.subject_type, a.subject_id "
+        "FROM examos_admin_audit a "
+        "LEFT JOIN examos_admin_users u ON u.user_id = a.actor_user_id "
+        "WHERE ($1::text IS NULL OR a.subject_id = $1) "
+        "ORDER BY a.occurred_at DESC LIMIT $2::integer",
+        2, NULL, params, NULL, NULL, 0);
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+
+    size_t used = 0;
+    int written = snprintf(out_buf, max_len, "[");
+    if (written < 0) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    used = (size_t)written;
+
+    for (int i = 0; i < PQntuples(res) && used + 1 < max_len; i++) {
+        char item[1024];
+        char event_type[128], actor[128], subject_type[64], subject_id[128];
+        snprintf(event_type, sizeof(event_type), "%s", PQgetvalue(res, i, 0));
+        snprintf(actor, sizeof(actor), "%s", PQgetvalue(res, i, 2));
+        snprintf(subject_type, sizeof(subject_type), "%s", PQgetvalue(res, i, 3));
+        snprintf(subject_id, sizeof(subject_id), "%s", PQgetvalue(res, i, 4));
+        platform_json_escape(event_type, event_type, sizeof(event_type));
+        platform_json_escape(actor, actor, sizeof(actor));
+        platform_json_escape(subject_type, subject_type, sizeof(subject_type));
+        platform_json_escape(subject_id, subject_id, sizeof(subject_id));
+
+        written = snprintf(item, sizeof(item),
+            "%s{\"event_type\":\"%s\",\"actor\":\"%s\",\"recorded_at\":\"%s\","
+            "\"subject_type\":\"%s\",\"subject_id\":\"%s\"}",
+            i > 0 ? "," : "", event_type, actor, PQgetvalue(res, i, 1),
+            subject_type, subject_id);
+        if (written <= 0 || used + (size_t)written >= max_len) break;
+        memcpy(out_buf + used, item, (size_t)written);
+        used += (size_t)written;
+    }
+    if (used + 3 < max_len) {
+        memcpy(out_buf + used, "]\0", 3);
+    } else {
+        out_buf[max_len - 1] = '\0';
+    }
+    PQclear(res);
+    release_db_connection(conn, 0);
+    return 0;
+}
+
+/* Live examination operations: state distribution and candidate progress. */
+int platform_get_operations_json(char *out_buf, size_t max_len) {
+    if (!out_buf || max_len < 256) return -1;
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+
+    PGresult *res = PQexec(conn,
+        "SELECT e.state, count(*), "
+        "       coalesce(sum(CASE WHEN r.status='CHECKED_IN' THEN 1 ELSE 0 END),0), "
+        "       coalesce(sum(CASE WHEN r.status='IN_EXAM' THEN 1 ELSE 0 END),0), "
+        "       coalesce(sum(CASE WHEN r.status='SUBMITTED' THEN 1 ELSE 0 END),0), "
+        "       coalesce(sum(CASE WHEN r.status='ELIGIBLE' THEN 1 ELSE 0 END),0) "
+        "FROM examos_exams e "
+        "LEFT JOIN examos_exam_roster r ON r.exam_id = e.exam_id "
+        "GROUP BY e.state ORDER BY e.state");
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+
+    size_t used = 0;
+    int written = snprintf(out_buf, max_len, "{\"exam_states\":[");
+    if (written < 0) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    used = (size_t)written;
+
+    for (int i = 0; i < PQntuples(res) && used + 1 < max_len; i++) {
+        char item[512];
+        written = snprintf(item, sizeof(item),
+            "%s{\"state\":\"%s\",\"exams\":%s,\"checked_in\":%s,\"in_exam\":%s,"
+            "\"submitted\":%s,\"eligible\":%s}",
+            i > 0 ? "," : "",
+            PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
+            PQgetvalue(res, i, 3), PQgetvalue(res, i, 4), PQgetvalue(res, i, 5));
+        if (written <= 0 || used + (size_t)written >= max_len) break;
+        memcpy(out_buf + used, item, (size_t)written);
+        used += (size_t)written;
+    }
+    if (used + 2 < max_len) {
+        memcpy(out_buf + used, "]}\0", 4);
+    } else {
+        out_buf[max_len - 1] = '\0';
+    }
+    PQclear(res);
+    release_db_connection(conn, 0);
+    return 0;
+}
+
+/* Device groups and deployment rings, with the size of each group. */
+int platform_get_device_groups_json(char *out_buf, size_t max_len) {
+    if (!out_buf || max_len < 256) return -1;
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+
+    PGresult *res = PQexec(conn,
+        "SELECT d.group_name, d.deployment_ring, count(*), "
+        "       coalesce(sum(CASE WHEN d.compliance_status='COMPLIANT' THEN 1 ELSE 0 END),0), "
+        "       coalesce(sum(CASE WHEN d.enrollment_status='ENROLLED' THEN 1 ELSE 0 END),0) "
+        "FROM examos_devices d "
+        "WHERE d.group_name <> '' "
+        "GROUP BY d.group_name, d.deployment_ring "
+        "ORDER BY d.group_name, d.deployment_ring");
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+
+    size_t used = 0;
+    int written = snprintf(out_buf, max_len, "[");
+    if (written < 0) { PQclear(res); release_db_connection(conn, 0); return -1; }
+    used = (size_t)written;
+
+    for (int i = 0; i < PQntuples(res) && used + 1 < max_len; i++) {
+        char item[512];
+        written = snprintf(item, sizeof(item),
+            "%s{\"group_name\":\"%s\",\"deployment_ring\":\"%s\",\"devices\":%s,"
+            "\"compliant\":%s,\"enrolled\":%s}",
+            i > 0 ? "," : "",
+            PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
+            PQgetvalue(res, i, 3), PQgetvalue(res, i, 4));
+        if (written <= 0 || used + (size_t)written >= max_len) break;
+        memcpy(out_buf + used, item, (size_t)written);
+        used += (size_t)written;
+    }
+    if (used + 3 < max_len) {
+        memcpy(out_buf + used, "]\0", 3);
+    } else {
+        out_buf[max_len - 1] = '\0';
+    }
+    PQclear(res);
+    release_db_connection(conn, 0);
+    return 0;
+}
+
+/* Updates the mutable attributes of an institution. */
+int platform_update_institution(const char *institution_id, const char *name,
+                                const char *contact_email, int retention_days,
+                                const char *actor) {
+    if (!institution_id || !institution_id[0] || !name || !name[0] ||
+        strlen(institution_id) >= 64 || strlen(name) >= 128 ||
+        retention_days < 1 || retention_days > 36500) {
+        platform_set_error("institution_id, name and a retention window between 1 and 36500 days are required");
+        return -1;
+    }
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        return -1;
+    }
+
+    char retention_str[16];
+    snprintf(retention_str, sizeof(retention_str), "%d", retention_days);
+    const char *params[4] = {
+        name,
+        contact_email && contact_email[0] ? contact_email : NULL,
+        retention_str,
+        institution_id
+    };
+    PGresult *res = PQexecParams(conn,
+        "UPDATE examos_institutions SET name = $1, domain_email = COALESCE($2, domain_email), "
+        "  retention_days = $3::integer WHERE institution_id = $4",
+        4, NULL, params, NULL, NULL, 0);
+
+    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK &&
+             strcmp(PQcmdTuples(res), "1") == 0;
+    if (!ok) platform_set_db_error(res);
+    if (res) PQclear(res);
+    release_db_connection(conn, 0);
+
+    if (ok) {
+        char details[256];
+        snprintf(details, sizeof(details),
+                 "institution_id=%s name=%s retention_days=%d actor=%s",
+                 institution_id, name, retention_days, actor ? actor : "system");
+        ledger_append("ADMIN_CONFIG_UPDATED", institution_id, details);
+    }
+    return ok ? 0 : -1;
 }

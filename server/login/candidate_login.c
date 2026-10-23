@@ -149,6 +149,29 @@ int candidate_session_validate(const char *token) {
     return valid;
 }
 
+int candidate_session_restore(const char *token, const char *candidate_id, time_t created_at) {
+    if (!token || !candidate_id || strlen(token) != SESSION_TOKEN_LEN) return -1;
+    pthread_mutex_lock(&g_session_lock);
+    time_t now = time(NULL);
+    /* Reject already-expired sessions */
+    if (now - created_at > 28800) { pthread_mutex_unlock(&g_session_lock); return -1; }
+    /* Find free or expired slot */
+    int slot = -1;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (!g_sessions[i].active || (now - g_sessions[i].created_at > 28800)) {
+            slot = i; break;
+        }
+    }
+    if (slot == -1) slot = 0; /* evict oldest */
+    memcpy(g_sessions[slot].token, token, SESSION_TOKEN_LEN + 1);
+    strncpy(g_sessions[slot].candidate_id, candidate_id, MAX_CANDIDATE_ID_LEN - 1);
+    g_sessions[slot].candidate_id[MAX_CANDIDATE_ID_LEN - 1] = '\0';
+    g_sessions[slot].created_at = created_at;
+    g_sessions[slot].active = 1;
+    pthread_mutex_unlock(&g_session_lock);
+    return 0;
+}
+
 int candidate_session_identity(const char *token, char *out_candidate_id, size_t max_len) {
     if (!token || !out_candidate_id || max_len == 0 || strlen(token) != SESSION_TOKEN_LEN) return 0;
     out_candidate_id[0] = '\0';
@@ -251,7 +274,7 @@ const char *candidate_login_html(void) {
            "      <button type=\"submit\" class=\"btn\" id=\"submit-btn\">Proceed to Verification</button>\n"
            "    </form>\n"
            "    <div class=\"footer\">\n"
-           "      ExamOS v0.4.0 • TPM Attestation: UNAVAILABLE • Proctoring Media: NOT CONFIGURED<br>\n"
+           "      ExamOS v0.4.0 • <span id=\"tpm-status\">Checking service…</span><br>\n"
            "      <a href=\"/admin\" style=\"color: #475569; text-decoration: none; font-size: 10px; margin-top: 8px; display: inline-block;\">Admin Portal</a>\n"
            "    </div>\n"
            "  </div>\n"
@@ -335,6 +358,10 @@ const char *candidate_login_html(void) {
            "      if (!response.ok) { alert('Consent could not be recorded securely.'); return; }\n"
            "      window.location.href = (currentExamUrl && currentExamUrl !== 'NOT_CONFIGURED') ? currentExamUrl : '/exam';\n"
            "    }\n"
+           "    fetch('/api/v1/health',{cache:'no-store'}).then(r=>r.json()).then(h=>{\n"
+           "      const el=document.getElementById('tpm-status');\n"
+           "      if(el) el.textContent='TPM: '+(h.tpm_mode||'unknown')+' | Ledger: '+(h.ledger_integrity||'unknown')+' | '+h.readiness;\n"
+           "    }).catch(()=>{});\n"
            "  </script>\n"
            "</body>\n"
            "</html>\n";

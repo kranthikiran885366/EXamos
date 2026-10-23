@@ -6,6 +6,7 @@
  */
 
 #define _GNU_SOURCE
+#include "../../server/include/config_manager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <time.h>
 #include <errno.h>
 
@@ -43,9 +45,33 @@ static void handle_signal(int sig) {
 }
 
 static int remove_directory_recursive(const char *path) {
-    char command[512];
-    snprintf(command, sizeof(command), "rm -rf \"%s\"", path);
-    return system(command);
+    if (!path || !path[0]) return -1;
+    /* Validate path is under a safe prefix to prevent accidental root deletion */
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    const char *safe_prefix = (runtime && runtime[0]) ? runtime : "/tmp";
+    if (strncmp(path, safe_prefix, strlen(safe_prefix)) != 0) return -1;
+
+    DIR *dir = opendir(path);
+    if (!dir) return (errno == ENOENT) ? 0 : -1;
+    struct dirent *entry;
+    int result = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        char child[512];
+        if (snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >= (int)sizeof(child)) {
+            result = -1; continue;
+        }
+        struct stat st;
+        if (lstat(child, &st) != 0) { result = -1; continue; }
+        if (S_ISDIR(st.st_mode)) {
+            if (remove_directory_recursive(child) != 0) result = -1;
+        } else {
+            if (unlink(child) != 0) result = -1;
+        }
+    }
+    closedir(dir);
+    if (rmdir(path) != 0) result = -1;
+    return result;
 }
 
 static int create_ephemeral_profile(char *out_path, size_t max_len) {
@@ -62,59 +88,14 @@ static int create_ephemeral_profile(char *out_path, size_t max_len) {
     return 0;
 }
 
-static int load_exam_url_from_config(char *out_url, size_t max_len) {
-    FILE *f = fopen(EXAM_CONF_PATH, "r");
-    if (!f) {
-        return -1;
+int main(void) {
+    exam_config_t exam_config = {0};
+    if (config_load(&exam_config) != 0 || !exam_config.configured ||
+        !config_validate_exam_url(exam_config.exam_url)) {
+        log_msg("ERROR", "Exam URL is missing or not approved; refusing to launch the kiosk browser");
+        return 1;
     }
-
-    char line[512];
-    int found = 0;
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "EXAM_URL=", 9) == 0) {
-            char *val = line + 9;
-            char *nl = strchr(val, '\r');
-            if (nl) *nl = '\0';
-            nl = strchr(val, '\n');
-            if (nl) *nl = '\0';
-
-            /* Trim spaces */
-            while (*val == ' ' || *val == '\t') val++;
-
-            if (strlen(val) > 0 && strcmp(val, "NOT_CONFIGURED") != 0) {
-                if (strncmp(val, "http://", 7) == 0 || strncmp(val, "https://", 8) == 0) {
-                    strncpy(out_url, val, max_len - 1);
-                    out_url[max_len - 1] = '\0';
-                    found = 1;
-                    break;
-                }
-            }
-        }
-    }
-    fclose(f);
-    return found ? 0 : -1;
-}
-
-int main(int argc, char *argv[]) {
-    char exam_url_buf[512] = {0};
-    const char *exam_url = NULL;
-
-    if (argc > 1 && strlen(argv[1]) > 0) {
-        exam_url = argv[1];
-    } else {
-        const char *env_url = getenv("EXAMOS_EXAM_URL");
-        if (env_url && strlen(env_url) > 0) {
-            exam_url = env_url;
-        } else if (load_exam_url_from_config(exam_url_buf, sizeof(exam_url_buf)) == 0) {
-            exam_url = exam_url_buf;
-        }
-    }
-
-    if (!exam_url || strlen(exam_url) == 0) {
-        /* Fallback: default to local candidate portal if nothing external configured */
-        exam_url = "http://127.0.0.1:8000/";
-        log_msg("INFO", "No external exam URL configured; loading local ExamOS Candidate Portal (http://127.0.0.1:8000/)");
-    }
+    const char *exam_url = exam_config.exam_url;
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));

@@ -8,14 +8,14 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/crypto.h>
 
 #define MAX_ACTIVE_SESSION_CHAINS 256
 
 typedef struct {
-    char     session_id[64];
+    char     session_id[EVENT_SESSION_ID_LEN];
     uint64_t last_sequence;
     char     latest_hash[HASH_HEX_LEN];
     time_t   last_event_time;
@@ -28,23 +28,24 @@ static char                  g_storage_path[512] = "/var/log/examos/proctoring_e
 static pthread_mutex_t       g_event_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(data, len, hash);
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    unsigned char hash[32];
+    unsigned int hash_len = 0;
+    EVP_Digest(data, len, hash, &hash_len, EVP_sha256(), NULL);
+    for (int i = 0; i < 32; i++)
         sprintf(out_hex + (i * 2), "%02x", hash[i]);
-    }
     out_hex[64] = '\0';
+    OPENSSL_cleanse(hash, sizeof(hash));
 }
 
 static int hmac_sha256_hex(const char *key, const unsigned char *data, size_t len, char *out_hex) {
-    unsigned char digest[SHA256_DIGEST_LENGTH];
+    unsigned char digest[32];
     unsigned int digest_len = 0;
     if (!HMAC(EVP_sha256(), key, (int)strlen(key), data, len, digest, &digest_len) ||
-        digest_len != SHA256_DIGEST_LENGTH) return -1;
-    for (unsigned int i = 0; i < digest_len; i++) {
+        digest_len != 32) return -1;
+    for (unsigned int i = 0; i < digest_len; i++)
         sprintf(out_hex + (i * 2), "%02x", digest[i]);
-    }
     out_hex[digest_len * 2] = '\0';
+    OPENSSL_cleanse(digest, sizeof(digest));
     return 0;
 }
 

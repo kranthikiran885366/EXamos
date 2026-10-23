@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT_DIR="$ROOT/artifacts/p0"
 source "$ROOT/scripts/p0-image-path.sh"
 OUTPUT_DIR="$(examos_image_output_dir "$ROOT" "$ROOT/image")"
-IMAGE_FILE="$OUTPUT_DIR/examos-production.raw"
+IMAGE_FILE="$OUTPUT_DIR/examos.raw"
 mkdir -p "$ARTIFACT_DIR"
 
 if [ ! -s "$IMAGE_FILE" ]; then

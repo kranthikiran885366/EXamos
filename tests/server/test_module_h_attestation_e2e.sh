@@ -117,8 +117,8 @@ trap cleanup EXIT
 
 # Wait for server
 for i in {1..15}; do
-    if curl -s http://127.0.0.1:8896/api/v1/health | grep -q "HEALTHY"; then
-        echo "Server is UP and HEALTHY on port 8896."
+    if curl -s http://127.0.0.1:8896/api/v1/health | grep -q "\"liveness\":\"LIVE\""; then
+        echo "Server is UP and reporting LIVE liveness on port 8896."
         break
     fi
     sleep 0.4

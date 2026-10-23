@@ -33,7 +33,7 @@ typedef struct {
     char    text[1024];             /* follow-up question text          */
     char    assessment_objective[128]; /* e.g. "reasoning" or "application" */
     char    rubric_reference[64];   /* server-side rubric id (reviewer only) */
-    char    source_question_id[64]; /* exam question this follows from  */
+    char    source_question_id[64]; /* exam question or submitted-exam reference */
     char    source_answer_version[64]; /* submission record version      */
 } viva_question_t;
 
@@ -47,7 +47,7 @@ typedef enum {
 
 typedef struct {
     char                     viva_id[64];
-    char                     session_id[64];
+    char                     session_id[128];
     char                     candidate_id[64];
     char                     exam_id[64];
     char                     submission_receipt_hash[65]; /* links to immutable submission */
@@ -75,7 +75,7 @@ typedef struct {
     char    viva_id[64];
     char    question_id[64];
     char    candidate_id[64];
-    char    session_id[64];
+    char    session_id[128];
 
     char    response_text[4096];    /* candidate's viva answer          */
     time_t  displayed_ts;

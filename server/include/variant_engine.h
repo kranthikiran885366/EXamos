@@ -99,6 +99,10 @@ typedef struct {
 
 int  variant_engine_init(void);
 
+/* Copy a provisioned built-in template into caller storage. A NULL or empty
+ * template_id selects the first built-in template. Returns 0 on success. */
+int  variant_get_template(const char *template_id, question_template_t *out_template);
+
 /* Generate a variant for candidate + exam + template.
  * Seed = HMAC-SHA256(EXAMOS_VARIANT_SECRET, canonical_id_string).
  * Returns 0 on success, -1 if constraint validation fails. */

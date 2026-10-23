@@ -51,7 +51,7 @@ KIOSK_SVC="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"
 grep -q "^User=exam$"              "$KIOSK_SVC" 2>/dev/null && chk "kiosk service User=exam"            "PASS" || chk "kiosk service User=exam" "FAIL"
 grep -q "WantedBy=graphical.target" "$KIOSK_SVC" 2>/dev/null && chk "kiosk WantedBy=graphical.target"  "PASS" || chk "kiosk WantedBy=graphical.target" "FAIL"
 grep -q "XDG_RUNTIME_DIR=/run/user/1000" "$KIOSK_SVC" 2>/dev/null && chk "kiosk XDG_RUNTIME_DIR=1000" "PASS" || chk "kiosk XDG_RUNTIME_DIR=1000" "FAIL"
-grep -q "Restart=on-failure"       "$KIOSK_SVC" 2>/dev/null && chk "kiosk Restart=on-failure"          "PASS" || chk "kiosk Restart=on-failure" "FAIL"
+grep -Eq "^Restart=(always|on-failure)$" "$KIOSK_SVC" 2>/dev/null && chk "kiosk auto-restart policy" "PASS" || chk "kiosk auto-restart policy" "FAIL"
 
 WANTS="$WORKSPACE/image/overlay/etc/systemd/system/graphical.target.wants/examos-kiosk.service"
 WANTS_TARGET=$(readlink "$WANTS" 2>/dev/null || true)

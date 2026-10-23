@@ -33,7 +33,9 @@ fi
 # --- Check 2: Stack Canary ---
 CANARY=false
 CANARY_DETAIL=""
-if readelf -s "$BINARY" 2>/dev/null | grep -q '__stack_chk_fail'; then
+# Do not use grep -q here: with pipefail, readelf receives SIGPIPE as soon as
+# grep exits and the whole pipeline would be reported as failed.
+if readelf -s "$BINARY" 2>/dev/null | grep '__stack_chk_fail' >/dev/null; then
     CANARY=true
     CANARY_DETAIL="__stack_chk_fail symbol found"
     SCORE=$((SCORE + 1))

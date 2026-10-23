@@ -1,12 +1,16 @@
 {
   "URLAllowlist": [
-    "https://*.examos.internal/*",
-    "https://exam.examos.security/*",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
   ],
-  "URLBlocklist": [
-    "*"
+  "URLBlocklist": ["*"],
+  "VideoCaptureAllowedUrls": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "AudioCaptureAllowedUrls": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
   ],
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
@@ -15,13 +19,9 @@
   "PrintingEnabled": false,
   "DownloadRestrictions": 3,
   "SavingBrowserHistoryDisabled": true,
-  "IncognitoModeAvailability": 2,
-  "AudioCaptureAllowed": true,
-  "VideoCaptureAllowed": true,
-  "ScreenCaptureAllowed": true,
-  "ExtensionInstallBlocklist": [
-    "*"
-  ],
+  "IncognitoModeAvailability": 1,
+  "ScreenCaptureAllowed": false,
+  "ExtensionInstallBlocklist": ["*"],
   "BookmarkBarEnabled": false,
   "SpellCheckServiceEnabled": false,
   "TranslateEnabled": false,
@@ -31,5 +31,20 @@
   "BrowserSignin": 0,
   "SyncDisabled": true,
   "MetricsReportingEnabled": false,
-  "DefaultClipboardSetting": 2
+  "SafeBrowsingProtectionLevel": 1,
+  "DefaultClipboardSetting": 1,
+  "AllowFileSelectionDialogs": false,
+  "DefaultPopupsSetting": 2,
+  "PromptForDownloadLocation": false,
+  "AllowDinosaurEasterEgg": false,
+  "SSLErrorOverrideAllowed": false,
+  "RemoteAccessHostFirewallTraversal": false,
+  "RemoteAccessHostAllowRemoteAccessConnections": false,
+  "DefaultWebBluetoothGuardSetting": 2,
+  "DefaultWebUsbGuardSetting": 2,
+  "DefaultGeolocationSetting": 2,
+  "DefaultNotificationsSetting": 2,
+  "DefaultSensorsSetting": 2,
+  "DefaultSerialGuardSetting": 2,
+  "ExternalProtocolDialogShowAlwaysOpenCheckbox": false
 }

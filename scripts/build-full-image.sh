@@ -80,6 +80,55 @@ install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE_DIR/usr/local/s
 install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE_DIR/usr/local/sbin/examos-provision-remote-postgres"
 install -d "$STAGE_DIR/usr/share/examos/migrations"
 install -m 0644 "$ROOT"/server/migrations/*.sql "$STAGE_DIR/usr/share/examos/migrations/"
+
+# ── Detector inventory ───────────────────────────────────────────────────────
+# The proctoring worker needs a digest-verified detector inventory. It is
+# provisioned on the build host, never committed, and the build fails if it
+# cannot be obtained, because a shipped proctor without a detector cannot
+# produce examination evidence.
+echo "  Provisioning the detector inventory..."
+MODEL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/examos-models.XXXXXX")"
+if ! bash "$ROOT/scripts/download-vision-models.sh" --dest "$MODEL_STAGE" >/dev/null 2>&1; then
+    echo "ERROR: the detector inventory could not be provisioned." >&2
+    echo "       Run scripts/download-vision-models.sh manually to see the reason." >&2
+    rm -rf "$MODEL_STAGE"
+    exit 1
+fi
+
+# ── Deployment content ───────────────────────────────────────────────────────
+# The browser policy catalogue, the appliance identity marker and the
+# detector inventory are staged with their required permissions.
+REPO_ROOT="$ROOT" bash "$ROOT/image/scripts/stage-deployment-content.sh" "$STAGE_DIR" "$MODEL_STAGE"
+rm -rf "$MODEL_STAGE"
+
+# ── Shared library check ─────────────────────────────────────────────────────
+# The proctoring worker is built on the build host and shipped in the image.
+# Its shared libraries must be present in the image, or the appliance would
+# ship a component that cannot start. The check fails the build rather than
+# shipping a broken worker.
+echo "  Checking the shipped binaries against the image..."
+if command -v ldd >/dev/null 2>&1; then
+    for binary in examos-proctor examos-server examos-agent; do
+        missing=""
+        while IFS= read -r line; do
+            library=$(echo "$line" | awk '{print $1}')
+            case "$library" in
+                linux-vdso*|libc.so*|libm.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv*) continue ;;
+            esac
+            if ! find "$STAGE_DIR" -name "$(basename "$library")" -print -quit 2>/dev/null | grep -q .; then
+                missing="$missing $library"
+            fi
+        done < <(ldd "$STAGE_DIR/usr/local/bin/$binary" 2>/dev/null || true)
+        if [ -n "$missing" ]; then
+            echo "ERROR: $binary needs shared libraries that the image does not provide:" >&2
+            echo "       $missing" >&2
+            echo "       Add the matching packages to image/mkosi.conf." >&2
+            exit 1
+        fi
+    done
+    echo "  Shared library check passed"
+fi
+
 # Normalize permissions
 find "$STAGE_DIR" -type d -exec chmod 0755 {} +
 find "$STAGE_DIR" -type f -exec chmod 0644 {} +
@@ -88,6 +137,11 @@ find "$STAGE_DIR/usr/local/sbin" -type f -exec chmod 0755 {} +
 # Sensitive config files
 [[ -f "$STAGE_DIR/etc/examos/admin.conf" ]]      && chmod 0600 "$STAGE_DIR/etc/examos/admin.conf"
 [[ -f "$STAGE_DIR/etc/examos/candidates.conf" ]] && chmod 0640 "$STAGE_DIR/etc/examos/candidates.conf"
+[[ -d "$STAGE_DIR/etc/examos" ]]                 && chmod 0750 "$STAGE_DIR/etc/examos"
+[[ -d "$STAGE_DIR/etc/examos/models" ]]          && chmod 0755 "$STAGE_DIR/etc/examos/models"
+[[ -f "$STAGE_DIR/etc/examos/browser_policies.json" ]] && chmod 0644 "$STAGE_DIR/etc/examos/browser_policies.json"
+[[ -f "$STAGE_DIR/etc/examos/appliance-identity" ]]    && chmod 0644 "$STAGE_DIR/etc/examos/appliance-identity"
+[[ -d "$STAGE_DIR/etc/examos/sealed" ]]          && chmod 0700 "$STAGE_DIR/etc/examos/sealed"
 echo "  Overlay staged at $STAGE_DIR"
 
 # ── Step 5: Build disk image with mkosi ──────────────────────────────────────

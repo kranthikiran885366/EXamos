@@ -1,6 +1,8 @@
 [Unit]
 Description=ExamOS Native C++ Proctoring and Anomaly Detection Engine
 ConditionPathExists=/run/examos/secrets/proctor.env
+ConditionPathExists=/etc/examos/models/MODEL-MANIFEST.json
+ConditionPathExists=/etc/examos/appliance-identity
 StartLimitIntervalSec=300
 StartLimitBurst=3
 Requires=examos-unseal.service
@@ -16,6 +18,16 @@ EnvironmentFile=/etc/examos/proctor.env
 EnvironmentFile=/run/examos/secrets/proctor.env
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
+
+# The detector inventory and the detector identity. The worker verifies every
+# artefact against the manifest digest before it is used, and refuses to
+# produce evidence when no detector is available.
+Environment=EXAMOS_PROCTOR_DETECTOR_CONFIG=/etc/examos/models/MODEL-MANIFEST.json
+Environment=EXAMOS_PROCTOR_MODEL_NAME=examos-opencv-ssd-face
+Environment=EXAMOS_PROCTOR_MODEL_VERSION=4.10.0
+Environment=EXAMOS_PROCTOR_MODEL_CLASS=face
+Environment=EXAMOS_PROCTOR_MODEL_LICENCE=BSD-3-Clause
+
 ExecStart=/usr/local/bin/examos-proctor
 Restart=always
 RestartSec=3
@@ -24,6 +36,7 @@ StandardError=journal
 
 # Sandboxing
 ProtectSystem=strict
+ProtectHome=yes
 ReadWritePaths=/run/user/1000 /tmp
 PrivateTmp=yes
 NoNewPrivileges=yes
@@ -32,7 +45,27 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+RestrictFileSystems=@nodev @notlownoexec
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+DevicePolicy=closed
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/zero rw
+DeviceAllow=/dev/random r
+DeviceAllow=/dev/urandom r
+# The camera is the only capture device the worker may open.
+DeviceAllow=/dev/video0 r
+DeviceAllow=char-* rw
+ReadOnlyPaths=/etc/examos/models
+ReadOnlyPaths=/usr/share/examos/models

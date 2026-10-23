@@ -1,21 +1,16 @@
 {
   "URLAllowlist": [
-    "https://*.examos.internal/*",
-    "https://exam.examos.security/*",
     "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*",
-    "https://*"
+    "http://localhost:8000/*"
   ],
-  "URLBlocklist": [
-    "file://*",
-    "chrome://*",
-    "edge://*",
-    "about:flags",
-    "about:version",
-    "chrome://settings*",
-    "chrome://extensions*",
-    "chrome://downloads*",
-    "chrome://history*"
+  "URLBlocklist": ["*"],
+  "VideoCaptureAllowedUrls": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "AudioCaptureAllowedUrls": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
   ],
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
@@ -25,12 +20,8 @@
   "DownloadRestrictions": 3,
   "SavingBrowserHistoryDisabled": true,
   "IncognitoModeAvailability": 1,
-  "AudioCaptureAllowed": true,
-  "VideoCaptureAllowed": true,
   "ScreenCaptureAllowed": false,
-  "ExtensionInstallBlocklist": [
-    "*"
-  ],
+  "ExtensionInstallBlocklist": ["*"],
   "BookmarkBarEnabled": false,
   "SpellCheckServiceEnabled": false,
   "TranslateEnabled": false,
@@ -40,7 +31,29 @@
   "BrowserSignin": 0,
   "SyncDisabled": true,
   "MetricsReportingEnabled": false,
-  "DefaultClipboardSetting": 2,
+  "SafeBrowsingProtectionLevel": 1,
+  "DefaultClipboardSetting": 1,
+  "AllowFileSelectionDialogs": false,
+  "DefaultPopupsSetting": 2,
   "PromptForDownloadLocation": false,
-  "AllowDinosaurEasterEgg": false
+  "AllowDinosaurEasterEgg": false,
+  "ExternalProtocolDialogShowAlwaysOpenCheckbox": false,
+  "HardwareAccelerationModeEnabled": true,
+  "NetworkPredictionOptions": 2,
+  "AutoplayAllowed": true,
+  "DefaultWebBluetoothGuardSetting": 2,
+  "DefaultWebUsbGuardSetting": 2,
+  "DefaultGeolocationSetting": 2,
+  "DefaultNotificationsSetting": 2,
+  "DefaultSensorsSetting": 2,
+  "DefaultSerialGuardSetting": 2,
+  "DefaultWindowManagementSetting": 2,
+  "DefaultLocalFontsSetting": 2,
+  "DefaultFileSystemReadGuardSetting": 2,
+  "DefaultFileSystemWriteGuardSetting": 2,
+  "SSLErrorOverrideAllowed": false,
+  "SafeSitesFilterBehavior": 0,
+  "CertificateTransparencyEnforcementDisabledForUrls": [],
+  "RemoteAccessHostFirewallTraversal": false,
+  "RemoteAccessHostAllowRemoteAccessConnections": false
 }

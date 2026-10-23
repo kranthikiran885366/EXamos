@@ -1,4 +1,4 @@
-﻿# ExamOS production roadmap and deployment plan
+# ExamOS production roadmap and deployment plan
 
 **Decision: NOT PRODUCTION READY.** This plan reflects the evidence recorded in
 `docs/security/END_TO_END_AUDIT.md`, `docs/security/RELEASE_READINESS.md`, and

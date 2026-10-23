@@ -11,6 +11,7 @@
 #include "../include/ledger.h"
 #include "../include/tpm_quote.h"
 #include "../include/admin_auth_store.h"
+#include "../include/enterprise_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,23 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+
+/* -----------------------------------------------------------------------
+ * Exam-key sealing
+ *
+ * The exam decryption key must survive a server restart, so it is stored
+ * durably. It is never stored in the clear: it is sealed with AES-256-GCM
+ * under a key-encryption key derived from EXAMOS_EXAM_KEY_KEK. A release
+ * is only ever unsealed for a challenge that is TRUSTED, unrevoked, and
+ * bound to the requesting device.
+ * ----------------------------------------------------------------------- */
+#define EXAM_KEY_KEK_BYTES   32
+#define EXAM_KEY_KEK_LABEL   "examos-exam-key-kek-v1"
+#define EXAM_KEY_SEAL_ID     "aes-256-gcm/v1"
+#define EXAM_KEY_NONCE_BYTES 12
+#define EXAM_KEY_TAG_BYTES   16
 
 /* -----------------------------------------------------------------------
  * Module-level state
@@ -97,6 +115,79 @@ static void safe_copy(char *dst, size_t dst_size, const char *src) {
     if (!dst || dst_size == 0) return;
     strncpy(dst, src ? src : "", dst_size - 1);
     dst[dst_size - 1] = '\0';
+}
+
+/* -------------------------------------------------------------------------
+ * Exam-key sealing helpers
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Derives the key-encryption key from the provisioned secret. The raw secret
+ * is never used directly as a key: it is run through HMAC with a fixed
+ * domain-separation label so it cannot collide with any other subsystem.
+ */
+static int derive_exam_key_kek(unsigned char kek[EXAM_KEY_KEK_BYTES]) {
+    const char *secret = getenv("EXAMOS_EXAM_KEY_KEK");
+    if (!secret || !secret[0]) return -1;
+    size_t secret_len = strlen(secret);
+    if (secret_len < 32 || secret_len > 256) return -1;
+
+    unsigned int out_len = 0;
+    if (!HMAC(EVP_sha256(), secret, (int)secret_len,
+              (const unsigned char *)EXAM_KEY_KEK_LABEL, strlen(EXAM_KEY_KEK_LABEL),
+              kek, &out_len)) {
+        return -1;
+    }
+    if (out_len != EXAM_KEY_KEK_BYTES) return -1;
+    return 0;
+}
+
+static int seal_exam_key(const unsigned char plain[32], const unsigned char kek[32],
+                         unsigned char ciphertext[32],
+                         unsigned char nonce[EXAM_KEY_NONCE_BYTES],
+                         unsigned char tag[EXAM_KEY_TAG_BYTES]) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return -1;
+
+    int out_len = 0, final_len = 0;
+    int ok = (RAND_bytes(nonce, EXAM_KEY_NONCE_BYTES) == 1) &&
+             (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) == 1) &&
+             (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+                                  EXAM_KEY_NONCE_BYTES, NULL) == 1) &&
+             (EVP_EncryptInit_ex(ctx, NULL, NULL, kek, nonce) == 1) &&
+             (EVP_EncryptUpdate(ctx, ciphertext, &out_len, plain, 32) == 1) &&
+             (out_len == 32) &&
+             (EVP_EncryptFinal_ex(ctx, ciphertext + out_len, &final_len) == 1) &&
+             (final_len == 0) &&
+             (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
+                                  EXAM_KEY_TAG_BYTES, tag) == 1);
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok ? 0 : -1;
+}
+
+static int open_exam_key(const unsigned char ciphertext[32],
+                         const unsigned char nonce[EXAM_KEY_NONCE_BYTES],
+                         const unsigned char tag[EXAM_KEY_TAG_BYTES],
+                         const unsigned char kek[32],
+                         unsigned char plain[32]) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return -1;
+
+    int out_len = 0, final_len = 0;
+    int ok = (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) == 1) &&
+             (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+                                  EXAM_KEY_NONCE_BYTES, NULL) == 1) &&
+             (EVP_DecryptInit_ex(ctx, NULL, NULL, kek, nonce) == 1) &&
+             (EVP_DecryptUpdate(ctx, plain, &out_len, ciphertext, 32) == 1) &&
+             (out_len == 32) &&
+             (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG,
+                                  EXAM_KEY_TAG_BYTES, (void *)tag) == 1) &&
+             (EVP_DecryptFinal_ex(ctx, plain + out_len, &final_len) == 1) &&
+             (final_len == 0);
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok ? 0 : -1;
 }
 
 static int is_sha256_hex(const char *value) {
@@ -254,7 +345,8 @@ static int persist_challenge(const attestation_session_t *session) {
 
 static int claim_persisted_challenge(const char *nonce, const char *device_id,
                                      const char *release_id,
-                                     char out_attestation_id[64]) {
+                                     char out_attestation_id[64],
+                                     char out_session_id[64]) {
     char nonce_hash[65];
     if (hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
     PGconn *conn = acquire_db_connection();
@@ -268,15 +360,165 @@ static int claim_persisted_challenge(const char *nonce, const char *device_id,
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
         "WHERE (r.target_type='DEVICE' AND r.target_id=$2) OR "
         "(r.target_type='RELEASE' AND r.target_id=$3)) "
-        "RETURNING attestation_id",
+        "RETURNING attestation_id, session_id",
         3, NULL, params, NULL, NULL, 0);
     int claimed = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                   PQntuples(result) == 1;
-    if (claimed) snprintf(out_attestation_id, 64, "%s", PQgetvalue(result, 0, 0));
+    if (claimed) {
+        snprintf(out_attestation_id, 64, "%s", PQgetvalue(result, 0, 0));
+        snprintf(out_session_id, 64, "%s", PQgetvalue(result, 0, 1));
+    }
     if (result) PQclear(result);
     release_db_connection(conn, 0);
     OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
     return claimed ? 0 : -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Durable exam-key release records
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Seals the exam key and stores it against the attestation challenge that
+ * produced it. The record is written in the same transaction as the release
+ * decision so a key can never exist without a bound, TRUSTED challenge.
+ */
+static int persist_exam_key_release(const char *attestation_id,
+                                    const char *session_id,
+                                    const char *device_id,
+                                    const char *release_id,
+                                    const unsigned char plain_key[32]) {
+    unsigned char kek[EXAM_KEY_KEK_BYTES];
+    unsigned char ciphertext[32];
+    unsigned char nonce[EXAM_KEY_NONCE_BYTES];
+    unsigned char tag[EXAM_KEY_TAG_BYTES];
+    int rc = -1;
+
+    if (derive_exam_key_kek(kek) != 0) {
+        fprintf(stderr, "[Attestation] FATAL: EXAMOS_EXAM_KEY_KEK is not provisioned; exam keys cannot be sealed.\n");
+        return -1;
+    }
+    if (seal_exam_key(plain_key, kek, ciphertext, nonce, tag) != 0) {
+        OPENSSL_cleanse(kek, sizeof(kek));
+        return -1;
+    }
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) { OPENSSL_cleanse(kek, sizeof(kek)); return -1; }
+
+    const char *params[8];
+    int param_lengths[8] = {0, 0, 0, 0, 32, EXAM_KEY_NONCE_BYTES, EXAM_KEY_TAG_BYTES, 0};
+    int param_formats[8] = {0, 0, 0, 0, 1, 1, 1, 0};
+    Oid param_types[8] = {0, 0, 0, 0, 17, 17, 17, 0};
+    params[0] = attestation_id;
+    params[1] = session_id;
+    params[2] = device_id;
+    params[3] = release_id;
+    params[4] = (const char *)ciphertext;
+    params[5] = (const char *)nonce;
+    params[6] = (const char *)tag;
+    params[7] = EXAM_KEY_SEAL_ID;
+
+    PGresult *result = PQexecParams(conn,
+        "INSERT INTO examos_exam_key_releases "
+        "(attestation_id, session_id, device_id, release_id, "
+        " key_ciphertext, key_nonce, key_tag, kek_id) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+        "ON CONFLICT (attestation_id) DO UPDATE SET "
+        " key_ciphertext=EXCLUDED.key_ciphertext, "
+        " key_nonce=EXCLUDED.key_nonce, "
+        " key_tag=EXCLUDED.key_tag, "
+        " kek_id=EXCLUDED.kek_id, "
+        " released_at=clock_timestamp(), revoked_at=NULL",
+        8, param_types, params, param_lengths, param_formats, 0);
+    rc = (result && PQresultStatus(result) == PGRES_COMMAND_OK) ? 0 : -1;
+    if (result) PQclear(result);
+    release_db_connection(conn, rc == 0 ? 0 : 1);
+
+    OPENSSL_cleanse(kek, sizeof(kek));
+    OPENSSL_cleanse(ciphertext, sizeof(ciphertext));
+    OPENSSL_cleanse(nonce, sizeof(nonce));
+    OPENSSL_cleanse(tag, sizeof(tag));
+    return rc;
+}
+
+/*
+ * Loads and unseals the exam key for a trusted session. The key is released
+ * only when the bound challenge is still TRUSTED, has not been revoked, and
+ * the requesting device matches the device that produced the quote.
+ */
+static int load_exam_key_release(const char *identifier, const char *device_id,
+                                 char *out_key_hex, size_t max_len) {
+    if (!identifier || !identifier[0] || !out_key_hex || max_len < EXAM_KEY_LEN + 1)
+        return -1;
+    out_key_hex[0] = '\0';
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+
+    const char *params[2];
+    params[0] = identifier;
+    params[1] = device_id && device_id[0] ? device_id : "";
+    PGresult *result = PQexecParams(conn,
+        "SELECT k.attestation_id, k.device_id, k.key_ciphertext, k.key_nonce, k.key_tag "
+        "FROM examos_exam_key_releases k "
+        "JOIN examos_attestation_challenges c ON c.attestation_id = k.attestation_id "
+        "WHERE (k.session_id=$1 OR k.attestation_id=$1) "
+        "AND ($2='' OR k.device_id=$2) "
+        "AND k.revoked_at IS NULL "
+        "AND c.state='TRUSTED' "
+        "AND c.verified_at > clock_timestamp() - interval '10 minutes' "
+        "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+        "WHERE (r.target_type='DEVICE' AND r.target_id=k.device_id) OR "
+        "(r.target_type='RELEASE' AND r.target_id=k.release_id)) "
+        "ORDER BY k.released_at DESC LIMIT 1",
+        2, NULL, params, NULL, NULL, 0);
+
+    int rc = -1;
+    unsigned char kek[EXAM_KEY_KEK_BYTES];
+    unsigned char plain[32];
+
+    if (result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1) {
+        const char *ct_hex = PQgetvalue(result, 0, 2);
+        const char *nonce_hex = PQgetvalue(result, 0, 3);
+        const char *tag_hex = PQgetvalue(result, 0, 4);
+        size_t ct_len = strlen(ct_hex), nonce_len = strlen(nonce_hex), tag_len = strlen(tag_hex);
+        if (ct_len == 64 && nonce_len == 24 && tag_len == 32 &&
+            derive_exam_key_kek(kek) == 0) {
+            unsigned char ciphertext[32], nonce[12], tag[16];
+            int decoded = 1;
+            for (size_t i = 0; i < 32; i++) {
+                unsigned int v = 0;
+                if (sscanf(ct_hex + i * 2, "%2x", &v) != 1) { decoded = 0; break; }
+                ciphertext[i] = (unsigned char)v;
+            }
+            for (size_t i = 0; i < 12 && decoded; i++) {
+                unsigned int v = 0;
+                if (sscanf(nonce_hex + i * 2, "%2x", &v) != 1) { decoded = 0; break; }
+                nonce[i] = (unsigned char)v;
+            }
+            for (size_t i = 0; i < 16 && decoded; i++) {
+                unsigned int v = 0;
+                if (sscanf(tag_hex + i * 2, "%2x", &v) != 1) { decoded = 0; break; }
+                tag[i] = (unsigned char)v;
+            }
+            if (decoded && open_exam_key(ciphertext, nonce, tag, kek, plain) == 0) {
+                for (int i = 0; i < 32; i++)
+                    sprintf(out_key_hex + i * 2, "%02x", plain[i]);
+                out_key_hex[64] = '\0';
+                rc = 0;
+            }
+            OPENSSL_cleanse(ciphertext, sizeof(ciphertext));
+            OPENSSL_cleanse(nonce, sizeof(nonce));
+            OPENSSL_cleanse(tag, sizeof(tag));
+        }
+    }
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+
+    OPENSSL_cleanse(kek, sizeof(kek));
+    OPENSSL_cleanse(plain, sizeof(plain));
+    return rc;
 }
 
 static int complete_persisted_challenge(const char *nonce, int verified,
@@ -378,13 +620,34 @@ int attestation_service_init(void) {
     return 0;
 }
 
-int attestation_store_init(void) {
+/*
+ * Read-only health probe for the attestation store. Unlike
+ * attestation_store_init() it never mutates challenge state, so it is safe
+ * to call on every readiness or health check.
+ */
+int attestation_store_health(void) {
     if (!production_attestation_mode()) return 0;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
     PGresult *result = PQexec(conn,
         "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
-        "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL");
+        "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL "
+        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL");
+    int healthy = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                  PQntuples(result) == 1 &&
+                  strcmp(PQgetvalue(result, 0, 0), "t") == 0;
+    if (result) PQclear(result);
+    release_db_connection(conn, 0);
+    return healthy ? 0 : -1;
+}
+
+int attestation_store_init(void) {    if (!production_attestation_mode()) return 0;
+    PGconn *conn = acquire_db_connection();
+    if (!conn) return -1;
+    PGresult *result = PQexec(conn,
+        "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
+        "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL "
+        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL");
     int ready = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                 PQntuples(result) == 1 && strcmp(PQgetvalue(result, 0, 0), "t") == 0;
     if (result) PQclear(result);
@@ -407,7 +670,6 @@ int attestation_store_init(void) {
         fprintf(stderr, "[Attestation] Required PostgreSQL challenge-state schema is unavailable.\n");
     return ready ? 0 : -1;
 }
-
 /* -----------------------------------------------------------------------
  * attestation_register_device
  * ----------------------------------------------------------------------- */
@@ -733,8 +995,9 @@ int attestation_verify_evidence(const char *evidence_json,
         }
 
         char persisted_id[64] = {0};
+        char persisted_session[64] = {0};
         if (claim_persisted_challenge(nonce, device_id, release_id,
-                                      persisted_id) != 0) {
+                                      persisted_id, persisted_session) != 0) {
             safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
             return -1;
         }
@@ -762,6 +1025,72 @@ int attestation_verify_evidence(const char *evidence_json,
             safe_copy(out_reason, 64, failure);
             return -1;
         }
+
+        /*
+         * The challenge is TRUSTED. Generate the exam key, seal it, and bind
+         * it durably to this challenge so that it can be released later
+         * through the audited key-release path, including after a restart.
+         */
+        char prod_key[EXAM_KEY_LEN + 1] = {0};
+        if (random_hex64(prod_key) != 0) {
+            safe_copy(out_reason, 64, "P3_EXAM_KEY_GENERATION_FAILED");
+            return -1;
+        }
+        unsigned char raw_key[32];
+        int key_decoded = 1;
+        for (int i = 0; i < 32; i++) {
+            unsigned int v = 0;
+            if (sscanf(prod_key + i * 2, "%2x", &v) != 1) { key_decoded = 0; break; }
+            raw_key[i] = (unsigned char)v;
+        }
+        if (!key_decoded) {
+            OPENSSL_cleanse(prod_key, sizeof(prod_key));
+            safe_copy(out_reason, 64, "P3_EXAM_KEY_GENERATION_FAILED");
+            return -1;
+        }
+        if (persist_exam_key_release(persisted_id, persisted_session,
+                                     device_id, release_id, raw_key) != 0) {
+            OPENSSL_cleanse(raw_key, sizeof(raw_key));
+            OPENSSL_cleanse(prod_key, sizeof(prod_key));
+            safe_copy(out_reason, 64, "P3_EXAM_KEY_RELEASE_PERSIST_FAILED");
+            return -1;
+        }
+        OPENSSL_cleanse(raw_key, sizeof(raw_key));
+
+        /* Mirror the trusted session into the in-process session table so
+           that in-process status and re-attestation see the same state. */
+        pthread_mutex_lock(&g_trust_lock);
+        for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
+            attestation_session_t *sess = &g_sessions[i];
+            if (sess->created_at && strcmp(sess->attestation_id, persisted_id) == 0) {
+                sess->state = ATTESTATION_STATE_TRUSTED;
+                sess->last_re_attestation = time(NULL);
+                safe_copy(sess->exam_key, sizeof(sess->exam_key), prod_key);
+                sess->exam_key_released = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_trust_lock);
+
+        {
+            ledger_block_t blk;
+            char details[256];
+            snprintf(details, sizeof(details),
+                     "Exam key bound to session=%s device=%s release=%s",
+                     persisted_session, device_id, release_id);
+            ledger_append_event("P3_KEY_BOUND", device_id, details, &blk);
+        }
+
+        /*
+         * Publish the verified attestation state to the device fleet so that
+         * exam readiness and policy eligibility reflect it. The fleet row is
+         * only updated when the device is registered; an unknown device
+         * still gets a valid attestation, it simply is not in the fleet.
+         */
+        platform_update_device_attestation(device_id, "TRUSTED", NULL);
+
+        if (out_exam_key) safe_copy(out_exam_key, EXAM_KEY_LEN + 1, prod_key);
+        OPENSSL_cleanse(prod_key, sizeof(prod_key));
         safe_copy(out_reason, 64, "TPM_QUOTE_VERIFIED");
         return 0;
     }
@@ -840,6 +1169,26 @@ int attestation_verify_evidence(const char *evidence_json,
                                                   : "P3_MALFORMED_TPM_QUOTE");
                 return -1;
             }
+
+            /* Generate and bind exam key to the now-trusted session */
+            char exam_key[EXAM_KEY_LEN + 1] = {0};
+            if (random_hex64(exam_key) != 0) {
+                safe_copy(out_reason, 64, "P3_EXAM_KEY_GENERATION_FAILED");
+                return -1;
+            }
+            pthread_mutex_lock(&g_trust_lock);
+            for (int j = 0; j < MAX_ATTESTATION_SESSIONS; ++j) {
+                attestation_session_t *cur = &g_sessions[j];
+                if (cur->created_at &&
+                    strcmp(cur->attestation_id, selected_attestation_id) == 0) {
+                    safe_copy(cur->exam_key, sizeof(cur->exam_key), exam_key);
+                    cur->exam_key_released = 1;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_trust_lock);
+            if (out_exam_key) safe_copy(out_exam_key, EXAM_KEY_LEN + 1, exam_key);
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
             safe_copy(out_reason, 64, "TPM_QUOTE_VERIFIED");
             return 0;
         }
@@ -1061,11 +1410,38 @@ int attestation_get_status(const char *attestation_id, char *out_status, size_t 
  *
  * Releases the session-bound exam decryption key to a TRUSTED session.
  * Searches by session_id OR attestation_id so callers can use either.
- * A key is only released if the session is in ATTESTATION_STATE_TRUSTED.
+ *
+ * In production the key is unsealed from the durable release record, so a
+ * restart does not strand a trusted session. The release is refused when the
+ * bound challenge is no longer TRUSTED, when it has been revoked, or when
+ * the requesting device does not match the device that produced the quote.
  * ----------------------------------------------------------------------- */
 int attestation_get_exam_key(const char *session_id, const char *device_id,
                                char *out_key, size_t max_len) {
-    if (!session_id || !out_key || max_len == 0) return -1;
+    if (!session_id || !out_key || max_len < EXAM_KEY_LEN + 1) return -1;
+    out_key[0] = '\0';
+
+    if (production_attestation_mode()) {
+        char released[EXAM_KEY_LEN + 1] = {0};
+        if (load_exam_key_release(session_id, device_id, released,
+                                  sizeof(released)) != 0) {
+            OPENSSL_cleanse(released, sizeof(released));
+            return -1;
+        }
+        memcpy(out_key, released, EXAM_KEY_LEN);
+        out_key[EXAM_KEY_LEN] = '\0';
+
+        ledger_block_t blk;
+        char details[256];
+        snprintf(details, sizeof(details),
+                 "Exam key released: session=%.63s device=%.63s",
+                 session_id, device_id ? device_id : "");
+        ledger_append_event("P3_KEY_RELEASED", device_id ? device_id : "UNKNOWN_DEV",
+                            details, &blk);
+        OPENSSL_cleanse(released, sizeof(released));
+        return 0;
+    }
+
     pthread_mutex_lock(&g_trust_lock);
 
     for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
