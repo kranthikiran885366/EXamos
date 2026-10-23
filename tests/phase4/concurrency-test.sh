@@ -39,7 +39,34 @@ ingested=$(awk -F, 'NR>1 {s+=$3} END {print s+0}' "$csv")
 dropped=$((sent - ingested))
 duration_ms=$(( (end - start) / 1000000 ))
 throughput=$(awk -v n="$ingested" -v ms="$duration_ms" 'BEGIN {printf "%.2f", ms ? n/(ms/1000) : 0}')
+
+# PG-27: Use independent verifier for sequence integrity instead of substring grep
+VERIFIER_STATUS="PASS"
+VERIFIER_BIN="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
+if [ -x "$VERIFIER_BIN" ]; then
+    # The server writes events to EXAMOS_EVENT_CHAIN_PATH, verify each session
+    EVENT_CHAIN="${EXAMOS_EVENT_CHAIN_PATH:-$ARTIFACT_DIR/p4-event-ledger.log}"
+    if [ -f "$EVENT_CHAIN" ]; then
+        VERIFICATION_FAILS=0
+        for session_n in $(seq 1 "$NUM_SESSIONS"); do
+            session_id="conc-sess-$(printf '%03d' "$session_n")"
+            if ! "$VERIFIER_BIN" --session "$session_id" --store "$EVENT_CHAIN" 2>&1 | grep -q "RESULT: PASS"; then
+                VERIFICATION_FAILS=$((VERIFICATION_FAILS + 1))
+            fi
+        done
+        if [ "$VERIFICATION_FAILS" -gt 0 ]; then
+            VERIFIER_STATUS="FAIL"
+            echo "[CONCURRENCY] Verifier found $VERIFICATION_FAILS sessions with chain integrity issues"
+        fi
+    else
+        echo "[CONCURRENCY] WARN: Event chain file not found for verification"
+    fi
+else
+    echo "[CONCURRENCY] WARN: Independent verifier not available, skipping chain verification"
+fi
+
 status=PASS; [ "$dropped" -eq 0 ] || status=FAIL
+[ "$VERIFIER_STATUS" = "PASS" ] || status=FAIL
 printf '{\n  "phase":"P4",\n  "concurrency_target_sessions":%d,\n  "events_per_session":%d,\n  "total_events_sent":%d,\n  "total_events_ingested":%d,\n  "total_events_dropped":%d,\n  "duration_ms":%d,\n  "throughput_events_per_second":%s,\n  "status":"%s"\n}\n' \
     "$NUM_SESSIONS" "$EVENTS_PER_SESSION" "$sent" "$ingested" "$dropped" "$duration_ms" "$throughput" "$status" \
     >"$ARTIFACT_DIR/concurrency-results.json"

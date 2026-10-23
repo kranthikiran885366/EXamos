@@ -77,6 +77,12 @@ This document summarizes all fixes applied to address the 44 gaps identified in 
 - T8 now properly detects cross-session contamination as FAIL
 - Total tests increased from 6 to 9
 
+**PG-27: Concurrency sequence verification improvement**
+- ✅ Enhanced tests/phase4/concurrency-test.sh
+- Replaced substring grep with independent verifier (exam-event-verify)
+- Verifier checks chain integrity for each session separately
+- Prevents false positives from session ID substring matches
+
 ---
 
 ### P5 Fixes (Code/Test Level)
