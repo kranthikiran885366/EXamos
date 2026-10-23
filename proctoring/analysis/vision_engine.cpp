@@ -694,10 +694,9 @@ int vision_engine_init(const char *config_path) {
 }
 
 void vision_engine_destroy(void) {
-    if (g_face_detector) {
-        delete g_face_detector;
-        g_face_detector = nullptr;
-    }
+    /* The active detector is one of two file-scope singletons; it is not
+       heap-allocated and must not be deleted. */
+    g_face_detector = nullptr;
     g_scorer.clear();
 }
 

@@ -199,7 +199,7 @@ FAILURES=0
 # authenticates to the server.  Evaluation runs in development mode unless
 # EXAMOS_TEST_MODE=production explicitly requests the production posture.
 export EXAMOS_PROCTOR_DETECTOR_CONFIG="$MODEL_MANIFEST"
-export EXAMOS_PROCTOR_MODEL_NAME="yolox-s+res10"
+export EXAMOS_PROCTOR_MODEL_NAME="yolox-s_res10"
 export EXAMOS_PROCTOR_MODEL_VERSION="4"
 export EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN"
 if [ "$EXAMOS_TEST_MODE" != "production" ]; then
