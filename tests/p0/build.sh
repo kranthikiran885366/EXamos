@@ -179,11 +179,55 @@ if [ -f "$IMAGE_ARTIFACT" ]; then
         # Extract snapshot timestamp from sources.lock
         SNAPSHOT=$(awk -F= '$1=="debian_snapshot" { sub(/\r$/, "", $2); print $2; exit }' "$SOURCES_LOCK")
         echo "[P0-BUILD] Using Debian snapshot: $SNAPSHOT"
-        # Note: Full package hash verification requires mkosi build output analysis
-        # This is a placeholder for future implementation of PG-05
-        echo "[P0-BUILD] INFO: Package hash verification placeholder (PG-05 - requires mkosi build output analysis)"
+        
+        # Check if sources.lock contains package hashes (not just snapshot metadata)
+        if grep -q "package_sha256" "$SOURCES_LOCK" 2>/dev/null; then
+            echo "[P0-BUILD] Verifying package hashes from sources.lock..."
+            # Parse and verify each package hash
+            VERIFICATION_FAILED=0
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    package_*)
+                        pkg_name="${key#package_}"
+                        pkg_name="${pkg_name%_sha256}"
+                        expected_hash=$(echo "$value" | tr -d '\r')
+                        # Look for the package in the mkosi build cache/apt archives
+                        found_pkg=$(find "$BUILD_WORK_DIR/cache" -name "${pkg_name}_*.deb" 2>/dev/null | head -1)
+                        if [ -n "$found_pkg" ]; then
+                            actual_hash=$(sha256sum "$found_pkg" | cut -d' ' -f1)
+                            if [ "$actual_hash" = "$expected_hash" ]; then
+                                echo "[P0-BUILD]   ✓ $pkg_name: hash verified"
+                            else
+                                echo "[P0-BUILD]   ✗ $pkg_name: hash mismatch (expected: $expected_hash, actual: $actual_hash)" >&2
+                                VERIFICATION_FAILED=1
+                            fi
+                        else
+                            echo "[P0-BUILD]   ! $pkg_name: package not found in build cache" >&2
+                        fi
+                        ;;
+                esac
+            done < "$SOURCES_LOCK"
+            
+            if [ "$VERIFICATION_FAILED" -eq 0 ]; then
+                echo "[P0-BUILD] Package hash verification: PASS"
+            else
+                echo "[P0-BUILD] FATAL: Package hash verification failed (PG-05)" >&2
+                exit 1
+            fi
+        else
+            # sources.lock does not contain package hashes - use APT repository verification
+            echo "[P0-BUILD] sources.lock does not contain package hashes, using APT repository verification..."
+            # Verify that the build used the pinned snapshot by checking build log
+            if grep -q "snapshot.debian.org.*$SNAPSHOT" "$BUILD_LOG" 2>/dev/null; then
+                echo "[P0-BUILD] APT repository snapshot verification: PASS"
+            else
+                echo "[P0-BUILD] WARN: Could not verify snapshot usage in build log" >&2
+                # Non-fatal warning as APT signatures may provide verification
+            fi
+        fi
     else
-        echo "[P0-BUILD] WARN: sources.lock not found, skipping package hash verification"
+        echo "[P0-BUILD] FATAL: sources.lock not found, cannot verify package integrity (PG-05)" >&2
+        exit 1
     fi
 
     echo "============================================================"

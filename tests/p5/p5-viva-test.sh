@@ -69,9 +69,9 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_SALT="$(openssl rand -hex 32)"
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
-        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+        -kdfopt "iter:${PBKDF2_ITERATIONS}" PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
     CAND_FILE="$RUN_DIR/candidates.conf"
-    echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+    echo "${CANDIDATE_ID}:${CANDIDATE_UID_BASE}:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
     # PG-31: Generate reviewer token explicitly before starting server
     REVIEWER_TOKEN="$(openssl rand -hex 32)"
@@ -83,13 +83,13 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
-    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
+    EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
