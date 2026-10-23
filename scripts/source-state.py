@@ -22,6 +22,7 @@ GENERATED_UNTRACKED_ROOTS = (
     "cache/",
     "server/examos-",
     "server/tests/",
+    "tests/p4/",
 )
 
 
