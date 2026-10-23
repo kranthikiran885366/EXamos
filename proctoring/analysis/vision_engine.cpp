@@ -28,7 +28,7 @@
  *   face-cascade OpenCV's frontal-face Haar cascade, which is bundled with
  *                the installed OpenCV package. A cascade yields no
  *                calibrated probability, so the confidence stays at zero.
- *   object-dnn   MobileNet SSD trained on COCO. Provides the "cell phone"
+ *   object-dnn   YOLOv8n (ONNX) trained on COCO. Provides the "cell phone"
  *                and "book" classes used by the proctoring taxonomy.
  *   landmarks    LBF 68-point facial landmark model, which makes head pose
  *                estimation possible; without it head pose is reported as
@@ -49,12 +49,19 @@ const char *ROLE_OBJECT_DNN_PROTOTXT  = "object-dnn-prototxt";
 const char *ROLE_OBJECT_DNN_WEIGHTS   = "object-dnn-weights";
 const char *ROLE_LANDMARKS            = "landmarks";
 
-/* COCO class identifiers used by the object detector. */
-const int COCO_CELL_PHONE = 78;
-const int COCO_BOOK       = 84;
+/* COCO class identifiers used by the object detector.
+ *
+ * The YOLOv8 family uses the contiguous 0-79 COCO index, where 67 is
+ * "cell phone" and 73 is "book".  (The 90-class COCO label map used by
+ * TensorFlow models numbers the same classes 77 and 84; do not mix the two
+ * maps - doing so makes the engine report a microwave as a phone.) */
+const int COCO_CELL_PHONE = 67;
+const int COCO_BOOK       = 73;
 
 const float FACE_SCORE_THRESHOLD = 0.50f;
 const float OBJECT_SCORE_THRESHOLD = 0.45f;
+const float OBJECT_NMS_THRESHOLD = 0.45f;
+const int   OBJECT_INPUT_SIZE = 640;
 
 /* A model artefact named by the manifest. */
 struct ModelArtifact {
@@ -62,6 +69,7 @@ struct ModelArtifact {
     std::string name;
     std::string path;
     std::string digest;
+    std::string framework;
     bool        verified = false;
 };
 
@@ -154,6 +162,7 @@ bool load_manifest(const char *config_path, std::map<std::string, ModelArtifact>
             json_field(block, "file", file_name) && !file_name.empty()) {
             json_field(block, "name", artifact.name);
             json_field(block, "sha256", artifact.digest);
+            json_field(block, "framework", artifact.framework);
             artifact.path = manifest_dir + "/" + file_name;
             out[artifact.role] = artifact;
         }
@@ -304,12 +313,25 @@ struct ObjectDetection {
     float       score;
 };
 
-/* MobileNet SSD object detector (COCO). */
-class MobileNetSsdDetector {
+/* Object detector for the COCO "cell phone" and "book" classes.
+ *
+ * The provisioned model is YOLOv8n exported to ONNX.  The graph is loaded
+ * with OpenCV's DNN module, which keeps the runtime dependency set unchanged.
+ * A Caffe SSD model is still accepted when the manifest pairs a prototxt with
+ * the weights, so an appliance that has not yet rotated to the ONNX model
+ * keeps working.
+ */
+class CocoObjectDetector {
 public:
-    bool load(const std::string &prototxt, const std::string &weights) {
+    bool load(const std::string &weights, const std::string &prototxt) {
         try {
-            net_ = cv::dnn::readNetFromCaffe(prototxt, weights);
+            if (!prototxt.empty()) {
+                net_ = cv::dnn::readNetFromCaffe(prototxt, weights);
+                is_yolo_ = false;
+            } else {
+                net_ = cv::dnn::readNetFromONNX(weights);
+                is_yolo_ = true;
+            }
         } catch (const cv::Exception &error) {
             fprintf(stderr, "[VisionEngine] Object detector could not be loaded: %s\n", error.what());
             return false;
@@ -318,37 +340,16 @@ public:
         return true;
     }
     bool available() const { return loaded_; }
+    bool is_yolo() const { return is_yolo_; }
 
     std::vector<ObjectDetection> detect(const cv::Mat &frame) {
         std::vector<ObjectDetection> found;
         if (!loaded_) return found;
         try {
-            cv::Mat blob = cv::dnn::blobFromImage(frame, 0.007843,
-                                                  cv::Size(300, 300),
-                                                  cv::Scalar(127.5, 127.5, 127.5));
-            net_.setInput(blob);
-            cv::Mat detections = net_.forward();
-            for (int i = 0; i < detections.size[2]; ++i) {
-                /* The output is [1][1][N][7]; the stride between rows is
-                   the third dimension's step. */
-                const float *row = detections.ptr<float>(0) + detections.step[2] * i;
-                int class_id = static_cast<int>(row[0]);
-                float score = row[1];
-                if (score < OBJECT_SCORE_THRESHOLD) continue;
-                if (class_id != COCO_CELL_PHONE && class_id != COCO_BOOK) continue;
-                cv::Point2f center(row[3], row[4]);
-                cv::Point2f extent(row[5], row[6]);
-                ObjectDetection detection;
-                detection.class_id = class_id;
-                detection.box = cv::Rect(static_cast<int>((center.x - extent.x / 2.0f) * frame.cols),
-                                         static_cast<int>((center.y - extent.y / 2.0f) * frame.rows),
-                                         static_cast<int>(extent.x * frame.cols),
-                                         static_cast<int>(extent.y * frame.rows)) &
-                                 cv::Rect(0, 0, frame.cols, frame.rows);
-                detection.score = score;
-                if (detection.box.width > 0 && detection.box.height > 0) {
-                    found.push_back(detection);
-                }
+            if (is_yolo_) {
+                detect_yolo(frame, found);
+            } else {
+                detect_ssd(frame, found);
             }
         } catch (const cv::Exception &error) {
             fprintf(stderr, "[VisionEngine] Object detection failed: %s\n", error.what());
@@ -357,8 +358,143 @@ public:
     }
 
 private:
+    /* YOLOv8 letterboxes the input to a square while preserving aspect
+       ratio.  The same transform is inverted for every output box. */
+    static void letterbox(const cv::Mat &frame, cv::Mat &out,
+                          float &scale, int &pad_x, int &pad_y) {
+        const int target = OBJECT_INPUT_SIZE;
+        scale = std::min(static_cast<float>(target) / frame.cols,
+                         static_cast<float>(target) / frame.rows);
+        const int width  = std::max(1, static_cast<int>(std::round(frame.cols * scale)));
+        const int height = std::max(1, static_cast<int>(std::round(frame.rows * scale)));
+        pad_x = (target - width) / 2;
+        pad_y = (target - height) / 2;
+
+        cv::Mat resized;
+        cv::resize(frame, resized, cv::Size(width, height));
+        out = cv::Mat(target, target, CV_8UC3, cv::Scalar(114, 114, 114));
+        resized.copyTo(out(cv::Rect(pad_x, pad_y, width, height)));
+    }
+
+    void detect_yolo(const cv::Mat &frame, std::vector<ObjectDetection> &found) {
+        cv::Mat input;
+        float scale = 1.0f;
+        int pad_x = 0, pad_y = 0;
+        letterbox(frame, input, scale, pad_x, pad_y);
+
+        cv::Mat blob = cv::dnn::blobFromImage(input, 1.0 / 255.0,
+                                              cv::Size(OBJECT_INPUT_SIZE, OBJECT_INPUT_SIZE),
+                                              cv::Scalar(), true, false);
+        net_.setInput(blob);
+        cv::Mat output = net_.forward();
+
+        /* YOLOv8 output is [1, 4 + classes, anchors].  Some OpenCV builds
+           return the transposed layout, so both are handled. */
+        if (output.dims != 3) return;
+        const int dim_a = output.size[1];
+        const int dim_b = output.size[2];
+        const bool channels_first = dim_a < dim_b;
+        const int attrs   = channels_first ? dim_a : dim_b;
+        const int anchors = channels_first ? dim_b : dim_a;
+        if (attrs < 5) return;
+
+        const int class_count = attrs - 4;
+
+        std::vector<ObjectDetection> candidates;
+        for (int i = 0; i < anchors; ++i) {
+            int best_class = -1;
+            float best_score = 0.0f;
+            for (int c = 0; c < class_count; ++c) {
+                const float score = channels_first ? output.ptr<float>(0, 4 + c)[i]
+                                                   : output.ptr<float>(0, i)[4 + c];
+                if (score > best_score) {
+                    best_score = score;
+                    best_class = c;
+                }
+            }
+            if (best_score < OBJECT_SCORE_THRESHOLD) continue;
+            if (best_class != COCO_CELL_PHONE && best_class != COCO_BOOK) continue;
+
+            const float cx = channels_first ? output.ptr<float>(0, 0)[i]
+                                            : output.ptr<float>(0, i)[0];
+            const float cy = channels_first ? output.ptr<float>(0, 1)[i]
+                                            : output.ptr<float>(0, i)[1];
+            const float w  = channels_first ? output.ptr<float>(0, 2)[i]
+                                            : output.ptr<float>(0, i)[2];
+            const float h  = channels_first ? output.ptr<float>(0, 3)[i]
+                                            : output.ptr<float>(0, i)[3];
+
+            ObjectDetection detection;
+            detection.class_id = best_class;
+            detection.score = best_score;
+            detection.box = cv::Rect(static_cast<int>((cx - w / 2.0f - pad_x) / scale),
+                                     static_cast<int>((cy - h / 2.0f - pad_y) / scale),
+                                     static_cast<int>(w / scale),
+                                     static_cast<int>(h / scale)) &
+                            cv::Rect(0, 0, frame.cols, frame.rows);
+            if (detection.box.width > 0 && detection.box.height > 0) {
+                candidates.push_back(detection);
+            }
+        }
+        apply_nms(candidates, found);
+    }
+
+    void detect_ssd(const cv::Mat &frame, std::vector<ObjectDetection> &found) {
+        cv::Mat blob = cv::dnn::blobFromImage(frame, 0.007843,
+                                              cv::Size(300, 300),
+                                              cv::Scalar(127.5, 127.5, 127.5));
+        net_.setInput(blob);
+        cv::Mat detections = net_.forward();
+        std::vector<ObjectDetection> candidates;
+        for (int i = 0; i < detections.size[2]; ++i) {
+            const float *row = detections.ptr<float>(0) + detections.step[2] * i;
+            int class_id = static_cast<int>(row[0]);
+            float score = row[1];
+            if (score < OBJECT_SCORE_THRESHOLD) continue;
+            if (class_id != COCO_CELL_PHONE && class_id != COCO_BOOK) continue;
+            cv::Point2f center(row[3], row[4]);
+            cv::Point2f extent(row[5], row[6]);
+            ObjectDetection detection;
+            detection.class_id = class_id;
+            detection.score = score;
+            detection.box = cv::Rect(static_cast<int>((center.x - extent.x / 2.0f) * frame.cols),
+                                     static_cast<int>((center.y - extent.y / 2.0f) * frame.rows),
+                                     static_cast<int>(extent.x * frame.cols),
+                                     static_cast<int>(extent.y * frame.rows)) &
+                            cv::Rect(0, 0, frame.cols, frame.rows);
+            if (detection.box.width > 0 && detection.box.height > 0) {
+                candidates.push_back(detection);
+            }
+        }
+        apply_nms(candidates, found);
+    }
+
+    static void apply_nms(const std::vector<ObjectDetection> &candidates,
+                          std::vector<ObjectDetection> &out) {
+        for (int cls : {COCO_CELL_PHONE, COCO_BOOK}) {
+            std::vector<cv::Rect> boxes;
+            std::vector<float> scores;
+            for (const auto &candidate : candidates) {
+                if (candidate.class_id != cls) continue;
+                boxes.push_back(candidate.box);
+                scores.push_back(candidate.score);
+            }
+            std::vector<int> keep;
+            cv::dnn::NMSBoxes(boxes, scores, OBJECT_SCORE_THRESHOLD,
+                              OBJECT_NMS_THRESHOLD, keep);
+            for (int index : keep) {
+                ObjectDetection detection;
+                detection.class_id = cls;
+                detection.box = boxes[index];
+                detection.score = scores[index];
+                out.push_back(detection);
+            }
+        }
+    }
+
     cv::dnn::Net net_;
     bool         loaded_ = false;
+    bool         is_yolo_ = true;
 };
 
 /* LBF facial landmark model, used for head pose. */
