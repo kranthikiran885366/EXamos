@@ -60,6 +60,13 @@ if [ -x "$SERVER_BIN" ]; then
         -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
     CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+    # PG-33: Seed second candidate BEFORE server starts to avoid live mutation
+    CANDIDATE_ID2="P5-VAR2-$(date +%s)"
+    CAND2_SALT="$(openssl rand -hex 32)"
+    CAND2_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
+        -kdfopt "hexsalt:${CAND2_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
+        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+    echo "${CANDIDATE_ID2}:100000:${CAND2_SALT}:${CAND2_HASH}" >> "$CAND_FILE"
 
     # PG-33: Seed the second candidate BEFORE the server starts so the
     # candidate store is never mutated while the server is running.
@@ -249,6 +256,27 @@ else
     else
         record "V6" "DIFFERENT" "FAIL" "Second variant generation failed: $VARIANT_RESP2"
     fi
+fi
+
+# -----------------------------------------------------------------------
+# V7: P5→P4 regression — verify event chain integrity after P5 operations
+# -----------------------------------------------------------------------
+echo "  V7: Verifying P4 tamper-evident event chain integrity..."
+EVENT_CHAIN="$RUN_DIR/events.log"
+if [ -f "$EVENT_CHAIN" ]; then
+    VERIFIER_BIN="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
+    if [ -x "$VERIFIER_BIN" ]; then
+        VERIFY_OUT=$("$VERIFIER_BIN" --session "$SESSION_ID" --store "$EVENT_CHAIN" 2>&1 || true)
+        if echo "$VERIFY_OUT" | grep -q "RESULT: PASS"; then
+            record "V7" "PASS" "PASS" "P4 event chain integrity verified after P5 operations"
+        else
+            record "V7" "PASS" "FAIL" "P4 event chain verification failed: $VERIFY_OUT"
+        fi
+    else
+        record "V7" "PASS" "BLOCKED" "Event verifier not available"
+    fi
+else
+    record "V7" "PASS" "BLOCKED" "Event chain file not found"
 fi
 
 # -----------------------------------------------------------------------

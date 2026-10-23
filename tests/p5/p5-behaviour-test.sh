@@ -257,6 +257,27 @@ fi
 
 # -----------------------------------------------------------------------
 # B6: P5→P4 regression — verify event chain integrity after P5 operations
+# -----------------------------------------------------------------------
+echo "  B6: Verifying P4 tamper-evident event chain integrity..."
+EVENT_CHAIN="$RUN_DIR/events.log"
+if [ -f "$EVENT_CHAIN" ]; then
+    VERIFIER_BIN="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
+    if [ -x "$VERIFIER_BIN" ]; then
+        VERIFY_OUT=$("$VERIFIER_BIN" --session "$SESSION_ID" --store "$EVENT_CHAIN" 2>&1 || true)
+        if echo "$VERIFY_OUT" | grep -q "RESULT: PASS"; then
+            record "B6" "PASS" "PASS" "P4 event chain integrity verified after P5 operations"
+        else
+            record "B6" "PASS" "FAIL" "P4 event chain verification failed: $VERIFY_OUT"
+        fi
+    else
+        record "B6" "PASS" "BLOCKED" "Event verifier not available"
+    fi
+else
+    record "B6" "PASS" "BLOCKED" "Event chain file not found"
+fi
+
+# -----------------------------------------------------------------------
+# B6: P5→P4 regression — verify event chain integrity after P5 operations
 # (PG-35: P5 events must be written to the tamper-evident event chain and
 #  the chain must remain valid after P5 operations)
 # -----------------------------------------------------------------------

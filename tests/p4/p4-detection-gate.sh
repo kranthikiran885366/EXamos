@@ -32,6 +32,9 @@ WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 DATASET_DIR="$WORKSPACE/tests/p4/dataset"
 PROCTOR_BIN="$WORKSPACE/proctoring/examos-proctor"
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9102}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 
@@ -130,8 +133,8 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_TPM_MODE=development \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
         "$SERVER_BIN" &

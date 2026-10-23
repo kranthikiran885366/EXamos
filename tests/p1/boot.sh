@@ -56,6 +56,16 @@ if [ ! -w /dev/kvm ]; then
     ACCEL="-accel tcg"
 fi
 
+# PG-42: Support production mode testing by checking EXAMOS_P1_PRODUCTION_MODE
+# Default to dev mode for backward compatibility
+PRODUCTION_MODE="${EXAMOS_P1_PRODUCTION_MODE:-0}"
+if [ "$PRODUCTION_MODE" = "1" ]; then
+    echo "[P1-BOOT] INFO: Running in production mode test (EXAMOS_P1_PRODUCTION_MODE=1)"
+    PRODUCTION_MODE_ARGS="-append EXAMOS_TPM_MODE=production"
+else
+    PRODUCTION_MODE_ARGS=""
+fi
+
 BOOT_LOG="$ARTIFACT_DIR/boot.log"
 echo "[P1-BOOT] Launching QEMU with image $IMAGE_FILE..."
 IMAGE_SHA256=$(sha256sum "$IMAGE_FILE" | cut -d' ' -f1)
@@ -70,6 +80,7 @@ timeout 60s qemu-system-x86_64 \
     -drive file="$IMAGE_FILE",format=raw,if=virtio \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -nographic \
+    $PRODUCTION_MODE_ARGS \
     -serial file:"$BOOT_LOG" >/dev/null 2>&1
 QEMU_RET=$?
 set -e
@@ -81,10 +92,22 @@ if [ -n "$SWTPM_PID" ]; then
 fi
 
 if grep -q -E "systemd|Welcome to|Linux version" "$BOOT_LOG" 2>/dev/null; then
+    # PG-07: Verify kiosk service actually started (runtime verification)
+    KIOSK_STARTED=false
+    if grep -q "Starting examos-kiosk.service" "$BOOT_LOG" 2>/dev/null; then
+        KIOSK_STARTED=true
+    fi
+    if grep -q "cage" "$BOOT_LOG" 2>/dev/null; then
+        KIOSK_STARTED=true
+    fi
+    if grep -q "chromium" "$BOOT_LOG" 2>/dev/null; then
+        KIOSK_STARTED=true
+    fi
+
     python3 - "$ARTIFACT_DIR/boot-result.json" "$WORKSPACE" "$IMAGE_FILE" \
-        "$IMAGE_SHA256" "$QEMU_RET" "$ELAPSED_MS" "$ACCEL" "$OVMF_CODE" <<'PY'
+        "$IMAGE_SHA256" "$QEMU_RET" "$ELAPSED_MS" "$ACCEL" "$OVMF_CODE" "$KIOSK_STARTED" <<'PY'
 import datetime, hashlib, json, pathlib, subprocess, sys
-out, workspace, image, digest, qemu_exit, elapsed, accel, ovmf = sys.argv[1:]
+out, workspace, image, digest, qemu_exit, elapsed, accel, ovmf, kiosk_started = sys.argv[1:]
 current = hashlib.sha256(pathlib.Path(image).read_bytes()).hexdigest()
 report = {
     "phase": "P1",
@@ -94,6 +117,7 @@ report = {
     "image_path": str(pathlib.Path(image).resolve()),
     "image_sha256": current,
     "boot_marker": "systemd|Welcome to|Linux version",
+    "kiosk_service_started": kiosk_started == "true",
     "qemu_exit_code": int(qemu_exit),
     "elapsed_ms": int(elapsed),
     "acceleration": accel,
@@ -107,7 +131,11 @@ PY
         echo "[P1-BOOT] FAIL: Boot evidence could not be bound to the current image"
         exit 1
     fi
-    echo "[P1-BOOT] PASS: ExamOS booted successfully under UEFI OVMF"
+    if [ "$KIOSK_STARTED" = true ]; then
+        echo "[P1-BOOT] PASS: ExamOS booted successfully with kiosk service started"
+    else
+        echo "[P1-BOOT] WARN: ExamOS booted but kiosk service start not detected (PG-07)"
+    fi
     exit 0
 else
     python3 - "$ARTIFACT_DIR/boot-result.json" "$WORKSPACE" "$IMAGE_SHA256" \

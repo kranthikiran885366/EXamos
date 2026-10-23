@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ExamOS P4 â€” Tamper Evidence Test Matrix (T1-T8)
+# ExamOS P4 - Tamper Evidence Test Matrix (T1-T8)
 #
 # Tests that the event chain detects every form of manipulation:
-#   T1: payload modification â†’ EVENT_HASH_MISMATCH
-#   T2: previous_hash modification â†’ PREVIOUS_HASH_MISMATCH
-#   T3: event_hash modification â†’ EVENT_HASH_MISMATCH
-#   T4: event deletion â†’ SEQUENCE_GAP
-#   T5: event reordering â†’ SEQUENCE_GAP_OR_REORDER
-#   T6: sequence manipulation â†’ SEQUENCE_GAP_OR_REORDER
-#   T7: checkpoint signature modification â†’ SIGNATURE_INVALID
-#   T8: wrong-session event insertion â†’ CHAIN_INTEGRITY_FAILURE
+#   T1: payload modification -> EVENT_HASH_MISMATCH
+#   T2: previous_hash modification -> PREVIOUS_HASH_MISMATCH
+#   T3: event_hash modification -> EVENT_HASH_MISMATCH
+#   T4: event deletion -> SEQUENCE_GAP
+#   T5: event reordering -> SEQUENCE_GAP_OR_REORDER
+#   T6: sequence manipulation -> SEQUENCE_GAP_OR_REORDER
+#   T7: checkpoint signature modification -> SIGNATURE_INVALID
+#   T8: wrong-session event insertion -> session isolation verified (PG-26 fix)
+#   T8b: payload tamper in real session -> EVENT_HASH_MISMATCH (PG-26 fix)
 #
 # Uses the live examos-server + exam-event-verify CLI tool.
-# Every result is from actual execution â€” no hardcoded outcomes.
+# Every result is from actual execution - no hardcoded outcomes.
 # =============================================================================
 set -uo pipefail
 
@@ -22,6 +23,9 @@ ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 mkdir -p "$ARTIFACT_DIR"
 
 LOG="$ARTIFACT_DIR/tamper-test-results.json"
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9100}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 VERIFIER="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
@@ -86,8 +90,8 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" \
     EXAMOS_EVENT_SIGNING_KEY_ID="test-signing-key" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_TPM_MODE=development \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_SESSION_JOURNAL="$RUN_DIR/sessions.log" \
@@ -97,7 +101,6 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
         "$SERVER_BIN" &
     SERVER_PID=$!
-    # Wait for health
     for i in $(seq 1 15); do
         curl -sf "${SERVER_URL}/api/v1/health" >/dev/null 2>&1 && break
         sleep 0.5
@@ -111,7 +114,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Helper: inject an event into the server
 inject_event() {
     local seq_type="$1" event_type="$2" payload="$3"
     curl -s -X POST "${SERVER_URL}/api/v1/proctoring/events" \
@@ -121,28 +123,21 @@ inject_event() {
         >/dev/null 2>&1 || true
 }
 
-# Helper: run verifier against the event log
 verify_chain() {
     "$VERIFIER" --session "$SESSION_ID" --store "$EVENT_LOG" 2>&1
 }
 
 # -----------------------------------------------------------------------
-# T0: Clean baseline â€” inject 5 events, verify VALID
+# T0: Clean baseline - inject 5 events, verify VALID
 # -----------------------------------------------------------------------
-echo "  T0: Clean baseline (5 events â†’ VALID)..."
-# Reset event log
+echo "  T0: Clean baseline (5 events -> VALID)..."
 rm -f "$EVENT_LOG"
 
 if [ -n "$SERVER_PID" ]; then
-    # Use server's event chain
     for i in 1 2 3 4 5; do
         inject_event "PRIMARY_CAMERA" "FACE_PRESENT" "{\"faceCount\":1,\"frameSeq\":$i}"
     done
-    # Events were appended directly to EVENT_LOG by server
-    :
 else
-    # Direct file injection â€” write events manually using the server's format
-    # This tests the verifier independently of the server
     PREV="0000000000000000000000000000000000000000000000000000000000000000"
     for i in 1 2 3 4 5; do
         TS=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
@@ -163,12 +158,11 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T1: Payload modification â€” change one event payload
+# T1: Payload modification
 # -----------------------------------------------------------------------
-echo "  T1: Payload modification â†’ expect EVENT_HASH_MISMATCH..."
+echo "  T1: Payload modification -> expect EVENT_HASH_MISMATCH..."
 T1_LOG="$RUN_DIR/t1.log"
 cp "$EVENT_LOG" "$T1_LOG"
-# Modify the payload of event 3
 python3 - "$T1_LOG" <<'PYEOF'
 import sys
 lines = open(sys.argv[1]).readlines()
@@ -188,7 +182,7 @@ fi
 # -----------------------------------------------------------------------
 # T2: Previous hash modification
 # -----------------------------------------------------------------------
-echo "  T2: Previous hash modification â†’ expect PREVIOUS_HASH_MISMATCH..."
+echo "  T2: Previous hash modification -> expect PREVIOUS_HASH_MISMATCH..."
 T2_LOG="$RUN_DIR/t2.log"
 cp "$EVENT_LOG" "$T2_LOG"
 python3 - "$T2_LOG" <<'PYEOF'
@@ -210,7 +204,7 @@ fi
 # -----------------------------------------------------------------------
 # T3: Event hash modification
 # -----------------------------------------------------------------------
-echo "  T3: Event hash modification â†’ expect EVENT_HASH_MISMATCH..."
+echo "  T3: Event hash modification -> expect EVENT_HASH_MISMATCH..."
 T3_LOG="$RUN_DIR/t3.log"
 cp "$EVENT_LOG" "$T3_LOG"
 python3 - "$T3_LOG" <<'PYEOF'
@@ -230,15 +224,14 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T4: Event deletion â€” remove one event
+# T4: Event deletion
 # -----------------------------------------------------------------------
-echo "  T4: Event deletion â†’ expect SEQUENCE_GAP..."
+echo "  T4: Event deletion -> expect SEQUENCE_GAP..."
 T4_LOG="$RUN_DIR/t4.log"
 cp "$EVENT_LOG" "$T4_LOG"
 python3 - "$T4_LOG" <<'PYEOF'
 import sys
 lines = open(sys.argv[1]).readlines()
-# Remove the 3rd event (sequence 3)
 new_lines = [l for l in lines if '"sequence":3' not in l]
 open(sys.argv[1], 'w').writelines(new_lines)
 PYEOF
@@ -250,15 +243,14 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T5: Event reordering â€” swap events 3 and 4
+# T5: Event reordering - swap events 3 and 4
 # -----------------------------------------------------------------------
-echo "  T5: Event reordering â†’ expect SEQUENCE_GAP_OR_REORDER..."
+echo "  T5: Event reordering -> expect SEQUENCE_GAP_OR_REORDER..."
 T5_LOG="$RUN_DIR/t5.log"
 cp "$EVENT_LOG" "$T5_LOG"
 python3 - "$T5_LOG" <<'PYEOF'
 import sys
 lines = open(sys.argv[1]).readlines()
-# Find and swap events 3 and 4
 idx3 = idx4 = -1
 for i, line in enumerate(lines):
     if '"sequence":3' in line: idx3 = i
@@ -275,9 +267,9 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T6: Sequence manipulation â€” change sequence number
+# T6: Sequence number manipulation
 # -----------------------------------------------------------------------
-echo "  T6: Sequence manipulation â†’ expect SEQUENCE_GAP_OR_REORDER..."
+echo "  T6: Sequence manipulation -> expect SEQUENCE_GAP..."
 T6_LOG="$RUN_DIR/t6.log"
 cp "$EVENT_LOG" "$T6_LOG"
 python3 - "$T6_LOG" <<'PYEOF'
@@ -297,9 +289,9 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T7: Checkpoint signature modification â€” requires server checkpoint
+# T7: Checkpoint signature modification
 # -----------------------------------------------------------------------
-echo "  T7: Checkpoint signature modification â†’ expect SIGNATURE_INVALID..."
+echo "  T7: Checkpoint signature modification -> expect SIGNATURE_INVALID..."
 if [ -n "$SERVER_PID" ]; then
     CKPT_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/proctoring/checkpoint" \
         -H "Content-Type: application/json" \
@@ -311,7 +303,6 @@ if [ -n "$SERVER_PID" ]; then
         TAMPERED_FILE="$RUN_DIR/checkpoint-tampered.json"
         printf '%s\n' "$CKPT_RESP" > "$CKPT_FILE"
         VALID_OUT=$(EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" "$VERIFIER" --checkpoint "$CKPT_FILE" 2>&1)
-
         python3 - "$CKPT_FILE" "$TAMPERED_FILE" <<'PYEOF'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -319,7 +310,6 @@ sig = doc.get("signature", "")
 doc["signature"] = ("b" * len(sig)) if sig else "b" * 64
 open(sys.argv[2], "w").write(json.dumps(doc))
 PYEOF
-
         TAMPER_OUT=$(EXAMOS_EVENT_SIGNING_KEY="$SIGNING_KEY" "$VERIFIER" --checkpoint "$TAMPERED_FILE" 2>&1)
         if echo "$VALID_OUT" | grep -q "CHECKPOINT: VALID" && \
            echo "$TAMPER_OUT" | grep -q "SIGNATURE_INVALID"; then
@@ -335,36 +325,86 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# T8: Wrong-session event insertion
+# T8: Wrong-session event insertion (PG-26 fix)
+# The verifier filters by session_id so the evil event is skipped and the
+# real session chain must remain VALID - confirming session isolation works.
+# T8c additionally verifies that cross-session contamination IS detected
+# when the full mixed log is checked without session filtering - a verifier
+# that simply ignores the injected event is not sufficient.
 # -----------------------------------------------------------------------
-echo "  T8: Wrong-session event insertion â†’ expect CHAIN_INTEGRITY_FAILURE..."
+echo "  T8: Wrong-session event insertion - real session chain must stay VALID..."
 T8_LOG="$RUN_DIR/t8.log"
 cp "$EVENT_LOG" "$T8_LOG"
-# Insert a valid-looking event from a different session in the middle
 python3 - "$T8_LOG" <<'PYEOF'
 import sys, hashlib, json
 lines = open(sys.argv[1]).readlines()
-# Create an event for a different session at sequence 3
 other_session = "wrong-session-attack"
 prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
 ts = "2026-10-15T12:00:00.000Z"
 payload = '{"faceCount":1}'
-canonical = '{"event_type":"FACE_PRESENT","model_name":"native-vision","model_version":"1.0.0","payload":' + payload + ',"previous_hash":"' + prev_hash + '","sequence":3,"server_timestamp":"' + ts + '","session_id":"' + other_session + '","source_timestamp":"' + ts + '","source_type":"PRIMARY_CAMERA"}'
+canonical = ('{"event_type":"FACE_PRESENT","model_name":"native-vision","model_version":"1.0.0",'
+             '"payload":' + payload + ',"previous_hash":"' + prev_hash + '",'
+             '"sequence":3,"server_timestamp":"' + ts + '","session_id":"' + other_session + '",'
+             '"source_timestamp":"' + ts + '","source_type":"PRIMARY_CAMERA"}')
 hash_input = prev_hash + canonical
-event_hash = hashlib.sha256(hash_input.encode()).hexdigest()
-evil_line = json.dumps({"session_id": other_session, "sequence": 3, "server_timestamp": ts, "source_timestamp": ts, "source_type": "PRIMARY_CAMERA", "event_type": "FACE_PRESENT", "payload": payload, "model_name": "native-vision", "model_version": "1.0.0", "previous_hash": prev_hash, "event_hash": event_hash})
-# Insert after line 1 (between event 1 and 2)
+evil_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+evil_line = json.dumps({
+    "session_id": other_session, "sequence": 3, "server_timestamp": ts,
+    "source_timestamp": ts, "source_type": "PRIMARY_CAMERA",
+    "event_type": "FACE_PRESENT", "payload": payload,
+    "model_name": "native-vision", "model_version": "1.0.0",
+    "previous_hash": prev_hash, "event_hash": evil_hash
+})
 new_lines = [lines[0], evil_line + '\n'] + lines[1:]
 open(sys.argv[1], 'w').writelines(new_lines)
 PYEOF
 T8_OUT=$("$VERIFIER" --session "$SESSION_ID" --store "$T8_LOG" 2>&1)
-# The verifier filters by session_id, so the wrong-session event should be skipped,
-# but the sequence gap (original event 3 now appears after the wrong-session event
-# which has sequence 3) should still be detected
-if echo "$T8_OUT" | grep -q "SEQUENCE_GAP\|CHAIN: VALID"; then
-    record "T8" "PASS" "PASS" "Wrong-session event correctly ignored by session-filtered verifier"
+if echo "$T8_OUT" | grep -q "CHAIN: VALID"; then
+    record "T8" "PASS" "PASS" "Wrong-session event correctly isolated; real session chain VALID"
+elif echo "$T8_OUT" | grep -q "SEQUENCE_GAP\|PREVIOUS_HASH_MISMATCH"; then
+    record "T8" "PASS" "FAIL" "Wrong-session event corrupted real session chain: $T8_OUT"
 else
-    record "T8" "PASS" "FAIL" "Unexpected: $T8_OUT"
+    record "T8" "PASS" "FAIL" "Unexpected verifier output: $T8_OUT"
+fi
+
+# T8c: Cross-session contamination must be detected in the full log
+# (PG-26: a verifier that simply ignores wrong-session events is insufficient)
+echo "  T8c: Cross-session contamination detected in full mixed log..."
+T8C_OUT=$("$VERIFIER" --store "$T8_LOG" 2>&1)
+if echo "$T8C_OUT" | grep -qiE "SEQUENCE_GAP|CROSS_SESSION|CONTAMINATION|INTEGRITY_VIOLATION|INVALID"; then
+    record "T8c" "PASS" "PASS" "Cross-session contamination detected in mixed log: $T8C_OUT"
+elif echo "$T8C_OUT" | grep -q "CHAIN: VALID"; then
+    record "T8c" "PASS" "FAIL" "Mixed log verified VALID despite wrong-session event — cross-session contamination not detected"
+else
+    record "T8c" "PASS" "FAIL" "Unexpected verifier output for mixed log: $T8C_OUT"
+fi
+
+# T8b: Payload tamper within real session must still be caught (PG-26)
+echo "  T8b: Payload tamper in real session - must detect EVENT_HASH_MISMATCH..."
+T8B_LOG="$RUN_DIR/t8b.log"
+cp "$EVENT_LOG" "$T8B_LOG"
+python3 - "$T8B_LOG" "$SESSION_ID" <<'PYEOF'
+import sys, json
+lines = open(sys.argv[1]).readlines()
+sid = sys.argv[2]
+new_lines = []
+for line in lines:
+    try:
+        ev = json.loads(line)
+        if ev.get("sequence") == 3 and ev.get("session_id") == sid:
+            ev["payload"] = '{"faceCount":99,"spoofed":true}'
+            new_lines.append(json.dumps(ev) + '\n')
+            continue
+    except Exception:
+        pass
+    new_lines.append(line)
+open(sys.argv[1], 'w').writelines(new_lines)
+PYEOF
+T8B_OUT=$("$VERIFIER" --session "$SESSION_ID" --store "$T8B_LOG" 2>&1)
+if echo "$T8B_OUT" | grep -q "EVENT_HASH_MISMATCH"; then
+    record "T8b" "EVENT_HASH_MISMATCH" "EVENT_HASH_MISMATCH" "Payload tamper in real session detected"
+else
+    record "T8b" "EVENT_HASH_MISMATCH" "FAIL" "Payload tamper not detected: $T8B_OUT"
 fi
 
 # -----------------------------------------------------------------------
@@ -376,7 +416,6 @@ OVERALL="PASS"
 [ "$FAIL" -gt 0 ] && OVERALL="FAIL"
 [ "$BLOCKED" -gt 0 ] && [ "$FAIL" -eq 0 ] && OVERALL="BLOCKED"
 
-# Write JSON results
 python3 -c "
 import json, sys
 results = json.loads(sys.argv[1])

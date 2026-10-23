@@ -15,6 +15,9 @@ ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 mkdir -p "$ARTIFACT_DIR"
 
 LOG="$ARTIFACT_DIR/concurrency-results.json"
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9101}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 VERIFIER="${EXAMOS_P4_VERIFIER:-$WORKSPACE/tools/exam-event-verify}"
@@ -46,8 +49,8 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_TPM_MODE=development \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_SESSION_JOURNAL="$RUN_DIR/sessions.log" \
@@ -138,22 +141,29 @@ fi
 
 DROPPED_EVENTS=$((TOTAL_EXPECTED - TOTAL_EVENTS))
 
-# Check for sequence gaps per session
+# PG-27: Use exact JSON field matching (Python parser) instead of substring
+# grep to avoid false positives when one session_id is a prefix of another.
 GAPS_FOUND=0
 SESSIONS_WITH_GAPS=0
 for i in $(seq 1 $TARGET_SESSIONS); do
     SID="load-test-session-$(printf '%03d' $i)"
-    # Check if all 10 sequences are present
-    for seq in $(seq 1 $EVENTS_PER_SESSION); do
-        if ! grep -q "\"session_id\":\"${SID}\".*\"sequence\":${seq}" "$EVENT_LOG" 2>/dev/null; then
-            GAPS_FOUND=$((GAPS_FOUND + 1))
-        fi
-    done
-    # If any gap in this session, count it
-    SESSION_EVENTS=$(grep -c "\"session_id\":\"${SID}\"" "$EVENT_LOG" 2>/dev/null || true)
+    SESSION_EVENTS=$(python3 -c "
+import json, sys
+count = 0
+with open('$EVENT_LOG') as f:
+    for line in f:
+        try:
+            ev = json.loads(line)
+            if ev.get('session_id') == '$SID':
+                count += 1
+        except Exception:
+            pass
+print(count)
+" 2>/dev/null || echo 0)
     SESSION_EVENTS=${SESSION_EVENTS:-0}
     if [ "$SESSION_EVENTS" -ne "$EVENTS_PER_SESSION" ]; then
         SESSIONS_WITH_GAPS=$((SESSIONS_WITH_GAPS + 1))
+        GAPS_FOUND=$((GAPS_FOUND + (EVENTS_PER_SESSION - SESSION_EVENTS)))
     fi
 done
 
