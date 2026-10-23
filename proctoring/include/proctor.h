@@ -40,6 +40,11 @@ private:
     std::vector<uint8_t> m_rgb_frame;
     uint32_t m_width;
     uint32_t m_height;
+    /* Regular-file capture is used by the evaluation harness.  The pointer is
+       an OpenCV VideoCapture kept opaque here so the public header does not
+       pull OpenCV into every translation unit that uses MediaCapture. */
+    void *m_file_capture;
+    bool m_file_mode;
 };
 
 } // namespace proctoring

@@ -538,7 +538,7 @@ private:
 FaceDetector     *g_face_detector = nullptr;
 SsdFaceDetector  g_ssd_face;
 CascadeFaceDetector g_cascade_face;
-MobileNetSsdDetector g_object_detector;
+CocoObjectDetector   g_object_detector;
 LandmarkDetector g_landmarks;
 std::string      g_scorer;
 
@@ -563,11 +563,11 @@ int vision_engine_init(const char *config_path) {
      *
      * Required artefacts (the Haar cascade face detector) are fatal when
      * missing or corrupted — the engine cannot operate without a face
-     * detector.  Optional artefacts (Caffe SSD face DNN, MobileNet object
+     * detector.  Optional artefacts (Caffe SSD face DNN, YOLOv8 object
      * DNN, LBF landmark model) produce a warning and are skipped; the
      * engine falls back gracefully:
      *   - Caffe SSD missing  → use Haar cascade only
-     *   - MobileNet missing  → object detection unavailable
+     *   - YOLOv8 missing     → object detection unavailable
      *   - LBF missing        → head pose estimation unavailable
      */
     for (auto &entry : artifacts) {
@@ -628,22 +628,26 @@ int vision_engine_init(const char *config_path) {
         return VISION_ENGINE_NO_DETECTOR;
     }
 
-    /* The object detector (MobileNet SSD) is optional.  When the weight files
-       are absent or failed verification a warning is emitted and object
-       detection is simply disabled — phone/book events will report
-       "unavailable". */
-    auto object_proto   = artifacts.find(ROLE_OBJECT_DNN_PROTOTXT);
+    /* The object detector (YOLOv8n ONNX) is optional.  When its weights are
+       absent or failed verification a warning is emitted and object detection
+       is simply disabled - phone/book events report that no approved detector
+       is provisioned. */
     auto object_weights = artifacts.find(ROLE_OBJECT_DNN_WEIGHTS);
-    if (object_proto   != artifacts.end() && !object_proto->second.path.empty() &&
-        object_weights != artifacts.end() && !object_weights->second.path.empty()) {
-        if (!g_object_detector.load(object_proto->second.path, object_weights->second.path)) {
+    auto object_proto   = artifacts.find(ROLE_OBJECT_DNN_PROTOTXT);
+    if (object_weights != artifacts.end() && !object_weights->second.path.empty()) {
+        std::string prototxt;
+        if (object_proto != artifacts.end() && !object_proto->second.path.empty() &&
+            object_weights->second.framework != "onnx") {
+            prototxt = object_proto->second.path;
+        }
+        if (!g_object_detector.load(object_weights->second.path, prototxt)) {
             fprintf(stderr,
-                    "[VisionEngine] WARNING: MobileNet SSD object detector failed to "
-                    "load — phone and book detection will be unavailable.\n");
+                    "[VisionEngine] WARNING: object detector failed to load - "
+                    "phone and book detection will be unavailable.\n");
         }
     } else {
         fprintf(stderr,
-                "[VisionEngine] WARNING: MobileNet SSD model files are not provisioned — "
+                "[VisionEngine] WARNING: object detector weights are not provisioned - "
                 "object detection (phone, book) will be unavailable.\n");
     }
 

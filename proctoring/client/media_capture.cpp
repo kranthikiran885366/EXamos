@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <linux/videodev2.h>
 #include <cstring>
 #include <cmath>
@@ -10,19 +11,51 @@
 #include <cerrno>
 #include <sys/mman.h>
 #include <sys/select.h>
+#include <opencv2/videoio.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace examos {
 namespace proctoring {
 
 MediaCapture::MediaCapture()
     : m_video_fd(-1), m_initialized(false), m_mmap_start(MAP_FAILED),
-      m_mmap_length(0), m_width(0), m_height(0) {}
+      m_mmap_length(0), m_width(0), m_height(0),
+      m_file_capture(nullptr), m_file_mode(false) {}
 
 MediaCapture::~MediaCapture() {
     close_devices();
 }
 
 bool MediaCapture::initialize(const std::string &video_dev) {
+    /* A regular file (used by the labelled-clip evaluation harness) is read
+       through OpenCV's VideoCapture.  Character devices continue down the
+       V4L2 path below. */
+    struct stat path_stat {};
+    if (stat(video_dev.c_str(), &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
+        auto *capture = new cv::VideoCapture(video_dev);
+        if (!capture->isOpened()) {
+            delete capture;
+            m_initialized = false;
+            return false;
+        }
+        cv::Mat first;
+        if (!capture->read(first) || first.empty()) {
+            capture->release();
+            delete capture;
+            m_initialized = false;
+            return false;
+        }
+        m_width = static_cast<uint32_t>(first.cols);
+        m_height = static_cast<uint32_t>(first.rows);
+        m_file_capture = capture;
+        m_file_mode = true;
+        m_rgb_frame.resize(static_cast<size_t>(m_width) * m_height * 3);
+        cv::cvtColor(first, first, cv::COLOR_BGR2RGB);
+        std::memcpy(m_rgb_frame.data(), first.data, m_rgb_frame.size());
+        m_initialized = true;
+        return true;
+    }
+
     m_video_fd = open(video_dev.c_str(), O_RDWR | O_NONBLOCK, 0);
     if (m_video_fd < 0) {
         // Fallback: Video device may not be present in virtual environment or non-camera setup
@@ -98,7 +131,33 @@ bool MediaCapture::initialize(const std::string &video_dev) {
 }
 
 bool MediaCapture::capture_frame(FrameStats &stats) {
-    if (!m_initialized || m_video_fd < 0) {
+    if (!m_initialized) {
+        return false;
+    }
+
+    if (m_file_mode) {
+        auto *capture = static_cast<cv::VideoCapture *>(m_file_capture);
+        if (!capture) return false;
+        cv::Mat frame;
+        if (!capture->read(frame) || frame.empty()) {
+            /* Loop the clip: a 3-second evaluation clip is sampled once per
+               second, so reaching EOF before the harness stops the worker is
+               expected rather than an error. */
+            capture->set(cv::CAP_PROP_POS_FRAMES, 0);
+            if (!capture->read(frame) || frame.empty()) return false;
+        }
+        m_width = static_cast<uint32_t>(frame.cols);
+        m_height = static_cast<uint32_t>(frame.rows);
+        const size_t needed = static_cast<size_t>(m_width) * m_height * 3;
+        if (m_rgb_frame.size() != needed) m_rgb_frame.resize(needed);
+        cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
+        std::memcpy(m_rgb_frame.data(), frame.data, needed);
+        stats.width = m_width;
+        stats.height = m_height;
+        return true;
+    }
+
+    if (m_video_fd < 0) {
         return false;
     }
 
@@ -148,6 +207,13 @@ uint32_t MediaCapture::frame_stride() const { return m_width * 3; }
 uint32_t MediaCapture::frame_channels() const { return 3; }
 
 void MediaCapture::close_devices() {
+    if (m_file_capture) {
+        auto *capture = static_cast<cv::VideoCapture *>(m_file_capture);
+        capture->release();
+        delete capture;
+        m_file_capture = nullptr;
+    }
+    m_file_mode = false;
     if (m_video_fd >= 0) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         if (m_initialized) ioctl(m_video_fd, VIDIOC_STREAMOFF, &type);

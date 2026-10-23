@@ -98,9 +98,19 @@ int main(int argc, char *argv[]) {
     {
         char appliance_reason[256] = {0};
         if (examos_appliance_verify(appliance_reason, sizeof(appliance_reason)) != 0) {
-            std::cerr << "[ExamOS-Proctor] FATAL: " << appliance_reason
-                      << ". The proctoring worker only runs on an ExamOS appliance." << std::endl;
-            return 2;
+            const char *tpm_mode = std::getenv("EXAMOS_TPM_MODE");
+            const bool production_mode = tpm_mode && strcmp(tpm_mode, "production") == 0;
+            const char *allow_dev = std::getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+            const bool development_bypass = !production_mode && allow_dev &&
+                                            strcmp(allow_dev, "1") == 0;
+            if (!development_bypass) {
+                std::cerr << "[ExamOS-Proctor] FATAL: " << appliance_reason
+                          << ". The proctoring worker only runs on an ExamOS appliance." << std::endl;
+                return 2;
+            }
+            std::cerr << "[ExamOS-Proctor] WARNING: " << appliance_reason
+                      << ". Development mode continues without the appliance posture; "
+                         "this run cannot produce production evidence." << std::endl;
         }
     }
 
@@ -204,6 +214,21 @@ int analysis = vision_engine_analyze_frame(capture.frame_data(), stats.width, st
 
         vision_engine_format_event_json(&result, event_type.c_str(), face_json, sizeof(face_json));
         send_proctoring_event(server_url, session_id, "PRIMARY_CAMERA", event_type, face_json);
+
+        /* Unauthorized-device events are emitted only when the provisioned
+           object detector actually matched the class.  A missing detector
+           leaves phone_detected/book_detected at zero, and main emits
+           nothing rather than a fabricated "detected: false" claim. */
+        if (result.phone_detected) {
+            char phone_json[1024];
+            vision_engine_format_event_json(&result, "PHONE_DETECTED", phone_json, sizeof(phone_json));
+            send_proctoring_event(server_url, session_id, "PRIMARY_CAMERA", "PHONE_DETECTED", phone_json);
+        }
+        if (result.book_detected) {
+            char book_json[1024];
+            vision_engine_format_event_json(&result, "BOOK_DETECTED", book_json, sizeof(book_json));
+            send_proctoring_event(server_url, session_id, "PRIMARY_CAMERA", "BOOK_DETECTED", book_json);
+        }
 
 
 
