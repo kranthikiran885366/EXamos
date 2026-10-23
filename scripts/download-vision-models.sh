@@ -8,7 +8,7 @@
 # a substituted or corrupted model cannot become examination evidence.
 #
 # Artefacts:
-#   face     Caffe SSD face detector (OpenCV project)
+#   face     YuNet ONNX face detector (OpenCV Zoo, MIT)
 #   object   YOLOX-S trained on COCO (OpenCV Zoo, Apache-2.0) - supplies the
 #            "cell phone" and "book" classes used by the proctoring taxonomy
 #   landmark LBF 68-point facial landmark model - makes head pose estimation
@@ -48,15 +48,13 @@ mkdir -p "$DEST" 2>/dev/null || { echo "[models] FATAL: cannot create $DEST (run
 # A download that does not match its digest is rejected, so a mirror that
 # serves an error page or a truncated file cannot be accepted.
 # ---------------------------------------------------------------------------
-FACE_BASE="https://raw.githubusercontent.com/opencv/opencv/4.10.0/samples/dnn/face_detector"
-FACE_WEIGHTS_URL="https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
+FACE_WEIGHTS_URL="https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 OBJECT_URL="https://github.com/opencv/opencv_zoo/raw/main/models/object_detection_yolox/object_detection_yolox_2022nov.onnx"
 LANDMARK_URL="https://github.com/kurnianggoro/GSOC2017/raw/master/data/lbfmodel.yaml"
 
 # role|file|url|sha256|size|licence|framework
 INVENTORY=(
-  "face-dnn-prototxt|deploy.prototxt|${FACE_BASE}/deploy.prototxt|dcd661dc48fc9de0a341db1f666a2164ea63a67265c7f779bc12d6b3f2fa67e9|28104|BSD-3-Clause (OpenCV project)|caffe"
-  "face-dnn-weights|res10_300x300_ssd_iter_140000.caffemodel|${FACE_WEIGHTS_URL}|2a56a11a57a4a295956b0660b4a3d76bbdca2206c4961cea8efe7d95c7cb2f2d|10666211|BSD-3-Clause (OpenCV project)|caffe"
+  "face-dnn-weights|face_detection_yunet_2023mar.onnx|${FACE_WEIGHTS_URL}|8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4|232589|MIT (OpenCV Zoo / YuNet)|opencv-yunet"
   "object-dnn-weights|object_detection_yolox_2022nov.onnx|${OBJECT_URL}|c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063|35858002|Apache-2.0 (OpenCV Zoo / YOLOX)|onnx"
   "landmarks|lbfmodel.yaml|${LANDMARK_URL}|70dd8b1657c42d1595d6bd13d97d932877b3bed54a95d3c4733a0f740d1fd66b|56375857|MIT (GSOC2017 landmark model)|"
 )

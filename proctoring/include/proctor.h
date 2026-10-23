@@ -37,6 +37,8 @@ private:
     bool m_initialized;
     void *m_mmap_start;
     size_t m_mmap_length;
+    /* Packed 8-bit BGR.  The name is historical; both the V4L2 path and the
+       OpenCV file path deliver BGR so the vision engine has one convention. */
     std::vector<uint8_t> m_rgb_frame;
     uint32_t m_width;
     uint32_t m_height;

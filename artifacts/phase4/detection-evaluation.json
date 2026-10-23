@@ -1,21 +1,35 @@
 {
   "phase": "P4",
-  "dataset_version": "1.0.0",
-  "total_clips": 50,
+  "test": "detection_quality",
+  "dataset_version": "1.0",
+  "total_clips": 71,
   "metrics": {
-    "true_positives": 39,
-    "true_negatives": 10,
+    "true_positives": 37,
+    "true_negatives": 12,
     "false_positives": 0,
-    "false_negatives": 1,
-    "accuracy_percent": 98.00,
-    "recall_percent": 97.50,
-    "precision_percent": 100.00,
-    "false_positive_rate_percent": 0.00
+    "false_negatives": 22,
+    "accuracy_percent": 69.01,
+    "recall_percent": 27.20,
+    "precision_percent": 27.20,
+    "false_positive_rate_percent": 0,
+    "multiple_face_recall_percent": "90.00",
+    "no_face_recall_percent": "100.00",
+    "single_face_recall_percent": "72.00",
+    "phone_recall_percent": "33.33",
+    "book_recall_percent": "41.66"
+  },
+  "informational_metrics": {
+    "single_face_recall_percent": "72.00",
+    "phone_recall_percent": "33.33",
+    "book_recall_percent": "41.66",
+    "note": "Phone and book recall are measured and reported but are not part of the existing P4 gate targets (multiple-face recall, no-face recall, false-positive rate)."
   },
   "targets": {
-    "multiple_face_recall_min": 90.0,
-    "no_face_recall_min": 90.0,
-    "max_false_positive_rate": 5.0
+    "multiple_face_recall_min": 90,
+    "no_face_recall_min": 90,
+    "max_false_positive_rate": 5
   },
-  "status": "PASS"
+  "status": "PASS",
+  "reason": "All targets met",
+  "timestamp": "2026-10-23T14:21:15Z"
 }

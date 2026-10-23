@@ -86,8 +86,14 @@ int main(int argc, char **argv) {
                 check("detected box lies inside the frame",
                       bbox.x >= 0.0f && bbox.y >= 0.0f &&
                       bbox.x + bbox.width <= 1.01f && bbox.y + bbox.height <= 1.01f);
-                check("no confidence was fabricated for a cascade detection",
-                      bbox.confidence == 0.0f);
+                const char *scorer = vision_engine_scorer();
+                if (scorer && strcmp(scorer, "binary_cascade") == 0) {
+                    check("a cascade detection carries no invented confidence",
+                          bbox.confidence == 0.0f);
+                } else {
+                    check("a calibrated detection reports its score",
+                          bbox.confidence > 0.0f && bbox.confidence <= 1.0f);
+                }
             }
         }
     }

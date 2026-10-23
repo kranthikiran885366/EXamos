@@ -2,7 +2,7 @@
   "_schema": "examos-model-manifest-v2",
   "_comment": "Detector artefacts used by the proctoring worker. Every artefact that is present is verified against its SHA-256 digest before use, so a substituted or corrupted model cannot become examination evidence. Required artefacts (face-cascade) are fatal when missing; optional artefacts (DNN weights, landmark model) log a warning and are skipped — the engine degrades gracefully without crashing.",
   "environment": "repository",
-  "version": "4",
+  "version": "5",
   "models": [
     {
       "name": "opencv-haarcascade-frontalface",
@@ -20,34 +20,20 @@
       "note": "Bundled with the OpenCV package. Required for engine operation — engine refuses to start if this file is missing or corrupted."
     },
     {
-      "name": "res10-ssd-face-prototxt",
-      "role": "face-dnn-prototxt",
-      "version": "res10_300x300_ssd",
-      "file": "deploy.prototxt",
-      "sha256": "dcd661dc48fc9de0a341db1f666a2164ea63a67265c7f779bc12d6b3f2fa67e9",
-      "size_bytes": 28104,
-      "source": "https://raw.githubusercontent.com/opencv/opencv/4.10.0/samples/dnn/face_detector/deploy.prototxt",
-      "licence": "BSD-3-Clause (OpenCV project)",
-      "class": "face",
-      "scorer": "opencv-dnn-ssd-face",
-      "required": false,
-      "produces_calibrated_confidence": true,
-      "note": "Network definition for the Caffe SSD face detector. If absent, the engine falls back to the face cascade transparently."
-    },
-    {
-      "name": "res10-ssd-face-weights",
+      "name": "yunet-face-weights",
       "role": "face-dnn-weights",
-      "version": "res10_300x300_ssd_iter_140000",
-      "file": "res10_300x300_ssd_iter_140000.caffemodel",
-      "sha256": "2a56a11a57a4a295956b0660b4a3d76bbdca2206c4961cea8efe7d95c7cb2f2d",
-      "size_bytes": 10666211,
-      "source": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
-      "licence": "BSD-3-Clause (OpenCV project)",
+      "version": "face_detection_yunet_2023mar",
+      "file": "face_detection_yunet_2023mar.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "size_bytes": 232589,
+      "source": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "licence": "MIT (OpenCV Zoo / YuNet)",
+      "framework": "opencv-yunet",
       "class": "face",
-      "scorer": "opencv-dnn-ssd-face",
+      "scorer": "opencv-yunet-face",
       "required": false,
       "produces_calibrated_confidence": true,
-      "note": "Caffe SSD face detector weights. Paired with face-dnn-prototxt. If absent, the engine falls back to the face cascade."
+      "note": "YuNet ONNX face detector. Detects small and partially occluded faces far more reliably than the res10 SSD at webcam resolution. If absent, the engine falls back to the bundled Haar cascade."
     },
     {
       "name": "yolox-s-object-weights",

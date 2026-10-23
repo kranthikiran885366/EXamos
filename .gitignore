@@ -140,6 +140,7 @@ server/attestation/examos-verifier
 # =============================================================================
 tests/p4/dataset/
 tests/p4/models/
+artifacts/phase4/detection-events.log
 
 # =============================================================================
 # OS / Editor artifacts

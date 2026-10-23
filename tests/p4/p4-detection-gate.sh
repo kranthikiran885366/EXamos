@@ -37,13 +37,14 @@ PROCTOR_BIN="$WORKSPACE/proctoring/examos-proctor"
 EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P4_SERVER_PORT:-9102}"
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
-EVENT_LOG="/tmp/examos-p4-detection-events.log"
+EVENT_LOG="$ARTIFACT_DIR/detection-events.log"
+DETAIL_CSV="$ARTIFACT_DIR/detection-clips.csv"
 MODEL_DIR="${EXAMOS_FACE_MODEL_DIR:-$WORKSPACE/tests/p4/models}"
 MODEL_MANIFEST="$MODEL_DIR/MODEL-MANIFEST.json"
 PROCTOR_TOKEN="$(openssl rand -hex 32)"
-: > "$EVENT_LOG"
 
 mkdir -p "$ARTIFACT_DIR"
+: > "$EVENT_LOG"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -106,7 +107,7 @@ EOF
     exit 2
 fi
 
-if [ ! -f "$MODEL_DIR/res10_300x300_ssd_iter_140000.caffemodel" ] ||
+if [ ! -f "$MODEL_DIR/face_detection_yunet_2023mar.onnx" ] ||
    [ ! -f "$MODEL_DIR/object_detection_yolox_2022nov.onnx" ] ||
    [ ! -f "$MODEL_MANIFEST" ]; then
     echo "  BLOCKED: vision engine weights are not provisioned in $MODEL_DIR" >&2
@@ -116,7 +117,7 @@ if [ ! -f "$MODEL_DIR/res10_300x300_ssd_iter_140000.caffemodel" ] ||
   "phase": "P4",
   "test": "detection_quality",
   "status": "BLOCKED",
-  "reason": "Vision engine models (res10 face SSD, YOLOX object detector and MODEL-MANIFEST.json) not installed in $MODEL_DIR. Run scripts/download-vision-models.sh.",
+  "reason": "Vision engine models (YuNet face detector, YOLOX object detector and MODEL-MANIFEST.json) not installed in $MODEL_DIR. Run scripts/download-vision-models.sh.",
   "total_clips": $CLIP_COUNT,
   "timestamp": "$(ts)"
 }
@@ -132,7 +133,7 @@ SERVER_PID=""
 
 if [ -x "$SERVER_BIN" ]; then
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
-    EXAMOS_LEDGER_PATH="/tmp/examos-p4-detection-ledger.log" \
+    EXAMOS_LEDGER_PATH="/tmp/examos-p4-detection-ledger-$$.log" \
     EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_CHAIN_PATH="$EVENT_LOG" \
     EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
@@ -143,7 +144,7 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
-        "$SERVER_BIN" &
+        "$SERVER_BIN" >/tmp/examos-p4-detection-server.log 2>&1 &
     SERVER_PID=$!
     for i in $(seq 1 15); do
         curl -sf "${SERVER_URL}/api/v1/health" >/dev/null 2>&1 && break
@@ -184,6 +185,30 @@ cleanup() {
 trap cleanup EXIT
 
 # -----------------------------------------------------------------------
+# Detector environment.  The warm-up below uses the same provisioned manifest
+# and credentials as every evaluated clip, so it warms YuNet, YOLOX and LBF
+# rather than merely the dynamic loader.
+# -----------------------------------------------------------------------
+export EXAMOS_PROCTOR_DETECTOR_CONFIG="$MODEL_MANIFEST"
+export EXAMOS_PROCTOR_MODEL_NAME="yolox-s_yunet"
+export EXAMOS_PROCTOR_MODEL_VERSION="5"
+export EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN"
+if [ "$EXAMOS_TEST_MODE" != "production" ]; then
+    export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}"
+    export EXAMOS_ALLOW_UNPROVISIONED_DEV=1
+fi
+
+# -----------------------------------------------------------------------
+# Warm the dynamic loader and the model files.  The first proctor start on a
+# cold WSL page cache spends most of its budget loading OpenCV and hashing the
+# 92 MB model inventory; without this warm-up the first evaluated clip would
+# measure process start-up rather than detection quality.
+# -----------------------------------------------------------------------
+echo "  Warming detector libraries and model cache..."
+timeout 30 "$PROCTOR_BIN" --session "p4-warmup" --server "$SERVER_URL" \
+    --device "$DATASET_DIR/empty-001.mp4" >/dev/null 2>&1 || true
+
+# -----------------------------------------------------------------------
 # Process each clip through the proctor and collect events
 # -----------------------------------------------------------------------
 echo "  Processing clips..."
@@ -191,21 +216,20 @@ echo "  Processing clips..."
 TP=0; TN=0; FP=0; FN=0
 MULTI_FACE_TP=0; MULTI_FACE_FN=0
 NO_FACE_TP=0; NO_FACE_FN=0
-SINGLE_FACE_OK=0
+SINGLE_FACE_OK=0; SINGLE_FACE_TOTAL=0
+PHONE_TP=0; PHONE_FN=0
+BOOK_TP=0; BOOK_FN=0
 TOTAL_PROCESSED=0
 FAILURES=0
 
+# Per-clip audit trail.  Every recognised clip gets a row, including clips that
+# produced no detector event, so a timing failure cannot hide inside an
+# aggregate recall number.
+echo "clip_id,label,face_events,multiple_faces,phone_detected,book_detected,events" > "$DETAIL_CSV"
+
 # The proctor attributes every event to the detector that produced it, and
-# authenticates to the server.  Evaluation runs in development mode unless
-# EXAMOS_TEST_MODE=production explicitly requests the production posture.
-export EXAMOS_PROCTOR_DETECTOR_CONFIG="$MODEL_MANIFEST"
-export EXAMOS_PROCTOR_MODEL_NAME="yolox-s_res10"
-export EXAMOS_PROCTOR_MODEL_VERSION="4"
-export EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN"
-if [ "$EXAMOS_TEST_MODE" != "production" ]; then
-    export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}"
-    export EXAMOS_ALLOW_UNPROVISIONED_DEV=1
-fi
+# authenticates to the server.  The environment was exported before the warm-up
+# so both the warm-up and every clip use the same approved detector.
 
 for label_file in "$DATASET_DIR"/*.json; do
     [ -f "$label_file" ] || continue
@@ -235,14 +259,16 @@ for label_file in "$DATASET_DIR"/*.json; do
         continue
     fi
 
-    # Run proctor against the clip for 3 seconds
+    # Run the proctor in the foreground under GNU timeout.  timeout sends
+    # SIGTERM to the worker and waits for it to finish its current frame and
+    # flush the event that frame produced.  Killing a background timeout
+    # wrapper could return before the worker had delivered its event.  The
+    # budget is long enough for model verification, LBF landmarks and several
+    # one-second samples even on a frame with multiple faces.
     SESSION_ID="detect-${CLIP_ID}"
-    timeout 5 "$PROCTOR_BIN" --session "$SESSION_ID" --server "$SERVER_URL" --device "$CLIP_VIDEO" \
-        >/dev/null 2>&1 &
-    PROC_PID=$!
-    sleep 3
-    kill "$PROC_PID" 2>/dev/null || true
-    wait "$PROC_PID" 2>/dev/null || true
+    timeout --signal=TERM --kill-after=4 20 "$PROCTOR_BIN" --session "$SESSION_ID" \
+        --server "$SERVER_URL" --device "$CLIP_VIDEO" >/dev/null 2>&1 || true
+    sleep 1
 
     # Read events from server log
     FACE_POSITIVE=0
@@ -250,6 +276,7 @@ for label_file in "$DATASET_DIR"/*.json; do
     DETECTED_NO_FACE=false
     DETECTED_PHONE=false
     DETECTED_BOOK=false
+    SESSION_EVENTS=""
 
     if [ -f "$EVENT_LOG" ]; then
         SESSION_EVENTS=$(grep -F "\"session_id\":\"${SESSION_ID}\"" "$EVENT_LOG" 2>/dev/null || true)
@@ -273,8 +300,18 @@ for label_file in "$DATASET_DIR"/*.json; do
         DETECTED_FACE=true
     fi
 
+    EVENTS_COUNT=$(printf '%s\n' "$SESSION_EVENTS" | grep -c . 2>/dev/null || true)
+    EVENTS_COUNT=${EVENTS_COUNT:-0}
+    echo "  ${CLIP_ID} [${LABEL}] face=${FACE_POSITIVE} multiple=${DETECTED_MULTIPLE} phone=${DETECTED_PHONE} book=${DETECTED_BOOK} events=${EVENTS_COUNT}"
+    printf '%s,%s,%s,%s,%s,%s,%s\n' \
+        "$CLIP_ID" "$LABEL" "$FACE_POSITIVE" "$DETECTED_MULTIPLE" \
+        "$DETECTED_PHONE" "$DETECTED_BOOK" "$EVENTS_COUNT" >> "$DETAIL_CSV"
+
     case "$LABEL" in
         single_face|multiple_faces)
+            if [ "$LABEL" = "single_face" ]; then
+                SINGLE_FACE_TOTAL=$((SINGLE_FACE_TOTAL + 1))
+            fi
             if [ "$DETECTED_FACE" = "true" ]; then
                 TP=$((TP + 1))
                 if [ "$LABEL" = "single_face" ]; then
@@ -306,15 +343,19 @@ for label_file in "$DATASET_DIR"/*.json; do
         phone_present)
             if [ "$DETECTED_PHONE" = "true" ]; then
                 TP=$((TP + 1))
+                PHONE_TP=$((PHONE_TP + 1))
             else
                 FN=$((FN + 1))
+                PHONE_FN=$((PHONE_FN + 1))
             fi
             ;;
         book_present)
             if [ "$DETECTED_BOOK" = "true" ]; then
                 TP=$((TP + 1))
+                BOOK_TP=$((BOOK_TP + 1))
             else
                 FN=$((FN + 1))
+                BOOK_FN=$((BOOK_FN + 1))
             fi
             ;;
         *)
@@ -368,6 +409,25 @@ else
     NOFACE_RECALL="N/A"
 fi
 
+# Single-face and object-class recall.  These are reported for transparency:
+# the P4 gate targets constrain multiple-face recall, no-face recall and the
+# false-positive rate, not object-class recall.
+if [ "$SINGLE_FACE_TOTAL" -gt 0 ]; then
+    SINGLE_RECALL=$(echo "scale=2; $SINGLE_FACE_OK * 100 / $SINGLE_FACE_TOTAL" | bc 2>/dev/null || echo "0")
+else
+    SINGLE_RECALL="N/A"
+fi
+if [ $((PHONE_TP + PHONE_FN)) -gt 0 ]; then
+    PHONE_RECALL=$(echo "scale=2; $PHONE_TP * 100 / ($PHONE_TP + $PHONE_FN)" | bc 2>/dev/null || echo "0")
+else
+    PHONE_RECALL="N/A"
+fi
+if [ $((BOOK_TP + BOOK_FN)) -gt 0 ]; then
+    BOOK_RECALL=$(echo "scale=2; $BOOK_TP * 100 / ($BOOK_TP + $BOOK_FN)" | bc 2>/dev/null || echo "0")
+else
+    BOOK_RECALL="N/A"
+fi
+
 # Gate decision
 GATE="PASS"
 REASON="All targets met"
@@ -412,6 +472,9 @@ echo "  Recall:               ${RECALL}%"
 echo "  Precision:            ${PRECISION}%"
 echo "  Multi-face recall:    ${MULTI_RECALL}% (target ≥ 90%)"
 echo "  No-face recall:       ${NOFACE_RECALL}% (target ≥ 90%)"
+echo "  Single-face recall:   ${SINGLE_RECALL}% (informational)"
+echo "  Phone recall:         ${PHONE_RECALL}% (informational)"
+echo "  Book recall:          ${BOOK_RECALL}% (informational)"
 echo "  False positive rate:  ${FPR}% (target < 5%)"
 echo "  Gate:                 $GATE"
 [ "$GATE" = "FAIL" ] && echo "  Reason: $REASON"
@@ -421,8 +484,10 @@ cat > "$ARTIFACT_DIR/detection-evaluation.json" <<EOF
 {
   "phase": "P4",
   "test": "detection_quality",
-  "dataset_version": "1.0",
+  "dataset_version": "coco-val2017-v1",
   "total_clips": $TOTAL_PROCESSED,
+  "per_clip_csv": "detection-clips.csv",
+  "event_log": "detection-events.log",
   "metrics": {
     "true_positives": $TP,
     "true_negatives": $TN,
@@ -433,7 +498,16 @@ cat > "$ARTIFACT_DIR/detection-evaluation.json" <<EOF
     "precision_percent": $PRECISION,
     "false_positive_rate_percent": $FPR,
     "multiple_face_recall_percent": "$MULTI_RECALL",
-    "no_face_recall_percent": "$NOFACE_RECALL"
+    "no_face_recall_percent": "$NOFACE_RECALL",
+    "single_face_recall_percent": "$SINGLE_RECALL",
+    "phone_recall_percent": "$PHONE_RECALL",
+    "book_recall_percent": "$BOOK_RECALL"
+  },
+  "informational_metrics": {
+    "single_face_recall_percent": "$SINGLE_RECALL",
+    "phone_recall_percent": "$PHONE_RECALL",
+    "book_recall_percent": "$BOOK_RECALL",
+    "note": "Phone and book recall are measured and reported but are not part of the existing P4 gate targets (multiple-face recall, no-face recall, false-positive rate)."
   },
   "targets": {
     "multiple_face_recall_min": 90,
@@ -458,6 +532,9 @@ recall_percent,$RECALL
 precision_percent,$PRECISION
 multiple_face_recall_percent,$MULTI_RECALL
 no_face_recall_percent,$NOFACE_RECALL
+single_face_recall_percent,$SINGLE_RECALL
+phone_recall_percent,$PHONE_RECALL
+book_recall_percent,$BOOK_RECALL
 false_positive_rate_percent,$FPR
 gate,$GATE
 EOF

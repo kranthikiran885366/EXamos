@@ -50,7 +50,8 @@ bool MediaCapture::initialize(const std::string &video_dev) {
         m_file_capture = capture;
         m_file_mode = true;
         m_rgb_frame.resize(static_cast<size_t>(m_width) * m_height * 3);
-        cv::cvtColor(first, first, cv::COLOR_BGR2RGB);
+        /* VideoCapture returns BGR, which is the layout the vision engine
+           expects; no colour conversion is needed. */
         std::memcpy(m_rgb_frame.data(), first.data, m_rgb_frame.size());
         m_initialized = true;
         return true;
@@ -150,7 +151,6 @@ bool MediaCapture::capture_frame(FrameStats &stats) {
         m_height = static_cast<uint32_t>(frame.rows);
         const size_t needed = static_cast<size_t>(m_width) * m_height * 3;
         if (m_rgb_frame.size() != needed) m_rgb_frame.resize(needed);
-        cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
         std::memcpy(m_rgb_frame.data(), frame.data, needed);
         stats.width = m_width;
         stats.height = m_height;
@@ -187,9 +187,11 @@ bool MediaCapture::capture_frame(FrameStats &stats) {
             int g = (298 * c - 100 * u - 208 * v + 128) >> 8;
             int b = (298 * c + 516 * u + 128) >> 8;
             size_t d = (p + static_cast<size_t>(j)) * 3;
-            m_rgb_frame[d] = static_cast<uint8_t>(std::max(0, std::min(255, r)));
+            /* Store BGR: OpenCV's video path and the vision engine both use
+               BGR, so a YUYV frame must not be handed over as RGB. */
+            m_rgb_frame[d] = static_cast<uint8_t>(std::max(0, std::min(255, b)));
             m_rgb_frame[d + 1] = static_cast<uint8_t>(std::max(0, std::min(255, g)));
-            m_rgb_frame[d + 2] = static_cast<uint8_t>(std::max(0, std::min(255, b)));
+            m_rgb_frame[d + 2] = static_cast<uint8_t>(std::max(0, std::min(255, r)));
             luminance += static_cast<uint64_t>(ys[j]);
         }
     }

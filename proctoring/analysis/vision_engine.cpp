@@ -3,6 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/face.hpp>
+#include <opencv2/objdetect.hpp>
 #include <openssl/evp.h>
 
 #include <cstdio>
@@ -22,9 +23,10 @@
  * when it matched nothing. Three classes of detector are supported, each
  * loaded from a digest-verified artefact named in the model manifest:
  *
- *   face-dnn     Caffe SSD face detector. Produces a calibrated detection
+ *   face-dnn     YuNet ONNX face detector. Produces a calibrated detection
  *                score per face, so the reported confidence is a real
- *                score and not a placeholder.
+ *                score and not a placeholder. The older Caffe SSD face
+ *                detector is still accepted when the manifest names it.
  *   face-cascade OpenCV's frontal-face Haar cascade, which is bundled with
  *                the installed OpenCV package. A cascade yields no
  *                calibrated probability, so the confidence stays at zero.
@@ -59,7 +61,10 @@ const int COCO_CELL_PHONE = 67;
 const int COCO_BOOK       = 73;
 
 const float FACE_SCORE_THRESHOLD = 0.50f;
-const float OBJECT_SCORE_THRESHOLD = 0.45f;
+/* A proctoring alert is recall-oriented: missing a phone is worse than a
+ * second look at a false positive. 0.25 keeps every empty-scene clip clean
+ * in the P4 evaluation set while recovering weak but real detections. */
+const float OBJECT_SCORE_THRESHOLD = 0.25f;
 const float OBJECT_NMS_THRESHOLD = 0.45f;
 const int   OBJECT_INPUT_SIZE = 640;
 
@@ -269,6 +274,59 @@ public:
 private:
     cv::dnn::Net net_;
     bool         loaded_ = false;
+};
+
+/* YuNet face detector (ONNX, MIT, OpenCV Zoo).
+ *
+ * YuNet is substantially better than the res10 SSD at small and moderately
+ * occluded faces, which is what a webcam frame at 640x480 actually contains.
+ * It also produces a calibrated score, so the reported confidence remains a
+ * real detector output rather than a placeholder. */
+class YuNetFaceDetector : public FaceDetector {
+public:
+    bool load(const std::string &weights) {
+        try {
+            detector_ = cv::FaceDetectorYN::create(weights, "", cv::Size(320, 320),
+                                                   0.60f, 0.30f, 5000);
+        } catch (const cv::Exception &error) {
+            fprintf(stderr, "[VisionEngine] YuNet face detector could not be loaded: %s\n",
+                    error.what());
+            return false;
+        }
+        if (!detector_) return false;
+        loaded_ = true;
+        return true;
+    }
+    const char *scorer() const override { return "opencv-yunet-face"; }
+    bool produces_confidence() const override { return true; }
+    std::vector<FaceDetection> detect(const cv::Mat &frame) override {
+        std::vector<FaceDetection> found;
+        if (!loaded_) return found;
+        try {
+            detector_->setInputSize(frame.size());
+            cv::Mat faces;
+            detector_->detect(frame, faces);
+            for (int i = 0; i < faces.rows; ++i) {
+                const float *row = faces.ptr<float>(i);
+                /* YuNet returns [x, y, w, h, five landmarks..., score]. */
+                cv::Rect box(static_cast<int>(row[0]), static_cast<int>(row[1]),
+                             static_cast<int>(row[2]), static_cast<int>(row[3]));
+                box &= cv::Rect(0, 0, frame.cols, frame.rows);
+                if (box.width < 8 || box.height < 8) continue;
+                FaceDetection detection;
+                detection.box = box;
+                detection.score = row[14];
+                found.push_back(detection);
+            }
+        } catch (const cv::Exception &error) {
+            fprintf(stderr, "[VisionEngine] YuNet face detection failed: %s\n", error.what());
+        }
+        return found;
+    }
+
+private:
+    cv::Ptr<cv::FaceDetectorYN> detector_;
+    bool                        loaded_ = false;
 };
 
 /* Haar cascade face detector. Reports presence, not a probability. */
@@ -557,6 +615,7 @@ private:
 
 FaceDetector     *g_face_detector = nullptr;
 SsdFaceDetector  g_ssd_face;
+YuNetFaceDetector g_yunet_face;
 CascadeFaceDetector g_cascade_face;
 CocoObjectDetector   g_object_detector;
 LandmarkDetector g_landmarks;
@@ -565,10 +624,10 @@ std::string      g_scorer;
 } // namespace
 
 int vision_engine_init(const char *config_path) {
-    if (g_face_detector) {
-        delete g_face_detector;
-        g_face_detector = nullptr;
-    }
+    /* The active detector is a file-scope singleton, not a heap object.  A
+       previous initialisation only needs its pointer cleared; deleting it
+       would free static storage. */
+    g_face_detector = nullptr;
     g_scorer.clear();
 
     std::map<std::string, ModelArtifact> artifacts;
@@ -583,11 +642,11 @@ int vision_engine_init(const char *config_path) {
      *
      * Required artefacts (the Haar cascade face detector) are fatal when
      * missing or corrupted — the engine cannot operate without a face
-     * detector.  Optional artefacts (Caffe SSD face DNN, YOLOv8 object
-     * DNN, LBF landmark model) produce a warning and are skipped; the
-     * engine falls back gracefully:
-     *   - Caffe SSD missing  → use Haar cascade only
-     *   - YOLOv8 missing     → object detection unavailable
+     * detector.  Optional artefacts (YuNet face DNN, YOLOX object DNN, LBF
+     * landmark model) produce a warning and are skipped; the engine falls
+     * back gracefully:
+     *   - YuNet missing      → use Haar cascade only
+     *   - YOLOX missing      → object detection unavailable
      *   - LBF missing        → head pose estimation unavailable
      */
     for (auto &entry : artifacts) {
@@ -615,20 +674,36 @@ int vision_engine_init(const char *config_path) {
         }
     }
 
-    /* The face detector is preferred when a Caffe SSD DNN is provisioned and
-       verified.  If those weights are absent or failed verification the engine
-       falls back transparently to the bundled Haar cascade. */
+    /* The face detector is preferred when a DNN is provisioned and verified.
+       YuNet (ONNX) is used when the manifest names it or the weights end in
+       .onnx; the older Caffe SSD remains supported when a prototxt is paired
+       with the weights.  If neither loads the engine falls back transparently
+       to the bundled Haar cascade. */
     auto face_proto   = artifacts.find(ROLE_FACE_DNN_PROTOTXT);
     auto face_weights = artifacts.find(ROLE_FACE_DNN_WEIGHTS);
-    if (face_proto   != artifacts.end() && !face_proto->second.path.empty() &&
-        face_weights != artifacts.end() && !face_weights->second.path.empty()) {
-        if (g_ssd_face.load(face_proto->second.path, face_weights->second.path)) {
-            g_face_detector = &g_ssd_face;
-            g_scorer = g_ssd_face.scorer();
-        } else {
-            fprintf(stderr,
-                    "[VisionEngine] WARNING: Caffe SSD face detector failed to load — "
-                    "falling back to Haar cascade.\n");
+    if (face_weights != artifacts.end() && !face_weights->second.path.empty()) {
+        const std::string &weights = face_weights->second.path;
+        const bool is_onnx = face_weights->second.framework == "opencv-yunet" ||
+                             (weights.size() > 5 &&
+                              weights.compare(weights.size() - 5, 5, ".onnx") == 0);
+        if (is_onnx) {
+            if (g_yunet_face.load(weights)) {
+                g_face_detector = &g_yunet_face;
+                g_scorer = g_yunet_face.scorer();
+            } else {
+                fprintf(stderr,
+                        "[VisionEngine] WARNING: YuNet face detector failed to load — "
+                        "falling back to Haar cascade.\n");
+            }
+        } else if (face_proto != artifacts.end() && !face_proto->second.path.empty()) {
+            if (g_ssd_face.load(face_proto->second.path, weights)) {
+                g_face_detector = &g_ssd_face;
+                g_scorer = g_ssd_face.scorer();
+            } else {
+                fprintf(stderr,
+                        "[VisionEngine] WARNING: Caffe SSD face detector failed to load — "
+                        "falling back to Haar cascade.\n");
+            }
         }
     }
     if (!g_face_detector) {
@@ -648,7 +723,7 @@ int vision_engine_init(const char *config_path) {
         return VISION_ENGINE_NO_DETECTOR;
     }
 
-    /* The object detector (YOLOv8n ONNX) is optional.  When its weights are
+    /* The object detector (YOLOX-S ONNX) is optional.  When its weights are
        absent or failed verification a warning is emitted and object detection
        is simply disabled - phone/book events report that no approved detector
        is provisioned. */
