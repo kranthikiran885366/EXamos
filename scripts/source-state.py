@@ -15,8 +15,7 @@ import sys
 
 
 GENERATED_UNTRACKED_ROOTS = (
-    "artifacts/p0/runs/",
-    "artifacts/production/runs/",
+    "artifacts/",
     "image/p0/output/",
     "build/",
     "cache/",
