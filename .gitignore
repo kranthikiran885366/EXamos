@@ -39,6 +39,10 @@ initrd.cpio.zst
 
 # ISO images — do not track build artifacts
 *.iso
+# Kernel / boot artifacts captured inside evidence directories
+*.efi
+*.initrd
+*.vmlinuz
 
 # mkosi build outputs (all in image/)
 image/examos.efi
