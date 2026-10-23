@@ -43,6 +43,13 @@ SOURCE_STATUS="$(examos_p0_source_status "$WORKSPACE")" || exit 2
 SOURCE_DIRTY_COUNT=0
 BUILD_CONFIG_SHA256="$(sha256sum "$WORKSPACE/image/p0/mkosi.conf" | cut -d' ' -f1)" || exit 2
 PINNED_INPUTS_SHA256="$(sha256sum "$WORKSPACE/image/p0/sources.lock" | cut -d' ' -f1)" || exit 2
+
+# PG-05: Verify sources.lock exists and is non-empty before trusting it
+[ -s "$WORKSPACE/image/p0/sources.lock" ] || {
+    echo "[P0-BUILD] FATAL: image/p0/sources.lock is missing or empty; cannot pin build inputs." >&2
+    exit 2
+}
+
 BUILD_FINALIZED=0
 record_build_failure() {
     local exit_code=$?
@@ -147,6 +154,37 @@ if [ -f "$IMAGE_ARTIFACT" ]; then
           image_size_bytes:$size_bytes}' > "$BUILD_RESULT_TMP" || exit 2
     mv -- "$BUILD_RESULT_TMP" "$BUILD_RESULT" || exit 2
     BUILD_FINALIZED=1
+
+    echo "============================================================"
+    # PG-03: Run binary hardening check as a hard gate blocker
+    echo "[P0-BUILD] Running binary hardening gate..."
+    HARDENING_SCRIPT="$WORKSPACE/tests/p0/binary-hardening-check.sh"
+    HARDENING_FAIL=0
+    for bin in server/examos-server agent/examos-agent kiosk/launcher/examos-kiosk-launcher proctoring/examos-proctor; do
+        BIN_PATH="$WORKSPACE/$bin"
+        [ -f "$BIN_PATH" ] || continue
+        GRADE=$(bash "$HARDENING_SCRIPT" "$BIN_PATH" json 2>/dev/null | grep -oP '"grade"\s*:\s*"\K[^"]+' || echo "F")
+        case "$GRADE" in
+            A+|A|B) echo "[P0-BUILD] Hardening grade $GRADE: $(basename $bin)" ;;
+            *) echo "[P0-BUILD] FATAL: binary hardening grade $GRADE for $(basename $bin) — minimum B required." >&2
+               HARDENING_FAIL=1 ;;
+        esac
+    done
+    [ "$HARDENING_FAIL" -eq 0 ] || exit 1
+
+    # PG-05: Verify downloaded packages match sources.lock hashes
+    echo "[P0-BUILD] Verifying package integrity against sources.lock..."
+    SOURCES_LOCK="$WORKSPACE/image/p0/sources.lock"
+    if [ -f "$SOURCES_LOCK" ]; then
+        # Extract snapshot timestamp from sources.lock
+        SNAPSHOT=$(awk -F= '$1=="debian_snapshot" { sub(/\r$/, "", $2); print $2; exit }' "$SOURCES_LOCK")
+        echo "[P0-BUILD] Using Debian snapshot: $SNAPSHOT"
+        # Note: Full package hash verification requires mkosi build output analysis
+        # This is a placeholder for future implementation of PG-05
+        echo "[P0-BUILD] INFO: Package hash verification placeholder (PG-05 - requires mkosi build output analysis)"
+    else
+        echo "[P0-BUILD] WARN: sources.lock not found, skipping package hash verification"
+    fi
 
     echo "============================================================"
     echo "[P0-BUILD] OVERALL BUILD STATUS: PASS"

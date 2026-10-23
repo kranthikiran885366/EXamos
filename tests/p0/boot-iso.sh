@@ -182,6 +182,21 @@ while kill -0 "$QEMU_PID" 2>/dev/null; do
         QEMU_PID=""
         break
     fi
+    # PG-02: Check for QEMU crash (exit 139 = SIGSEGV)
+    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        set +e
+        wait "$QEMU_PID"
+        QEMU_STATUS=$?
+        set -e
+        QEMU_PID=""
+        if [ "$QEMU_STATUS" -eq 139 ]; then
+            echo "[P0-ISO-BOOT] FAIL: QEMU crashed with SIGSEGV (exit 139)"
+            echo "[P0-ISO-BOOT] Root cause: Likely memory or firmware configuration issue"
+            tail -50 "$BOOT_LOG" 2>/dev/null
+            fail "QEMU crashed during ISO boot (exit 139)"
+        fi
+        break
+    fi
     if [ "$((SECONDS - QEMU_START))" -ge "$BOOT_TIMEOUT" ]; then
         echo "[P0-ISO-BOOT] Guest readiness deadline reached."
         kill -TERM "$QEMU_PID" 2>/dev/null || true

@@ -171,6 +171,18 @@ echo ""
 echo ">>> STEP 5/10: Building Target Disk Image..."
 P0_BUILD_START_EPOCH="$(date +%s)" bash "$WORKSPACE/tests/p0/build.sh"
 
+# PG-03: Run enterprise validation as hard gate (binary hardening check)
+CURRENT_STEP="enterprise validation"
+echo ""
+echo ">>> STEP 5.5/10: Running Enterprise Validation (binary hardening)..."
+CHECK_ENTERPRISE="FAIL"
+if bash "$WORKSPACE/tests/p0/enterprise-validate.sh"; then
+    CHECK_ENTERPRISE="PASS"
+else
+    CHECK_ENTERPRISE="FAIL"
+    echo "[P0] FAIL: Enterprise validation failed (binary hardening check)"
+fi
+
 # Step 6: Build a hybrid ISO from the P0 disk's verified partitions.
 CURRENT_STEP="hybrid ISO build"
 echo ""
@@ -443,7 +455,7 @@ for _c in "$CHECK_ARCH" "$CHECK_KVM" "$CHECK_QEMU" "$CHECK_OVMF" "$CHECK_MKOSI" 
           "$CHECK_BOOT" "$CHECK_FIRST_BOOT" "$CHECK_FIRST_BOOT_RECOVERY" \
           "$CHECK_ISO_BUILD" "$CHECK_ISO_BOOT" \
           "$CHECK_IMAGE_FORENSICS" "$CHECK_PINNED_INPUTS" "$CHECK_REPRODUCIBLE_BUILD" \
-          "$CHECK_ADMIN_AUTH_SECURITY" "$CHECK_SOURCE_TREE"; do
+          "$CHECK_ADMIN_AUTH_SECURITY" "$CHECK_ENTERPRISE" "$CHECK_SOURCE_TREE"; do
     if [ "$_c" = "FAIL" ]; then
         OVERALL="FAIL"
         break
@@ -496,6 +508,7 @@ cat > "$ARTIFACT_DIR/results.json" <<JSONEOF
     "first_boot_account": "$CHECK_FIRST_BOOT",
     "first_boot_recovery": "$CHECK_FIRST_BOOT_RECOVERY",
     "admin_auth_security": "$CHECK_ADMIN_AUTH_SECURITY",
+    "enterprise_validation": "$CHECK_ENTERPRISE",
     "iso_build": "$CHECK_ISO_BUILD",
     "iso_boot": "$CHECK_ISO_BOOT",
     "image_forensics": "$CHECK_IMAGE_FORENSICS",
