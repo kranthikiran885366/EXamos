@@ -136,6 +136,12 @@ artifacts/phase4/detection-evaluation.csv
 server/attestation/examos-verifier
 
 # =============================================================================
+# P4 evaluation inputs (downloaded, not redistributed)
+# =============================================================================
+tests/p4/dataset/
+tests/p4/models/
+
+# =============================================================================
 # OS / Editor artifacts
 # =============================================================================
 .DS_Store
