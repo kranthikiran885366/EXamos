@@ -16,6 +16,16 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/examos-tls.XXXXXX")"
 PORT="${EXAMOS_TLS_TEST_PORT:-19224}"
 FAIL=0
 
+# Dynamic configuration - no hardcoded dev mode
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
+if [ "$EXAMOS_TEST_MODE" = "production" ]; then
+    TEST_DEV_FLAG=0
+    TEST_TPM_MODE="production"
+else
+    TEST_DEV_FLAG=1
+    TEST_TPM_MODE="development"
+fi
+
 pass() { echo "[TLS-PASS] $1"; }
 fail() { echo "[TLS-FAIL] $1" >&2; FAIL=1; }
 
@@ -49,8 +59,8 @@ start_server() {
     EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
-    EXAMOS_TPM_MODE=development \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
+    EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
     EXAMOS_TLS_CERT="$TMP_DIR/cert.pem" \
     EXAMOS_TLS_KEY="$TMP_DIR/key.pem" \
     "$SERVER_BIN" >"$TMP_DIR/server.log" 2>&1 &
@@ -110,8 +120,8 @@ EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
 EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
 EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
 EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
-EXAMOS_TPM_MODE=development \
+EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
+EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
 EXAMOS_BIND_ADDR=0.0.0.0 \
 timeout 10 "$SERVER_BIN" >"$TMP_DIR/refuse.log" 2>&1
 REFUSE_RC=$?

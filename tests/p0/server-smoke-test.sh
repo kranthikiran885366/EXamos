@@ -13,6 +13,16 @@ mkdir -p "$ENT_DIR"
 
 SERVER_BIN="${EXAMOS_SERVER_BIN:-$WORKSPACE/server/examos-server}"
 
+# Dynamic configuration - no hardcoded dev mode
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
+if [ "$EXAMOS_TEST_MODE" = "production" ]; then
+    TEST_DEV_FLAG=0
+    TEST_TPM_MODE="production"
+else
+    TEST_DEV_FLAG=1
+    TEST_TPM_MODE="development"
+fi
+
 echo "============================================================"
 echo "ExamOS P0 — Server Runtime Smoke Test"
 echo "============================================================"
@@ -117,8 +127,8 @@ EXAMOS_VARIANT_SECRET="$VARIANT_SECRET" \
 EXAMOS_ADMIN_CONFIG="$ADMIN_CONFIG" \
 EXAMOS_EXAM_CONFIG="$EXAM_CONFIG" \
 EXAMOS_BROWSER_POLICY_CATALOG="${EXAMOS_BROWSER_POLICY_CATALOG:-$WORKSPACE/server/config/browser_policies.json}" \
-EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
-EXAMOS_TPM_MODE=development \
+EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
+EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
 "$SERVER_BIN" &
 SERVER_PID=$!
 

@@ -6,6 +6,16 @@ TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/examos-e1-http.XXXXXX")"
 ARTIFACT_DIR="${EXAMOS_E1_ARTIFACT_DIR:-$WORKSPACE/artifacts/e1}"
 SERVER_PID=""
 
+# Dynamic configuration - no hardcoded dev mode
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
+if [ "$EXAMOS_TEST_MODE" = "production" ]; then
+    TEST_DEV_FLAG=0
+    TEST_TPM_MODE="production"
+else
+    TEST_DEV_FLAG=1
+    TEST_TPM_MODE="development"
+fi
+
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
         kill -TERM "$SERVER_PID" 2>/dev/null || true
@@ -56,7 +66,7 @@ SESSION_TOKEN=""
 
 EXAMOS_SERVER_PORT="$PORT" \
 EXAMOS_SERVER_BIND=127.0.0.1 \
-EXAMOS_TPM_MODE=development \
+EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
 EXAMOS_LEDGER_PATH="$TEST_ROOT/ledger.log" \
 EXAMOS_EVENT_CHAIN_PATH="$TEST_ROOT/events.jsonl" \
 EXAMOS_LEDGER_HMAC_KEY="$LEDGER_HMAC_KEY" \
