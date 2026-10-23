@@ -238,6 +238,53 @@ run_test "not_found_route" "GET" "/api/v1/nonexistent" "404"
 
 RESULTS="$RESULTS]"
 
+# PG-04: Verify production mode rejects EXAMOS_ALLOW_UNPROVISIONED_DEV
+echo ""
+echo "[SMOKE] PG-04: Verifying production mode rejects unprovisioned dev override..."
+PROD_PORT=$(find_free_port)
+PROD_REJECT_STATUS="FAIL"
+PROD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/examos-smoke-prod.XXXXXX")"
+EXAMOS_SERVER_PORT=$PROD_PORT \
+EXAMOS_LEDGER_PATH="$PROD_TMP/ledger.log" \
+EXAMOS_LEDGER_HMAC_KEY="$LEDGER_HMAC_KEY" \
+EXAMOS_SESSION_JOURNAL="$PROD_TMP/session.log" \
+EXAMOS_DATA_DIR="$PROD_TMP/data" \
+EXAMOS_EVENT_CHAIN_PATH="$PROD_TMP/events.log" \
+EXAMOS_BEHAVIOUR_STORE="$PROD_TMP/behaviour" \
+EXAMOS_VARIANT_STORE="$PROD_TMP/variants" \
+EXAMOS_VIVA_STORE="$PROD_TMP/viva" \
+EXAMOS_AGENT_API_TOKEN="$AGENT_TOKEN" \
+EXAMOS_PROCTOR_API_TOKEN="$PROCTOR_TOKEN" \
+EXAMOS_EVENT_SIGNING_KEY="$EVENT_SIGNING_KEY" \
+EXAMOS_VARIANT_SECRET="$VARIANT_SECRET" \
+EXAMOS_ADMIN_CONFIG="$ADMIN_CONFIG" \
+EXAMOS_EXAM_CONFIG="$EXAM_CONFIG" \
+EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+EXAMOS_TPM_MODE=production \
+"$SERVER_BIN" > "$PROD_TMP/prod.log" 2>&1 &
+PROD_PID=$!
+sleep 1
+if kill -0 "$PROD_PID" 2>/dev/null; then
+    kill -TERM "$PROD_PID" 2>/dev/null || true
+    wait "$PROD_PID" 2>/dev/null || true
+    echo "[SMOKE] PG-04: FAIL — production mode started with EXAMOS_ALLOW_UNPROVISIONED_DEV=1"
+else
+    # Server exited — check it rejected the forbidden combination
+    if grep -q 'EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden' "$PROD_TMP/prod.log" 2>/dev/null; then
+        PROD_REJECT_STATUS="PASS"
+        echo "[SMOKE] PG-04: PASS — production mode correctly rejected unprovisioned dev override"
+    else
+        echo "[SMOKE] PG-04: FAIL — server exited but did not emit expected rejection message"
+        cat "$PROD_TMP/prod.log" >&2
+    fi
+fi
+rm -rf -- "$PROD_TMP"
+if [ "$PROD_REJECT_STATUS" = "PASS" ]; then
+    PASSED=$((PASSED + 1))
+fi
+TOTAL=$((TOTAL + 1))
+RESULTS="${RESULTS%]},{\"name\":\"prod_mode_rejects_unprovisioned_dev\",\"method\":\"STARTUP\",\"path\":\"N/A\",\"expected\":0,\"actual\":0,\"status\":\"${PROD_REJECT_STATUS}\",\"latency_ms\":0}]"
+
 # --- Check server alive ---
 ALIVE_STATUS="PASS"
 if kill -0 "$SERVER_PID" 2>/dev/null; then

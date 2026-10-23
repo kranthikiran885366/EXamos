@@ -193,6 +193,7 @@ PYEOF
 
 # ---------------------------------------------------------------------------
 # CP-04 (P2-16): Chromium sandbox — verify running process has no --no-sandbox
+# PG-14: Also verify AppArmor is in enforce mode for Chromium
 # ---------------------------------------------------------------------------
 CHROMIUM_PID=$(pgrep -f "chromium.*--kiosk" 2>/dev/null | head -1 || true)
 if [ -n "$CHROMIUM_PID" ]; then
@@ -202,8 +203,30 @@ if [ -n "$CHROMIUM_PID" ]; then
     else
         record "CP-04" "PASS" "Chromium running without sandbox-disabling flags (PID=${CHROMIUM_PID})"
     fi
+    # PG-14: Check AppArmor confinement status for the running Chromium process
+    AA_STATUS=$(cat /proc/${CHROMIUM_PID}/attr/current 2>/dev/null || echo "")
+    if [ -z "$AA_STATUS" ] || [ "$AA_STATUS" = "unconfined" ]; then
+        record "CP-04-APPARMOR" "FAIL" "Chromium process (PID=${CHROMIUM_PID}) is NOT confined by AppArmor (status: ${AA_STATUS:-unconfined})"
+    else
+        record "CP-04-APPARMOR" "PASS" "Chromium process (PID=${CHROMIUM_PID}) is AppArmor-confined: ${AA_STATUS}"
+    fi
 else
     record "CP-04" "BLOCKED" "BLOCKED: Chromium not running — sandbox check deferred"
+    # PG-14: Static check — verify AppArmor profile exists and is in enforce mode
+    AA_PROFILE="/etc/apparmor.d/usr.bin.chromium"
+    if [ ! -f "$AA_PROFILE" ]; then
+        AA_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"
+    fi
+    if [ -f "$AA_PROFILE" ]; then
+        # Profile must not contain 'flags=(complain)' — that would be non-enforcing
+        if grep -q 'flags=(complain)' "$AA_PROFILE" 2>/dev/null; then
+            record "CP-04-APPARMOR" "FAIL" "AppArmor Chromium profile is in COMPLAIN mode, not enforce"
+        else
+            record "CP-04-APPARMOR" "PASS" "AppArmor Chromium profile exists and is not in complain mode (enforce assumed)"
+        fi
+    else
+        record "CP-04-APPARMOR" "FAIL" "AppArmor Chromium profile not found — confinement unverified"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

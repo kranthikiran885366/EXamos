@@ -48,20 +48,23 @@ run_check "kiosk" "$WORKSPACE/tests/p1/kiosk.sh"
 run_check "network" "$WORKSPACE/tests/p1/network.sh"
 run_check "boot" "$WORKSPACE/tests/p1/boot.sh"
 run_check "performance" "$WORKSPACE/tests/p1/performance.sh"
+# PG-10: Chromium policy generator correctness is a mandatory P1 gate check
+run_check "chromium_policy" "$WORKSPACE/tests/p1/chromium-policy-generator-test.sh"
 
-python3 - "$ARTIFACT_DIR/results.json" "$STATUS" "$REASON" "$SOURCE_COMMIT" "$SOURCE_TREE_STATE" "${RESULTS[source_validation]}" "${RESULTS[kiosk]}" "${RESULTS[network]}" "${RESULTS[boot]}" "${RESULTS[performance]}" <<'PY'
+python3 - "$ARTIFACT_DIR/results.json" "$STATUS" "$REASON" "$SOURCE_COMMIT" "$SOURCE_TREE_STATE" "${RESULTS[source_validation]}" "${RESULTS[kiosk]}" "${RESULTS[network]}" "${RESULTS[boot]}" "${RESULTS[performance]}" "${RESULTS[chromium_policy]}" <<'PY'
 import datetime
 import json
 import pathlib
 import sys
 
-out, status, reason, commit, tree_state, source, kiosk, network, boot, performance = sys.argv[1:]
+out, status, reason, commit, tree_state, source, kiosk, network, boot, performance, chromium_policy = sys.argv[1:]
 checks = {
     "source_validation": source,
     "kiosk": kiosk,
     "network": network,
     "boot": boot,
     "performance": performance,
+    "chromium_policy": chromium_policy,
 }
 report = {
     "phase": "P1",

@@ -647,6 +647,106 @@ static int parse_viva_response(const char *llm_body,
     return (*out_count >= VIVA_MIN_QUESTIONS) ? 0 : -1;
 }
 
+/* ── ISS-04: Offline Fallback Question Bank ──────────────────────────────── */
+/*
+ * When the LLM provider is unreachable, generate structured viva questions
+ * from a pre-defined bank keyed on exam_type. Returns VIVA_STATUS_OFFLINE_FALLBACK.
+ * Produces 3-5 questions in the same viva_question_t format.
+ */
+
+typedef struct {
+    const char *exam_type_keyword; /* matched against exam_id prefix or "generic" */
+    const char *questions[5];
+    const char *objectives[5];
+    int count;
+} offline_question_set_t;
+
+static const offline_question_set_t g_offline_question_bank[] = {
+    {
+        "math", {
+            "Explain the reasoning behind your approach to the main problem in this exam.",
+            "What alternative methods could have been used to arrive at the same answer?",
+            "Describe a real-world scenario where this mathematical concept is applied.",
+            "How would you verify the correctness of your solution?",
+            "What assumptions did you make, and how do they affect your result?"
+        }, {
+            "reasoning",
+            "application",
+            "application",
+            "verification",
+            "critical thinking"
+        }, 5
+    },
+    {
+        "science", {
+            "Explain the core scientific principle underlying your answer.",
+            "What experimental evidence supports the conclusion you reached?",
+            "How would you design an experiment to test the hypothesis in this question?",
+            "Describe how this concept relates to other areas of science you have studied.",
+            "What are the limitations of the approach you used to answer this question?"
+        }, {
+            "reasoning",
+            "evidence evaluation",
+            "experimental design",
+            "synthesis",
+            "critical analysis"
+        }, 5
+    },
+    {
+        "generic", {
+            "Explain the core reasoning behind the approach you took in your answer.",
+            "What alternative approaches could you have used, and why did you choose this one?",
+            "Describe how you would verify that your answer is correct.",
+            "How does the concept tested in this question apply in a real-world context?",
+            "What additional information would have helped you give a more complete answer?"
+        }, {
+            "reasoning",
+            "critical thinking",
+            "verification",
+            "application",
+            "reflection"
+        }, 5
+    }
+};
+
+static const offline_question_set_t *select_offline_question_set(const char *exam_id) {
+    if (exam_id && *exam_id) {
+        for (size_t i = 0; i < sizeof(g_offline_question_bank)/sizeof(g_offline_question_bank[0]) - 1; i++) {
+            if (strstr(exam_id, g_offline_question_bank[i].exam_type_keyword) != NULL) {
+                return &g_offline_question_bank[i];
+            }
+        }
+    }
+    /* last entry is always "generic" */
+    return &g_offline_question_bank[sizeof(g_offline_question_bank)/sizeof(g_offline_question_bank[0]) - 1];
+}
+
+static int viva_generate_offline_fallback(viva_generation_t *out_viva,
+                                          const char *exam_id) {
+    const offline_question_set_t *qs = select_offline_question_set(exam_id);
+
+    /* Use 3 questions from the set (minimum required, bounded by set size) */
+    int count = qs->count < 3 ? qs->count : 3;
+    out_viva->question_count = count;
+
+    for (int i = 0; i < count; i++) {
+        viva_question_t *vq = &out_viva->questions[i];
+        memset(vq, 0, sizeof(*vq));
+        gen_id(vq->question_id, sizeof(vq->question_id), "vivaq-offline");
+        copy_text(vq->text, sizeof(vq->text), qs->questions[i]);
+        copy_text(vq->assessment_objective, sizeof(vq->assessment_objective), qs->objectives[i]);
+        strncpy(vq->rubric_reference, "OFFLINE_FALLBACK", sizeof(vq->rubric_reference)-1);
+    }
+
+    out_viva->status = VIVA_STATUS_OFFLINE_FALLBACK;
+    copy_text(out_viva->status_str, sizeof(out_viva->status_str), "VIVA_OFFLINE_FALLBACK");
+    copy_text(out_viva->failure_reason, sizeof(out_viva->failure_reason),
+              "LLM provider unavailable; pre-banked academic integrity questions used");
+    fprintf(stderr, "[VivaEngine] ISS-04: LLM unavailable — using offline fallback question bank (%s)\n",
+            qs->exam_type_keyword);
+    return 0;
+}
+
 /* ── Validation ──────────────────────────────────────────────────────────── */
 
 static int validate_viva_output(const viva_generation_t *v) {
@@ -736,12 +836,19 @@ int viva_generate(const char *session_id,
     int llm_rc = llm_https_post(prompt, llm_body, sizeof(llm_body));
 
     if (llm_rc != 0) {
-        out_viva->status = VIVA_STATUS_FAILED;
-        copy_text(out_viva->status_str, sizeof(out_viva->status_str), "VIVA_PROVIDER_UNAVAILABLE");
-        copy_text(out_viva->failure_reason, sizeof(out_viva->failure_reason),
-                  "VIVA_PROVIDER_UNAVAILABLE");
-        fprintf(stderr, "[VivaEngine] BLOCKED: configured LLM provider did not return a valid response\n");
-        return -1;
+        /* ISS-04 fix: LLM unavailable — use offline academic integrity fallback question bank.
+         * This allows the viva workflow to proceed in air-gapped exam centres without
+         * an external cloud dependency. The offline fallback is clearly flagged in the
+         * generated record and audit trail so reviewers know it was used. */
+        fprintf(stderr, "[VivaEngine] ISS-04: LLM provider unavailable, using offline fallback\n");
+        if (viva_generate_offline_fallback(out_viva, exam_id) != 0) {
+            out_viva->status = VIVA_STATUS_FAILED;
+            copy_text(out_viva->status_str, sizeof(out_viva->status_str), "VIVA_PROVIDER_UNAVAILABLE");
+            copy_text(out_viva->failure_reason, sizeof(out_viva->failure_reason),
+                      "LLM unavailable and offline fallback also failed");
+            return -1;
+        }
+        /* Offline fallback succeeded — fall through to validation and persistence */
     } else {
         viva_question_t questions[VIVA_MAX_QUESTIONS];
         int qcount = 0;

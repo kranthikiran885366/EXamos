@@ -46,11 +46,18 @@ elapsed = result.get("elapsed_ms")
 if not isinstance(elapsed, int) or elapsed <= 0:
     print("[P1-PERF] FAIL: boot duration is missing or invalid", file=sys.stderr)
     raise SystemExit(1)
+# PG-09: Enforce boot-to-multiuser time threshold (<=120 seconds = 120000ms)
+MAX_BOOT_MS = 120000
+if elapsed > MAX_BOOT_MS:
+    print(f"[P1-PERF] FAIL: boot time {elapsed}ms exceeds maximum {MAX_BOOT_MS}ms", file=sys.stderr)
+    raise SystemExit(1)
 with output.open("a", encoding="utf-8") as report:
     report.write(f"Image Path: {image.resolve()}\n")
     report.write(f"Image SHA-256: {digest}\n")
     report.write(f"Image Size Bytes: {image.stat().st_size}\n")
     report.write(f"Measured QEMU Boot Elapsed Ms: {elapsed}\n")
+    report.write(f"Boot Time Threshold Ms: {MAX_BOOT_MS}\n")
+    report.write(f"Boot Time Gate: PASS\n")
     report.write(f"QEMU Acceleration: {result.get('acceleration', 'UNKNOWN')}\n")
-print(f"[P1-PERF] PASS: image and boot timing bound to SHA-256 {digest}")
+print(f"[P1-PERF] PASS: image and boot timing bound to SHA-256 {digest} ({elapsed}ms <= {MAX_BOOT_MS}ms)")
 PY

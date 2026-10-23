@@ -39,10 +39,11 @@ typedef struct {
 
 /* ── Viva Generation Record ─────────────────────────────────────────────── */
 typedef enum {
-    VIVA_STATUS_PENDING   = 0,
-    VIVA_STATUS_SUCCEEDED = 1,
-    VIVA_STATUS_FAILED    = 2,
-    VIVA_STATUS_INVALID   = 3       /* validation failed post-generation */
+    VIVA_STATUS_PENDING          = 0,
+    VIVA_STATUS_SUCCEEDED        = 1,
+    VIVA_STATUS_FAILED           = 2,
+    VIVA_STATUS_INVALID          = 3,      /* validation failed post-generation */
+    VIVA_STATUS_OFFLINE_FALLBACK = 4       /* ISS-04: LLM unavailable, pre-banked questions used */
 } viva_generation_status_t;
 
 typedef struct {

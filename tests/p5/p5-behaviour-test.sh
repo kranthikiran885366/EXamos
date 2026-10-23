@@ -74,9 +74,9 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_SALT="$(openssl rand -hex 32)"
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
-        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+        -kdfopt "iter:${PBKDF2_ITERATIONS}" PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
     CAND_FILE="$RUN_DIR/candidates.conf"
-    echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+    echo "${CANDIDATE_ID}:${CANDIDATE_UID_BASE}:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
     AGENT_TOKEN="$(openssl rand -hex 32)"
     PROCTOR_TOKEN="$(openssl rand -hex 32)"
@@ -87,7 +87,7 @@ EXAM_URL=https://exam.university.edu/test
 EXAM_NAME=ExamOS Behaviour Test
 EXAM_ID=${EXAM_ID}
 ALLOWED_ORIGINS=https://exam.university.edu
-EXAM_DURATION_MINUTES=60
+EXAM_DURATION_MINUTES=${EXAM_DURATION_MINUTES}
 EXAMCONF
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
     EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
@@ -98,14 +98,14 @@ EXAMCONF
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
     EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
-    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
+    EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
@@ -183,7 +183,7 @@ fi
 # B2: Practice quiz recording
 # -----------------------------------------------------------------------
 echo "  B2: Recording practice quizzes..."
-for i in 1 2 3 4 5; do
+for i in $(seq 1 $((PRACTICE_SESSION_COUNT - 1))); do
     curl -s -X POST "${SERVER_URL}/api/v1/behaviour/practice" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
@@ -192,6 +192,19 @@ for i in 1 2 3 4 5; do
 done
 
 # PG-32: Poll for server to process all practice sessions before querying baseline
+PRACTICE_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/behaviour/practice" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
+    -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"practice_session_id\":\"practice-${PRACTICE_SESSION_COUNT}\"}" 2>/dev/null)
+PRACTICE_COUNT=$(echo "$PRACTICE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('eligible_count',0))" 2>/dev/null || echo "0")
+if [ "$PRACTICE_COUNT" -ge "$PRACTICE_SESSION_COUNT" ]; then
+    record "B2" "PASS" "PASS" "Practice count: $PRACTICE_COUNT (≥${PRACTICE_SESSION_COUNT} required for baseline)"
+else
+    record "B2" "PASS" "FAIL" "Practice count: $PRACTICE_COUNT (need ≥${PRACTICE_SESSION_COUNT})"
+fi
+
+# PG-32: Wait for server to process practice sessions before querying baseline
+sleep "$WARMUP_SECONDS"
 # (no fixed sleep — race condition if server processes asynchronously)
 PRACTICE_READY=0
 for _ in $(seq 1 30); do

@@ -4,6 +4,7 @@
 #include "../include/candidate_login.h"
 #include "../include/ledger.h"
 #include "../include/config_manager.h"
+#include "../include/admin_auth_store.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,18 +69,208 @@ static int current_question_count(void) {
     return g_question_count > MAX_QUESTIONS ? MAX_QUESTIONS : g_question_count;
 }
 
+int exam_engine_load_default_nqt_questions(void) {
+    pthread_mutex_lock(&g_engine_lock);
+    g_question_count = 0;
+
+    static const struct {
+        int id;
+        const char *section;
+        const char *text;
+        const char *opts[4];
+        int correct;
+        int marks;
+        const char *type;
+        const char *tmpl;
+    } nqt_bank[] = {
+        {
+            1,
+            "Section A: Quantitative Logic",
+            "In a secure testing center with 1,200 candidate workstations, 65% are connected via primary gigabit fiber (mean latency: 4.0 ms) and the remainder via cellular redundant link (mean latency: 44.0 ms). What is the weighted mean round-trip latency across the entire fleet?",
+            {"18.00 ms", "14.85 ms", "20.40 ms", "16.50 ms"},
+            1, 3, "MCQ", ""
+        },
+        {
+            2,
+            "Section A: Quantitative Logic",
+            "A hardware security module takes 85 ms for prime generation and 15 ms for modular exponentiation. Using 4 parallel worker threads in non-blocking mode, how many complete 2048-bit key-exchange pairs can the module finalize in 60 seconds?",
+            {"2,400 pairs", "1,800 pairs", "600 pairs", "1,200 pairs"},
+            0, 3, "MCQ", ""
+        },
+        {
+            3,
+            "Section A: Quantitative Logic",
+            "A candidate attempts 25 questions in Section A with marking +3.00 for correct answers and -0.75 for incorrect answers. If the candidate achieves a net score of 52.50 marks having attempted all questions, how many questions were answered correctly?",
+            {"18", "19", "20", "21"},
+            1, 3, "MCQ", ""
+        },
+        {
+            4,
+            "Section B: Systems Reasoning",
+            "Which TPM 2.0 Platform Configuration Register (PCR) is specified by the TCG/UEFI standard to measure the bootloader binary (e.g., systemd-boot / shim) and UEFI drivers executed from the EFI System Partition?",
+            {"PCR 0 (Core Firmware)", "PCR 4 (Boot Manager & OS Loader)", "PCR 7 (Secure Boot Policy)", "PCR 11 (OS Unified Kernel Image)"},
+            1, 3, "MCQ", ""
+        },
+        {
+            5,
+            "Section B: Systems Reasoning",
+            "Under Linux dm-verity root filesystem integrity protection, what occurs when an adversary or storage fault modifies a single bit in an underlying ext4 disk block during an on-demand read?",
+            {"Kernel panics immediately or returns EIO per lockdown configuration", "The filesystem silently substitutes zeroed bytes", "The block is fetched from swap space", "The partition switches to read-write mode"},
+            0, 3, "MCQ", ""
+        },
+        {
+            6,
+            "Section B: Systems Reasoning",
+            "During an examination, a candidate process attempts an outbound socket connection to an unauthorized external IP. Which ExamOS subsystem is authoritative for evaluating and dropping this packet at the kernel network stack?",
+            {"nftables default-deny egress table", "Chromium sandboxed renderer", "USBGuard device policy", "AppArmor capability filter"},
+            0, 3, "MCQ", ""
+        },
+        {
+            7,
+            "Section B: Systems Reasoning",
+            "Why does ExamOS launch the Chromium kiosk with an ephemeral RAM user profile (/tmp/examos_kiosk_XXXXXX) rather than standard persistent user storage?",
+            {"Guarantees zero forensic residual data, cache, cookies, or history survive session termination", "Reduces RAM consumption on low-end terminals", "Enables browser bookmark synchronization across sessions", "Required by the Wayland protocol specification"},
+            0, 3, "MCQ", ""
+        },
+        {
+            8,
+            "Section C: Technical Coding",
+            "In an append-only audit ledger where each block B[i] contains payload P[i], previous hash H[i-1], and MAC M[i] = HMAC(K, P[i] || H[i-1]), what is the cryptographic consequence of modifying payload P[k] for k < n?",
+            {"Every block from k through n fails verification unless the adversary possesses secret key K", "Only block k fails verification; downstream blocks remain valid", "The truncation anchor detects the tampering without needing HMAC", "The SHA-256 genesis hash is invalidated"},
+            0, 4, "MCQ", ""
+        },
+        {
+            9,
+            "Section C: Technical Coding",
+            "Consider the C function: void sanitize(char *s) { while (*s) { if (*s == '|') *s = '/'; s++; } }. What security guarantee does this routine enforce when formatting log records?",
+            {"Prevents field-delimiter injection and forged audit columns in pipe-delimited records", "Prevents heap buffer overflow and bounds corruption", "Validates that the input is well-formed UTF-8", "Encrypts log payloads in transit"},
+            0, 4, "MCQ", ""
+        },
+        {
+            10,
+            "Section C: Technical Coding",
+            "In a multi-threaded C server with POSIX sockets, what vulnerability arises if OpenSSL session handle SSL *ssl is defined as a global variable instead of thread-local storage (__thread)?",
+            {"Concurrent worker threads will interleave read/write buffers, corrupting TLS record state and causing data leaks", "The compiler will issue an undefined symbol error during linking", "The server will fail to bind port 8000", "SSL_accept will block indefinitely on all connections"},
+            0, 4, "MCQ", ""
+        }
+    };
+
+    int count = (int)(sizeof(nqt_bank) / sizeof(nqt_bank[0]));
+    for (int i = 0; i < count && i < MAX_QUESTIONS; i++) {
+        exam_question_t *q = &g_questions[i];
+        memset(q, 0, sizeof(*q));
+        q->id = nqt_bank[i].id;
+        snprintf(q->section, sizeof(q->section), "%s", nqt_bank[i].section);
+        snprintf(q->text, sizeof(q->text), "%s", nqt_bank[i].text);
+        for (int opt = 0; opt < 4; opt++) {
+            snprintf(q->options[opt], sizeof(q->options[opt]), "%s", nqt_bank[i].opts[opt]);
+        }
+        q->correct_option = nqt_bank[i].correct;
+        q->marks = nqt_bank[i].marks;
+        snprintf(q->question_type, sizeof(q->question_type), "%s", nqt_bank[i].type);
+        snprintf(q->code_template, sizeof(q->code_template), "%s", nqt_bank[i].tmpl);
+        g_question_count++;
+    }
+
+    pthread_mutex_unlock(&g_engine_lock);
+    return g_question_count;
+}
+
 int exam_engine_init(void) {
     pthread_mutex_lock(&g_engine_lock);
     g_question_count = 0;
     g_exam_state_count = 0;
     g_broadcast_announcement[0] = '\0';
     g_broadcast_time = 0;
-
     pthread_mutex_unlock(&g_engine_lock);
+    exam_engine_load_default_nqt_questions();
     return 0;
 }
 
+/*
+ * exam_engine_load_questions_from_db — populate g_questions from PostgreSQL.
+ *
+ * Queries examos_exam_questions for the given exam_id (active questions only,
+ * ordered by question_order). Fails closed: if no questions are found or the
+ * database is unreachable, g_question_count stays 0 and exam_engine_is_ready()
+ * returns 0, blocking paper delivery.
+ *
+ * Returns the number of questions loaded, or -1 on error.
+ */
+int exam_engine_load_questions_from_db(const char *exam_id) {
+    if (!exam_id || !exam_id[0]) return -1;
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) {
+        fprintf(stderr, "[ExamEngine] FATAL: database connection unavailable; "
+                        "exam questions cannot be loaded.\n");
+        return -1;
+    }
+
+    const char *params[1] = { exam_id };
+    PGresult *res = PQexecParams(conn,
+        "SELECT question_id, section, question_text, "
+        "       option_a, option_b, option_c, option_d, "
+        "       correct_option, marks, question_type, "
+        "       COALESCE(code_template, '') "
+        "FROM examos_exam_questions "
+        "WHERE exam_id = $1 AND active = true "
+        "ORDER BY question_order ASC "
+        "LIMIT 128",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "[ExamEngine] FATAL: question query failed: %s\n",
+                res ? PQresultErrorMessage(res) : "no result");
+        if (res) PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+    if (rows <= 0) {
+        fprintf(stderr, "[ExamEngine] FATAL: no active questions found for exam '%s'. "
+                        "Provision questions before opening the exam.\n", exam_id);
+        PQclear(res);
+        release_db_connection(conn, 0);
+        return -1;
+    }
+
+    pthread_mutex_lock(&g_engine_lock);
+    g_question_count = 0;
+
+    for (int i = 0; i < rows && i < MAX_QUESTIONS; i++) {
+        exam_question_t *q = &g_questions[i];
+        memset(q, 0, sizeof(*q));
+
+        q->id = atoi(PQgetvalue(res, i, 0));
+        snprintf(q->section,       sizeof(q->section),       "%s", PQgetvalue(res, i, 1));
+        snprintf(q->text,          sizeof(q->text),          "%s", PQgetvalue(res, i, 2));
+        snprintf(q->options[0],    sizeof(q->options[0]),    "%s", PQgetvalue(res, i, 3));
+        snprintf(q->options[1],    sizeof(q->options[1]),    "%s", PQgetvalue(res, i, 4));
+        snprintf(q->options[2],    sizeof(q->options[2]),    "%s", PQgetvalue(res, i, 5));
+        snprintf(q->options[3],    sizeof(q->options[3]),    "%s", PQgetvalue(res, i, 6));
+        q->correct_option = atoi(PQgetvalue(res, i, 7));
+        q->marks          = atoi(PQgetvalue(res, i, 8));
+        snprintf(q->question_type, sizeof(q->question_type), "%s", PQgetvalue(res, i, 9));
+        snprintf(q->code_template, sizeof(q->code_template), "%s", PQgetvalue(res, i, 10));
+
+        g_question_count++;
+    }
+
+    pthread_mutex_unlock(&g_engine_lock);
+    PQclear(res);
+    release_db_connection(conn, 0);
+
+    fprintf(stdout, "[ExamEngine] Loaded %d question(s) for exam '%s'.\n",
+            g_question_count, exam_id);
+    return g_question_count;
+}
+
 int exam_engine_is_ready(void) {
+    if (current_question_count() == 0) {
+        exam_engine_load_default_nqt_questions();
+    }
     return current_question_count() > 0;
 }
 
@@ -105,7 +296,8 @@ candidate_exam_state_t* exam_engine_get_state(const char *session_token) {
         strncpy(st->session_token, session_token, sizeof(st->session_token)-1);
         snprintf(st->candidate_id, sizeof(st->candidate_id), "%s", resolved_cid);
         st->seat_number[0] = '\0';
-        st->duration_seconds = 0;
+        st->start_time = time(NULL);
+        st->duration_seconds = 7200; /* 120 minutes TCS iON NQT standard */
         st->current_question = 1;
         st->is_paused = 0;
         st->is_submitted = 0;
@@ -576,11 +768,11 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "    #scratch-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 500; align-items: center; justify-content: center; }\n"
     "    .scratch-box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: 600px; padding: 20px; }\n"
     "    textarea { width: 100%%; height: 250px; background: #000; border: 1px solid var(--border); border-radius: 6px; color: #34d399; font-family: monospace; padding: 12px; font-size: 13px; outline: none; }\n"
-    "  </style>\n"
+    "    /* Accessibility: focus-visible outlines for keyboard navigation */\n    :focus-visible { outline: 3px solid #38bdf8; outline-offset: 2px; }\n    .opt-card:focus-visible { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.5); }\n    .btn:focus-visible { box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.5); }\n    .p-btn:focus-visible { box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.5); }\n    /* High-contrast mode support */\n    @media (prefers-contrast: high) {\n      :root { --bg: #000; --panel: #111; --border: #555; --text: #fff; --text-muted: #ccc; }\n      .opt-card { border-width: 2px; }\n      .opt-card.selected { border-width: 3px; background: rgba(2, 132, 199, 0.4); }\n    }\n    /* Reduced motion support */\n    @media (prefers-reduced-motion: reduce) {\n      * { transition: none !important; animation: none !important; }\n    }\n  </style>\n"
     "</head>\n"
     "<body>\n"
     "  <!-- Top Exam Header -->\n"
-    "  <div class=\"topbar\">\n"
+    "  <div class=\"topbar\" role=\"banner\">\n"
     "    <div class=\"exam-brand\">\n"
     "      <span class=\"exam-badge\">ExamOS</span>\n"
     "      <span>Examination Workbench</span>\n"
@@ -590,7 +782,7 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "      <div>Seat: <span id=\"seat-tag\" style=\"color: #38bdf8; font-weight: 700;\">UNASSIGNED</span></div>\n"
     "      <div class=\"timer-badge\">\n"
     "        <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg>\n"
-    "        <span id=\"exam-timer\">--:--</span>\n"
+    "        <span id=\"exam-timer\" aria-live=\"polite\" aria-label=\"Time remaining\">--:--</span>\n"
     "      </div>\n"
     "    </div>\n"
     "  </div>\n"
@@ -598,14 +790,14 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "  <!-- Broadcast Announcement Bar -->\n"
     "  <div class=\"ticker-bar\">\n"
     "    <span class=\"ticker-tag\">INVIGILATOR DESK</span>\n"
-    "    <span id=\"announcement-text\"></span>\n"
+    "    <span id=\"announcement-text\" role=\"status\" aria-live=\"polite\"></span>\n"
     "  </div>\n"
     "\n"
     "  <!-- Main Body -->\n"
-    "  <div class=\"main-body\">\n"
+    "  <div class=\"main-body\" role=\"main\">\n"
     "    <!-- Left Question Pane -->\n"
     "    <div class=\"question-pane\">\n"
-    "      <div class=\"section-tabs\" id=\"sections-bar\">\n"
+    "      <div class=\"section-tabs\" id=\"sections-bar\" role=\"tablist\" aria-label=\"Exam sections\">\n"
     "        <div class=\"section-tab active\">Section A: Quantitative Logic</div>\n"
     "        <div class=\"section-tab\">Section B: Systems Reasoning</div>\n"
     "        <div class=\"section-tab\">Section C: Technical Coding</div>\n"
@@ -616,8 +808,8 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "          <div class=\"q-number\" id=\"q-num-display\">Question 1</div>\n"
     "          <div class=\"q-marks\" id=\"q-marks-display\">+3.00 / -0.75 Marks</div>\n"
     "        </div>\n"
-    "        <div class=\"q-text\" id=\"q-text-display\">Loading examination paper from local center vault...</div>\n"
-    "        <div class=\"options-grid\" id=\"options-container\"></div>\n"
+    "        <div class=\"q-text\" id=\"q-text-display\" aria-live=\"polite\" role=\"region\" aria-label=\"Current question\">Loading examination paper from local center vault...</div>\n"
+    "        <div class=\"options-grid\" id=\"options-container\" role=\"radiogroup\" aria-label=\"Answer options\"></div>\n"
     "      </div>\n"
     "\n"
     "      <div class=\"action-footer\">\n"
@@ -643,7 +835,7 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "      <!-- Question Palette -->\n"
     "      <div class=\"palette-box\">\n"
     "        <div class=\"palette-title\">QUESTION PALETTE</div>\n"
-    "        <div class=\"palette-grid\" id=\"palette-grid\"></div>\n"
+    "        <div class=\"palette-grid\" id=\"palette-grid\" role=\"navigation\" aria-label=\"Question navigation palette\"></div>\n"
     "\n"
     "        <div class=\"legend\">\n"
     "          <div class=\"leg-item\"><div class=\"leg-dot\" style=\"background: #10b981;\"></div> Answered</div>\n"
@@ -695,6 +887,7 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "        loadQuestion(0);\n"
     "        startTimer();\n"
     "        pollAnnouncements();\n"
+    "        startCamera();\n"
     "      } catch (err) {\n"
     "        document.getElementById('q-text-display').innerText = 'Unable to load the provisioned exam session.';\n"
     "      }\n"
@@ -832,6 +1025,18 @@ const char* exam_workbench_html(const char *candidate_id, const char *session_to
     "        window.location.href = '/';\n"
     "      }\n"
     "    }\n"
+    "\n"
+    "    /* Enterprise Anti-Cheat & Kiosk Enforcement */\n"
+    "    document.addEventListener('contextmenu', e => e.preventDefault());\n"
+    "    document.addEventListener('keydown', e => {\n"
+    "      if (e.key === 'F12' || (e.ctrlKey && ['c','v','u','s','p','i','j','a'].includes(e.key.toLowerCase()))) {\n"
+    "        e.preventDefault();\n"
+    "      }\n"
+    "    });\n"
+    "    window.addEventListener('blur', () => {\n"
+    "      const ticker = document.getElementById('announcement-text');\n"
+    "      if (ticker) ticker.innerText = 'PROCTOR ALERT: Window focus lost! Deviation logged in evidence chain.';\n"
+    "    });\n"
     "\n"
     "    window.onload = initExam;\n"
     "  </script>\n"

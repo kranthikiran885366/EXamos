@@ -32,6 +32,20 @@ SERVER_PID=""
 RUN_DIR="$(mktemp -d /tmp/examos-p5-variant.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
+# Dynamic test configuration - no hardcoded values
+CANDIDATE_UID_BASE="${EXAMOS_CANDIDATE_UID_BASE:-100000}"
+PBKDF2_ITERATIONS="${EXAMOS_PBKDF2_ITERATIONS:-100000}"
+EXAM_DURATION_MINUTES="${EXAMOS_EXAM_DURATION_MINUTES:-60}"
+
+# Production mode validation
+if [ "$EXAMOS_TEST_MODE" = "production" ]; then
+    TEST_DEV_FLAG=0
+    TEST_TPM_MODE="production"
+else
+    TEST_DEV_FLAG=1
+    TEST_TPM_MODE="development"
+fi
+
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 record() {
     local id="$1" expected="$2" actual="$3" detail="$4"
@@ -57,16 +71,16 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_SALT="$(openssl rand -hex 32)"
     CAND_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
-        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+        -kdfopt "iter:${PBKDF2_ITERATIONS}" PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
     CAND_FILE="$RUN_DIR/candidates.conf"
-    echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+    echo "${CANDIDATE_ID}:${CANDIDATE_UID_BASE}:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
     # PG-33: Seed second candidate BEFORE server starts to avoid live mutation
     CANDIDATE_ID2="P5-VAR2-$(date +%s)"
     CAND2_SALT="$(openssl rand -hex 32)"
     CAND2_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
         -kdfopt "hexsalt:${CAND2_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
-        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
-    echo "${CANDIDATE_ID2}:100000:${CAND2_SALT}:${CAND2_HASH}" >> "$CAND_FILE"
+        -kdfopt "iter:${PBKDF2_ITERATIONS}" PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+    echo "${CANDIDATE_ID2}:${CANDIDATE_UID_BASE}:${CAND2_SALT}:${CAND2_HASH}" >> "$CAND_FILE"
 
     # PG-33: Seed the second candidate BEFORE the server starts so the
     # candidate store is never mutated while the server is running.
@@ -85,7 +99,7 @@ EXAM_URL=https://exam.university.edu/test
 EXAM_NAME=ExamOS Variant Test
 EXAM_ID=${EXAM_ID}
 ALLOWED_ORIGINS=https://exam.university.edu
-EXAM_DURATION_MINUTES=60
+EXAM_DURATION_MINUTES=${EXAM_DURATION_MINUTES}
 EXAMCONF
 
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
@@ -96,13 +110,14 @@ EXAMCONF
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
     EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
-    EXAMOS_TPM_MODE=development \
+    EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \

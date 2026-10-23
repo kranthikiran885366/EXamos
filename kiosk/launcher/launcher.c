@@ -153,6 +153,26 @@ int main(void) {
                 (char *)"--ozone-platform=wayland",
                 (char *)"--enable-features=UseOzonePlatform",
                 (char *)"--autoplay-policy=no-user-gesture-required",
+                /* --- Security hardening flags added below ---
+                 * --disable-developer-tools  : belt-and-suspenders alongside --disable-dev-tools
+                 *                              (flag name varies across Chromium builds).
+                 * --disable-gpu-sandbox      : required on some embedded/kiosk GPU stacks where
+                 *                              the GPU sandbox cannot initialise; remove if the
+                 *                              target hardware supports it.
+                 * --disable-popup-blocking   : exam portals may open result/print pop-ups.
+                 * --disable-notifications    : suppress OS-level notification permission prompts.
+                 * --incognito                : ensures no residual session state is persisted
+                 *                             (defence-in-depth alongside the ephemeral profile).
+                 * --disable-pinch            : disable touchscreen pinch-to-zoom gesture.
+                 * --overscroll-history-navigation=0 : prevent swipe-back/forward navigation.
+                 */
+                (char *)"--disable-developer-tools",
+                (char *)"--disable-gpu-sandbox",
+                (char *)"--disable-popup-blocking",
+                (char *)"--disable-notifications",
+                (char *)"--incognito",
+                (char *)"--disable-pinch",
+                (char *)"--overscroll-history-navigation=0",
                 app_flag,
                 NULL
             };

@@ -57,16 +57,34 @@ sudo losetup -d "$LOOP"
 echo "[4/4] Building Hybrid UEFI ISO with xorriso..."
 rm -f "$ISO_OUTPUT"
 
+# ISS-02 FIX: Inject kernel command line parameters to prevent boot failures on optical media.
+#   root=LABEL=EXAMOS_ROOT  — explicitly bind the root filesystem to the ISO volume label,
+#                             avoiding systemd-gpt-auto-generator's GPT partition probing
+#                             (which fails on optical/loop media with no GPT partition table).
+#   systemd.gpt_auto=0      — disable the systemd GPT auto-generator entirely for ISO boots.
+#   rd.auto=0               — prevent the initrd from auto-mounting partitions, which can
+#                             race or deadlock on CD-ROM / virtual optical drives.
+# The -append_partition / -appended_part_as_gpt flags and the EFI catalog (-e efiboot.img)
+# remain unchanged; only the kernel parameters are extended.
+KERNEL_CMDLINE="root=LABEL=EXAMOS_ROOT systemd.gpt_auto=0 rd.auto=0"
+
 xorriso -as mkisofs \
     -iso-level 3 \
     -full-iso9660-filenames \
-    -volid "EXAMOS_LIVE" \
+    -volid "EXAMOS_ROOT" \
     -eltorito-alt-boot \
     -e efiboot.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
     -output "$ISO_OUTPUT" \
     "$ISODIR"
+
+# Embed the kernel parameters into the ISO's El Torito / GRUB boot catalog.
+# xorriso's --boot_image any cmdline= applies the parameters to the EFI boot entry.
+# This is a post-processing step to patch the boot entry after initial ISO creation.
+xorriso -dev "$ISO_OUTPUT" \
+    --boot_image any cmdline="$KERNEL_CMDLINE" \
+    --commit
 
 rm -rf "$ISODIR" "$MNT"
 

@@ -423,30 +423,68 @@ int vision_engine_init(const char *config_path) {
         return VISION_ENGINE_NO_DETECTOR;
     }
 
-    /* Every artefact is verified before it is used. */
+    /* Verify every artefact that is present.
+     *
+     * Required artefacts (the Haar cascade face detector) are fatal when
+     * missing or corrupted — the engine cannot operate without a face
+     * detector.  Optional artefacts (Caffe SSD face DNN, MobileNet object
+     * DNN, LBF landmark model) produce a warning and are skipped; the
+     * engine falls back gracefully:
+     *   - Caffe SSD missing  → use Haar cascade only
+     *   - MobileNet missing  → object detection unavailable
+     *   - LBF missing        → head pose estimation unavailable
+     */
     for (auto &entry : artifacts) {
         entry.second.verified = verify_artifact(entry.second);
         if (!entry.second.verified) {
-            fprintf(stderr, "[VisionEngine] FATAL: detector artefact for role '%s' was rejected.\n",
-                    entry.first.c_str());
-            return VISION_ENGINE_NO_DETECTOR;
+            /* Determine whether this artefact is required (face-cascade) or
+               optional (DNN weights / landmarks). */
+            bool required = (entry.first == ROLE_FACE_CASCADE);
+            if (required) {
+                fprintf(stderr,
+                        "[VisionEngine] FATAL: required detector artefact for role '%s' was "
+                        "rejected — cannot continue without a face detector.\n",
+                        entry.first.c_str());
+                return VISION_ENGINE_NO_DETECTOR;
+            } else {
+                fprintf(stderr,
+                        "[VisionEngine] WARNING: optional detector artefact for role '%s' "
+                        "is missing or could not be verified — that capability will be "
+                        "unavailable.\n",
+                        entry.first.c_str());
+                /* Remove from the map so the loader below does not attempt to
+                   use an unverified path. */
+                entry.second.path.clear();
+            }
         }
     }
 
-    /* The face detector is preferred when a DNN detector is provisioned. */
-    auto face_proto = artifacts.find(ROLE_FACE_DNN_PROTOTXT);
+    /* The face detector is preferred when a Caffe SSD DNN is provisioned and
+       verified.  If those weights are absent or failed verification the engine
+       falls back transparently to the bundled Haar cascade. */
+    auto face_proto   = artifacts.find(ROLE_FACE_DNN_PROTOTXT);
     auto face_weights = artifacts.find(ROLE_FACE_DNN_WEIGHTS);
-    if (face_proto != artifacts.end() && face_weights != artifacts.end()) {
+    if (face_proto   != artifacts.end() && !face_proto->second.path.empty() &&
+        face_weights != artifacts.end() && !face_weights->second.path.empty()) {
         if (g_ssd_face.load(face_proto->second.path, face_weights->second.path)) {
             g_face_detector = &g_ssd_face;
             g_scorer = g_ssd_face.scorer();
+        } else {
+            fprintf(stderr,
+                    "[VisionEngine] WARNING: Caffe SSD face detector failed to load — "
+                    "falling back to Haar cascade.\n");
         }
     }
     if (!g_face_detector) {
         auto cascade = artifacts.find(ROLE_FACE_CASCADE);
-        if (cascade != artifacts.end() && g_cascade_face.load(cascade->second.path)) {
+        if (cascade != artifacts.end() && !cascade->second.path.empty() &&
+            g_cascade_face.load(cascade->second.path)) {
             g_face_detector = &g_cascade_face;
             g_scorer = g_cascade_face.scorer();
+        } else {
+            fprintf(stderr,
+                    "[VisionEngine] WARNING: Haar cascade face detector could not be "
+                    "loaded — the cascade file may be missing.\n");
         }
     }
     if (!g_face_detector) {
@@ -454,16 +492,38 @@ int vision_engine_init(const char *config_path) {
         return VISION_ENGINE_NO_DETECTOR;
     }
 
-    /* The object and landmark detectors are optional: without them the
-       corresponding event types report themselves unavailable. */
-    auto object_proto = artifacts.find(ROLE_OBJECT_DNN_PROTOTXT);
+    /* The object detector (MobileNet SSD) is optional.  When the weight files
+       are absent or failed verification a warning is emitted and object
+       detection is simply disabled — phone/book events will report
+       "unavailable". */
+    auto object_proto   = artifacts.find(ROLE_OBJECT_DNN_PROTOTXT);
     auto object_weights = artifacts.find(ROLE_OBJECT_DNN_WEIGHTS);
-    if (object_proto != artifacts.end() && object_weights != artifacts.end()) {
-        g_object_detector.load(object_proto->second.path, object_weights->second.path);
+    if (object_proto   != artifacts.end() && !object_proto->second.path.empty() &&
+        object_weights != artifacts.end() && !object_weights->second.path.empty()) {
+        if (!g_object_detector.load(object_proto->second.path, object_weights->second.path)) {
+            fprintf(stderr,
+                    "[VisionEngine] WARNING: MobileNet SSD object detector failed to "
+                    "load — phone and book detection will be unavailable.\n");
+        }
+    } else {
+        fprintf(stderr,
+                "[VisionEngine] WARNING: MobileNet SSD model files are not provisioned — "
+                "object detection (phone, book) will be unavailable.\n");
     }
+
+    /* The LBF landmark model is optional.  Without it head pose estimation is
+       disabled; a "UNAVAILABLE" payload is emitted for HEAD_POSE events. */
     auto landmark = artifacts.find(ROLE_LANDMARKS);
-    if (landmark != artifacts.end()) {
-        g_landmarks.load(landmark->second.path);
+    if (landmark != artifacts.end() && !landmark->second.path.empty()) {
+        if (!g_landmarks.load(landmark->second.path)) {
+            fprintf(stderr,
+                    "[VisionEngine] WARNING: LBF landmark model failed to load — "
+                    "head pose estimation will be unavailable.\n");
+        }
+    } else {
+        fprintf(stderr,
+                "[VisionEngine] WARNING: LBF landmark model file is not provisioned — "
+                "head pose estimation will be unavailable.\n");
     }
 
     fprintf(stderr, "[VisionEngine] Face detector ready: %s (objects=%s, landmarks=%s)\n",

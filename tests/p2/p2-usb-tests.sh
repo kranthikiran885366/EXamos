@@ -146,17 +146,37 @@ fi
 # U-05 (Hardware only): Plug/unplug event logging
 # ---------------------------------------------------------------------------
 if [ "$HARDWARE_TEST" = "1" ]; then
-    echo "[USB] Monitoring USB events for 30 seconds (plug test devices now)..."
+    # PG-13: Real hardware USB enforcement test
+    # Requires a USB mass storage device to be plugged during the test window
+    echo "[USB] Hardware enforcement test: monitoring for 30 seconds."
+    echo "[USB] ACTION REQUIRED: plug a USB mass storage device now."
+    JOURNAL_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     sleep 30
-    USB_EVENTS=$(journalctl -n 100 --since "1 minute ago" 2>/dev/null | grep -i "ExamOS-USB\|usbguard\|authorized" || true)
-    if [ -n "$USB_EVENTS" ]; then
-        record "U-05" "PASS" "USB events logged: $(echo "$USB_EVENTS" | wc -l) entries"
-        echo "$USB_EVENTS" >> "$ARTIFACT_DIR/usb-event-log.txt"
+    # Check USBGuard blocked the device
+    USBGUARD_BLOCKS=$(usbguard list-devices 2>/dev/null | grep -i 'block' || true)
+    JOURNAL_EVENTS=$(journalctl --since "$JOURNAL_START" 2>/dev/null | \
+        grep -iE 'usbguard|ExamOS-USB|authorized.*0|block.*usb' || true)
+    if [ -n "$USBGUARD_BLOCKS" ] || [ -n "$JOURNAL_EVENTS" ]; then
+        record "U-05" "PASS" "USB device blocked by USBGuard: $(echo "$USBGUARD_BLOCKS" | head -1)"
+        echo "$JOURNAL_EVENTS" >> "$ARTIFACT_DIR/usb-event-log.txt"
     else
-        record "U-05" "FAIL" "No USB events logged during test window"
+        # Check if any USB device appeared at all
+        USB_APPEARED=$(journalctl --since "$JOURNAL_START" 2>/dev/null | grep -i 'usb' | head -5 || true)
+        if [ -z "$USB_APPEARED" ]; then
+            record "U-05" "BLOCKED" "No USB device was plugged during the test window"
+        else
+            record "U-05" "FAIL" "USB device appeared but was not blocked by USBGuard"
+        fi
+    fi
+    # Verify no mass storage filesystem was mounted
+    STORAGE_MOUNTS=$(grep -E '^/dev/sd[b-z]|^/dev/sda[2-9]' /proc/mounts 2>/dev/null || true)
+    if [ -z "$STORAGE_MOUNTS" ]; then
+        record "U-05-MOUNT" "PASS" "No USB mass storage filesystem mounted"
+    else
+        record "U-05-MOUNT" "FAIL" "USB mass storage was mounted: $STORAGE_MOUNTS"
     fi
 else
-    record "U-05" "BLOCKED" "BLOCKED_ENVIRONMENT: hardware test not enabled (set HARDWARE_TEST=1)"
+    record "U-05" "BLOCKED" "BLOCKED_ENVIRONMENT: hardware test not enabled (set HARDWARE_TEST=1 with a physical USB device)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,9 @@ typedef struct {
 
 int exam_engine_init(void);
 int exam_engine_is_ready(void);
+int exam_engine_load_default_nqt_questions(void);
+/* Load questions from PostgreSQL for the given exam_id. Returns count or -1. */
+int exam_engine_load_questions_from_db(const char *exam_id);
 const char* exam_engine_get_paper_json(const char *session_token);
 int exam_engine_save_answer(const char *session_token, int q_id, int selected_opt, const char *text_ans, int status);
 int exam_engine_submit(const char *session_token, char *out_receipt, size_t max_receipt_len);

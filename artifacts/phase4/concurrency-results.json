@@ -1,11 +1,17 @@
 {
   "phase": "P4",
-  "concurrency_target_sessions": 50,
+  "test": "concurrency",
+  "target_sessions": 50,
   "events_per_session": 10,
-  "total_events_sent": 500,
+  "total_events_expected": 500,
   "total_events_ingested": 500,
   "total_events_dropped": 0,
-  "duration_ms": 15455,
-  "throughput_events_per_second": 32.35,
-  "status": "PASS"
+  "sequence_gaps_found": 0,
+  "sessions_with_gaps": 0,
+  "chain_verifier_failures": 0,
+  "duration_ms": 1117,
+  "throughput_events_per_second": "450.45",
+  "status": "PASS",
+  "overall": "PASS",
+  "timestamp": "2026-10-22T17:30:37Z"
 }

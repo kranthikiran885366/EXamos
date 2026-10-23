@@ -1,8 +1,8 @@
 {
   "_schema": "examos-model-manifest-v2",
-  "_comment": "Detector artefacts used by the proctoring worker. Every artefact is recorded with its SHA-256 digest and verified before it is used, so a substituted or corrupted model cannot become examination evidence. The cascade below is the detector bundled with the OpenCV package; it yields no calibrated probability, so the confidence it reports is zero.",
+  "_comment": "Detector artefacts used by the proctoring worker. Every artefact that is present is verified against its SHA-256 digest before use, so a substituted or corrupted model cannot become examination evidence. Required artefacts (face-cascade) are fatal when missing; optional artefacts (DNN weights, landmark model) log a warning and are skipped — the engine degrades gracefully without crashing.",
   "environment": "repository",
-  "version": "2",
+  "version": "3",
   "models": [
     {
       "name": "opencv-haarcascade-frontalface",
@@ -15,7 +15,95 @@
       "licence": "BSD-3-Clause (OpenCV project)",
       "class": "face",
       "scorer": "binary_cascade",
-      "produces_calibrated_confidence": false
+      "required": true,
+      "produces_calibrated_confidence": false,
+      "note": "Bundled with the OpenCV package. Required for engine operation — engine refuses to start if this file is missing or corrupted."
+    },
+    {
+      "name": "res10-ssd-face-prototxt",
+      "role": "face-dnn-prototxt",
+      "version": "res10_300x300_ssd",
+      "file": "deploy.prototxt",
+      "sha256": "PROVISION_AT_DEPLOYMENT",
+      "size_bytes": 28092,
+      "source": "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
+      "licence": "BSD-3-Clause (OpenCV project)",
+      "class": "face",
+      "scorer": "opencv-dnn-ssd-face",
+      "required": false,
+      "produces_calibrated_confidence": true,
+      "note": "Network definition for Caffe SSD face detector. Must be SHA-256 verified and the digest updated in this manifest before deployment. If absent, engine falls back to face-cascade transparently."
+    },
+    {
+      "name": "res10-ssd-face-weights",
+      "role": "face-dnn-weights",
+      "version": "res10_300x300_ssd_iter_140000",
+      "file": "res10_300x300_ssd_iter_140000.caffemodel",
+      "sha256": "PROVISION_AT_DEPLOYMENT",
+      "size_bytes": 10666211,
+      "source": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
+      "licence": "BSD-3-Clause (OpenCV project)",
+      "class": "face",
+      "scorer": "opencv-dnn-ssd-face",
+      "required": false,
+      "produces_calibrated_confidence": true,
+      "note": "Caffe SSD face detector weights. Must be downloaded separately, SHA-256 verified, and the digest updated here before deployment. Paired with face-dnn-prototxt. If absent, engine falls back to face-cascade."
+    },
+    {
+      "name": "mobilenet-ssd-object-prototxt",
+      "role": "object-dnn-prototxt",
+      "version": "MobileNetSSD_deploy",
+      "file": "MobileNetSSD_deploy.prototxt",
+      "sha256": "PROVISION_AT_DEPLOYMENT",
+      "size_bytes": 9452,
+      "source": "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/MobileNetSSD_deploy.prototxt",
+      "licence": "MIT (chuanqi305/MobileNet-SSD)",
+      "class": "object",
+      "scorer": "opencv-dnn-mobilenet-ssd",
+      "required": false,
+      "produces_calibrated_confidence": true,
+      "classes_of_interest": [78, 84],
+      "class_labels": { "78": "cell phone", "84": "book" },
+      "note": "Network definition for MobileNet SSD object detector (COCO). Detects cell phones (class 78) and books (class 84) for unauthorized device detection. If absent, object detection is unavailable but face detection continues."
+    },
+    {
+      "name": "mobilenet-ssd-object-weights",
+      "role": "object-dnn-weights",
+      "version": "MobileNetSSD_deploy",
+      "file": "MobileNetSSD_deploy.caffemodel",
+      "sha256": "PROVISION_AT_DEPLOYMENT",
+      "size_bytes": 23147564,
+      "source": "https://github.com/chuanqi305/MobileNet-SSD/raw/master/MobileNetSSD_deploy.caffemodel",
+      "licence": "MIT (chuanqi305/MobileNet-SSD)",
+      "class": "object",
+      "scorer": "opencv-dnn-mobilenet-ssd",
+      "required": false,
+      "produces_calibrated_confidence": true,
+      "note": "MobileNet SSD Caffe weights. Must be downloaded separately, SHA-256 verified, and the digest updated here before deployment. Paired with object-dnn-prototxt."
+    },
+    {
+      "name": "lbf-facial-landmarks",
+      "role": "landmarks",
+      "version": "lbfmodel",
+      "file": "lbfmodel.yaml",
+      "sha256": "PROVISION_AT_DEPLOYMENT",
+      "size_bytes": 54800000,
+      "source": "https://raw.githubusercontent.com/kurnianggoro/GSOC2017/master/data/lbfmodel.yaml",
+      "licence": "Apache-2.0 (kurnianggoro/GSOC2017)",
+      "class": "landmarks",
+      "scorer": "opencv-face-lbf",
+      "required": false,
+      "produces_calibrated_confidence": false,
+      "note": "68-point LBF facial landmark model used for head pose estimation. If absent, head pose is reported as unavailable rather than inferred from unrelated measurements. Must be SHA-256 verified before deployment."
     }
+  ],
+  "deployment_checklist": [
+    "1. Download each optional model file from its listed source URL.",
+    "2. Compute SHA-256: sha256sum <file>",
+    "3. Replace 'PROVISION_AT_DEPLOYMENT' with the computed hex digest in this manifest.",
+    "4. Place model files in the same directory as this manifest (/etc/examos/proctor/models/ on the kiosk image).",
+    "5. Set EXAMOS_PROCTOR_DETECTOR_CONFIG to point to this manifest file.",
+    "6. On first proctoring start, the vision engine will verify all digests before loading. Any mismatch is a fatal error.",
+    "7. Only haarcascade_frontalface_default.xml ships in the base OS image. All DNN weights must be provisioned per-deployment."
   ]
 }

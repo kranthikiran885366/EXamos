@@ -12,23 +12,31 @@
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
 #include <ctype.h>
 #include <limits.h>
 
 static int g_tpm_detected = 0;
+
+/* Validate a 10-char 0x-prefixed persistent handle in the 0x81000000-0x81ffffff range. */
+static int valid_tpm_handle(const char *h) {
+    if (!h || strlen(h) != 10 || h[0] != '0' || (h[1] != 'x' && h[1] != 'X')) return 0;
+    for (size_t i = 2; i < 10; ++i)
+        if (!isxdigit((unsigned char)h[i])) return 0;
+    unsigned long v = strtoul(h, NULL, 16);
+    return v >= 0x81000000UL && v <= 0x81ffffffUL;
+}
 
 int tpm_attestation_init(void) {
     struct stat device_stat;
     const char *device = stat("/dev/tpmrm0", &device_stat) == 0 &&
                          S_ISCHR(device_stat.st_mode) ? "/dev/tpmrm0" : "/dev/tpm0";
     g_tpm_detected = stat(device, &device_stat) == 0 && S_ISCHR(device_stat.st_mode);
-    const char *ak_handle = getenv("EXAMOS_TPM_AK_HANDLE");
-    if (!ak_handle || strlen(ak_handle) != 10 || ak_handle[0] != '0' ||
-        (ak_handle[1] != 'x' && ak_handle[1] != 'X')) return -1;
-    for (size_t i = 2; i < 10; ++i)
-        if (!isxdigit((unsigned char)ak_handle[i])) return -1;
-    unsigned long handle = strtoul(ak_handle, NULL, 16);
-    if (handle < 0x81000000UL || handle > 0x81ffffffUL) return -1;
+    if (!valid_tpm_handle(getenv("EXAMOS_TPM_AK_HANDLE"))) return -1;
+    /* EK handle is optional but must be valid if set */
+    const char *ek_handle = getenv("EXAMOS_TPM_EK_HANDLE");
+    if (ek_handle && ek_handle[0] && !valid_tpm_handle(ek_handle)) return -1;
     return g_tpm_detected ? 0 : -1;
 }
 
@@ -153,14 +161,112 @@ int tpm_attestation_generate_report(const char *device_id, const char *release_i
     char work_dir[] = "/tmp/examos-tpm-quote.XXXXXX";
     if (!handle || !mkdtemp(work_dir)) return -1;
     chmod(work_dir, 0700);
+
     char message_path[PATH_MAX], signature_path[PATH_MAX];
-    int a = snprintf(message_path, sizeof(message_path), "%s/quote.attest", work_dir);
+    char ak_pub_path[PATH_MAX], ak_pem_path[PATH_MAX];
+    char ek_pub_path[PATH_MAX];
+    int a = snprintf(message_path,   sizeof(message_path),   "%s/quote.attest",    work_dir);
     int b = snprintf(signature_path, sizeof(signature_path), "%s/quote.signature", work_dir);
+    int c = snprintf(ak_pub_path,    sizeof(ak_pub_path),    "%s/ak.pub",          work_dir);
+    int d = snprintf(ak_pem_path,    sizeof(ak_pem_path),    "%s/ak.pem",          work_dir);
+    int e = snprintf(ek_pub_path,    sizeof(ek_pub_path),    "%s/ek.pub",          work_dir);
     if (a < 0 || (size_t)a >= sizeof(message_path) ||
-        b < 0 || (size_t)b >= sizeof(signature_path)) {
+        b < 0 || (size_t)b >= sizeof(signature_path) ||
+        c < 0 || (size_t)c >= sizeof(ak_pub_path) ||
+        d < 0 || (size_t)d >= sizeof(ak_pem_path) ||
+        e < 0 || (size_t)e >= sizeof(ek_pub_path)) {
         rmdir(work_dir);
         return -1;
     }
+
+    /* --- Read AK public key and derive its PEM + SHA-256 fingerprint --- */
+    {
+        pid_t child = fork();
+        if (child < 0) { rmdir(work_dir); return -1; }
+        if (child == 0) {
+            if (setenv("TPM2TOOLS_TCTI", "tabrmd", 1) != 0) _exit(126);
+            char *const argv[] = {
+                "tpm2_readpublic", "--object-context", (char *)handle,
+                "--output", ak_pub_path,
+                "--format", "pem",
+                NULL
+            };
+            execvp(argv[0], argv);
+            _exit(127);
+        }
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) { rmdir(work_dir); return -1; } }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            rmdir(work_dir);
+            return -1;
+        }
+    }
+    /* Read PEM into report */
+    {
+        int fd = open(ak_pub_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd >= 0) {
+            ssize_t n = read(fd, report->ak_pub_hex, sizeof(report->ak_pub_hex) - 1);
+            close(fd);
+            if (n > 0) report->ak_pub_hex[n] = '\0';
+            else report->ak_pub_hex[0] = '\0';
+        }
+        unlink(ak_pub_path);
+    }
+
+    /* --- Read EK public key and compute its SHA-256 fingerprint --- */
+    const char *ek_handle = getenv("EXAMOS_TPM_EK_HANDLE");
+    if (ek_handle && ek_handle[0]) {
+        pid_t child = fork();
+        if (child == 0) {
+            if (setenv("TPM2TOOLS_TCTI", "tabrmd", 1) != 0) _exit(126);
+            char *const argv[] = {
+                "tpm2_readpublic", "--object-context", (char *)ek_handle,
+                "--output", ek_pub_path,
+                "--format", "pem",
+                NULL
+            };
+            execvp(argv[0], argv);
+            _exit(127);
+        }
+        if (child > 0) {
+            int status = 0;
+            while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) break; }
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                /* Hash the DER-encoded EK public key */
+                unsigned char ek_pem_buf[4096];
+                size_t ek_pem_len = 0;
+                int fd = open(ek_pub_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                if (fd >= 0) {
+                    ssize_t n = read(fd, ek_pem_buf, sizeof(ek_pem_buf) - 1);
+                    close(fd);
+                    if (n > 0) {
+                        ek_pem_buf[n] = '\0';
+                        ek_pem_len = (size_t)n;
+                        BIO *bio = BIO_new_mem_buf(ek_pem_buf, (int)ek_pem_len);
+                        EVP_PKEY *pkey = bio ? PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL) : NULL;
+                        BIO_free(bio);
+                        if (pkey) {
+                            unsigned char *der = NULL;
+                            int der_len = i2d_PUBKEY(pkey, &der);
+                            if (der_len > 0 && der) {
+                                unsigned char digest[32];
+                                unsigned int dlen = 0;
+                                if (EVP_Digest(der, (size_t)der_len, digest, &dlen,
+                                               EVP_sha256(), NULL) == 1 && dlen == 32) {
+                                    bytes_to_hex(digest, 32, report->ek_fingerprint);
+                                }
+                                OPENSSL_clear_free(der, (size_t)der_len);
+                            }
+                            EVP_PKEY_free(pkey);
+                        }
+                    }
+                    OPENSSL_cleanse(ek_pem_buf, sizeof(ek_pem_buf));
+                }
+            }
+            unlink(ek_pub_path);
+        }
+    }
+
     if (run_tpm_quote(handle, nonce, message_path, signature_path) != 0) {
         unlink(message_path); unlink(signature_path); rmdir(work_dir);
         return -1;

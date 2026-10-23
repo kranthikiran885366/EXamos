@@ -1,8 +1,84 @@
 {
   "phase": "P4",
-  "test_suite": "tamper_matrix",
-  "total_tests": 6,
-  "passed": 6,
+  "test": "tamper_matrix",
+  "total": 9,
+  "passed": 9,
   "failed": 0,
-  "status": "PASS"
+  "blocked": 0,
+  "overall": "PASS",
+  "results": [
+    {
+      "id": "T0",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS",
+      "detail": "Clean baseline verified VALID (5 events)",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T1",
+      "expected": "EVENT_HASH_MISMATCH",
+      "actual": "EVENT_HASH_MISMATCH",
+      "status": "PASS",
+      "detail": "Payload modification detected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T2",
+      "expected": "PREVIOUS_HASH_MISMATCH",
+      "actual": "PREVIOUS_HASH_MISMATCH",
+      "status": "PASS",
+      "detail": "Previous hash modification detected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T3",
+      "expected": "EVENT_HASH_MISMATCH",
+      "actual": "EVENT_HASH_MISMATCH",
+      "status": "PASS",
+      "detail": "Event hash modification detected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T4",
+      "expected": "SEQUENCE_GAP",
+      "actual": "SEQUENCE_GAP",
+      "status": "PASS",
+      "detail": "Event deletion detected as sequence gap",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T5",
+      "expected": "DETECTED",
+      "actual": "DETECTED",
+      "status": "PASS",
+      "detail": "Event reordering detected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T6",
+      "expected": "DETECTED",
+      "actual": "DETECTED",
+      "status": "PASS",
+      "detail": "Sequence manipulation detected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T7",
+      "expected": "SIGNATURE_INVALID",
+      "actual": "SIGNATURE_INVALID",
+      "status": "PASS",
+      "detail": "Valid checkpoint verified; modified signature rejected",
+      "timestamp": "2026-10-22T17:30:33Z"
+    },
+    {
+      "id": "T8",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS",
+      "detail": "Wrong-session event correctly ignored by session-filtered verifier",
+      "timestamp": "2026-10-22T17:30:34Z"
+    }
+  ],
+  "timestamp": "2026-10-22T17:30:34Z"
 }

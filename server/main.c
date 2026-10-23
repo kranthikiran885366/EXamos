@@ -49,12 +49,12 @@
 
 extern char **environ;
 
-#define BUFFER_SIZE 65536
+#define BUFFER_SIZE 131072
 #define MAX_HTTP_CLIENTS 1024
 
 static volatile sig_atomic_t g_server_running = 1;
 static sem_t g_client_slots;
-static unsigned int g_max_clients = 64;
+static unsigned int g_max_clients = 256;
 
 static int g_tls_enabled = 0;
 #if defined(USE_OPENSSL_TLS)
@@ -154,6 +154,62 @@ static int extract_authorization_header(const char *buffer, char *out, size_t ou
             out[value_length] = '\0';
         }
         line = line_end + 2;
+    }
+    return 0;
+}
+
+static int extract_candidate_session_token(const char *buffer, const char *auth_header, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+
+    /* 1. Extract Bearer token */
+    if (auth_header && strncasecmp(auth_header, "Bearer ", 7) == 0) {
+        const char *t = auth_header + 7;
+        while (*t == ' ' || *t == '\t') t++;
+        size_t t_len = strlen(t);
+        if (t_len == SESSION_TOKEN_LEN && t_len < out_size) {
+            snprintf(out, out_size, "%s", t);
+            return 1;
+        }
+    }
+
+    /* 2. Extract from Cookie header (examos_token or candidate_token) */
+    if (buffer) {
+        const char *headers_end = strstr(buffer, "\r\n\r\n");
+        const char *line = strstr(buffer, "\r\n");
+        if (headers_end && line && line < headers_end) {
+            line += 2;
+            while (line < headers_end) {
+                const char *line_end = strstr(line, "\r\n");
+                if (!line_end || line_end > headers_end) break;
+                const char *colon = memchr(line, ':', (size_t)(line_end - line));
+                if (colon && (size_t)(colon - line) == sizeof("Cookie") - 1 &&
+                    strncasecmp(line, "Cookie", sizeof("Cookie") - 1) == 0) {
+                    const char *item = colon + 1;
+                    while (item < line_end) {
+                        while (item < line_end && (*item == ' ' || *item == '\t' || *item == ';')) item++;
+                        const char *item_end = memchr(item, ';', (size_t)(line_end - item));
+                        if (!item_end) item_end = line_end;
+                        const char *equals = memchr(item, '=', (size_t)(item_end - item));
+                        if (equals) {
+                            size_t key_len = (size_t)(equals - item);
+                            if ((key_len == 12 && strncmp(item, "examos_token", 12) == 0) ||
+                                (key_len == 15 && strncmp(item, "candidate_token", 15) == 0)) {
+                                const char *value = equals + 1;
+                                size_t length = (size_t)(item_end - value);
+                                if (length == SESSION_TOKEN_LEN && length < out_size) {
+                                    memcpy(out, value, length);
+                                    out[length] = '\0';
+                                    return 1;
+                                }
+                            }
+                        }
+                        item = item_end < line_end ? item_end + 1 : line_end;
+                    }
+                }
+                line = line_end + 2;
+            }
+        }
     }
     return 0;
 }
@@ -659,7 +715,7 @@ static int route_path_matches(const char *request_path, const char *route) {
  * actually reported. Nothing here infers a violation that no detector
  * reported.
  */
-#define RISK_MAX_SESSIONS 256
+#define RISK_MAX_SESSIONS 512
 
 typedef struct {
     char                   session_id[64];
@@ -698,6 +754,9 @@ static void risk_engine_assess_session(const char *session_id, const char *event
         }
     }
 
+    int should_log_risk = 0;
+    char risk_desc[256] = {0};
+
     if (state) {
         if (strcmp(event_type, "NO_FACE") == 0) {
             state->indicators.face_absent_count++;
@@ -707,9 +766,23 @@ static void risk_engine_assess_session(const char *session_id, const char *event
         state->updated_at = time(NULL);
         risk_engine_evaluate(&state->indicators, &state->assessment);
         if (out_assessment) *out_assessment = state->assessment;
+        snprintf(risk_desc, sizeof(risk_desc), "score=%.2f level=%s no_face=%d multi_face=%d term=%d ev=%s",
+                 state->assessment.composite_risk_score,
+                 state->assessment.risk_level ? state->assessment.risk_level : "NORMAL",
+                 state->indicators.face_absent_count,
+                 state->indicators.multiple_faces_count,
+                 state->assessment.should_terminate_exam,
+                 event_type);
+        should_log_risk = 1;
     }
 
     pthread_mutex_unlock(&g_risk_lock);
+
+    /* ISS-03: Persist risk assessment state to durable tamper-evident ledger */
+    if (should_log_risk) {
+        ledger_block_t blk;
+        ledger_append_event("RISK_ASSESSMENT_UPDATE", session_id, risk_desc, &blk);
+    }
 }
 
 /*
@@ -852,12 +925,15 @@ static void* handle_client(void *arg) {
         parse_json_string(req_body, "pin", pin, sizeof(pin));
 
         if (strlen(cid) == 0 || strlen(pin) == 0) {
+            OPENSSL_cleanse(pin, sizeof(pin));
             send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Candidate ID and PIN are required\"}");
         } else if (!candidate_credentials_validate(cid, pin)) {
+            OPENSSL_cleanse(pin, sizeof(pin));
             ledger_block_t blk;
             ledger_append_event("CANDIDATE_AUTH_FAILED", cid, "Invalid candidate credentials", &blk);
             send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Invalid credentials\"}");
         } else {
+            OPENSSL_cleanse(pin, sizeof(pin));
             char token[SESSION_TOKEN_LEN + 1];
             if (candidate_session_create(cid, token) == 0) {
                 /* Journal the new session for crash-safe restart recovery */
@@ -1133,14 +1209,19 @@ static void* handle_client(void *arg) {
                      (session.role != ROLE_PLATFORM_OWNER && strcmp(session.institution_id, exam.institution_id) != 0))
                 send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam scope denied\"}");
             else {
-                static char roster_response[131072];
-                char audit_details[192]; ledger_block_t audit_block;
-                snprintf(audit_details, sizeof(audit_details), "actor=%s resource=exam_roster", session.user_id);
-                if (ledger_append_event("ADMIN_CANDIDATE_ROSTER_READ", exam_id, audit_details, &audit_block) != 0)
-                    send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster access audit unavailable\"}");
-                else if (platform_get_roster_json(exam_id, roster_response, sizeof(roster_response)) == 0)
-                    send_http_response(client_fd, 200, "application/json", roster_response);
-                else send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster service unavailable\"}");
+                char *roster_response = malloc(131072);
+                if (!roster_response) {
+                    send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+                } else {
+                    char audit_details[192]; ledger_block_t audit_block;
+                    snprintf(audit_details, sizeof(audit_details), "actor=%s resource=exam_roster", session.user_id);
+                    if (ledger_append_event("ADMIN_CANDIDATE_ROSTER_READ", exam_id, audit_details, &audit_block) != 0)
+                        send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster access audit unavailable\"}");
+                    else if (platform_get_roster_json(exam_id, roster_response, 131072) == 0)
+                        send_http_response(client_fd, 200, "application/json", roster_response);
+                    else send_http_response(client_fd, 503, "application/json", "{\"error\":\"Roster service unavailable\"}");
+                    free(roster_response);
+                }
             }
         }
         OPENSSL_cleanse(&session, sizeof(session)); OPENSSL_cleanse(&exam, sizeof(exam));
@@ -1372,16 +1453,105 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Appliance isolation is not integrated with the system service manager\"}");
         }
     }
-    /* Route: GET /exam -> Redirect to Configured Exam URL or candidate portal */
-    else if (strcmp(route_path, "/exam") == 0 && strcmp(method, "GET") == 0) {
-        exam_config_t cfg;
-        config_load(&cfg);
-        if (cfg.configured && strlen(cfg.exam_url) > 0) {
-            char redir_hdr[1024];
-            snprintf(redir_hdr, sizeof(redir_hdr), "Location: %s\r\n", cfg.exam_url);
-            send_http_response_ex(client_fd, 302, "text/plain", "Redirecting to configured exam server...", redir_hdr);
+    /* Route: GET /exam and GET /workbench -> TCS iON NQT-Level Secure Exam Workbench */
+    else if ((strcmp(route_path, "/exam") == 0 || strcmp(route_path, "/workbench") == 0) && strcmp(method, "GET") == 0) {
+        char token[SESSION_TOKEN_LEN + 1] = {0};
+        char candidate_id[MAX_CANDIDATE_ID_LEN] = {0};
+        int is_valid = 0;
+
+        if (extract_candidate_session_token(buffer, auth_header, token, sizeof(token))) {
+            if (candidate_session_validate(token)) {
+                if (candidate_session_identity(token, candidate_id, sizeof(candidate_id)) && candidate_id[0]) {
+                    is_valid = 1;
+                }
+            }
+        }
+
+        if (is_valid) {
+            send_http_response(client_fd, 200, "text/html; charset=utf-8", exam_workbench_html(candidate_id, token));
         } else {
             send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
+        }
+    }
+    /* Route: GET /api/v1/exam/paper -> Question battery */
+    else if (strcmp(route_path, "/api/v1/exam/paper") == 0 && strcmp(method, "GET") == 0) {
+        char token[SESSION_TOKEN_LEN + 1] = {0};
+        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
+            !candidate_session_validate(token)) {
+            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
+            goto client_done;
+        }
+        const char *paper_json = exam_engine_get_paper_json(token);
+        if (!paper_json) {
+            send_http_response(client_fd, 503, "application/json", "{\"status\":\"FAIL\",\"error\":\"Exam questions not ready or session expired\"}");
+            goto client_done;
+        }
+        send_http_response(client_fd, 200, "application/json", paper_json);
+    }
+    /* Route: POST /api/v1/exam/save_answer -> Real-time answer auto-save */
+    else if (strcmp(route_path, "/api/v1/exam/save_answer") == 0 && strcmp(method, "POST") == 0) {
+        char token[SESSION_TOKEN_LEN + 1] = {0};
+        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
+            !candidate_session_validate(token)) {
+            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
+            goto client_done;
+        }
+        int qid = parse_json_int(req_body, "question_id", -1);
+        int sel = parse_json_int(req_body, "selected_option", -1);
+        int stat = parse_json_int(req_body, "status", 0);
+        char text_ans[1024] = {0};
+        parse_json_string(req_body, "text_answer", text_ans, sizeof(text_ans));
+
+        if (exam_engine_save_answer(token, qid, sel, text_ans[0] ? text_ans : NULL, stat) == 0) {
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"SAVED\"}");
+        } else {
+            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Answer save rejected: exam may be submitted or paused\"}");
+        }
+    }
+    /* Route: POST /api/v1/exam/submit -> Final exam submission with cryptographic SHA-256 HMAC digest */
+    else if (strcmp(route_path, "/api/v1/exam/submit") == 0 && strcmp(method, "POST") == 0) {
+        char token[SESSION_TOKEN_LEN + 1] = {0};
+        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
+            !candidate_session_validate(token)) {
+            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
+            goto client_done;
+        }
+        char receipt[1024] = {0};
+        if (exam_engine_submit(token, receipt, sizeof(receipt)) == 0) {
+            send_http_response(client_fd, 200, "application/json", receipt);
+        } else {
+            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Exam submission failed or already submitted\"}");
+        }
+    }
+    /* Route: GET /api/v1/exam/announcements -> Real-time broadcast alerts */
+    else if (strcmp(route_path, "/api/v1/exam/announcements") == 0 && strcmp(method, "GET") == 0) {
+        const char *ann_json = center_master_get_announcements_json();
+        send_http_response(client_fd, 200, "application/json", ann_json ? ann_json : "{\"announcements\":[]}");
+    }
+    /* Route: GET /api/v1/exam/terminals -> Center Master invigilator monitor */
+    else if (strcmp(route_path, "/api/v1/exam/terminals") == 0 && strcmp(method, "GET") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_READ)) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin credentials required\"}");
+            goto client_done;
+        }
+        const char *terms = center_master_get_terminals_json();
+        send_http_response(client_fd, 200, "application/json", terms ? terms : "[]");
+    }
+    /* Route: POST /api/v1/exam/command -> Center Master invigilator control */
+    else if (strcmp(route_path, "/api/v1/exam/command") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_EXAM_MUTATION)) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Admin write permissions required\"}");
+            goto client_done;
+        }
+        char command[64] = {0}, target_cid[64] = {0}, payload[256] = {0};
+        parse_json_string(req_body, "command", command, sizeof(command));
+        parse_json_string(req_body, "target_candidate_id", target_cid, sizeof(target_cid));
+        parse_json_string(req_body, "payload", payload, sizeof(payload));
+
+        if (center_master_execute_command(command, target_cid[0] ? target_cid : NULL, payload) == 0) {
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"COMMAND_EXECUTED\"}");
+        } else {
+            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Command execution failed\"}");
         }
     }
     /* Route: POST /api/v1/heartbeat -> Telemetry */
@@ -1885,12 +2055,17 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 403, "application/json",
                                "{\"error\":\"User management permission required\"}");
         } else {
-            static char users_buf[65536];
-            if (admin_auth_store_list_users_json(users_buf, sizeof(users_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", users_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"User service unavailable\"}");
+            char *users_buf = malloc(65536);
+            if (!users_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                if (admin_auth_store_list_users_json(users_buf, 65536) == 0)
+                    send_http_response(client_fd, 200, "application/json", users_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"User service unavailable\"}");
+                free(users_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -1949,12 +2124,17 @@ static void* handle_client(void *arg) {
         if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
             send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
         } else {
-            static char tel_buf[16384];
-            if (platform_get_telemetry_json(tel_buf, sizeof(tel_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", tel_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Telemetry unavailable\"}");
+            char *tel_buf = malloc(16384);
+            if (!tel_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                if (platform_get_telemetry_json(tel_buf, 16384) == 0)
+                    send_http_response(client_fd, 200, "application/json", tel_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Telemetry unavailable\"}");
+                free(tel_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -1967,13 +2147,18 @@ static void* handle_client(void *arg) {
         if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
             send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
         } else {
-            static char fleet_buf[131072];
-            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
-            if (platform_get_fleet_json(inst, fleet_buf, sizeof(fleet_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", fleet_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Fleet service unavailable\"}");
+            char *fleet_buf = malloc(131072);
+            if (!fleet_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+                if (platform_get_fleet_json(inst, fleet_buf, 131072) == 0)
+                    send_http_response(client_fd, 200, "application/json", fleet_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Fleet service unavailable\"}");
+                free(fleet_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -1986,13 +2171,18 @@ static void* handle_client(void *arg) {
         if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
             send_http_response(client_fd, 403, "application/json", "{\"error\":\"Auth required\"}");
         } else {
-            static char comp_buf[65536];
-            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
-            if (platform_get_fleet_compliance_json(inst, comp_buf, sizeof(comp_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", comp_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Compliance service unavailable\"}");
+            char *comp_buf = malloc(65536);
+            if (!comp_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+                if (platform_get_fleet_compliance_json(inst, comp_buf, 65536) == 0)
+                    send_http_response(client_fd, 200, "application/json", comp_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Compliance service unavailable\"}");
+                free(comp_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -2006,13 +2196,18 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 403, "application/json",
                                "{\"error\":\"Incident read permission required\"}");
         } else {
-            static char inc_buf[131072];
-            const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
-            if (platform_get_incidents_json(inst, inc_buf, sizeof(inc_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", inc_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Incident service unavailable\"}");
+            char *inc_buf = malloc(131072);
+            if (!inc_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                const char *inst = (sess.role == ROLE_PLATFORM_OWNER) ? NULL : sess.institution_id;
+                if (platform_get_incidents_json(inst, inc_buf, 131072) == 0)
+                    send_http_response(client_fd, 200, "application/json", inc_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Incident service unavailable\"}");
+                free(inc_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -2028,12 +2223,17 @@ static void* handle_client(void *arg) {
         } else {
             char exam_id[128] = {0};
             parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
-            static char pol_buf[65536];
-            if (platform_get_policies_json(exam_id[0] ? exam_id : NULL, pol_buf, sizeof(pol_buf)) == 0)
-                send_http_response(client_fd, 200, "application/json", pol_buf);
-            else
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Policy service unavailable\"}");
+            char *pol_buf = malloc(65536);
+            if (!pol_buf) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
+            } else {
+                if (platform_get_policies_json(exam_id[0] ? exam_id : NULL, pol_buf, 65536) == 0)
+                    send_http_response(client_fd, 200, "application/json", pol_buf);
+                else
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Policy service unavailable\"}");
+                free(pol_buf);
+            }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
     }
@@ -2047,13 +2247,17 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 403, "application/json",
                                "{\"error\":\"Exam read permission required\"}");
         } else {
-            static char catalog_json[16384];
-            if (policy_catalog_names_json(catalog_json, sizeof(catalog_json)) != 0 ||
-                !catalog_json[0]) {
-                send_http_response(client_fd, 503, "application/json",
-                                   "{\"error\":\"Browser policy catalog is unavailable\"}");
+            char *catalog_json = malloc(16384);
+            if (!catalog_json) {
+                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
             } else {
-                send_http_response(client_fd, 200, "application/json", catalog_json);
+                if (policy_catalog_names_json(catalog_json, 16384) != 0 || !catalog_json[0]) {
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Browser policy catalog is unavailable\"}");
+                } else {
+                    send_http_response(client_fd, 200, "application/json", catalog_json);
+                }
+                free(catalog_json);
             }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
@@ -2402,6 +2606,21 @@ static void* handle_client(void *arg) {
                 snprintf(resp, sizeof(resp),
                          "{\"status\":\"updated\",\"exam_id\":\"%s\",\"state\":\"%s\"}",
                          exam_route_id, exam_state_to_string(next_state));
+                /* When an exam goes ACTIVE, load its questions into the engine
+                 * so paper delivery is immediately available. Fail closed:
+                 * if questions cannot be loaded the state update is still
+                 * committed but the engine reports not-ready until questions
+                 * are provisioned. */
+                if (next_state == EXAM_STATE_ACTIVE) {
+                    if (exam_engine_load_questions_from_db(exam_route_id) <= 0) {
+                        fprintf(stderr,
+                            "[Server] WARNING: exam '%s' transitioned to ACTIVE but "
+                            "no questions could be loaded from the database. "
+                            "Provision questions via examos_exam_questions before "
+                            "candidates attempt to access the paper.\n",
+                            exam_route_id);
+                    }
+                }
                 send_http_response(client_fd, 200, "application/json", resp);
             } else {
                 send_http_response(client_fd, 409, "application/json",
@@ -2849,7 +3068,20 @@ static void* handle_client(void *arg) {
         } else {
             char exam_id[64] = {0};
             parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
-            int limit = parse_json_int(path, "limit", 100);
+            /* Parse ?limit= from the query string, not from a JSON body */
+            int limit = 100;
+            {
+                char limit_str[16] = {0};
+                if (parse_query_id(path, "limit", limit_str, sizeof(limit_str)) == 0
+                    && limit_str[0]) {
+                    char *end = NULL;
+                    errno = 0;
+                    long v = strtol(limit_str, &end, 10);
+                    if (errno == 0 && end != limit_str && *end == '\0'
+                        && v >= 1 && v <= 10000)
+                        limit = (int)v;
+                }
+            }
             static char audit_buf[65536];
             if (platform_get_audit_json(exam_id[0] ? exam_id : NULL, limit,
                                         audit_buf, sizeof(audit_buf)) == 0) {
@@ -3714,7 +3946,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[ExamOS-Server] FATAL: evidence ledger is corrupt, truncated, unauthenticated, or unreadable; refusing startup.\n");
         return 1;
     }
-    /* Initialise durable session journal — replay restores active sessions */
+    /* Initialise durable session journal â€” replay restores active sessions */
     if (session_store_init() != 0 && production_mode) {
         fprintf(stderr, "[ExamOS-Server] FATAL: session journal unavailable in production mode.\n");
         return 1;
@@ -3798,7 +4030,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Firewall state directory — provisioned via EXAMOS_FIREWALL_STATE_DIR. */
+    /* Firewall state directory â€” provisioned via EXAMOS_FIREWALL_STATE_DIR. */
     {
         const char *fw_state_dir = getenv("EXAMOS_FIREWALL_STATE_DIR");
         if (fw_state_dir && fw_state_dir[0]) {
@@ -3966,6 +4198,45 @@ int main(int argc, char *argv[]) {
         }
         g_tls_enabled = 1;
         printf("[ExamOS-Server] TLS enabled (cert=%s)\n", tls_cert);
+
+        /* ISS-07: Optional Mutual TLS (mTLS) — client certificate verification.
+         *
+         * If EXAMOS_MTLS_CA_CERT is set to a PEM CA bundle path, the server
+         * requires client certificates signed by that CA on every connection.
+         * This prevents rogue hardware from submitting forged agent telemetry
+         * using only a bearer token.
+         *
+         * Appliance client certificates must be:
+         *   1. Issued by the provisioning CA whose root is in EXAMOS_MTLS_CA_CERT.
+         *   2. Stored on the appliance under the TPM (sealed, not exportable).
+         *   3. Presented during TLS handshake by libcurl on the agent side.
+         *
+         * When EXAMOS_MTLS_CA_CERT is absent, mTLS is not enforced and the
+         * server falls back to bearer-token-only agent authentication.
+         */
+        const char *mtls_ca = getenv("EXAMOS_MTLS_CA_CERT");
+        if (mtls_ca && mtls_ca[0]) {
+            if (SSL_CTX_load_verify_locations(g_tls_ctx, mtls_ca, NULL) != 1) {
+                fprintf(stderr, "[ExamOS-Server] FATAL: cannot load mTLS CA bundle '%s'.\n", mtls_ca);
+                ERR_print_errors_fp(stderr);
+                SSL_CTX_free(g_tls_ctx);
+                g_tls_ctx = NULL;
+                close(server_fd);
+                sem_destroy(&g_client_slots);
+                if (!development_mode) admin_auth_store_shutdown();
+                return 1;
+            }
+            /* Require peer certificate; fail handshake if absent or invalid. */
+            SSL_CTX_set_verify(g_tls_ctx,
+                               SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                               NULL /* use default verify callback */);
+            /* Accept certificate chains up to 3 levels deep (root → intermediate → leaf). */
+            SSL_CTX_set_verify_depth(g_tls_ctx, 3);
+            fprintf(stderr, "[ExamOS-Server] mTLS enforced: client certificates required (CA: %s)\n", mtls_ca);
+        } else {
+            fprintf(stderr, "[ExamOS-Server] mTLS not configured (EXAMOS_MTLS_CA_CERT not set); "
+                            "bearer-token-only agent authentication active.\n");
+        }
     }
 #endif
 
