@@ -156,7 +156,6 @@ int main(void) {
                 /* --- Security hardening flags added below ---
                  * --disable-developer-tools  : belt-and-suspenders alongside --disable-dev-tools
                  *                              (flag name varies across Chromium builds).
-                 * --disable-gpu-sandbox      : required on some embedded/kiosk GPU stacks where
                  *                              the GPU sandbox cannot initialise; remove if the
                  *                              target hardware supports it.
                  * --disable-popup-blocking   : exam portals may open result/print pop-ups.
@@ -167,7 +166,6 @@ int main(void) {
                  * --overscroll-history-navigation=0 : prevent swipe-back/forward navigation.
                  */
                 (char *)"--disable-developer-tools",
-                (char *)"--disable-gpu-sandbox",
                 (char *)"--disable-popup-blocking",
                 (char *)"--disable-notifications",
                 (char *)"--incognito",

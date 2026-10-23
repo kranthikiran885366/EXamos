@@ -1,8 +1,9 @@
 {
   "phase": "P0",
   "version": "0.1.0",
-  "timestamp": "2026-10-09T02:51:09Z",
-  "git_commit": "6fe4059c90701b9fca8412dfcbae5bbf94c3c55f",
+  "timestamp": "2026-10-23T13:08:23Z",
+  "git_commit": "cf15808e48d7f91f4414e400ce8173d6552b58b6",
+  "source_tree_state": "CLEAN",
   "status": "PASS",
   "checks": {
     "host_architecture": "PASS",
@@ -14,8 +15,34 @@
     "tpm_tools_ready": "PASS",
     "mkosi_build": "PASS",
     "artifact_generated": "PASS",
-    "artifact_checksum": "7a832d158e33aa2161c1252ad9262bcc4b297a9f571c1a85da6344a4c3f28ada",
+    "artifact_checksum": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
     "qemu_ovmf_boot": "PASS",
-    "secrets_clean": "PASS"
-  }
+    "secrets_clean": "PASS",
+    "disk_build": "PASS",
+    "disk_boot": "PASS",
+    "binary_hardening": "PASS",
+    "sources_lock_verification": "PASS"
+  },
+  "build": {
+    "status": "PASS",
+    "image_path": "artifacts/p0/runs/run-20261023T120701Z-clean/examos-p0.raw",
+    "image_sha256": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
+    "image_size_bytes": 1026260992,
+    "build_config_sha256": "f3f58146919c0f6f6883642e98859539903feff6b3efc0081e706d42fb01099a",
+    "pinned_inputs_sha256": "01b04599da1e68705ce36eb896893e1836032cd6acfcdf2f1d9273dd82f21af5",
+    "source_commit": "15919033e67ba9f777b87d00fae478b10586d213",
+    "mkosi_version": "mkosi 26"
+  },
+  "boot": {
+    "status": "PASS",
+    "image_sha256": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
+    "image_unchanged": true,
+    "qemu_acceleration": "KVM",
+    "kernel": true,
+    "systemd": true,
+    "multi_user_target": true,
+    "serial_console_prompt": true
+  },
+  "gate": "PASS",
+  "gate_reason": "P0 disk build and boot both PASS from clean tree, bound to commit cf15808e48d7f91f4414e400ce8173d6552b58b6"
 }
