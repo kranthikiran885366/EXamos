@@ -17,7 +17,16 @@ WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 ARTIFACT_DIR="${EXAMOS_P5_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase5}"
 mkdir -p "$ARTIFACT_DIR"
 
+# PG-44: Make test port configurable to avoid conflicts
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9105}"
+# Use a dynamic port if the default is in use
+if ss -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} " || \
+   netstat -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} "; then
+    SERVER_PORT=$((SERVER_PORT + 100))
+fi
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
@@ -50,6 +59,8 @@ if [ -x "$SERVER_BIN" ]; then
     CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
 
+    # PG-31: Generate reviewer token explicitly before starting server
+    REVIEWER_TOKEN="$(openssl rand -hex 32)"
     EXAMOS_SERVER_PORT="$SERVER_PORT" \
     EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
     EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
@@ -57,14 +68,14 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_REVIEWER_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
-    EXAMOS_TPM_MODE=development \
+    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
@@ -80,7 +91,6 @@ if [ -x "$SERVER_BIN" ]; then
         -H "Content-Type: application/json" \
         -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"pin\":\"${CANDIDATE_PIN}\"}" 2>/dev/null)
     CANDIDATE_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
-    REVIEWER_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_REVIEWER_TOKEN | cut -d= -f2)
 fi
 
 cleanup() {
@@ -239,9 +249,19 @@ fi
 
 # -----------------------------------------------------------------------
 # VI4: Duplicate response rejection
+# PG-34: Only test duplicate rejection if the first response was actually
+# accepted (RESPONSE_RECORDED). Testing duplicate rejection against a
+# non-existent first response is a test design flaw.
 # -----------------------------------------------------------------------
 echo "  VI4: Testing duplicate response rejection..."
+FIRST_ACCEPTED=0
 if [ -n "$FIRST_Q_ID" ]; then
+    SUBMIT_STATUS=$(echo "$SUBMIT_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+    if [ "$SUBMIT_STATUS" = "RESPONSE_RECORDED" ]; then
+        FIRST_ACCEPTED=1
+    fi
+fi
+if [ "$FIRST_ACCEPTED" -eq 1 ]; then
     DUP_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/viva/response" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
@@ -252,8 +272,10 @@ if [ -n "$FIRST_Q_ID" ]; then
     else
         record "VI4" "REJECTED" "FAIL" "Duplicate not rejected: $DUP_STATUS"
     fi
+elif [ -n "$FIRST_Q_ID" ]; then
+    record "VI4" "REJECTED" "FAIL" "First response was not accepted (status=$SUBMIT_STATUS) — cannot test duplicate rejection"
 else
-    record "VI4" "REJECTED" "BLOCKED" "No question ID"
+    record "VI4" "REJECTED" "BLOCKED" "No question ID available"
 fi
 
 # -----------------------------------------------------------------------

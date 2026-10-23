@@ -59,5 +59,34 @@ else
     exit 1
 fi
 
+# PG-07: Verify kiosk binary is actually built and is a valid ELF executable
+KIOSK_BIN="$WORKSPACE/kiosk/launcher/examos-kiosk-launcher"
+if [ ! -f "$KIOSK_BIN" ]; then
+    echo "[KIOSK-CHECK] FAIL: kiosk launcher binary not built: $KIOSK_BIN"
+    exit 1
+fi
+if ! file "$KIOSK_BIN" 2>/dev/null | grep -q 'ELF 64-bit.*x86-64'; then
+    echo "[KIOSK-CHECK] FAIL: kiosk launcher is not a valid ELF x86-64 binary"
+    exit 1
+fi
+echo "[KIOSK-CHECK] PASS: Kiosk launcher binary is a valid ELF x86-64 executable"
+
+# PG-07: Verify kiosk service ExecStart references the correct binary path
+KIOSK_SVC="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"
+if ! grep -q 'ExecStart=.*examos-kiosk-launcher\|ExecStart=.*cage' "$KIOSK_SVC" 2>/dev/null; then
+    echo "[KIOSK-CHECK] FAIL: kiosk service ExecStart does not reference launcher or cage"
+    exit 1
+fi
+echo "[KIOSK-CHECK] PASS: Kiosk service ExecStart references correct binary"
+
+# PG-07: Verify kiosk service has required hardening directives
+for directive in "NoNewPrivileges=true" "ProtectSystem=strict" "PrivateTmp=true"; do
+    if ! grep -q "^${directive}" "$KIOSK_SVC" 2>/dev/null; then
+        echo "[KIOSK-CHECK] FAIL: kiosk.service missing hardening directive: $directive"
+        exit 1
+    fi
+done
+echo "[KIOSK-CHECK] PASS: Kiosk service has required systemd hardening directives"
+
 echo "[P1-KIOSK] PASS: All kiosk static verification checks passed"
 exit 0

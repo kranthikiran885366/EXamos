@@ -46,9 +46,19 @@ for pkg in bash openssh-server gcc g++ make perl ruby nodejs sudo su; do
 done
 # python3 is retained deliberately: the shipped startup validator and health
 # reporter use it at runtime. Do not classify a required runtime interpreter
-# as a build-tool leak.
+# as a build-tool leak. However, document the justification in the audit log.
 if printf '%s\n' "$CONTENT_PKGS" | grep -qE '^\s+python3\s*$'; then
-    p "S-01: python3 retained for shipped startup/security validators"
+    # PG-15: Verify python3 is confined by AppArmor profile before allowing it
+    APPARMOR_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"
+    PYTHON_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.python3"
+    if [ -f "$PYTHON_PROFILE" ]; then
+        p "S-01: python3 retained and confined by AppArmor profile: $PYTHON_PROFILE"
+    elif [ -f "$APPARMOR_PROFILE" ]; then
+        # Acceptable if python3 is only invoked by confined services
+        p "S-01: python3 retained for shipped startup/security validators (AppArmor present; python3-specific profile absent — ensure python3 is only invoked from confined systemd units)"
+    else
+        f "S-01: python3 in release image but no AppArmor confinement profile found — attack surface not justified"
+    fi
 else
     f "S-01: python3 runtime dependency missing from release mkosi.conf"
 fi
@@ -182,17 +192,24 @@ for key_val in \
 done
 
 # ---------------------------------------------------------------------------
-# S-09 (P2-13): nftables policy is default-deny
+# S-09 (P2-13): nftables policy is default-deny on ALL three chains
 # ---------------------------------------------------------------------------
 NFT="$WORKSPACE/image/overlay/etc/nftables.conf"
 if [ -f "$NFT" ]; then
-    DROP_COUNT=$(grep -c "policy drop" "$NFT" 2>/dev/null || echo 0)
+    # PG-16: Check each required chain explicitly, not just a count
+    MISSING_CHAINS=""
+    for chain in input output forward; do
+        # Look for the chain block containing 'policy drop'
+        if ! awk "/chain ${chain}/,/}/ { if (/policy drop/) found=1 } END { exit !found }" "$NFT" 2>/dev/null; then
+            MISSING_CHAINS="$MISSING_CHAINS $chain"
+        fi
+    done
     WILDCARD=$(sed 's/#.*//' "$NFT" | \
         grep -E '(^|[[:space:]])(0\.0\.0\.0/0|0/0|::/0)([[:space:]]|$).*accept' || true)
-    if [ "$DROP_COUNT" -ge 3 ] && [ -z "$WILDCARD" ]; then
-        p "S-09: nftables has default-drop on all chains, no 0.0.0.0/0 accept"
+    if [ -z "$MISSING_CHAINS" ] && [ -z "$WILDCARD" ]; then
+        p "S-09: nftables has policy drop on input/output/forward chains, no 0.0.0.0/0 accept"
     else
-        [ "$DROP_COUNT" -lt 3 ] && f "S-09: nftables missing default-drop chains (found ${DROP_COUNT})"
+        [ -n "$MISSING_CHAINS" ] && f "S-09: nftables missing policy drop on chains:${MISSING_CHAINS}"
         [ -n "$WILDCARD" ] && f "S-09: nftables contains broad 0.0.0.0/0 accept rule"
     fi
 else

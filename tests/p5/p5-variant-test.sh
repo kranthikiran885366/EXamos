@@ -16,7 +16,16 @@ WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 ARTIFACT_DIR="${EXAMOS_P5_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase5}"
 mkdir -p "$ARTIFACT_DIR"
 
+# PG-44: Make test port configurable to avoid conflicts
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9104}"
+# Use a dynamic port if the default is in use
+if ss -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} " || \
+   netstat -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} "; then
+    SERVER_PORT=$((SERVER_PORT + 100))
+fi
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
@@ -39,6 +48,9 @@ echo "=== [P5-VARIANT] Variant Engine Test ==="
 
 # Start server
 CANDIDATE_TOKEN=""
+# PG-31: Generate reviewer token here, pass it explicitly to server env
+# instead of reading it back from /proc/<pid>/environ
+REVIEWER_TOKEN="$(openssl rand -hex 32)"
 if [ -x "$SERVER_BIN" ]; then
     CANDIDATE_ID="P5-VAR-$(date +%s)"
     CANDIDATE_PIN="$(openssl rand -hex 8)"
@@ -48,6 +60,16 @@ if [ -x "$SERVER_BIN" ]; then
         -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
     CAND_FILE="$RUN_DIR/candidates.conf"
     echo "${CANDIDATE_ID}:100000:${CAND_SALT}:${CAND_HASH}" > "$CAND_FILE"
+
+    # PG-33: Seed the second candidate BEFORE the server starts so the
+    # candidate store is never mutated while the server is running.
+    CANDIDATE_ID2="P5-VAR2-$(date +%s)"
+    CAND2_PIN="$(openssl rand -hex 8)"
+    CAND2_SALT="$(openssl rand -hex 32)"
+    CAND2_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
+        -kdfopt "hexsalt:${CAND2_SALT}" -kdfopt "pass:${CAND2_PIN}" \
+        -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
+    echo "${CANDIDATE_ID2}:100000:${CAND2_SALT}:${CAND2_HASH}" >> "$CAND_FILE"
 
     # Provision a real examination identity; the server no longer fabricate one.
     EXAM_ID="P5-VARIANT-$(date +%s)"
@@ -66,8 +88,7 @@ EXAMCONF
     EXAMOS_PROCTOR_API_TOKEN="$(openssl rand -hex 32)" \
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-    EXAMOS_REVIEWER_TOKEN="$(openssl rand -hex 32)" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
     EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
@@ -90,7 +111,6 @@ EXAMCONF
         -H "Content-Type: application/json" \
         -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"pin\":\"${CANDIDATE_PIN}\"}" 2>/dev/null)
     CANDIDATE_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
-    REVIEWER_TOKEN=$(cat /proc/$SERVER_PID/environ 2>/dev/null | tr '\0' '\n' | grep EXAMOS_REVIEWER_TOKEN | cut -d= -f2)
 fi
 
 cleanup() {
@@ -200,31 +220,35 @@ fi
 # V6: Variant diversity — different candidates get different params
 # -----------------------------------------------------------------------
 echo "  V6: Checking variant diversity..."
-# Login as a second candidate
+# PG-33: Second candidate already seeded before server start (see setup).
+# The store is never mutated while the server is running.
 CANDIDATE_ID2="P5-VAR2-$(date +%s)"
+CAND2_PIN="$(openssl rand -hex 8)"
 CAND2_SALT="$(openssl rand -hex 32)"
 CAND2_HASH=$(openssl kdf -keylen 32 -kdfopt digest:SHA256 \
-    -kdfopt "hexsalt:${CAND2_SALT}" -kdfopt "pass:${CANDIDATE_PIN}" \
+    -kdfopt "hexsalt:${CAND2_SALT}" -kdfopt "pass:${CAND2_PIN}" \
     -kdfopt iter:100000 PBKDF2 2>/dev/null | tr -d ':\n' | tr 'A-F' 'a-f')
-echo "${CANDIDATE_ID2}:100000:${CAND2_SALT}:${CAND2_HASH}" >> "$CAND_FILE"
-
-LOGIN2_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/candidate/login" \
+# Log in as second candidate
+LOGIN_RESP2=$(curl -s -X POST "${SERVER_URL}/api/v1/candidate/login" \
     -H "Content-Type: application/json" \
-    -d "{\"candidate_id\":\"${CANDIDATE_ID2}\",\"pin\":\"${CANDIDATE_PIN}\"}" 2>/dev/null)
-CAND2_TOKEN=$(echo "$LOGIN2_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+    -d "{\"candidate_id\":\"${CANDIDATE_ID2}\",\"pin\":\"${CAND2_PIN}\"}" 2>/dev/null)
+CANDIDATE_TOKEN2=$(echo "$LOGIN_RESP2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
 
-if [ -n "$CAND2_TOKEN" ]; then
-    VAR2_RESP=$(curl -s "${SERVER_URL}/api/v1/exam/variant" \
-        -H "Authorization: Bearer ${CAND2_TOKEN}" 2>/dev/null)
-    VAR2_ID=$(echo "$VAR2_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('variant_id',''))" 2>/dev/null || echo "")
-
-    if [ "$VAR2_ID" != "$VARIANT_ID" ]; then
-        record "V6" "DIFFERENT" "DIFFERENT" "Two candidates got different variant IDs"
-    else
-        record "V6" "DIFFERENT" "FAIL" "Same variant ID for two candidates"
-    fi
+if [ -z "$CANDIDATE_TOKEN2" ]; then
+    record "V6" "DIFFERENT" "BLOCKED" "Second candidate could not authenticate (store may be cached at server startup)"
 else
-    record "V6" "DIFFERENT" "BLOCKED" "Cannot authenticate second candidate"
+    VARIANT_RESP2=$(curl -s "${SERVER_URL}/api/v1/exam/variant" \
+        -H "Authorization: Bearer ${CANDIDATE_TOKEN2}" 2>/dev/null)
+    VARIANT_ID2=$(echo "$VARIANT_RESP2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('variant_id',''))" 2>/dev/null || echo "")
+    WATERMARK2=$(echo "$VARIANT_RESP2" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('watermark_footer', d.get('watermark_text',''))[:60])" 2>/dev/null || echo "")
+
+    if [ -n "$VARIANT_ID2" ] && [ "$VARIANT_ID2" != "$VARIANT_ID" ]; then
+        record "V6" "DIFFERENT" "PASS" "Different candidates get different variants ($VARIANT_ID vs $VARIANT_ID2)"
+    elif [ -n "$VARIANT_ID2" ] && [ "$VARIANT_ID2" = "$VARIANT_ID" ]; then
+        record "V6" "DIFFERENT" "FAIL" "Same variant ID for both candidates: $VARIANT_ID"
+    else
+        record "V6" "DIFFERENT" "FAIL" "Second variant generation failed: $VARIANT_RESP2"
+    fi
 fi
 
 # -----------------------------------------------------------------------

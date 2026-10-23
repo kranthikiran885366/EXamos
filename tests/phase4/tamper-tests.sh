@@ -3,7 +3,7 @@
 # ExamOS Phase 4 — Tamper Evidence Test Suite
 # tests/phase4/tamper-tests.sh
 #
-# Validates T1-T8 tamper detection rules using the standalone CLI verifier:
+# Validates T0-T8 tamper detection rules using the standalone CLI verifier:
 # tools/exam-event-verify
 # =============================================================================
 set -euo pipefail
@@ -130,12 +130,53 @@ else
     record_t "T5" "sequence_tamper_detected" "PASS" "FAIL"
 fi
 
+# --- T6: Checkpoint Signature Tampering ---
+echo "[T6] Testing checkpoint signature tampering..."
+TMP_T6=$(mktemp)
+cp "$TMP_STORE" "$TMP_T6"
+# Inject a fake checkpoint signature with invalid HMAC
+echo '{"session_id":"tamper-sess-01","sequence":999,"server_timestamp":"2026-10-08T22:30:99.000Z","source_timestamp":"2026-10-08T22:30:99.000Z","source_type":"CHECKPOINT","event_type":"SESSION_CHECKPOINT","payload":{"checkpoint_number":1},"model_name":"system","model_version":"1.0.0","previous_hash":"'"$PREV_HASH"'","event_hash":"badsignature123456789"}' >> "$TMP_T6"
+OUT=$("$VERIFIER_BIN" --session "tamper-sess-01" --store "$TMP_T6" 2>&1 || true)
+rm -f "$TMP_T6"
+if echo "$OUT" | grep -q "RESULT: FAIL"; then
+    record_t "T6" "checkpoint_tamper_detected" "PASS" "PASS"
+else
+    record_t "T6" "checkpoint_tamper_detected" "PASS" "FAIL"
+fi
+
+# --- T7: Hash Field Tampering ---
+echo "[T7] Testing event_hash field tampering..."
+TMP_T7=$(mktemp)
+sed 's/"event_hash":"[a-f0-9]\{64\}"/"event_hash":"0000000000000000000000000000000000000000000000000000000000000000"/' "$TMP_STORE" > "$TMP_T7"
+OUT=$("$VERIFIER_BIN" --session "tamper-sess-01" --store "$TMP_T7" 2>&1 || true)
+rm -f "$TMP_T7"
+if echo "$OUT" | grep -q "RESULT: FAIL" && echo "$OUT" | grep -q "EVENT_HASH_MISMATCH"; then
+    record_t "T7" "hash_field_tamper_detected" "PASS" "PASS"
+else
+    record_t "T7" "hash_field_tamper_detected" "PASS" "FAIL"
+fi
+
+# --- T8: Wrong-Session Insertion (Cross-Session Contamination) ---
+echo "[T8] Testing wrong-session event insertion detection..."
+TMP_T8=$(mktemp)
+cp "$TMP_STORE" "$TMP_T8"
+# Insert an event from a different session
+echo '{"session_id":"tamper-sess-02","sequence":1,"server_timestamp":"2026-10-08T22:30:99.000Z","source_timestamp":"2026-10-08T22:30:99.000Z","source_type":"PRIMARY_CAMERA","event_type":"FACE_PRESENT","payload":{"faceCount":1,"confidence":0.95},"model_name":"native-vision","model_version":"1.0.0","previous_hash":"'"$GENESIS"'","event_hash":"badsessionhash"}' >> "$TMP_T8"
+OUT=$("$VERIFIER_BIN" --session "tamper-sess-01" --store "$TMP_T8" 2>&1 || true)
+rm -f "$TMP_T8"
+# PG-26: T8 should FAIL when cross-session contamination is detected, not pass when ignored
+if echo "$OUT" | grep -q "RESULT: FAIL"; then
+    record_t "T8" "cross_session_contamination_detected" "PASS" "PASS"
+else
+    record_t "T8" "cross_session_contamination_detected" "PASS" "FAIL"
+fi
+
 # Write results
 cat > "$ARTIFACT_DIR/tamper-test-results.json" <<JSONEOF
 {
   "phase": "P4",
   "test_suite": "tamper_matrix",
-  "total_tests": 6,
+  "total_tests": 9,
   "passed": $PASS_COUNT,
   "failed": $FAIL_COUNT,
   "status": "$([ $FAIL_COUNT -eq 0 ] && echo 'PASS' || echo 'FAIL')"

@@ -16,7 +16,16 @@ WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 ARTIFACT_DIR="${EXAMOS_P5_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase5}"
 mkdir -p "$ARTIFACT_DIR"
 
+# PG-44: Make test port configurable to avoid conflicts
+# PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
+# EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
+EXAMOS_TEST_MODE="${EXAMOS_TEST_MODE:-dev}"
 SERVER_PORT="${EXAMOS_P5_SERVER_PORT:-9103}"
+# Use a dynamic port if the default is in use
+if ss -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} " || \
+   netstat -tlnp 2>/dev/null | grep -q ":${SERVER_PORT} "; then
+    SERVER_PORT=$((SERVER_PORT + 100))
+fi
 SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 SERVER_BIN="$WORKSPACE/server/examos-server"
 SERVER_PID=""
@@ -73,17 +82,16 @@ EXAMCONF
     EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
     EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
     EXAMOS_REVIEWER_TOKEN="$REVIEWER_TOKEN" \
-    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}" \
     EXAMOS_EXAM_CONFIG="$RUN_DIR/exam.conf" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
-    EXAMOS_TPM_MODE=development \
+    EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
-    EXAMOS_SESSION_JOURNAL="/tmp/examos-p5-behaviour-sessions.log" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
         "$SERVER_BIN" &
     SERVER_PID=$!
@@ -167,6 +175,22 @@ for i in 1 2 3 4 5; do
         >/dev/null 2>&1
 done
 
+# PG-32: Poll for server to process all practice sessions before querying baseline
+# (no fixed sleep — race condition if server processes asynchronously)
+PRACTICE_READY=0
+for _ in $(seq 1 30); do
+    PRACTICE_PROBE=$(curl -s -X POST "${SERVER_URL}/api/v1/behaviour/practice" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
+        -d "{\"candidate_id\":\"${CANDIDATE_ID}\",\"practice_session_id\":\"practice-probe\"}" 2>/dev/null)
+    PRACTICE_COUNT=$(echo "$PRACTICE_PROBE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('eligible_count',0))" 2>/dev/null || echo "0")
+    if [ "$PRACTICE_COUNT" -ge 5 ]; then
+        PRACTICE_READY=1
+        break
+    fi
+    sleep 0.5
+done
+
 PRACTICE_RESP=$(curl -s -X POST "${SERVER_URL}/api/v1/behaviour/practice" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${CANDIDATE_TOKEN}" \
@@ -229,6 +253,23 @@ if echo "$FEATURES_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); 
     record "B5" "PASS" "PASS" "Features exported via reviewer token"
 else
     record "B5" "PASS" "BLOCKED" "Cannot export features - auth or store issue"
+fi
+
+# -----------------------------------------------------------------------
+# B6: P5→P4 regression — verify event chain integrity after P5 operations
+# (PG-35: P5 events must be written to the tamper-evident event chain and
+#  the chain must remain valid after P5 operations)
+# -----------------------------------------------------------------------
+echo "  B6: Verifying event chain integrity after P5 behaviour operations..."
+if [ -x "$WORKSPACE/tools/exam-event-verify" ] && [ -f "$RUN_DIR/events.log" ]; then
+    CHAIN_VERIFY=$("$WORKSPACE/tools/exam-event-verify" --session "$SESSION_ID" --store "$RUN_DIR/events.log" 2>&1)
+    if echo "$CHAIN_VERIFY" | grep -q "CHAIN: VALID"; then
+        record "B6" "PASS" "PASS" "Event chain remains valid after P5 behaviour operations"
+    else
+        record "B6" "PASS" "FAIL" "Event chain integrity broken after P5 operations: $CHAIN_VERIFY"
+    fi
+else
+    record "B6" "PASS" "BLOCKED" "Verifier or event log not available for chain integrity check"
 fi
 
 # -----------------------------------------------------------------------
