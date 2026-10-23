@@ -71,21 +71,45 @@ echo "[P1-BOOT] Launching QEMU with image $IMAGE_FILE..."
 IMAGE_SHA256=$(sha256sum "$IMAGE_FILE" | cut -d' ' -f1)
 START_MS=$(date +%s%3N)
 
-set +e
-timeout 60s qemu-system-x86_64 \
+# Run QEMU in background so we can poll for boot markers without hanging
+# on a kiosk that never exits. Snapshot mode prevents image modification.
+qemu-system-x86_64 \
     -M q35 $ACCEL \
     -m 2048 \
     -smp 2 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-    -drive file="$IMAGE_FILE",format=raw,if=virtio \
+    -drive file="$IMAGE_FILE",format=raw,if=virtio,snapshot=on \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -nographic \
     $PRODUCTION_MODE_ARGS \
-    -serial file:"$BOOT_LOG" >/dev/null 2>&1
-QEMU_RET=$?
-set -e
-END_MS=$(date +%s%3N)
-ELAPSED_MS=$((END_MS - START_MS))
+    -serial file:"$BOOT_LOG" >/dev/null 2>&1 &
+QEMU_PID=$!
+
+BOOT_TIMEOUT="${EXAMOS_P1_BOOT_TIMEOUT:-90}"
+BOOT_READY=false
+ELAPSED_MS=0
+while kill -0 "$QEMU_PID" 2>/dev/null; do
+    NOW_MS=$(date +%s%3N)
+    ELAPSED_MS=$((NOW_MS - START_MS))
+    if [ "$ELAPSED_MS" -ge $((BOOT_TIMEOUT * 1000)) ]; then
+        kill -TERM "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+        QEMU_RET=124
+        break
+    fi
+    if grep -q -E "systemd|Welcome to|Linux version" "$BOOT_LOG" 2>/dev/null; then
+        BOOT_READY=true
+        kill -TERM "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+        QEMU_RET=0
+        break
+    fi
+    sleep 1
+done
+if [ -z "$QEMU_RET" ]; then
+    wait "$QEMU_PID" 2>/dev/null || true
+    QEMU_RET=$?
+fi
 
 if [ -n "$SWTPM_PID" ]; then
     kill "$SWTPM_PID" 2>/dev/null || true

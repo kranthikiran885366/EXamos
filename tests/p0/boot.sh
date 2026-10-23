@@ -145,7 +145,7 @@ qemu-system-x86_64 -M q35 $QEMU_ACCEL \
     -m "$QEMU_MEMORY_MIB" -smp "$QEMU_CPUS" -snapshot \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$TMP_VARS" \
-    -drive file="$IMAGE_FILE",format=raw,if=virtio \
+    -drive file="$IMAGE_FILE",format=raw,if=virtio,snapshot=on \
     -net none -display none -serial file:"$BOOT_LOG" \
     > "$TMP_DIR/qemu.log" 2>&1 &
 QEMU_PID=$!
