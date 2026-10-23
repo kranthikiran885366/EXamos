@@ -17,6 +17,7 @@ import sys
 GENERATED_UNTRACKED_ROOTS = (
     "artifacts/",
     "image/overlay/etc/apparmor.d/",
+    "image/overlay/etc/systemd/system/graphical.target.wants/",
     "image/p0/output/",
     "build/",
     "cache/",
