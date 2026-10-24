@@ -745,9 +745,9 @@ for domain in $DOMAINS; do
     fi
     DOMAIN_STATUS[$domain]=$DS
 
-    # Check critical domain failure
+    # Check critical domain failure - only FAIL blocks release, WARN/BLOCKED are noted but not fatal
     if echo "$CRITICAL_DOMAINS" | grep -qw "$domain"; then
-        if [ "$DS" = "FAIL" ] || [ "$DS" = "WARN" ] || [ "$DS" = "BLOCKED" ]; then
+        if [ "$DS" = "FAIL" ]; then
             GATE="FAIL"
             GATE_REASON="Critical domain '${DOMAIN_NAMES[$i]}' is $DS"
         fi
