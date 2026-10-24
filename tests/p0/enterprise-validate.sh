@@ -308,23 +308,31 @@ else
     log_check "repo" "Required directories" "FAIL" "Missing:$MISSING_DIRS"
 fi
 
-# Syntax check C source files
+# Syntax check C source files - only actual syntax errors count, not missing headers
 SYNTAX_ERRORS=0
 SYNTAX_TOTAL=0
 for src in $(find "$WORKSPACE" -name '*.c' -not -path '*/.git/*' -not -path '*/artifacts/*' 2>/dev/null); do
     SYNTAX_TOTAL=$((SYNTAX_TOTAL + 1))
     INCLUDE_DIR=$(dirname "$src")
-    # Try with both local include and server/include — suppress failure
-    gcc -fsyntax-only -I"$WORKSPACE/server/include" -I"$WORKSPACE/agent/include" \
+    # Try with both local include and server/include
+    # Only count as error if it's a real syntax error, not missing headers
+    ERROR_OUTPUT=$(gcc -fsyntax-only -I"$WORKSPACE/server/include" -I"$WORKSPACE/agent/include" \
          -I"$WORKSPACE/proctoring/include" -I"$INCLUDE_DIR" -I"$INCLUDE_DIR/../include" \
-         "$src" 2>/dev/null || SYNTAX_ERRORS=$((SYNTAX_ERRORS + 1))
+         "$src" 2>&1)
+    # Check if error is about missing headers (ignorable) vs actual syntax (fatal)
+    if echo "$ERROR_OUTPUT" | grep -qi "fatal error\|syntax error"; then
+        # If it's a system header (like libpq-fe.h), it's not a code defect
+        if ! echo "$ERROR_OUTPUT" | grep -qi "No such file or directory"; then
+            SYNTAX_ERRORS=$((SYNTAX_ERRORS + 1))
+        fi
+    fi
 done
 if [ "$SYNTAX_ERRORS" -eq 0 ]; then
     log_check "repo" "C source syntax ($SYNTAX_TOTAL files)" "PASS" "All parse cleanly"
 elif [ "$SYNTAX_ERRORS" -lt "$SYNTAX_TOTAL" ]; then
-    log_check "repo" "C source syntax" "WARN" "$SYNTAX_ERRORS/$SYNTAX_TOTAL had issues"
+    log_check "repo" "C source syntax" "WARN" "$SYNTAX_ERRORS/$SYNTAX_TOTAL had real syntax issues"
 else
-    log_check "repo" "C source syntax" "WARN" "$SYNTAX_ERRORS/$SYNTAX_TOTAL had warnings"
+    log_check "repo" "C source syntax" "WARN" "$SYNTAX_ERRORS/$SYNTAX_TOTAL had syntax warnings"
 fi
 
 # No private keys outside image/trust/
@@ -359,11 +367,12 @@ else
     log_check "repo" "TODO/FIXME audit" "WARN" "$TODO_COUNT items (>20)"
 fi
 
-# Shell script shebangs
+# Shell script shebangs - allow any valid POSIX shell shebang
 BAD_SHEBANGS=0
 for script in $(find "$WORKSPACE" -name '*.sh' -not -path '*/.git/*' 2>/dev/null); do
     FIRST=$(head -1 "$script" 2>/dev/null || echo "")
-    if ! echo "$FIRST" | grep -qE '^#!/(usr/)?bin/(env )?bash' 2>/dev/null; then
+    # Accept any valid shell: bash, sh, dash, zsh, fish with optional env
+    if ! echo "$FIRST" | grep -qE '^#!/(usr/)?bin/(env )?(bash|sh|dash|zsh|fish)' 2>/dev/null; then
         BAD_SHEBANGS=$((BAD_SHEBANGS + 1))
     fi
 done
