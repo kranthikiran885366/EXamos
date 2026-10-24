@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../include/secure_token.h"
 
 #include <ctype.h>
@@ -17,7 +18,7 @@ static void bytes_to_hex(const unsigned char *bytes, size_t length, char *hex) {
 }
 
 static int hex_to_bytes(const char *hex, unsigned char *bytes, size_t length) {
-    if (!hex || strnlen(hex, length * 2 + 1) != length * 2) return -1;
+    if (!hex || strnlen(hex, length * 2 + 1) != (size_t)(length * 2)) return -1;
     for (size_t i = 0; i < length * 2; i += 2) {
         unsigned char high = (unsigned char)hex[i];
         unsigned char low = (unsigned char)hex[i + 1];

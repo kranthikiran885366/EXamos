@@ -33,7 +33,10 @@ if ! "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \
     "$WORKSPACE/tests/server/password-hash-test.c" \
     "$WORKSPACE/server/admin/config_manager.c" \
     "$WORKSPACE/server/admin/admin_auth_store.c" \
-    "$WORKSPACE/server/admin/admin_dashboard.c" -lcrypto -lpq \
+    "$WORKSPACE/server/admin/admin_dashboard.c" \
+    "$WORKSPACE/server/security/totp.c" \
+    "$WORKSPACE/server/security/secure_token.c" \
+    -lcrypto -lpq \
     -I/usr/include/postgresql \
     -o "$TMP_DIR/admin-auth-test" >"$LOG" 2>&1 ||
     ! "$TMP_DIR/admin-auth-test" >>"$LOG" 2>&1; then
