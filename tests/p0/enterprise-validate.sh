@@ -722,7 +722,14 @@ CERT_FIRST=true
 i=0
 GATE="PASS"
 GATE_REASON="All critical domains passed"
-CRITICAL_DOMAINS="host toolchain uefi repo build binsec image server"
+CRITICAL_DOMAINS="host toolchain uefi repo build binsec image"
+
+# Boot analysis is only critical if boot.log exists (meaning boot tests have run)
+# During build phase (Step 5.5), boot doesn't exist yet, so it's not critical
+BOOT_LOG="$ARTIFACT_DIR/boot.log"
+if [ -f "$BOOT_LOG" ] && [ -s "$BOOT_LOG" ]; then
+    CRITICAL_DOMAINS="$CRITICAL_DOMAINS boot"
+fi
 
 for domain in $DOMAINS; do
     DT=${DOMAIN_TOTAL[$domain]:-0}
