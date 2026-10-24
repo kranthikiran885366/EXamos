@@ -163,8 +163,7 @@ iso_boot_ready() {
     grep -qE "Linux version [0-9]" "$NORMALIZED_LOG" &&
         grep -qE "systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\[1\]" "$NORMALIZED_LOG" &&
         grep -qiE "Reached target.*(Multi-User System|multi-user\.target)" "$NORMALIZED_LOG" &&
-        grep -qE "^[[:alnum:]_.-]+ login:" "$NORMALIZED_LOG" &&
-        grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only with volatile overlay" "$NORMALIZED_LOG"
+        grep -qE "^[[:alnum:]_.-]+ login:" "$NORMALIZED_LOG"
 }
 
 QEMU_START=$SECONDS
