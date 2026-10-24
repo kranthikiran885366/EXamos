@@ -67,9 +67,10 @@ else
 fi
 
 BOOT_LOG="$ARTIFACT_DIR/boot.log"
+: > "$BOOT_LOG"
 echo "[P1-BOOT] Launching QEMU with image $IMAGE_FILE..."
 IMAGE_SHA256=$(sha256sum "$IMAGE_FILE" | cut -d' ' -f1)
-START_MS=$(date +%s%3N)
+START_SEC=$(date +%s)
 
 # Run QEMU in background so we can poll for boot markers without hanging
 # on a kiosk that never exits. Snapshot mode prevents image modification.
@@ -87,11 +88,11 @@ QEMU_PID=$!
 
 BOOT_TIMEOUT="${EXAMOS_P1_BOOT_TIMEOUT:-90}"
 BOOT_READY=false
-ELAPSED_MS=0
+ELAPSED_SEC=0
 while kill -0 "$QEMU_PID" 2>/dev/null; do
-    NOW_MS=$(date +%s%3N)
-    ELAPSED_MS=$((NOW_MS - START_MS))
-    if [ "$ELAPSED_MS" -ge $((BOOT_TIMEOUT * 1000)) ]; then
+    NOW_SEC=$(date +%s)
+    ELAPSED_SEC=$((NOW_SEC - START_SEC))
+    if [ "$ELAPSED_SEC" -ge "$BOOT_TIMEOUT" ]; then
         kill -TERM "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
         QEMU_RET=124
@@ -129,7 +130,7 @@ if grep -q -E "systemd|Welcome to|Linux version" "$BOOT_LOG" 2>/dev/null; then
     fi
 
     python3 - "$ARTIFACT_DIR/boot-result.json" "$WORKSPACE" "$IMAGE_FILE" \
-        "$IMAGE_SHA256" "$QEMU_RET" "$ELAPSED_MS" "$ACCEL" "$OVMF_CODE" "$KIOSK_STARTED" <<'PY'
+        "$IMAGE_SHA256" "$QEMU_RET" "$ELAPSED_SEC" "$ACCEL" "$OVMF_CODE" "$KIOSK_STARTED" <<'PY'
 import datetime, hashlib, json, pathlib, subprocess, sys
 out, workspace, image, digest, qemu_exit, elapsed, accel, ovmf, kiosk_started = sys.argv[1:]
 current = hashlib.sha256(pathlib.Path(image).read_bytes()).hexdigest()
@@ -143,7 +144,7 @@ report = {
     "boot_marker": "systemd|Welcome to|Linux version",
     "kiosk_service_started": kiosk_started == "true",
     "qemu_exit_code": int(qemu_exit),
-    "elapsed_ms": int(elapsed),
+    "elapsed_sec": int(elapsed),
     "acceleration": accel,
     "ovmf_firmware": ovmf,
 }
@@ -163,7 +164,7 @@ PY
     exit 0
 else
     python3 - "$ARTIFACT_DIR/boot-result.json" "$WORKSPACE" "$IMAGE_SHA256" \
-        "$QEMU_RET" "$ELAPSED_MS" "$ACCEL" <<'PY'
+        "$QEMU_RET" "$ELAPSED_SEC" "$ACCEL" <<'PY'
 import datetime, json, pathlib, subprocess, sys
 out, workspace, digest, qemu_exit, elapsed, accel = sys.argv[1:]
 report = {
@@ -171,7 +172,7 @@ report = {
     "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "source_commit": subprocess.check_output(["git", "-C", workspace, "rev-parse", "HEAD"], text=True).strip(),
     "image_sha256": digest, "boot_marker": None,
-    "qemu_exit_code": int(qemu_exit), "elapsed_ms": int(elapsed), "acceleration": accel,
+    "qemu_exit_code": int(qemu_exit), "elapsed_sec": int(elapsed), "acceleration": accel,
 }
 pathlib.Path(out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 PY
