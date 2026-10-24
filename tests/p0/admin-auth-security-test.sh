@@ -32,7 +32,7 @@ if ! "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \
     -fstack-protector-strong \
     "$WORKSPACE/tests/server/password-hash-test.c" \
     "$WORKSPACE/server/admin/config_manager.c" \
-    "$WORKSPACE/server/admin/admin_dashboard.c" -lcrypto \
+    "$WORKSPACE/server/admin/admin_dashboard.c" -lcrypto -lpq \
     -o "$TMP_DIR/admin-auth-test" >"$LOG" 2>&1 ||
     ! "$TMP_DIR/admin-auth-test" >>"$LOG" 2>&1; then
     STATUS="FAIL"
