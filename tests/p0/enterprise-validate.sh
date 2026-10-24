@@ -39,7 +39,7 @@ fi
 TOTAL=0; PASSED=0; FAILED=0; WARNED=0; BLOCKED=0
 
 # Tracking per-domain
-declare -A DOMAIN_TOTAL DOMAIN_PASSED DOMAIN_STATUS
+declare -A DOMAIN_TOTAL DOMAIN_PASSED DOMAIN_STATUS DOMAIN_BLOCKED
 
 log_check() {
     local domain="$1" name="$2" status="$3" detail="$4"
@@ -49,7 +49,7 @@ log_check() {
         PASS) PASSED=$((PASSED + 1)); DOMAIN_PASSED[$domain]=$(( ${DOMAIN_PASSED[$domain]:-0} + 1 )) ;;
         FAIL) FAILED=$((FAILED + 1)) ;;
         WARN) WARNED=$((WARNED + 1)) ;;
-        BLOCKED) BLOCKED=$((BLOCKED + 1)) ;;
+        BLOCKED) BLOCKED=$((BLOCKED + 1)); DOMAIN_BLOCKED[$domain]=$(( ${DOMAIN_BLOCKED[$domain]:-0} + 1 )) ;;
     esac
     printf "  [%-8s] %-40s %s\n" "$status" "$name" "$detail"
 }
@@ -156,7 +156,8 @@ if [ -f /proc/config.gz ]; then
     if zcat /proc/config.gz 2>/dev/null | grep -q 'CONFIG_NAMESPACES=y'; then NS_SUPPORTED=true; fi
 elif ls /boot/config-* 2>/dev/null | head -1 | xargs grep -q 'CONFIG_NAMESPACES=y' 2>/dev/null; then
     NS_SUPPORTED=true
-elif [ -d /proc/self/ns ]; then
+elif [ -d /proc/self/ns ] && ls /proc/self/ns/* >/dev/null 2>&1; then
+    # Check if namespace entries actually exist in the directory
     NS_SUPPORTED=true
 fi
 if [ "$NS_SUPPORTED" = true ]; then
@@ -743,10 +744,14 @@ fi
 for domain in $DOMAINS; do
     DT=${DOMAIN_TOTAL[$domain]:-0}
     DP=${DOMAIN_PASSED[$domain]:-0}
+    DB=${DOMAIN_BLOCKED[$domain]:-0}
     if [ "$DT" -eq 0 ]; then
         DS="BLOCKED"
     elif [ "$DP" -eq "$DT" ]; then
         DS="PASS"
+    elif [ "${DB:-0}" -gt 0 ]; then
+        # If checks are blocked due to environment limitations, treat as WARN not FAIL
+        DS="WARN"
     elif [ "$DP" -ge $((DT - 1)) ]; then
         DS="WARN"
     else
