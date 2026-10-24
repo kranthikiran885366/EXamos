@@ -722,7 +722,7 @@ CERT_FIRST=true
 i=0
 GATE="PASS"
 GATE_REASON="All critical domains passed"
-CRITICAL_DOMAINS="host toolchain uefi repo build binsec image boot"
+CRITICAL_DOMAINS="host toolchain uefi repo build binsec image server"
 
 for domain in $DOMAINS; do
     DT=${DOMAIN_TOTAL[$domain]:-0}
