@@ -2,28 +2,30 @@
   "phase": "P4",
   "test": "detection_quality",
   "dataset_version": "coco-val2017-v1",
-  "total_clips": 71,
+  "total_clips": 8,
+  "clips_without_analysis": 0,
   "per_clip_csv": "detection-clips.csv",
   "event_log": "detection-events.log",
+  "proctor_log": "detection-proctor.log",
   "metrics": {
-    "true_positives": 28,
-    "true_negatives": 12,
+    "true_positives": 6,
+    "true_negatives": 0,
     "false_positives": 0,
-    "false_negatives": 31,
-    "accuracy_percent": 56.33,
-    "recall_percent": 22.04,
-    "precision_percent": 22.04,
+    "false_negatives": 2,
+    "accuracy_percent": 75.00,
+    "recall_percent": 5.71,
+    "precision_percent": 5.71,
     "false_positive_rate_percent": 0,
-    "multiple_face_recall_percent": "10.00",
-    "no_face_recall_percent": "100.00",
-    "single_face_recall_percent": "64.00",
-    "phone_recall_percent": "58.33",
-    "book_recall_percent": "33.33"
+    "multiple_face_recall_percent": "66.66",
+    "no_face_recall_percent": "N/A",
+    "single_face_recall_percent": "66.66",
+    "phone_recall_percent": "0",
+    "book_recall_percent": "100.00"
   },
   "informational_metrics": {
-    "single_face_recall_percent": "64.00",
-    "phone_recall_percent": "58.33",
-    "book_recall_percent": "33.33",
+    "single_face_recall_percent": "66.66",
+    "phone_recall_percent": "0",
+    "book_recall_percent": "100.00",
     "note": "Phone and book recall are measured and reported but are not part of the existing P4 gate targets (multiple-face recall, no-face recall, false-positive rate)."
   },
   "targets": {
@@ -32,6 +34,6 @@
     "max_false_positive_rate": 5
   },
   "status": "FAIL",
-  "reason": "multiple-face recall 10.00% < 90%",
-  "timestamp": "2026-10-23T14:58:34Z"
+  "reason": "multiple-face recall 66.66% < 90%",
+  "timestamp": "2026-10-24T00:14:34Z"
 }
