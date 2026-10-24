@@ -36,7 +36,7 @@ ARTIFACT_DIR="${EXAMOS_P4_ARTIFACT_DIR:-$WORKSPACE/artifacts/phase4}"
 # make a clip look like a detector miss.  The evidence is copied back to
 # artifacts/ when the run ends.
 LOCAL_DIR="${EXAMOS_P4_LOCAL_DIR:-$HOME/p4-work/p4-detection}"
-DATASET_DIR="$WORKSPACE/tests/p4/dataset"
+DATASET_DIR="${EXAMOS_P4_DATASET_DIR:-$WORKSPACE/tests/p4/dataset}"
 PROCTOR_BIN="$WORKSPACE/proctoring/examos-proctor"
 # PG-42: Support production mode testing (EXAMOS_TEST_MODE=production uses
 # EXAMOS_ALLOW_UNPROVISIONED_DEV=0 + EXAMOS_TPM_MODE=production instead of dev mode)
@@ -515,6 +515,15 @@ if [ $((TP + FN + FP + TN)) -ne $TOTAL_PROCESSED ]; then
     GATE="FAIL"; REASON="the confusion matrix does not account for every processed clip"
 fi
 
+# A clip that never analysed a frame was not tested.  It must not be silently
+# converted into a detector miss (or into a PASS via the remaining clips).
+if [ "$NO_EVENT_CLIPS" -gt 0 ]; then
+    GATE="BLOCKED"; REASON="${NO_EVENT_CLIPS} clip(s) produced no analysis event after retry; detection cannot be attested"
+fi
+if [ "$SERVER_DOWN" -eq 1 ]; then
+    GATE="BLOCKED"; REASON="the event-collection server became unavailable during the run; detection cannot be attested"
+fi
+
 # Dataset provenance.
 #
 # Metrics computed over synthetic test patterns describe the pipeline, not
@@ -547,8 +556,9 @@ echo "  Single-face recall:   ${SINGLE_RECALL}% (informational)"
 echo "  Phone recall:         ${PHONE_RECALL}% (informational)"
 echo "  Book recall:          ${BOOK_RECALL}% (informational)"
 echo "  False positive rate:  ${FPR}% (target < 5%)"
+echo "  Clips w/o analysis:   ${NO_EVENT_CLIPS}"
 echo "  Gate:                 $GATE"
-[ "$GATE" = "FAIL" ] && echo "  Reason: $REASON"
+[ "$GATE" != "PASS" ] && echo "  Reason: $REASON"
 
 # Write JSON
 cat > "$ARTIFACT_DIR/detection-evaluation.json" <<EOF
@@ -557,8 +567,10 @@ cat > "$ARTIFACT_DIR/detection-evaluation.json" <<EOF
   "test": "detection_quality",
   "dataset_version": "coco-val2017-v1",
   "total_clips": $TOTAL_PROCESSED,
+  "clips_without_analysis": $NO_EVENT_CLIPS,
   "per_clip_csv": "detection-clips.csv",
   "event_log": "detection-events.log",
+  "proctor_log": "detection-proctor.log",
   "metrics": {
     "true_positives": $TP,
     "true_negatives": $TN,
@@ -607,6 +619,7 @@ single_face_recall_percent,$SINGLE_RECALL
 phone_recall_percent,$PHONE_RECALL
 book_recall_percent,$BOOK_RECALL
 false_positive_rate_percent,$FPR
+clips_without_analysis,$NO_EVENT_CLIPS
 gate,$GATE
 EOF
 

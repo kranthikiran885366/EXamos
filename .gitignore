@@ -141,6 +141,8 @@ server/attestation/examos-verifier
 tests/p4/dataset/
 tests/p4/models/
 artifacts/phase4/detection-events.log
+artifacts/phase4/detection-server.log
+artifacts/phase4/detection-proctor.log
 
 # =============================================================================
 # OS / Editor artifacts
