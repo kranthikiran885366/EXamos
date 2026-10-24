@@ -42,22 +42,22 @@ digest = hashlib.sha256(image.read_bytes()).hexdigest()
 if result.get("result") != "PASS" or result.get("image_sha256") != digest:
     print("[P1-PERF] FAIL: boot evidence failed or belongs to a different image", file=sys.stderr)
     raise SystemExit(1)
-elapsed = result.get("elapsed_ms")
+elapsed = result.get("elapsed_sec")
 if not isinstance(elapsed, int) or elapsed <= 0:
     print("[P1-PERF] FAIL: boot duration is missing or invalid", file=sys.stderr)
     raise SystemExit(1)
-# PG-09: Enforce boot-to-multiuser time threshold (<=120 seconds = 120000ms)
-MAX_BOOT_MS = 120000
-if elapsed > MAX_BOOT_MS:
-    print(f"[P1-PERF] FAIL: boot time {elapsed}ms exceeds maximum {MAX_BOOT_MS}ms", file=sys.stderr)
+# PG-09: Enforce boot-to-multiuser time threshold (<=120 seconds)
+MAX_BOOT_SEC = 120
+if elapsed > MAX_BOOT_SEC:
+    print(f"[P1-PERF] FAIL: boot time {elapsed}s exceeds maximum {MAX_BOOT_SEC}s", file=sys.stderr)
     raise SystemExit(1)
 with output.open("a", encoding="utf-8") as report:
     report.write(f"Image Path: {image.resolve()}\n")
     report.write(f"Image SHA-256: {digest}\n")
     report.write(f"Image Size Bytes: {image.stat().st_size}\n")
-    report.write(f"Measured QEMU Boot Elapsed Ms: {elapsed}\n")
-    report.write(f"Boot Time Threshold Ms: {MAX_BOOT_MS}\n")
+    report.write(f"Measured QEMU Boot Elapsed Sec: {elapsed}\n")
+    report.write(f"Boot Time Threshold Sec: {MAX_BOOT_SEC}\n")
     report.write(f"Boot Time Gate: PASS\n")
     report.write(f"QEMU Acceleration: {result.get('acceleration', 'UNKNOWN')}\n")
-print(f"[P1-PERF] PASS: image and boot timing bound to SHA-256 {digest} ({elapsed}ms <= {MAX_BOOT_MS}ms)")
+print(f"[P1-PERF] PASS: image and boot timing bound to SHA-256 {digest} ({elapsed}s <= {MAX_BOOT_SEC}s)")
 PY
