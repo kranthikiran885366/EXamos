@@ -129,6 +129,7 @@ artifacts/p0/vmware/
 # =============================================================================
 artifacts/phase4/concurrency-results.csv
 artifacts/phase4/detection-evaluation.csv
+artifacts/phase4/detection-evaluation.json
 
 # =============================================================================
 # Go build outputs

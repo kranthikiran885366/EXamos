@@ -442,13 +442,13 @@ done
 # positive rate is the proportion of genuinely negative clips in which a
 # face was reported, which is the quantity the gate actually constrains.
 if [ $((TP + FN)) -gt 0 ]; then
-    RECALL=$(echo "scale=2; $TP * 100 / ($TP + FN)" | bc 2>/dev/null || echo "0")
+    RECALL=$(echo "scale=2; $TP * 100 / ($TP + $FN)" | bc 2>/dev/null || echo "0")
 else
     RECALL="0"
 fi
 
 if [ $((TP + FP)) -gt 0 ]; then
-    PRECISION=$(echo "scale=2; $TP * 100 / ($TP + FP)" | bc 2>/dev/null || echo "0")
+    PRECISION=$(echo "scale=2; $TP * 100 / ($TP + $FP)" | bc 2>/dev/null || echo "0")
 else
     PRECISION="0"
 fi
