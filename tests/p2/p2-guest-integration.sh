@@ -113,6 +113,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# P2-06: The live root must be a read-only dm-verity mapping.  Host-side
+# veritysetup verification proves the artifact and corruption case; this
+# probe proves the guest actually booted through that mapping.
+# ---------------------------------------------------------------------------
+ROOT_SOURCE=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+ROOT_OPTIONS=$(findmnt -n -o OPTIONS / 2>/dev/null || true)
+VERITY_MAPPINGS=$(dmsetup ls --target verity 2>/dev/null || true)
+ROOT_MAPPING=""
+case "$ROOT_SOURCE" in
+    /dev/mapper/*)
+        ROOT_MAPPING="${ROOT_SOURCE#/dev/mapper/}"
+        ;;
+    /dev/dm-*)
+        ROOT_MAPPING=$(dmsetup info -C --noheadings -o name "$ROOT_SOURCE" 2>/dev/null | tr -d '[:space:]' || true)
+        ;;
+esac
+if [ -z "$ROOT_SOURCE" ] || ! command -v findmnt >/dev/null 2>&1 || ! command -v dmsetup >/dev/null 2>&1; then
+    record "P2-06" "BLOCKED" "BLOCKED_ENVIRONMENT: cannot inspect live root dm-verity mapping"
+elif [ -z "$VERITY_MAPPINGS" ]; then
+    record "P2-06" "FAIL" "live root is ${ROOT_SOURCE}; no active dm-verity mapping exists"
+elif [[ ",$ROOT_OPTIONS," != *,ro,* ]]; then
+    record "P2-06" "FAIL" "live root ${ROOT_SOURCE} is not mounted read-only (options=${ROOT_OPTIONS})"
+elif [ -z "$ROOT_MAPPING" ]; then
+    record "P2-06" "FAIL" "live root ${ROOT_SOURCE} is not a device-mapper mapping"
+else
+    if printf '%s\n' "$VERITY_MAPPINGS" | awk -v mapping="$ROOT_MAPPING" '$1 == mapping { found=1 } END { exit !found }'; then
+        record "P2-06" "PASS" "live root ${ROOT_SOURCE} is a read-only dm-verity mapping"
+    else
+        record "P2-06" "FAIL" "live root ${ROOT_SOURCE} does not use an active dm-verity mapping"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # P2-07: Attempt modprobe after module lock
 # ---------------------------------------------------------------------------
 MOD_DISABLED=$(cat /proc/sys/kernel/modules_disabled 2>/dev/null || echo "NOT_AVAILABLE")

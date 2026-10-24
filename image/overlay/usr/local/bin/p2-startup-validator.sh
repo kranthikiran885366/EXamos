@@ -4,6 +4,13 @@
 # Exits 0 (pass) or 1 (fail — triggers examos-lockdown-failed.target).
 set -euo pipefail
 
+# This overlay placeholder must be replaced by the complete validator staged
+# by scripts/build-full-image.sh. Never treat an incomplete shortcut build as
+# suitable for a kiosk session.
+echo "[P2-VALIDATOR] FAIL: complete runtime validator was not staged." >&2
+echo "[P2-VALIDATOR] Build with scripts/build-full-image.sh." >&2
+exit 2
+
 PASS=0
 FAIL=0
 

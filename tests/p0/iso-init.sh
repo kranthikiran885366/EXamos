@@ -4,8 +4,19 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
+log() {
+    # /dev/console may be VGA even when the kernel serial console is enabled.
+    # Emit the boot-proof records to ttyS0 as well, so the headless QEMU gate
+    # can distinguish the optical root loader from an accidental disk-root
+    # boot path.
+    printf '%s\n' "ExamOS ISO init: $*" >/dev/console 2>/dev/null || true
+    if [ -c /dev/ttyS0 ]; then
+        printf '%s\n' "ExamOS ISO init: $*" >/dev/ttyS0 2>/dev/null || true
+    fi
+}
+
 fail() {
-    printf 'ExamOS ISO init: %s\n' "$1" >/dev/console 2>/dev/null || true
+    log "$1"
     sync || true
     if command -v poweroff >/dev/null 2>&1; then
         poweroff -f || true
@@ -88,8 +99,9 @@ mount -t overlay overlay \
     /sysroot ||
     fail "cannot create the volatile writable root overlay"
 
-echo "ExamOS ISO init: UEFI optical media selected" >/dev/console
-echo "ExamOS ISO init: mounted canonical root filesystem $ROOT_UUID read-only with volatile overlay" >/dev/console
+log "UEFI optical media selected"
+log "mounted canonical root filesystem $ROOT_UUID read-only"
+log "activated volatile overlay root"
 
 mkdir -p /sysroot/run
 mount --move /run /sysroot/run ||

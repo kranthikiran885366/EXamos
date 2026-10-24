@@ -258,6 +258,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# S-13 (P2-06): the real validator and lockdown mutation must enter the image
+# ---------------------------------------------------------------------------
+BUILD_SCRIPT="$WORKSPACE/scripts/build-full-image.sh"
+RUNTIME_VALIDATOR="$WORKSPACE/image/scripts/p2-startup-validator.sh"
+OVERLAY_VALIDATOR="$WORKSPACE/image/overlay/usr/local/bin/p2-startup-validator.sh"
+if grep -Fq 'PostInstallationScripts=scripts/03-p2-lockdown.sh' "$MKOSI" &&
+   grep -Fq 'image/scripts/p2-startup-validator.sh' "$BUILD_SCRIPT" &&
+   grep -Fq 'EXPECTED_CHECKS=18' "$RUNTIME_VALIDATOR" &&
+   grep -Fq 'V-16-ROOTVERITY' "$RUNTIME_VALIDATOR" &&
+   grep -Fq 'complete runtime validator was not staged' "$OVERLAY_VALIDATOR"; then
+    p "S-13: complete validator is staged and P2 lockdown runs during image assembly"
+else
+    f "S-13: image build could ship an incomplete validator or skip P2 lockdown"
+fi
+
+# ---------------------------------------------------------------------------
 # Output summary
 # ---------------------------------------------------------------------------
 echo ""

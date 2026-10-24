@@ -103,6 +103,25 @@ else
     sha256sum --check "$ARTIFACT_DIR/image.sha256" ||
         fail "P0 disk checksum verification failed"
     SOURCE_HASH="$(cut -d' ' -f1 "$ARTIFACT_DIR/image.sha256")"
+
+    # Bind the input disk to the current clean source revision.  The checksum
+    # alone only proves the image has not changed since its earlier build.
+    [ -s "$ARTIFACT_DIR/build-result.json" ] ||
+        fail "P0 disk build evidence is missing"
+    jq -e \
+        --arg commit "$SOURCE_COMMIT" \
+        --arg image_path "$IMAGE_RELATIVE" \
+        --arg image_hash "$SOURCE_HASH" '
+        .phase == "P0"
+        and .check == "disk_build"
+        and .status == "PASS"
+        and .source_commit == $commit
+        and .source_tree_state == "CLEAN"
+        and .source_dirty_path_count == 0
+        and .image_path == $image_path
+        and .image_sha256 == $image_hash
+    ' "$ARTIFACT_DIR/build-result.json" >/dev/null ||
+        fail "P0 disk build evidence is stale, incomplete, or not bound to this clean source revision"
 fi
 # ISO assembly temporarily needs the extracted partitions, a rebuilt UKI, and
 # the complete output at once.  Use a Linux-native filesystem by default:

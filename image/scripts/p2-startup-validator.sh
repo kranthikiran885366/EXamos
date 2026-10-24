@@ -263,6 +263,39 @@ fi
 # ---------------------------------------------------------------------------
 # V-16: root filesystem mounted read-only
 # ---------------------------------------------------------------------------
+if ! command -v findmnt >/dev/null 2>&1 || ! command -v dmsetup >/dev/null 2>&1; then
+    record "V-16-ROOTVERITY" "BLOCKED" "findmnt or dmsetup is unavailable; cannot verify dm-verity root"
+else
+    ROOT_SOURCE=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+    ROOT_OPTIONS=$(findmnt -n -o OPTIONS / 2>/dev/null || true)
+    VERITY_MAPPINGS=$(dmsetup ls --target verity 2>/dev/null || true)
+    ROOT_DM_NAME=""
+
+    case "$ROOT_SOURCE" in
+        /dev/mapper/*)
+            ROOT_DM_NAME="${ROOT_SOURCE#/dev/mapper/}"
+            ;;
+        /dev/dm-*)
+            ROOT_DM_NAME=$(dmsetup info -C --noheadings -o name "$ROOT_SOURCE" 2>/dev/null | tr -d '[:space:]' || true)
+            ;;
+    esac
+
+    if [ -z "$VERITY_MAPPINGS" ]; then
+        record "V-16-ROOTVERITY" "FAIL" "No active dm-verity mapping exists"
+    elif ! printf '%s\n' "$ROOT_OPTIONS" | grep -qw ro; then
+        record "V-16-ROOTVERITY" "FAIL" "Root filesystem is not read-only: source=${ROOT_SOURCE:-unknown} options=${ROOT_OPTIONS:-unknown}"
+    elif [ -z "$ROOT_DM_NAME" ]; then
+        record "V-16-ROOTVERITY" "FAIL" "Root source is not a device-mapper mapping: ${ROOT_SOURCE:-unknown}"
+    elif printf '%s\n' "$VERITY_MAPPINGS" | awk -v mapping="$ROOT_DM_NAME" '$1 == mapping { found=1 } END { exit !found }'; then
+        record "V-16-ROOTVERITY" "PASS" "Root uses active read-only dm-verity mapping: ${ROOT_DM_NAME}"
+    else
+        record "V-16-ROOTVERITY" "FAIL" "Root mapping ${ROOT_DM_NAME} is not an active dm-verity target"
+    fi
+fi
+
+# Retained only as a record of the former read-only-only check. It must not
+# emit a second result or allow a non-verity root to pass.
+: <<'LEGACY_ROOT_MOUNT_CHECK'
 ROOT_MOUNT=$(grep ' / ' /proc/mounts 2>/dev/null | head -1 || true)
 if echo "$ROOT_MOUNT" | grep -qE '\bro\b'; then
     record "V-16-ROOTRO" "PASS" "Root filesystem is read-only"
@@ -272,6 +305,7 @@ elif echo "$ROOT_MOUNT" | grep -qE '\brw\b'; then
 else
     record "V-16-ROOTRO" "BLOCKED" "Cannot determine root mount flags: ${ROOT_MOUNT}"
 fi
+LEGACY_ROOT_MOUNT_CHECK
 
 # ---------------------------------------------------------------------------
 # V-17: Chromium URLAllowlist does not contain https://*

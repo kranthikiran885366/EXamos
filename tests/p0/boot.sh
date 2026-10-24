@@ -65,6 +65,10 @@ IMAGE_FILE="$WORKSPACE/$IMAGE_RELATIVE"
     echo "[P0-BOOT] FATAL: the disk checksum for this run is missing." >&2
     exit 1
 }
+[ -s "$ARTIFACT_DIR/build-result.json" ] || {
+    echo "[P0-BOOT] FATAL: the run-bound disk build result is missing." >&2
+    exit 1
+}
 sha256sum --check "$ARTIFACT_DIR/image.sha256" || {
     echo "[P0-BOOT] FATAL: the run-bound disk checksum did not verify." >&2
     exit 1
@@ -72,6 +76,25 @@ sha256sum --check "$ARTIFACT_DIR/image.sha256" || {
 IMAGE_HASH="$(cut -d' ' -f1 "$ARTIFACT_DIR/image.sha256")"
 [[ "$IMAGE_HASH" =~ ^[0-9a-f]{64}$ ]] || {
     echo "[P0-BOOT] FATAL: disk checksum is not a SHA-256 digest." >&2
+    exit 1
+}
+
+# The image checksum proves byte identity, but a stale image could otherwise
+# be booted after source changed and be attributed to the newer revision.
+jq -e \
+    --arg commit "$SOURCE_COMMIT" \
+    --arg image_path "$IMAGE_RELATIVE" \
+    --arg image_hash "$IMAGE_HASH" '
+    .phase == "P0"
+    and .check == "disk_build"
+    and .status == "PASS"
+    and .source_commit == $commit
+    and .source_tree_state == "CLEAN"
+    and .source_dirty_path_count == 0
+    and .image_path == $image_path
+    and .image_sha256 == $image_hash
+' "$ARTIFACT_DIR/build-result.json" >/dev/null || {
+    echo "[P0-BOOT] FATAL: disk build evidence is stale, incomplete, or not bound to this clean source revision." >&2
     exit 1
 }
 

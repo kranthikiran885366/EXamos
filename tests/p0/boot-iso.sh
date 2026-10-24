@@ -235,14 +235,15 @@ grep -qE "systemd [0-9]+(\.[0-9]+)?[^[:cntrl:]]* running in system mode|systemd\
 grep -qiE "Reached target (Multi-User System|multi-user\.target)([[:space:].]|$)" "$NORMALIZED_LOG" && MULTIUSER=true
 grep -qE "^[[:alnum:]_.-]+ login:" "$NORMALIZED_LOG" && LOGIN_PROMPT=true
 grep -qE "Kernel command line:.*examos\.media=optical([[:space:]]|$)" "$NORMALIZED_LOG" && ROOT_SELECTOR=true
-grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only with volatile overlay" "$NORMALIZED_LOG" && ROOT_FILESYSTEM_MOUNTED=true
-grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only with volatile overlay" "$NORMALIZED_LOG" && VOLATILE_OVERLAY=true
+grep -Fq "ExamOS ISO init: mounted canonical root filesystem $ROOT_FILESYSTEM_UUID read-only" "$NORMALIZED_LOG" && ROOT_FILESYSTEM_MOUNTED=true
+grep -Fq "ExamOS ISO init: activated volatile overlay root" "$NORMALIZED_LOG" && VOLATILE_OVERLAY=true
 
 echo "[P0-ISO-BOOT] Kernel=$KERNEL systemd=$SYSTEMD root_selector=$ROOT_SELECTOR volatile_overlay=$VOLATILE_OVERLAY root_mounted=$ROOT_FILESYSTEM_MOUNTED multi_user=$MULTIUSER login_prompt=$LOGIN_PROMPT"
 echo "[P0-ISO-BOOT] QEMU exit=$QEMU_STATUS ISO unchanged=$ISO_UNCHANGED"
 
 STATUS="FAIL"
 if [ "$KERNEL" = true ] && [ "$SYSTEMD" = true ] && [ "$ROOT_SELECTOR" = true ] && \
+    [ "$ROOT_FILESYSTEM_MOUNTED" = true ] && [ "$VOLATILE_OVERLAY" = true ] && \
     [ "$MULTIUSER" = true ] && \
     [ "$LOGIN_PROMPT" = true ] && [ "$ISO_UNCHANGED" = true ] && \
     [ "$BOOT_READY" = true ]; then

@@ -59,6 +59,12 @@ STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/examos-stage.XXXXXX")"
 trap 'rm -rf -- "$STAGE_DIR"' EXIT
 cp -a "$ROOT/image/overlay/." "$STAGE_DIR/"
 mkdir -p "$STAGE_DIR/etc/examos"
+# The overlay contains a deliberately fail-closed placeholder so a direct
+# mkosi invocation cannot accidentally ship the obsolete, partial validator.
+# The production build always installs the complete runtime validator here
+# before mkosi applies the P2 lockdown post-install script.
+install -D -m 0755 "$ROOT/image/scripts/p2-startup-validator.sh" \
+    "$STAGE_DIR/usr/local/bin/p2-startup-validator.sh"
 cat > "$STAGE_DIR/etc/examos/admin.conf" <<'EOF'
 # Provision a unique ADMIN_PASSWORD_PBKDF2 verifier after installation.
 ADMIN_USERNAME=NOT_PROVISIONED

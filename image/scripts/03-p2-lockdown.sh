@@ -31,8 +31,14 @@ BR="${BUILDROOT}"
 
 echo "=== [ExamOS P2] Applying Phase 2 Lockdown Controls ==="
 
-if [ ! -x "${BR}/usr/local/bin/p2-startup-validator.sh" ]; then
-    echo "[P2] FAIL: canonical overlay is missing p2-startup-validator.sh" >&2
+VALIDATOR="${BR}/usr/local/bin/p2-startup-validator.sh"
+if [ ! -x "$VALIDATOR" ]; then
+    echo "[P2] FAIL: production runtime validator is missing" >&2
+    exit 1
+fi
+if ! grep -Fq 'EXPECTED_CHECKS=18' "$VALIDATOR" || \
+   ! grep -Fq 'V-16-ROOTVERITY' "$VALIDATOR"; then
+    echo "[P2] FAIL: incomplete runtime validator staged; use scripts/build-full-image.sh" >&2
     exit 1
 fi
 

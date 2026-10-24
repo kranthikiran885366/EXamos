@@ -121,6 +121,18 @@ GATE_RESULTS["network-tests"]="BLOCKED"
 echo "--- guest-integration: BLOCKED (no current booted-guest execution in this gate) ---"
 echo "--- network-tests: BLOCKED (no current guest plus independent port-scan execution) ---"
 
+# A mandatory control backed by more than one evidence layer passes only when
+# every layer passes.  This keeps a host-side cryptographic verification from
+# being mistaken for proof that the running guest actually enabled the control.
+combine_status() {
+    local status
+    for status in "$@"; do [ "$status" = "FAIL" ] && { echo "FAIL"; return; }; done
+    for status in "$@"; do [ "$status" = "NOT_RUN" ] && { echo "NOT_RUN"; return; }; done
+    for status in "$@"; do [ "$status" = "BLOCKED" ] && { echo "BLOCKED"; return; }; done
+    for status in "$@"; do [ "$status" != "PASS" ] && { echo "FAIL"; return; }; done
+    echo "PASS"
+}
+
 # ---------------------------------------------------------------------------
 # Mandatory P2 acceptance test mapping
 # Each mandatory test maps to one or more test suite results
@@ -131,7 +143,9 @@ declare -A MANDATORY_TESTS=(
     ["P2-03"]="${GATE_RESULTS[network-tests]:-NOT_RUN}"
     ["P2-04"]="${GATE_RESULTS[guest-integration]:-NOT_RUN}"
     ["P2-05"]="${GATE_RESULTS[guest-integration]:-NOT_RUN}"
-    ["P2-06"]="${GATE_RESULTS[verity-tests]:-NOT_RUN}"
+    # P2-06 requires both the host-side artifact/corruption proof and the
+    # in-guest proof that the running root actually uses dm-verity.
+    ["P2-06"]="$(combine_status "${GATE_RESULTS[verity-tests]:-NOT_RUN}" "${GATE_RESULTS[guest-integration]:-NOT_RUN}")"
     ["P2-07"]="${GATE_RESULTS[guest-integration]:-NOT_RUN}"
     ["P2-08"]="${GATE_RESULTS[guest-integration]:-NOT_RUN}"
     ["P2-09"]="${GATE_RESULTS[network-tests]:-NOT_RUN}"

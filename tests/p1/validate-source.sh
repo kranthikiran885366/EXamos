@@ -64,6 +64,9 @@ MKOSI="$WORKSPACE/image/mkosi.conf"
 grep -q "^\[Distribution\]" "$MKOSI" 2>/dev/null && pass "mkosi.conf: [Distribution] section" || fail "mkosi.conf: missing [Distribution] section"
 grep -q "^\[Content\]"      "$MKOSI" 2>/dev/null && pass "mkosi.conf: [Content] section"      || fail "mkosi.conf: missing [Content] section"
 grep -q "^Bootable=yes"     "$MKOSI" 2>/dev/null && pass "mkosi.conf: Bootable=yes"           || fail "mkosi.conf: Bootable=yes missing"
+grep -Fq "PostInstallationScripts=scripts/03-p2-lockdown.sh" "$MKOSI" 2>/dev/null \
+    && pass "mkosi.conf: P2 lockdown post-install script enabled" \
+    || fail "mkosi.conf: P2 lockdown post-install script missing"
 
 # ── kiosk service: User=exam (not root) ───────────────────────────────────────
 KIOSK_SVC="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"
@@ -97,10 +100,12 @@ grep -q "^u exam 1000" "$SYSUSERS" 2>/dev/null && pass "sysusers: exam UID=1000"
 grep -q "nologin" "$SYSUSERS" 2>/dev/null && pass "sysusers: exam nologin shell" || fail "sysusers: exam must have nologin shell"
 
 # ── No production secrets ─────────────────────────────────────────────────────
-SECRET_FINDINGS=$(find "$WORKSPACE" -type f \
-    \( -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" \
-       -o -name "id_rsa" -o -name "id_ed25519" \) \
-    ! -path "*/.git/*" ! -path "*/build/*" ! -path "*/image/trust/*" 2>/dev/null || true)
+SECRET_FINDINGS=$(find "$WORKSPACE" \
+    \( -path "$WORKSPACE/.git" -o -path "$WORKSPACE/artifacts" \
+       -o -path "$WORKSPACE/build" -o -path "$WORKSPACE/cache" \
+       -o -path "$WORKSPACE/output" -o -path "$WORKSPACE/image/trust" \) -prune -o \
+    -type f \( -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" \
+       -o -name "id_rsa" -o -name "id_ed25519" \) -print 2>/dev/null || true)
 [ -z "$SECRET_FINDINGS" ] && pass "no production secrets committed" || { fail "production secrets found: $SECRET_FINDINGS"; }
 
 # ── admin.conf: no plaintext password in comment ──────────────────────────────
