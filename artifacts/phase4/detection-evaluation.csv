@@ -1,0 +1,16 @@
+metric,value
+total_clips,71
+true_positives,46
+true_negatives,12
+false_positives,0
+false_negatives,13
+recall_percent,77.96
+precision_percent,100.00
+multiple_face_recall_percent,90.00
+no_face_recall_percent,100.00
+single_face_recall_percent,96.00
+phone_recall_percent,58.33
+book_recall_percent,41.66
+false_positive_rate_percent,0
+clips_without_analysis,0
+gate,PASS

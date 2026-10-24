@@ -15,5 +15,28 @@
     "concurrency_50_sessions": "PASS",
     "regression_p0_p3": "PASS"
   },
+  "detection_quality": {
+    "status": "PASS",
+    "artifact": "artifacts/phase4/detection-evaluation.json",
+    "per_clip_audit": "artifacts/phase4/detection-clips.csv",
+    "dataset": "coco-val2017-v1",
+    "dataset_note": "71 clips derived from real COCO val2017 photographs; dataset manifest records synthetic=false.",
+    "model": "yolox-s_yunet",
+    "model_version": "5",
+    "timestamp": "2026-10-24T00:41:38Z",
+    "clips": 71,
+    "clips_without_analysis": 0,
+    "targets": {
+      "multiple_face_recall_percent": 90.0,
+      "no_face_recall_percent": 100.0,
+      "false_positive_rate_percent": 0.0
+    },
+    "informational": {
+      "single_face_recall_percent": 96.0,
+      "phone_recall_percent": 58.33,
+      "book_recall_percent": 41.66,
+      "note": "Phone and book recall are measured but are not P4 gate targets; both are below a production-ready level."
+    }
+  },
   "overall_gate": "PASS"
 }

@@ -128,8 +128,6 @@ artifacts/p0/vmware/
 # never committed. Tombstone files (gate="INVALIDATED") may be committed.
 # =============================================================================
 artifacts/phase4/concurrency-results.csv
-artifacts/phase4/detection-evaluation.csv
-artifacts/phase4/detection-evaluation.json
 
 # =============================================================================
 # Go build outputs

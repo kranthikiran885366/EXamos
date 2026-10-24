@@ -1,0 +1,39 @@
+{
+  "phase": "P4",
+  "test": "detection_quality",
+  "dataset_version": "coco-val2017-v1",
+  "total_clips": 71,
+  "clips_without_analysis": 0,
+  "per_clip_csv": "detection-clips.csv",
+  "event_log": "detection-events.log",
+  "proctor_log": "detection-proctor.log",
+  "metrics": {
+    "true_positives": 46,
+    "true_negatives": 12,
+    "false_positives": 0,
+    "false_negatives": 13,
+    "accuracy_percent": 81.69,
+    "recall_percent": 77.96,
+    "precision_percent": 100.00,
+    "false_positive_rate_percent": 0,
+    "multiple_face_recall_percent": "90.00",
+    "no_face_recall_percent": "100.00",
+    "single_face_recall_percent": "96.00",
+    "phone_recall_percent": "58.33",
+    "book_recall_percent": "41.66"
+  },
+  "informational_metrics": {
+    "single_face_recall_percent": "96.00",
+    "phone_recall_percent": "58.33",
+    "book_recall_percent": "41.66",
+    "note": "Phone and book recall are measured and reported but are not part of the existing P4 gate targets (multiple-face recall, no-face recall, false-positive rate)."
+  },
+  "targets": {
+    "multiple_face_recall_min": 90,
+    "no_face_recall_min": 90,
+    "max_false_positive_rate": 5
+  },
+  "status": "PASS",
+  "reason": "All targets met",
+  "timestamp": "2026-10-24T00:41:38Z"
+}
