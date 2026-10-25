@@ -165,3 +165,18 @@ Thumbs.db
 .wsl-io-probe.*
 **/__pycache__/
 *.pyc
+
+# =============================================================================
+# Temporary debug scripts
+# =============================================================================
+_check_*.sh
+_diag_*.sh
+_fix_*.sh
+_probe*.sh
+_reprovision_*.sh
+_restart_*.sh
+_setup_*.sh
+_final_*.sh
+_full_*.sh
+_pg_*.sh
+_server_*.sh
