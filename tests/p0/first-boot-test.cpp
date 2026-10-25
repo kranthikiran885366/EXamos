@@ -353,6 +353,9 @@ int main(int argc, char* argv[]) {
 
     if (success && resume) {
         transcript.clear();
+        // Clear any pending input before sending recovery command
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
         const std::string command =
             "sudo -S -p 'EXAMOS_P0_SUDO_PASSWORD:' /bin/bash -c '"
             "passwd --delete " + username + " && "

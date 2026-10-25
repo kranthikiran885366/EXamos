@@ -4313,22 +4313,39 @@ int main(int argc, char *argv[]) {
     candidate_session_init();
 
     /* --- ExamOS Console integration: PostgreSQL database --- */
+    const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    int allow_dev_mode = allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
+    
     if (db_init(NULL) != 0) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
-        return 1;
-    }
-    g_db_initialized = 1;
-    if (db_create_schema() != 0) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
-        return 1;
+        if (allow_dev_mode) {
+            fprintf(stderr, "[ExamOS-Server] WARNING: database pool initialization failed; continuing in unprovisioned dev mode.\n");
+        } else {
+            fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
+            return 1;
+        }
+    } else {
+        g_db_initialized = 1;
+        if (db_create_schema() != 0) {
+            if (allow_dev_mode) {
+                fprintf(stderr, "[ExamOS-Server] WARNING: database schema creation failed; continuing in unprovisioned dev mode.\n");
+            } else {
+                fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
+                return 1;
+            }
+        }
     }
 
     /* --- ExamOS Console integration: audit hash chain --- */
     if (audit_init() != 0) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: audit chain initialization failed.\n");
-        return 1;
+        if (allow_dev_mode) {
+            fprintf(stderr, "[ExamOS-Server] WARNING: audit chain initialization failed; continuing in unprovisioned dev mode.\n");
+        } else {
+            fprintf(stderr, "[ExamOS-Server] FATAL: audit chain initialization failed.\n");
+            return 1;
+        }
+    } else {
+        g_audit_initialized = 1;
     }
-    g_audit_initialized = 1;
 
     /* --- ExamOS Console integration: load console public key for request signing verification --- */
     {
