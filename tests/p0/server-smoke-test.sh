@@ -32,6 +32,12 @@ if [ ! -x "$SERVER_BIN" ]; then
     exit 2
 fi
 
+# Check if PostgreSQL service is running
+if ! sudo -u postgres pg_isready >/dev/null 2>&1; then
+    echo "[SMOKE] BLOCKED: PostgreSQL service is not running" >&2
+    exit 2
+fi
+
 # --- Find a free port ---
 find_free_port() {
     local port
@@ -87,20 +93,20 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" T
     exit 2
 }
 
-# Configure pg_hba.conf to allow password authentication
-PG_HBA="/etc/postgresql/*/main/pg_hba.conf"
-if [ -f "$PG_HBA" ]; then
-    sudo cp "$PG_HBA" "$PG_HBA.backup"
-    # Add local md5 authentication if not present
-    if ! sudo grep -q "local all all md5" "$PG_HBA"; then
-        sudo sed -i '1i local all all md5' "$PG_HBA"
+# Configure pg_hba.conf to allow password authentication (only if needed)
+PG_HBA_BACKUP_CREATED=false
+for PG_HBA in /etc/postgresql/*/main/pg_hba.conf; do
+    if [ -f "$PG_HBA" ]; then
+        # Check if md5 auth is already configured
+        if ! sudo grep -q "md5" "$PG_HBA"; then
+            sudo cp "$PG_HBA" "$PG_HBA.backup"
+            sudo sed -i '1i local all all md5' "$PG_HBA"
+            sudo sed -i '1i host all all 127.0.0.1/32 md5' "$PG_HBA"
+            sudo systemctl reload postgresql >/dev/null 2>&1 || true
+            PG_HBA_BACKUP_CREATED=true
+        fi
     fi
-    # Add host md5 authentication if not present
-    if ! sudo grep -q "host all all 127.0.0.1/32 md5" "$PG_HBA"; then
-        sudo sed -i '1i host all all 127.0.0.1/32 md5' "$PG_HBA"
-    fi
-    sudo systemctl reload postgresql >/dev/null 2>&1 || true
-fi
+done
 
 export EXAMOS_DB_NAME
 export EXAMOS_DB_USER
@@ -159,12 +165,13 @@ cleanup() {
     if [ -n "${EXAMOS_DB_USER:-}" ]; then
         sudo -u postgres psql -c "DROP USER IF EXISTS \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || true
     fi
-    # Restore pg_hba.conf if we modified it
-    PG_HBA="/etc/postgresql/*/main/pg_hba.conf"
-    if [ -f "$PG_HBA.backup" ]; then
-        sudo mv "$PG_HBA.backup" "$PG_HBA" >/dev/null 2>&1 || true
-        sudo systemctl reload postgresql >/dev/null 2>&1 || true
-    fi
+    # Restore pg_hba.conf if we modified it (only restore if backup exists)
+    for PG_HBA in /etc/postgresql/*/main/pg_hba.conf; do
+        if [ -f "$PG_HBA.backup" ]; then
+            sudo mv "$PG_HBA.backup" "$PG_HBA" >/dev/null 2>&1 || true
+            sudo systemctl reload postgresql >/dev/null 2>&1 || true
+        fi
+    done
     case "$TMP_DIR" in
         "${TMPDIR:-/tmp}"/examos-smoke.*) [ -d "$TMP_DIR" ] && [ ! -L "$TMP_DIR" ] && rm -rf -- "$TMP_DIR" ;;
         *) echo "[SMOKE] Refusing to remove unexpected temporary path: $TMP_DIR" >&2 ;;
