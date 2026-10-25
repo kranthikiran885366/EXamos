@@ -232,7 +232,24 @@ int main(int argc, char *argv[]) {
     uint64_t total_events = 0;
 
     while (fgets(line, sizeof(line), fp)) {
-        if (!strstr(line, session_id)) continue;
+        /* Check for cross-session contamination before filtering */
+        char *p_sess_check = strstr(line, "\"session_id\":\"");
+        if (p_sess_check) {
+            p_sess_check += 14;
+            char *end_sess_check = strchr(p_sess_check, '"');
+            if (end_sess_check) {
+                *end_sess_check = '\0';
+                if (strcmp(p_sess_check, session_id) != 0) {
+                    printf("SESSION: %s\n", session_id);
+                    printf("CHAIN: INVALID\n");
+                    printf("FAILURE_TYPE: CROSS_SESSION_CONTAMINATION (found event from session %s)\n", p_sess_check);
+                    printf("RESULT: FAIL\n");
+                    fclose(fp);
+                    return 1;
+                }
+                *end_sess_check = '"';
+            }
+        }
 
         parsed_event_t ev;
         memset(&ev, 0, sizeof(ev));

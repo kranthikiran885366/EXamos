@@ -159,7 +159,7 @@ case "$QEMU_ACCEL" in *"-accel kvm"*) ACCELERATION="KVM" ;; *) ACCELERATION="TCG
 QEMU_RESOURCES="$(examos_qemu_resources)" || blocked "host does not have safe resources for a P1 guest"
 IFS=$'\t' read -r QEMU_MEMORY_MIB QEMU_CPUS <<< "$QEMU_RESOURCES"
 
-BOOT_TIMEOUT="${EXAMOS_P1_BOOT_TIMEOUT:-180}"
+BOOT_TIMEOUT="${EXAMOS_P1_BOOT_TIMEOUT:-300}"
 case "$BOOT_TIMEOUT" in ''|*[!0-9]*) blocked "EXAMOS_P1_BOOT_TIMEOUT must be an integer" ;; esac
 [ "$BOOT_TIMEOUT" -ge 30 ] && [ "$BOOT_TIMEOUT" -le 600 ] ||
     blocked "EXAMOS_P1_BOOT_TIMEOUT must be between 30 and 600 seconds"
