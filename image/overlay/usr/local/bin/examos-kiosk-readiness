@@ -2,7 +2,7 @@
 set -eu
 
 attempt=0
-while [ "$attempt" -lt 80 ]; do
+while [ "$attempt" -lt 240 ]; do
     if /usr/bin/systemctl is-active --quiet examos-kiosk.service; then
         if [ -S /run/user/1000/wayland-0 ]; then
             if /usr/bin/pgrep -u exam -f 'chromium.*--kiosk.*--app=' >/dev/null; then

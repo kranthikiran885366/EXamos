@@ -9,7 +9,7 @@ OnFailure=examos-lockdown-failed.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-TimeoutStartSec=25
+TimeoutStartSec=60
 ExecStart=/usr/local/bin/examos-kiosk-readiness
 StandardOutput=journal+console
 StandardError=journal+console

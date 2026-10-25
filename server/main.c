@@ -4213,7 +4213,6 @@ int main(int argc, char *argv[]) {
 
     /* In production, forbid the development bypass before any system check. */
     const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
-    int allow_dev_mode = allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
     if (production_mode && allow_unprovisioned) {
         fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
         return 2;
@@ -4315,22 +4314,13 @@ int main(int argc, char *argv[]) {
 
     /* --- ExamOS Console integration: PostgreSQL database --- */
     if (db_init(NULL) != 0) {
-        if (allow_dev_mode) {
-            fprintf(stderr, "[ExamOS-Server] WARNING: database pool initialization failed; continuing in unprovisioned dev mode.\n");
-        } else {
-            fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
-            return 1;
-        }
-    } else {
-        g_db_initialized = 1;
-        if (db_create_schema() != 0) {
-            if (allow_dev_mode) {
-                fprintf(stderr, "[ExamOS-Server] WARNING: database schema creation failed; continuing in unprovisioned dev mode.\n");
-            } else {
-                fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
-                return 1;
-            }
-        }
+        fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
+        return 1;
+    }
+    g_db_initialized = 1;
+    if (db_create_schema() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
+        return 1;
     }
 
     /* --- ExamOS Console integration: audit hash chain --- */

@@ -56,6 +56,59 @@ PROCTOR_TOKEN="$(openssl rand -hex 32)"
 EVENT_SIGNING_KEY="$(openssl rand -hex 32)"
 VARIANT_SECRET="$(openssl rand -hex 32)"
 LEDGER_HMAC_KEY="$(openssl rand -hex 32)"
+
+# Set up PostgreSQL for the smoke test
+PGDATA="$TMP_DIR/pgdata"
+PGLOG="$TMP_DIR/pg.log"
+mkdir -p "$PGDATA"
+if command -v initdb >/dev/null 2>&1; then
+    initdb -D "$PGDATA" --no-locale --encoding=UTF8 >/dev/null 2>&1 || {
+        echo "[SMOKE] BLOCKED: cannot initialize PostgreSQL data directory" >&2
+        exit 2
+    }
+    # Configure PostgreSQL to accept local connections
+    echo "host all all 127.0.0.1/32 md5" >> "$PGDATA/pg_hba.conf"
+    echo "local all all md5" >> "$PGDATA/pg_hba.conf"
+    
+    # Start PostgreSQL
+    pg_ctl -D "$PGDATA" -l "$PGLOG" -o "-p 5433" start >/dev/null 2>&1 || {
+        echo "[SMOKE] BLOCKED: cannot start PostgreSQL" >&2
+        exit 2
+    }
+    sleep 2
+    
+    # Create database and user
+    EXAMOS_DB_NAME="examos_smoke_$(date +%s)"
+    EXAMOS_DB_USER="examos_smoke"
+    EXAMOS_DB_PASS="$(openssl rand -hex 16)"
+    
+    psql -h 127.0.0.1 -p 5433 -U postgres -c "CREATE DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || {
+        echo "[SMOKE] BLOCKED: cannot create PostgreSQL database" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5433" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    psql -h 127.0.0.1 -p 5433 -U postgres -c "CREATE USER \"$EXAMOS_DB_USER\" WITH PASSWORD '$EXAMOS_DB_PASS';" >/dev/null 2>&1 || {
+        echo "[SMOKE] BLOCKED: cannot create PostgreSQL user" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5433" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    psql -h 127.0.0.1 -p 5433 -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" TO \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || {
+        echo "[SMOKE] BLOCKED: cannot grant PostgreSQL privileges" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5433" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    export EXAMOS_DB_NAME
+    export EXAMOS_DB_USER
+    export EXAMOS_DB_PASS
+    export EXAMOS_DB_HOST="127.0.0.1"
+    export EXAMOS_DB_PORT="5433"
+else
+    echo "[SMOKE] BLOCKED: PostgreSQL initdb not available" >&2
+    exit 2
+fi
 read -r ADMIN_USERNAME ADMIN_CREDENTIAL ADMIN_AUTH_VALUE < <(python3 - <<'PY'
 import base64
 import hashlib
@@ -101,6 +154,10 @@ cleanup() {
         fi
         wait "$SERVER_PID" 2>/dev/null || true
     fi
+    # Stop PostgreSQL if it was started
+    if [ -n "${PGDATA:-}" ] && [ -d "$PGDATA" ]; then
+        pg_ctl -D "$PGDATA" -o "-p 5433" stop >/dev/null 2>&1 || true
+    fi
     case "$TMP_DIR" in
         "${TMPDIR:-/tmp}"/examos-smoke.*) [ -d "$TMP_DIR" ] && [ ! -L "$TMP_DIR" ] && rm -rf -- "$TMP_DIR" ;;
         *) echo "[SMOKE] Refusing to remove unexpected temporary path: $TMP_DIR" >&2 ;;
@@ -129,6 +186,11 @@ EXAMOS_EXAM_CONFIG="$EXAM_CONFIG" \
 EXAMOS_BROWSER_POLICY_CATALOG="${EXAMOS_BROWSER_POLICY_CATALOG:-$WORKSPACE/server/config/browser_policies.json}" \
 EXAMOS_ALLOW_UNPROVISIONED_DEV="$TEST_DEV_FLAG" \
 EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
+EXAMOS_DB_NAME="${EXAMOS_DB_NAME:-}" \
+EXAMOS_DB_USER="${EXAMOS_DB_USER:-}" \
+EXAMOS_DB_PASS="${EXAMOS_DB_PASS:-}" \
+EXAMOS_DB_HOST="${EXAMOS_DB_HOST:-}" \
+EXAMOS_DB_PORT="${EXAMOS_DB_PORT:-}" \
 "$SERVER_BIN" &
 SERVER_PID=$!
 
