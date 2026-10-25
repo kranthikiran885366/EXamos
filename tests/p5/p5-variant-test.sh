@@ -32,6 +32,56 @@ SERVER_PID=""
 RUN_DIR="$(mktemp -d /tmp/examos-p5-variant.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
+# Set up PostgreSQL for P5 tests
+PGDATA="$RUN_DIR/pgdata"
+PGLOG="$RUN_DIR/pg.log"
+mkdir -p "$PGDATA"
+if command -v initdb >/dev/null 2>&1; then
+    initdb -D "$PGDATA" --no-locale --encoding=UTF8 >/dev/null 2>&1 || {
+        echo "[P5-VARIANT] BLOCKED: cannot initialize PostgreSQL data directory" >&2
+        exit 2
+    }
+    echo "host all all 127.0.0.1/32 md5" >> "$PGDATA/pg_hba.conf"
+    echo "local all all md5" >> "$PGDATA/pg_hba.conf"
+    
+    pg_ctl -D "$PGDATA" -l "$PGLOG" -o "-p 5435" start >/dev/null 2>&1 || {
+        echo "[P5-VARIANT] BLOCKED: cannot start PostgreSQL" >&2
+        exit 2
+    }
+    sleep 2
+    
+    EXAMOS_DB_NAME="examos_p5_variant_$(date +%s)"
+    EXAMOS_DB_USER="examos_p5"
+    EXAMOS_DB_PASS="$(openssl rand -hex 16)"
+    
+    psql -h 127.0.0.1 -p 5435 -U postgres -c "CREATE DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || {
+        echo "[P5-VARIANT] BLOCKED: cannot create PostgreSQL database" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5435" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    psql -h 127.0.0.1 -p 5435 -U postgres -c "CREATE USER \"$EXAMOS_DB_USER\" WITH PASSWORD '$EXAMOS_DB_PASS';" >/dev/null 2>&1 || {
+        echo "[P5-VARIANT] BLOCKED: cannot create PostgreSQL user" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5435" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    psql -h 127.0.0.1 -p 5435 -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" TO \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || {
+        echo "[P5-VARIANT] BLOCKED: cannot grant PostgreSQL privileges" >&2
+        pg_ctl -D "$PGDATA" -o "-p 5435" stop >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    export EXAMOS_DB_NAME
+    export EXAMOS_DB_USER
+    export EXAMOS_DB_PASS
+    export EXAMOS_DB_HOST="127.0.0.1"
+    export EXAMOS_DB_PORT="5435"
+else
+    echo "[P5-VARIANT] BLOCKED: PostgreSQL initdb not available" >&2
+    exit 2
+fi
+
 # Dynamic test configuration - no hardcoded values
 CANDIDATE_UID_BASE="${EXAMOS_CANDIDATE_UID_BASE:-100000}"
 PBKDF2_ITERATIONS="${EXAMOS_PBKDF2_ITERATIONS:-100000}"
@@ -115,6 +165,11 @@ EXAMCONF
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_BEHAVIOUR_STORE="$RUN_DIR/behaviour-store" \
+    EXAMOS_DB_NAME="${EXAMOS_DB_NAME:-}" \
+    EXAMOS_DB_USER="${EXAMOS_DB_USER:-}" \
+    EXAMOS_DB_PASS="${EXAMOS_DB_PASS:-}" \
+    EXAMOS_DB_HOST="${EXAMOS_DB_HOST:-}" \
+    EXAMOS_DB_PORT="${EXAMOS_DB_PORT:-}" \
     EXAMOS_VIVA_STORE="$RUN_DIR/viva-store" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
     EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
@@ -137,6 +192,10 @@ fi
 
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    # Stop PostgreSQL if it was started
+    if [ -n "${PGDATA:-}" ] && [ -d "$PGDATA" ]; then
+        pg_ctl -D "$PGDATA" -o "-p 5435" stop >/dev/null 2>&1 || true
+    fi
     rm -rf "$RUN_DIR"
 }
 trap cleanup EXIT
