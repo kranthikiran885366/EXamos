@@ -33,6 +33,40 @@ SERVER_PID=""
 RUN_DIR="$(mktemp -d /tmp/examos-p5-viva.XXXXXX)"
 PASS=0; FAIL=0; BLOCKED=0
 
+# Set up PostgreSQL for P5 tests using system PostgreSQL
+EXAMOS_DB_NAME="examos_p5_viva_$(date +%s)"
+EXAMOS_DB_USER="examos_p5"
+EXAMOS_DB_PASS="$(openssl rand -hex 16)"
+
+if ! sudo -u postgres pg_isready >/dev/null 2>&1; then
+    echo "[P5-VIVA] BLOCKED: PostgreSQL service is not running" >&2
+    exit 2
+fi
+
+sudo -u postgres psql -c "CREATE DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || {
+    echo "[P5-VIVA] BLOCKED: cannot create PostgreSQL database" >&2
+    exit 2
+}
+
+sudo -u postgres psql -c "CREATE USER \"$EXAMOS_DB_USER\" WITH PASSWORD '$EXAMOS_DB_PASS';" >/dev/null 2>&1 || {
+    echo "[P5-VIVA] BLOCKED: cannot create PostgreSQL user" >&2
+    sudo -u postgres psql -c "DROP DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+    exit 2
+}
+
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" TO \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || {
+    echo "[P5-VIVA] BLOCKED: cannot grant PostgreSQL privileges" >&2
+    sudo -u postgres psql -c "DROP DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+    sudo -u postgres psql -c "DROP USER \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || true
+    exit 2
+}
+
+export EXAMOS_DB_NAME
+export EXAMOS_DB_USER
+export EXAMOS_DB_PASS
+export EXAMOS_DB_HOST="127.0.0.1"
+export EXAMOS_DB_PORT="5432"
+
 # Dynamic test configuration - no hardcoded values
 CANDIDATE_UID_BASE="${EXAMOS_CANDIDATE_UID_BASE:-100000}"
 PBKDF2_ITERATIONS="${EXAMOS_PBKDF2_ITERATIONS:-100000}"
@@ -93,6 +127,11 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \
     EXAMOS_CANDIDATE_STORE="$CAND_FILE" \
+    EXAMOS_DB_NAME="$EXAMOS_DB_NAME" \
+    EXAMOS_DB_USER="$EXAMOS_DB_USER" \
+    EXAMOS_DB_PASS="$EXAMOS_DB_PASS" \
+    EXAMOS_DB_HOST="$EXAMOS_DB_HOST" \
+    EXAMOS_DB_PORT="5432" \
     EXAMOS_SESSION_JOURNAL="$RUN_DIR/session.log" \
         "$SERVER_BIN" &
     SERVER_PID=$!
@@ -109,6 +148,13 @@ fi
 
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    # Clean up PostgreSQL database and user
+    if [ -n "${EXAMOS_DB_NAME:-}" ]; then
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${EXAMOS_DB_USER:-}" ]; then
+        sudo -u postgres psql -c "DROP USER IF EXISTS \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || true
+    fi
     rm -rf "$RUN_DIR"
 }
 trap cleanup EXIT

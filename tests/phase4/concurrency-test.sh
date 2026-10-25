@@ -15,93 +15,80 @@ if [ -z "${EXAMOS_PROCTOR_API_TOKEN:-}" ]; then
     echo "[CONCURRENCY] No external server configured, starting local test server"
     RUN_DIR="$(mktemp -d /tmp/examos-concurrency.XXXXXX)"
     
-    # Set up PostgreSQL
-    PGDATA="$RUN_DIR/pgdata"
-    PGLOG="$RUN_DIR/pg.log"
-    mkdir -p "$PGDATA"
-    if command -v initdb >/dev/null 2>&1; then
-        initdb -D "$PGDATA" --no-locale --encoding=UTF8 >/dev/null 2>&1 || {
-            echo "[CONCURRENCY] BLOCKED: cannot initialize PostgreSQL data directory" >&2
-            exit 2
-        }
-        echo "host all all 127.0.0.1/32 md5" >> "$PGDATA/pg_hba.conf"
-        echo "local all all md5" >> "$PGDATA/pg_hba.conf"
-        
-        pg_ctl -D "$PGDATA" -l "$PGLOG" -o "-p 5436" start >/dev/null 2>&1 || {
-            echo "[CONCURRENCY] BLOCKED: cannot start PostgreSQL" >&2
-            exit 2
-        }
-        sleep 2
-        
-        EXAMOS_DB_NAME="examos_concurrency_$(date +%s)"
-        EXAMOS_DB_USER="examos_conc"
-        EXAMOS_DB_PASS="$(openssl rand -hex 16)"
-        
-        psql -h 127.0.0.1 -p 5436 -U postgres -c "CREATE DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || {
-            echo "[CONCURRENCY] BLOCKED: cannot create PostgreSQL database" >&2
-            pg_ctl -D "$PGDATA" -o "-p 5436" stop >/dev/null 2>&1 || true
-            exit 2
-        }
-        
-        psql -h 127.0.0.1 -p 5436 -U postgres -c "CREATE USER \"$EXAMOS_DB_USER\" WITH PASSWORD '$EXAMOS_DB_PASS';" >/dev/null 2>&1 || {
-            echo "[CONCURRENCY] BLOCKED: cannot create PostgreSQL user" >&2
-            pg_ctl -D "$PGDATA" -o "-p 5436" stop >/dev/null 2>&1 || true
-            exit 2
-        }
-        
-        psql -h 127.0.0.1 -p 5436 -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" TO \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || {
-            echo "[CONCURRENCY] BLOCKED: cannot grant PostgreSQL privileges" >&2
-            pg_ctl -D "$PGDATA" -o "-p 5436" stop >/dev/null 2>&1 || true
-            exit 2
-        }
-        
-        export EXAMOS_DB_NAME
-        export EXAMOS_DB_USER
-        export EXAMOS_DB_PASS
-        export EXAMOS_DB_HOST="127.0.0.1"
-        export EXAMOS_DB_PORT="5436"
-        
-        # Start server
-        SERVER_BIN="$WORKSPACE/server/examos-server"
-        EXAMOS_SERVER_PORT="9099" \
-        EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
-        EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
-        EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
-        EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
-        EXAMOS_PROCTOR_API_TOKEN="$API_TOKEN" \
-        EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
-        EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
-        EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
-        EXAMOS_TPM_MODE=development \
-        EXAMOS_DB_NAME="$EXAMOS_DB_NAME" \
-        EXAMOS_DB_USER="$EXAMOS_DB_USER" \
-        EXAMOS_DB_PASS="$EXAMOS_DB_PASS" \
-        EXAMOS_DB_HOST="$EXAMOS_DB_HOST" \
-        EXAMOS_DB_PORT="$EXAMOS_DB_PORT" \
-        "$SERVER_BIN" &
-        SERVER_PID=$!
-        
-        # Wait for server readiness
-        for i in $(seq 1 30); do
-            if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:9099/api/v1/health" 2>/dev/null | grep -q '200'; then
-                break
-            fi
-            sleep 0.2
-        done
-        
-        # Cleanup function
-        cleanup() {
-            [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-            if [ -n "${PGDATA:-}" ] && [ -d "$PGDATA" ]; then
-                pg_ctl -D "$PGDATA" -o "-p 5436" stop >/dev/null 2>&1 || true
-            fi
-            rm -rf -- "$RESULT_DIR" "$RUN_DIR"
-        }
-        trap cleanup EXIT
-    else
-        echo "[CONCURRENCY] BLOCKED: PostgreSQL initdb not available" >&2
+    # Set up PostgreSQL using system PostgreSQL
+    EXAMOS_DB_NAME="examos_concurrency_$(date +%s)"
+    EXAMOS_DB_USER="examos_conc"
+    EXAMOS_DB_PASS="$(openssl rand -hex 16)"
+    
+    if ! sudo -u postgres pg_isready >/dev/null 2>&1; then
+        echo "[CONCURRENCY] BLOCKED: PostgreSQL service is not running" >&2
         exit 2
     fi
+    
+    sudo -u postgres psql -c "CREATE DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || {
+        echo "[CONCURRENCY] BLOCKED: cannot create PostgreSQL database" >&2
+        exit 2
+    }
+    
+    sudo -u postgres psql -c "CREATE USER \"$EXAMOS_DB_USER\" WITH PASSWORD '$EXAMOS_DB_PASS';" >/dev/null 2>&1 || {
+        echo "[CONCURRENCY] BLOCKED: cannot create PostgreSQL user" >&2
+        sudo -u postgres psql -c "DROP DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE \"$EXAMOS_DB_NAME\" TO \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || {
+        echo "[CONCURRENCY] BLOCKED: cannot grant PostgreSQL privileges" >&2
+        sudo -u postgres psql -c "DROP DATABASE \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+        sudo -u postgres psql -c "DROP USER \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || true
+        exit 2
+    }
+    
+    export EXAMOS_DB_NAME
+    export EXAMOS_DB_USER
+    export EXAMOS_DB_PASS
+    export EXAMOS_DB_HOST="127.0.0.1"
+    export EXAMOS_DB_PORT="5432"
+    
+    # Start server
+    SERVER_BIN="$WORKSPACE/server/examos-server"
+    EXAMOS_SERVER_PORT="9099" \
+    EXAMOS_LEDGER_PATH="$RUN_DIR/ledger.log" \
+    EXAMOS_LEDGER_HMAC_KEY="$(openssl rand -hex 32)" \
+    EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
+    EXAMOS_AGENT_API_TOKEN="$(openssl rand -hex 32)" \
+    EXAMOS_PROCTOR_API_TOKEN="$API_TOKEN" \
+    EXAMOS_EVENT_SIGNING_KEY="$(openssl rand -hex 32)" \
+    EXAMOS_VARIANT_SECRET="$(openssl rand -hex 32)" \
+    EXAMOS_ALLOW_UNPROVISIONED_DEV=1 \
+    EXAMOS_TPM_MODE=development \
+    EXAMOS_DB_NAME="$EXAMOS_DB_NAME" \
+    EXAMOS_DB_USER="$EXAMOS_DB_USER" \
+    EXAMOS_DB_PASS="$EXAMOS_DB_PASS" \
+    EXAMOS_DB_HOST="$EXAMOS_DB_HOST" \
+    EXAMOS_DB_PORT="$EXAMOS_DB_PORT" \
+    "$SERVER_BIN" &
+    SERVER_PID=$!
+    
+    # Wait for server readiness
+    for i in $(seq 1 30); do
+        if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:9099/api/v1/health" 2>/dev/null | grep -q '200'; then
+            break
+        fi
+        sleep 0.2
+    done
+    
+    # Cleanup function
+    cleanup() {
+        [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+        if [ -n "${EXAMOS_DB_NAME:-}" ]; then
+            sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$EXAMOS_DB_NAME\";" >/dev/null 2>&1 || true
+        fi
+        if [ -n "${EXAMOS_DB_USER:-}" ]; then
+            sudo -u postgres psql -c "DROP USER IF EXISTS \"$EXAMOS_DB_USER\";" >/dev/null 2>&1 || true
+        fi
+        rm -rf -- "$RESULT_DIR" "$RUN_DIR"
+    }
+    trap cleanup EXIT
 fi
 
 run_session() {
