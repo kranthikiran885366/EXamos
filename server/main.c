@@ -46,15 +46,73 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/hmac.h>
+
+/* --- ExamOS Console integration controllers --- */
+#include "controllers/controller.h"
+#include "controllers/auth_controller.h"
+#include "controllers/institution_controller.h"
+#include "controllers/exam_controller.h"
+#include "controllers/candidate_controller.h"
+#include "controllers/device_controller.h"
+#include "controllers/tpm_controller.h"
+#include "controllers/session_controller.h"
+#include "controllers/release_controller.h"
+#include "controllers/policy_controller.h"
+#include "controllers/modules_controller.h"
+#include "db/db.h"
+#include "security/security.h"
+#include "audit/audit.h"
 
 extern char **environ;
 
 #define BUFFER_SIZE 131072
 #define MAX_HTTP_CLIENTS 1024
 
+/* CORS configuration for the ExamOS Console frontend.
+ * Allowed origins are read from EXAMOS_CORS_ALLOWED_ORIGINS (comma-separated).
+ * In development the console runs on http://localhost:5173. */
+static int cors_origin_allowed(const char *origin) {
+    if (!origin || !origin[0]) return 0;
+    const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
+    if (!env || !env[0]) {
+        /* Default dev allowance for the local console. */
+        return strcmp(origin, "http://localhost:5173") == 0
+            || strcmp(origin, "http://127.0.0.1:5173") == 0;
+    }
+    char buf[1024];
+    size_t n = strlen(env);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, env, n); buf[n] = '\0';
+    char *save = NULL;
+    char *tok = strtok_r(buf, ",", &save);
+    while (tok) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        if (strcmp(tok, origin) == 0) return 1;
+        tok = strtok_r(NULL, ",", &save);
+    }
+    return 0;
+}
+
+static int is_cors_preflight(const char *method, const char *buffer) {
+    if (strcmp(method, "OPTIONS") != 0) return 0;
+    return strstr(buffer, "Access-Control-Request-Method") != NULL;
+}
+
 static volatile sig_atomic_t g_server_running = 1;
 static sem_t g_client_slots;
 static unsigned int g_max_clients = 256;
+
+/* --- Console integration globals --- */
+static int g_db_initialized = 0;
+static int g_audit_initialized = 0;
+static char g_console_public_key_pem[2048] = {0};
+static int g_console_key_loaded = 0;
+
+
+/* CORS origin for the current request (set in handle_client). */
+static char g_cors_origin[512] = {0};
+static int g_cors_allowed = 0;
 
 static int g_tls_enabled = 0;
 #if defined(USE_OPENSSL_TLS)
@@ -262,7 +320,9 @@ static int extract_admin_session_cookie(const char *buffer, char *out, size_t ou
 static const char *status_text(int status_code) {
     switch (status_code) {
         case 200: return "OK";
+        case 201: return "Created";
         case 202: return "Accepted";
+        case 204: return "No Content";
         case 302: return "Found";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";
@@ -346,7 +406,7 @@ static ssize_t receive_http_request(int fd, char *buffer, size_t capacity) {
 }
 
 static void send_http_response_ex(int client_fd, int status_code, const char *content_type, const char *body, const char *extra_headers) {
-    char header[2048];
+    char header[2400];
     size_t body_len = body ? strlen(body) : 0;
     const char *hsts = "";
 #if defined(USE_OPENSSL_TLS)
@@ -354,6 +414,16 @@ static void send_http_response_ex(int client_fd, int status_code, const char *co
         hsts = "Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n";
     }
 #endif
+    /* CORS headers for console integration. */
+    char cors_header[700] = {0};
+    if (g_cors_allowed && g_cors_origin[0]) {
+        int cl = snprintf(cors_header, sizeof(cors_header),
+            "Access-Control-Allow-Origin: %s\r\n"
+            "Vary: Origin\r\n"
+            "Access-Control-Allow-Credentials: true\r\n",
+            g_cors_origin);
+        if (cl < 0 || (size_t)cl >= sizeof(cors_header)) cors_header[0] = '\0';
+    }
     int header_length = snprintf(header, sizeof(header),
              "HTTP/1.1 %d %s\r\n"
              "Content-Type: %s\r\n"
@@ -366,14 +436,15 @@ static void send_http_response_ex(int client_fd, int status_code, const char *co
              "X-Permitted-Cross-Domain-Policies: none\r\n"
              "Referrer-Policy: no-referrer\r\n"
              "Cross-Origin-Opener-Policy: same-origin\r\n"
-             "Cross-Origin-Resource-Policy: same-origin\r\n"
+             "Cross-Origin-Resource-Policy: cross-origin\r\n"
              "Permissions-Policy: camera=(self), microphone=(self), geolocation=(), payment=(), usb=()\r\n"
              "Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'\r\n"
              "%s"
              "Connection: close\r\n"
-             "%s"
+             "%s%s"
              "\r\n",
              status_code, status_text(status_code), content_type, body_len,
+             cors_header,
              hsts, extra_headers ? extra_headers : "");
 
     if (header_length < 0 || (size_t)header_length >= sizeof(header)) return;
@@ -384,6 +455,138 @@ static void send_http_response_ex(int client_fd, int status_code, const char *co
 
 static void send_http_response(int client_fd, int status_code, const char *content_type, const char *body) {
     send_http_response_ex(client_fd, status_code, content_type, body, NULL);
+}
+
+/* Checks if client connected via 127.0.0.0/8 or IPv6 loopback ::1 */
+static int is_loopback_client(int fd) {
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getpeername(fd, (struct sockaddr *)&addr, &len) != 0) {
+        return 0;
+    }
+    if (addr.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&addr;
+        uint32_t ip = ntohl(s->sin_addr.s_addr);
+        return (ip >> 24) == 127;
+    } else if (addr.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
+        static const unsigned char loopback6[16] = {
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1
+        };
+        static const unsigned char v4mapped_loopback[16] = {
+            0,0,0,0, 0,0,0,0, 0,0,0xff,0xff, 127,0,0,1
+        };
+        return memcmp(&s->sin6_addr, loopback6, 16) == 0 ||
+               memcmp(&s->sin6_addr, v4mapped_loopback, 12) == 0;
+    }
+    return 0;
+}
+
+static int extract_user_agent(const char *buffer, char *out, size_t out_size) {
+    if (!buffer || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    const char *headers_end = strstr(buffer, "\r\n\r\n");
+    const char *line = strstr(buffer, "\r\n");
+    if (headers_end && line && line < headers_end) {
+        line += 2;
+        while (line < headers_end) {
+            const char *line_end = strstr(line, "\r\n");
+            if (!line_end || line_end > headers_end) break;
+            const char *colon = memchr(line, ':', (size_t)(line_end - line));
+            if (colon && (size_t)(colon - line) == sizeof("User-Agent") - 1 &&
+                strncasecmp(line, "User-Agent", sizeof("User-Agent") - 1) == 0) {
+                const char *val = colon + 1;
+                while (val < line_end && (*val == ' ' || *val == '\t')) val++;
+                size_t vlen = (size_t)(line_end - val);
+                if (vlen >= out_size) vlen = out_size - 1;
+                memcpy(out, val, vlen);
+                out[vlen] = '\0';
+                return 0;
+            }
+            line = line_end + 2;
+        }
+    }
+    return -1;
+}
+
+static int has_kiosk_header(const char *buffer) {
+    if (!buffer) return 0;
+    return strstr(buffer, "X-ExamOS-Kiosk:") != NULL || strstr(buffer, "x-examos-kiosk:") != NULL;
+}
+
+static const char *candidate_kiosk_lockout_html(void) {
+    return "<!DOCTYPE html>\n"
+           "<html lang=\"en\">\n"
+           "<head>\n"
+           "  <meta charset=\"UTF-8\">\n"
+           "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+           "  <title>ExamOS — Access Restricted</title>\n"
+           "  <style>\n"
+           "    * { box-sizing: border-box; margin: 0; padding: 0; }\n"
+           "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;\n"
+           "           background: #090d16; color: #f1f5f9; min-height: 100vh; display: flex;\n"
+           "           flex-direction: column; justify-content: center; align-items: center; padding: 24px; }\n"
+           "    .card { background: #131d2e; border: 1px solid #dc2626; border-radius: 14px; width: 100%;\n"
+           "            max-width: 560px; padding: 36px; box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.25); text-align: center; }\n"
+           "    .icon { width: 56px; height: 56px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;\n"
+           "            background: rgba(220, 38, 38, 0.15); border: 2px solid #ef4444; border-radius: 14px; color: #f87171; font-size: 28px; }\n"
+           "    .title { font-size: 22px; font-weight: 800; color: #f8fafc; margin-bottom: 8px; }\n"
+           "    .tag { display: inline-block; background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d;\n"
+           "           padding: 4px 12px; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase;\n"
+           "           letter-spacing: 0.05em; margin-bottom: 20px; }\n"
+           "    .desc { font-size: 14px; color: #cbd5e1; line-height: 1.6; margin-bottom: 20px; text-align: left; }\n"
+           "    .rules { background: #0b1120; border: 1px solid #1e293b; border-radius: 10px; padding: 18px;\n"
+           "             text-align: left; margin-bottom: 24px; font-size: 13px; color: #94a3b8; line-height: 1.6; }\n"
+           "    .rules strong { color: #e2e8f0; }\n"
+           "    .rules ul { margin-left: 20px; margin-top: 8px; }\n"
+           "    .rules li { margin-bottom: 6px; }\n"
+           "    .footer { font-size: 11px; color: #64748b; border-top: 1px solid #1e293b; padding-top: 16px; margin-top: 8px; }\n"
+           "    .footer a { color: #38bdf8; text-decoration: none; }\n"
+           "  </style>\n"
+           "</head>\n"
+           "<body>\n"
+           "  <div class=\"card\">\n"
+           "    <div class=\"icon\">&#9888;</div>\n"
+           "    <div class=\"title\">ExamOS Appliance Required</div>\n"
+           "    <span class=\"tag\">Candidate Terminal Lockdown</span>\n"
+           "    <p class=\"desc\">Candidate authentication and examination sessions cannot be run inside standard desktop operating systems (Windows, macOS, unmanaged Linux) or regular consumer browsers.</p>\n"
+           "    <div class=\"rules\">\n"
+           "      <strong>Examination Security Standards:</strong>\n"
+           "      <ul>\n"
+           "        <li><strong>Dedicated Appliance OS:</strong> Candidates must boot directly from the verified ExamOS bootable ISO or USB drive.</li>\n"
+           "        <li><strong>Hardware Kiosk Supervisor:</strong> Examination runs exclusively inside the hardened Wayland/Cage kiosk sandbox with TPM attestation.</li>\n"
+           "        <li><strong>Anti-Tamper Isolation:</strong> Virtual terminal switching, external processes, developer shortcuts, and host OS telemetry are disabled.</li>\n"
+           "      </ul>\n"
+           "    </div>\n"
+           "    <div class=\"footer\">\n"
+           "      ExamOS Appliance Gateway • Hardware Security Module • <a href=\"/admin\">Admin Portal</a>\n"
+           "    </div>\n"
+           "  </div>\n"
+           "</body>\n"
+           "</html>\n";
+}
+
+static int is_examos_kiosk_request(int client_fd, const char *buffer, const char *origin) {
+    (void)origin;
+    char ua[512] = {0};
+    extract_user_agent(buffer, ua, sizeof(ua));
+
+    int is_loopback = is_loopback_client(client_fd);
+    int has_kiosk_ua = (strstr(ua, "ExamOS-Kiosk") != NULL);
+    int has_header = has_kiosk_header(buffer);
+
+    /* In production mode: MUST be loopback AND have ExamOS Kiosk runtime signature */
+    if (g_production_mode) {
+        if (!is_loopback) return 0;
+        return has_kiosk_ua || has_header;
+    }
+
+    /* In development mode: allow if kiosk UA, or kiosk header, or query param dev_kiosk=1 */
+    if (has_kiosk_ua || has_header) return 1;
+    if (buffer && (strstr(buffer, "dev_kiosk=1") != NULL || strstr(buffer, "kiosk=1") != NULL)) return 1;
+
+    /* External standard browser or remote connection: rejected */
+    return 0;
 }
 
 static int json_hex4(const char **cursor, uint32_t *value) {
@@ -887,6 +1090,38 @@ static void* handle_client(void *arg) {
         goto client_done;
     }
 
+    /* Extract Origin header for CORS. */
+    char origin[512] = {0};
+    {
+        const char *headers_end = strstr(buffer, "\r\n\r\n");
+        const char *line = strstr(buffer, "\r\n");
+        if (headers_end && line && line < headers_end) {
+            line += 2;
+            while (line < headers_end) {
+                const char *line_end = strstr(line, "\r\n");
+                if (!line_end || line_end > headers_end) break;
+                const char *colon = memchr(line, ':', (size_t)(line_end - line));
+                if (colon && (size_t)(colon - line) == sizeof("Origin") - 1 &&
+                    strncasecmp(line, "Origin", sizeof("Origin") - 1) == 0) {
+                    const char *value = colon + 1;
+                    while (value < line_end && (*value == ' ' || *value == '\t')) value++;
+                    size_t vlen = (size_t)(line_end - value);
+                    if (vlen > 0 && vlen < sizeof(origin)) {
+                        memcpy(origin, value, vlen);
+                        origin[vlen] = '\0';
+                    }
+                    break;
+                }
+                line = line_end + 2;
+            }
+        }
+    }
+    int cors_ok = cors_origin_allowed(origin);
+    if (cors_ok) {
+        g_cors_allowed = 1;
+        snprintf(g_cors_origin, sizeof(g_cors_origin), "%s", origin);
+    }
+
     /*
      * Routing compares the path without its query string. The original
      * path is kept so that query parameters can still be parsed.
@@ -898,11 +1133,38 @@ static void* handle_client(void *arg) {
         if (query_delimiter) *query_delimiter = '\0';
     }
 
+    /* CORS preflight: reply immediately with allowed headers, no auth needed. */
+    if (is_cors_preflight(method, buffer)) {
+        if (!cors_ok) {
+            send_http_response(client_fd, 403, "application/json", "{\"error\":\"CORS origin not allowed\"}");
+            goto client_done;
+        }
+        char extra[512];
+        int elen = snprintf(extra, sizeof(extra),
+            "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Authorization, Content-Type, X-ExamOS-Console, X-ExamOS-Console-Version, X-ExamOS-Request-Id, X-ExamOS-Timestamp, X-ExamOS-Signature, X-ExamOS-Signature-Alg, X-ExamOS-Signature-Key-Id, X-Requested-With\r\n"
+            "Access-Control-Max-Age: 86400\r\n");
+        if (elen > 0 && (size_t)elen < sizeof(extra))
+            send_http_response_ex(client_fd, 204, "application/json", "", extra);
+        else
+            send_http_response(client_fd, 204, "application/json", "");
+        goto client_done;
+    }
+
+    char extra[700] = {0};
+    /* Note: send_http_response_ex already emits Access-Control-Allow-Origin from g_cors_origin */
+
     // Extract Authorization only from the parsed header block, never from the body.
     char auth_header[512] = {0};
     if (extract_authorization_header(buffer, auth_header, sizeof(auth_header)) != 0) {
         send_http_response(client_fd, 400, "application/json", "{\"error\":\"Invalid or duplicate Authorization header\"}");
         goto client_done;
+    }
+    if (auth_header[0] == '\0') {
+        char cookie_token[256] = {0};
+        if (extract_admin_session_cookie(buffer, cookie_token, sizeof(cookie_token)) == 0 && cookie_token[0]) {
+            snprintf(auth_header, sizeof(auth_header), "Bearer %s", cookie_token);
+        }
     }
 
     // Extract body if POST
@@ -916,108 +1178,52 @@ static void* handle_client(void *arg) {
 
     /* Route: GET / -> Candidate Login UI */
     if (strcmp(route_path, "/") == 0 && strcmp(method, "GET") == 0) {
-        send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response(client_fd, 403, "text/html; charset=utf-8", candidate_kiosk_lockout_html());
+        } else {
+            send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
+        }
     }
     /* Route: POST /api/v1/candidate/login */
     else if (strcmp(route_path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
-        char cid[64] = {0}, pin[64] = {0};
-        parse_json_string(req_body, "candidate_id", cid, sizeof(cid));
-        parse_json_string(req_body, "pin", pin, sizeof(pin));
-
-        if (strlen(cid) == 0 || strlen(pin) == 0) {
-            OPENSSL_cleanse(pin, sizeof(pin));
-            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Candidate ID and PIN are required\"}");
-        } else if (!candidate_credentials_validate(cid, pin)) {
-            OPENSSL_cleanse(pin, sizeof(pin));
-            ledger_block_t blk;
-            ledger_append_event("CANDIDATE_AUTH_FAILED", cid, "Invalid candidate credentials", &blk);
-            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Invalid credentials\"}");
-        } else {
-            OPENSSL_cleanse(pin, sizeof(pin));
-            char token[SESSION_TOKEN_LEN + 1];
-            if (candidate_session_create(cid, token) == 0) {
-                /* Journal the new session for crash-safe restart recovery */
-                session_journal_record_t jrec;
-                memset(&jrec, 0, sizeof(jrec));
-                jrec.event_type = SESSION_EVENT_CREATE;
-                memcpy(jrec.token, token, SESSION_TOKEN_LEN + 1);
-                snprintf(jrec.candidate_id, sizeof(jrec.candidate_id), "%s", cid);
-                jrec.created_at = time(NULL);
-                jrec.expires_at = jrec.created_at + 28800;
-                session_store_record(&jrec);
-                exam_config_t cfg;
-                config_load(&cfg);
-                char resp[4096], safe_url[3072], safe_name[768];
-                const char *exam_url = cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED";
-                const char *exam_name = cfg.exam_name[0] ? cfg.exam_name : "Not configured";
-                if (json_escape(exam_url, safe_url, sizeof(safe_url)) != 0 ||
-                    json_escape(exam_name, safe_name, sizeof(safe_name)) != 0) {
-                    OPENSSL_cleanse(token, sizeof(token));
-                    send_http_response(client_fd, 500, "application/json", "{\"status\":\"FAIL\",\"error\":\"Invalid configured exam text\"}");
-                    goto client_done;
-                }
-                snprintf(resp, sizeof(resp),
-                         "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"exam_url\":\"%s\",\"exam_name\":\"%s\"}",
-                         token, safe_url, safe_name);
-                OPENSSL_cleanse(token, sizeof(token));
-
-                ledger_block_t blk;
-                char details[128];
-                snprintf(details, sizeof(details), "Candidate %s logged in", cid);
-                ledger_append_event("CANDIDATE_AUTH_SUCCESS", cid, details, &blk);
-
-                send_http_response(client_fd, 200, "application/json", resp);
-            } else {
-                send_http_response(client_fd, 500, "application/json", "{\"status\":\"FAIL\",\"error\":\"Internal session creation error\"}");
-            }
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate portal is strictly restricted to the ExamOS secure bootable kiosk operating system. External operating systems and browsers are prohibited.\"}",
+                extra);
+            goto client_done;
         }
+        auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* Canonical dashboard route plus the established API login alias. */
     else if ((strcmp(route_path, "/api/v1/admin/login") == 0 ||
               strcmp(route_path, "/api/v1/auth/login") == 0) && strcmp(method, "POST") == 0) {
-        char username[64] = {0}, password[256] = {0}, mfa_code[16] = {0};
-        parse_json_string(req_body, "username", username, sizeof(username));
-        parse_json_string(req_body, "password", password, sizeof(password));
-        parse_json_string(req_body, "mfa_code", mfa_code, sizeof(mfa_code));
-        auth_session_t session;
-        memset(&session, 0, sizeof(session));
-        int login_status = admin_auth_store_login(username, password,
-            mfa_code[0] ? mfa_code : NULL, &session);
-        OPENSSL_cleanse(password, sizeof(password));
-        OPENSSL_cleanse(mfa_code, sizeof(mfa_code));
-        if (login_status == AUTH_LOGIN_SUCCESS) {
-            char response[512];
-            char cookie_header[192];
-            const char *secure_cookie = getenv("EXAMOS_ADMIN_COOKIE_SECURE");
-            int cookie_length = snprintf(cookie_header, sizeof(cookie_header),
-                "Set-Cookie: admin_session=%s; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=28800%s\r\n",
-                session.session_token,
-                secure_cookie && strcmp(secure_cookie, "1") == 0 ? "; Secure" : "");
-            snprintf(response, sizeof(response),
-                "{\"status\":\"AUTHENTICATED\",\"token\":\"%s\",\"mfa_required\":false}",
-                session.session_token);
-            if (cookie_length < 0 || (size_t)cookie_length >= sizeof(cookie_header))
-                send_http_response(client_fd, 500, "application/json", "{\"error\":\"Session response could not be created\"}");
-            else
-                send_http_response_ex(client_fd, 200, "application/json", response, cookie_header);
-        } else if (login_status == AUTH_LOGIN_MFA_REQUIRED) {
-            send_http_response(client_fd, 401, "application/json",
-                "{\"status\":\"MFA_REQUIRED\",\"error\":\"MFA code required\"}");
-        } else {
-            send_http_response(client_fd, 401, "application/json",
-                "{\"status\":\"FAIL\",\"error\":\"Invalid credentials or MFA code\"}");
-        }
-        OPENSSL_cleanse(&session, sizeof(session));
+        auth_admin_login(client_fd, req_body, origin, extra, sizeof(extra));
+        goto client_done;
     }
     else if (strcmp(route_path, "/api/v1/admin/logout") == 0 && strcmp(method, "POST") == 0) {
-        static const char prefix[] = "Bearer ";
-        if (strncmp(auth_header, prefix, sizeof(prefix) - 1) != 0 ||
-            admin_auth_store_revoke(auth_header + sizeof(prefix) - 1) != 0) {
-            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
-        } else {
-            send_http_response_ex(client_fd, 200, "application/json", "{\"status\":\"SIGNED_OUT\"}",
-                "Set-Cookie: admin_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0\r\n");
-        }
+        auth_admin_logout(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/session") == 0 ||
+              strcmp(route_path, "/api/v1/auth/session") == 0) && strcmp(method, "GET") == 0) {
+        auth_admin_session(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/mfa/setup") == 0 ||
+              strcmp(route_path, "/api/v1/auth/mfa/setup") == 0) && strcmp(method, "POST") == 0) {
+        auth_mfa_setup(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/mfa/confirm") == 0 ||
+              strcmp(route_path, "/api/v1/auth/mfa/confirm") == 0) && strcmp(method, "POST") == 0) {
+        auth_mfa_confirm(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/recovery/reset") == 0 ||
+              strcmp(route_path, "/api/v1/auth/recovery/reset") == 0) && strcmp(method, "POST") == 0) {
+        auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* Organization reads are session-scoped; only the platform owner can enumerate tenants. */
     else if (strcmp(route_path, "/api/v1/admin/institutions") == 0 && strcmp(method, "GET") == 0) {
@@ -1455,6 +1661,10 @@ static void* handle_client(void *arg) {
     }
     /* Route: GET /exam and GET /workbench -> TCS iON NQT-Level Secure Exam Workbench */
     else if ((strcmp(route_path, "/exam") == 0 || strcmp(route_path, "/workbench") == 0) && strcmp(method, "GET") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response(client_fd, 403, "text/html; charset=utf-8", candidate_kiosk_lockout_html());
+            goto client_done;
+        }
         char token[SESSION_TOKEN_LEN + 1] = {0};
         char candidate_id[MAX_CANDIDATE_ID_LEN] = {0};
         int is_valid = 0;
@@ -1475,6 +1685,11 @@ static void* handle_client(void *arg) {
     }
     /* Route: GET /api/v1/exam/paper -> Question battery */
     else if (strcmp(route_path, "/api/v1/exam/paper") == 0 && strcmp(method, "GET") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
+            goto client_done;
+        }
         char token[SESSION_TOKEN_LEN + 1] = {0};
         if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
             !candidate_session_validate(token)) {
@@ -1490,6 +1705,11 @@ static void* handle_client(void *arg) {
     }
     /* Route: POST /api/v1/exam/save_answer -> Real-time answer auto-save */
     else if (strcmp(route_path, "/api/v1/exam/save_answer") == 0 && strcmp(method, "POST") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
+            goto client_done;
+        }
         char token[SESSION_TOKEN_LEN + 1] = {0};
         if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
             !candidate_session_validate(token)) {
@@ -1510,6 +1730,11 @@ static void* handle_client(void *arg) {
     }
     /* Route: POST /api/v1/exam/submit -> Final exam submission with cryptographic SHA-256 HMAC digest */
     else if (strcmp(route_path, "/api/v1/exam/submit") == 0 && strcmp(method, "POST") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
+            goto client_done;
+        }
         char token[SESSION_TOKEN_LEN + 1] = {0};
         if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
             !candidate_session_validate(token)) {
@@ -1697,6 +1922,11 @@ static void* handle_client(void *arg) {
     }
     /* Route: POST /api/v1/consent -> Record candidate consent before camera/mic access */
     else if (strcmp(route_path, "/api/v1/consent") == 0 && strcmp(method, "POST") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
+            goto client_done;
+        }
         char sess_id[64] = {0}, cand_id[64] = {0};
         parse_json_string(req_body, "session_id",   sess_id, sizeof(sess_id));
         parse_json_string(req_body, "candidate_id", cand_id, sizeof(cand_id));
@@ -1980,7 +2210,7 @@ static void* handle_client(void *arg) {
             database_ok ? "true" : "false",
             attestation_ok ? "true" : "false",
             g_production_mode ? "production" : "development");
-        send_http_response(client_fd, 200, "application/json", health_resp);
+        send_http_response_ex(client_fd, 200, "application/json", health_resp, extra);
     }
     /* ================================================================
      * Enterprise Platform API Routes
@@ -2021,30 +2251,6 @@ static void* handle_client(void *arg) {
             }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
-    }
-    /* Return only the authenticated administrator's own role and scope. */
-    else if (strcmp(route_path, "/api/v1/admin/session") == 0 && strcmp(method, "GET") == 0) {
-        const char *token = bearer_token(auth_header);
-        auth_session_t session;
-        memset(&session, 0, sizeof(session));
-        if (!token || admin_auth_store_authorize(token, AUTH_PERM_READ, &session) != 0) {
-            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Authenticated administrator session required\"}");
-        } else {
-            char user_id[160], username[160], institution_id[160];
-            if (json_escape(session.user_id, user_id, sizeof(user_id)) != 0 ||
-                json_escape(session.username, username, sizeof(username)) != 0 ||
-                json_escape(session.institution_id, institution_id, sizeof(institution_id)) != 0) {
-                send_http_response(client_fd, 500, "application/json", "{\"error\":\"Session profile could not be encoded\"}");
-            } else {
-                char response[640];
-                snprintf(response, sizeof(response),
-                    "{\"user_id\":\"%s\",\"username\":\"%s\",\"institution_id\":\"%s\",\"role\":\"%s\",\"session_expires_at\":%lld}",
-                    user_id, username, institution_id, admin_role_to_string(session.role),
-                    (long long)session.expires_at);
-                send_http_response(client_fd, 200, "application/json", response);
-            }
-        }
-        OPENSSL_cleanse(&session, sizeof(session));
     }
     else if (strcmp(route_path, "/api/v1/admin/users") == 0 && strcmp(method, "GET") == 0) {
         static const char prefix[] = "Bearer ";
@@ -3796,6 +4002,151 @@ p5_score_done:
         }
     }
     else {
+        /* --- ExamOS Console controller dispatch (fallback for /api/v1/ routes) --- */
+        if (strncmp(route_path, "/api/v1/", 8) == 0) {
+            char origin[512] = {0};
+            /* Re-extract origin for CORS on controller responses */
+            {
+                const char *headers_end = strstr(buffer, "\r\n\r\n");
+                const char *line = strstr(buffer, "\r\n");
+                if (headers_end && line && line < headers_end) {
+                    line += 2;
+                    while (line < headers_end) {
+                        const char *line_end = strstr(line, "\r\n");
+                        if (!line_end || line_end > headers_end) break;
+                        const char *colon = memchr(line, ':', (size_t)(line_end - line));
+                        if (colon && (size_t)(colon - line) == sizeof("Origin") - 1 &&
+                            strncasecmp(line, "Origin", sizeof("Origin") - 1) == 0) {
+                            const char *v = colon + 1;
+                            while (v < line_end && (*v == ' ' || *v == '\t')) v++;
+                            size_t vlen = (size_t)(line_end - v);
+                            if (vlen > 0 && vlen < sizeof(origin)) {
+                                memcpy(origin, v, vlen);
+                                origin[vlen] = '\0';
+                            }
+                            break;
+                        }
+                        line = line_end + 2;
+                    }
+                }
+            }
+            int cors_ok = cors_origin_allowed(origin);
+            char extra[700] = {0};
+            if (cors_ok && origin[0]) {
+                int cl = snprintf(extra, sizeof(extra),
+                    "Access-Control-Allow-Origin: %s\r\n"
+                    "Vary: Origin\r\n"
+                    "Access-Control-Allow-Credentials: true\r\n",
+                    origin);
+                if (cl < 0 || (size_t)cl >= sizeof(extra)) extra[0] = '\0';
+            }
+
+            /* Auth routes */
+            if (strcmp(route_path, "/api/v1/admin/login") == 0 && strcmp(method, "POST") == 0) {
+                auth_admin_login(client_fd, req_body, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if (strcmp(route_path, "/api/v1/admin/logout") == 0 && strcmp(method, "POST") == 0) {
+                auth_admin_logout(client_fd, auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if (strcmp(route_path, "/api/v1/admin/session") == 0 && strcmp(method, "GET") == 0) {
+                auth_admin_session(client_fd, auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if ((strcmp(route_path, "/api/v1/admin/mfa/setup") == 0 ||
+                 strcmp(route_path, "/api/v1/auth/mfa/setup") == 0) && strcmp(method, "POST") == 0) {
+                auth_mfa_setup(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if ((strcmp(route_path, "/api/v1/admin/mfa/confirm") == 0 ||
+                 strcmp(route_path, "/api/v1/auth/mfa/confirm") == 0) && strcmp(method, "POST") == 0) {
+                auth_mfa_confirm(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if ((strcmp(route_path, "/api/v1/admin/recovery/reset") == 0 ||
+                 strcmp(route_path, "/api/v1/auth/recovery/reset") == 0) && strcmp(method, "POST") == 0) {
+                auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if (strcmp(route_path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
+                if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+                    send_http_response_ex(client_fd, 403, "application/json",
+                        "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate portal is strictly restricted to the ExamOS secure bootable kiosk operating system. External operating systems and browsers are prohibited.\"}",
+                        extra);
+                    goto client_done;
+                }
+                auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Institution routes */
+            if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0) {
+                institution_handle(client_fd, method, route_path, req_body,
+                                   auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Exam routes */
+            if (strncmp(route_path, "/api/v1/admin/exams", 19) == 0 ||
+                strncmp(route_path, "/api/v1/platform/exams", 22) == 0) {
+                exam_handle(client_fd, method, route_path, req_body,
+                            auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Candidate routes */
+            if (strncmp(route_path, "/api/v1/admin/roster", 20) == 0 ||
+                strncmp(route_path, "/api/v1/platform/exams/", 23) == 0) {
+                candidate_handle(client_fd, method, route_path, req_body,
+                                 auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Device/fleet/heartbeat routes */
+            if (strncmp(route_path, "/api/v1/admin/fleet", 19) == 0 ||
+                strcmp(route_path, "/api/v1/heartbeat") == 0) {
+                device_handle(client_fd, method, route_path, req_body,
+                              auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* TPM/attestation routes */
+            if (strncmp(route_path, "/api/v1/attestation", 19) == 0) {
+                tpm_handle(client_fd, method, route_path, req_body,
+                           auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Session/proctoring/consent/key-release routes */
+            if (strncmp(route_path, "/api/v1/exam", 10) == 0 ||
+                strcmp(route_path, "/api/v1/consent") == 0 ||
+                strncmp(route_path, "/api/v1/proctoring", 18) == 0 ||
+                strncmp(route_path, "/api/v1/second-camera", 21) == 0) {
+                session_handle(client_fd, method, route_path, req_body,
+                               auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Release revocation routes */
+            if (strncmp(route_path, "/api/v1/admin/revoke", 20) == 0) {
+                release_handle(client_fd, method, route_path, req_body,
+                               auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Policy routes */
+            if (strncmp(route_path, "/api/v1/admin/policies", 22) == 0) {
+                policy_handle(client_fd, method, route_path, req_body,
+                              auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* All remaining module routes */
+            modules_handle(client_fd, method, route_path, req_body,
+                           auth_header, origin, extra, sizeof(extra));
+            goto client_done;
+        }
         send_http_response(client_fd, 404, "application/json", "{\"error\":\"Not Found\"}");
     }
 
@@ -3846,6 +4197,43 @@ int main(int argc, char *argv[]) {
     const int production_mode = strcmp(tpm_mode, "production") == 0;
     g_production_mode = production_mode;
 
+    /* Validate required secrets first — before any system or appliance check.
+     * This ensures a missing secret always produces a diagnostic that names
+     * the exact secret, regardless of deployment environment.  The appliance
+     * check may exit early on its own error, but secrets must be checked
+     * unconditionally so the startup-fail-closed test contract is preserved.
+     */
+    if (!valid_startup_secret("EXAMOS_AGENT_API_TOKEN", 1) ||
+        !valid_startup_secret("EXAMOS_PROCTOR_API_TOKEN", 1) ||
+        !valid_startup_secret("EXAMOS_EVENT_SIGNING_KEY", 1) ||
+        !valid_startup_secret("EXAMOS_VARIANT_SECRET", 1) ||
+        !valid_startup_secret("EXAMOS_LEDGER_HMAC_KEY", 1)) {
+        return 2;
+    }
+
+    /* In production, forbid the development bypass before any system check. */
+    const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    if (production_mode && allow_unprovisioned) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
+        return 2;
+    }
+
+    /* The exam key-encryption key seals released exam keys. It must be
+       provisioned before the service can accept any attestation. */
+    if (production_mode) {
+        const char *kek = getenv("EXAMOS_EXAM_KEY_KEK");
+        if (!kek || strlen(kek) < 32) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK must be provisioned with at least 32 characters in production mode.\n");
+            return 2;
+        }
+        for (size_t i = 0; i < strlen(kek); i++) {
+            if (isspace((unsigned char)kek[i]) || (unsigned char)kek[i] < 0x20) {
+                fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK contains unsupported characters.\n");
+                return 2;
+            }
+        }
+    }
+
     /*
      * In production the service only runs on an ExamOS appliance. The
      * examination evidence, the attestation state and the sealed secrets
@@ -3864,37 +4252,6 @@ int main(int argc, char *argv[]) {
             fprintf(stderr,
                     "[ExamOS-Server] WARNING: %s. Development mode continues without the appliance posture.\n",
                     appliance_reason);
-        }
-    }
-    const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
-    if (production_mode && allow_unprovisioned) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
-        return 2;
-    }
-    /* The evidence ledger is authenticated with HMAC-SHA256, so its key is
-       mandatory in every mode: a ledger that cannot be authenticated is not
-       evidence, and silently running unauthenticated would be a fallback. */
-    if (!valid_startup_secret("EXAMOS_AGENT_API_TOKEN", 1) ||
-        !valid_startup_secret("EXAMOS_PROCTOR_API_TOKEN", 1) ||
-        !valid_startup_secret("EXAMOS_EVENT_SIGNING_KEY", 1) ||
-        !valid_startup_secret("EXAMOS_VARIANT_SECRET", 1) ||
-        !valid_startup_secret("EXAMOS_LEDGER_HMAC_KEY", 1)) {
-        return 2;
-    }
-
-    /* The exam key-encryption key seals released exam keys. It must be
-       provisioned before the service can accept any attestation. */
-    if (production_mode) {
-        const char *kek = getenv("EXAMOS_EXAM_KEY_KEK");
-        if (!kek || strlen(kek) < 32) {
-            fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK must be provisioned with at least 32 characters in production mode.\n");
-            return 2;
-        }
-        for (size_t i = 0; i < strlen(kek); i++) {
-            if (isspace((unsigned char)kek[i]) || (unsigned char)kek[i] < 0x20) {
-                fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_EXAM_KEY_KEK contains unsupported characters.\n");
-                return 2;
-            }
         }
     }
 
@@ -3954,6 +4311,44 @@ int main(int argc, char *argv[]) {
     exam_manager_init();
     exam_engine_init();
     candidate_session_init();
+
+    /* --- ExamOS Console integration: PostgreSQL database --- */
+    if (db_init(NULL) != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
+        return 1;
+    }
+    g_db_initialized = 1;
+    if (db_create_schema() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
+        return 1;
+    }
+
+    /* --- ExamOS Console integration: audit hash chain --- */
+    if (audit_init() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: audit chain initialization failed.\n");
+        return 1;
+    }
+    g_audit_initialized = 1;
+
+    /* --- ExamOS Console integration: load console public key for request signing verification --- */
+    {
+        const char *key_path = getenv("EXAMOS_CONSOLE_PUBLIC_KEY");
+        if (key_path && key_path[0]) {
+            FILE *kf = fopen(key_path, "r");
+            if (kf) {
+                size_t n = fread(g_console_public_key_pem, 1, sizeof(g_console_public_key_pem) - 1, kf);
+                g_console_public_key_pem[n] = '\0';
+                fclose(kf);
+                g_console_key_loaded = 1;
+                fprintf(stderr, "[ExamOS-Server] Console public key loaded from %s\n", key_path);
+            } else {
+                fprintf(stderr, "[ExamOS-Server] WARNING: cannot read console public key %s\n", key_path);
+            }
+        } else {
+            fprintf(stderr, "[ExamOS-Server] NOTE: EXAMOS_CONSOLE_PUBLIC_KEY not set; console request signing verification will be permissive in development.\n");
+        }
+    }
+
     if (attestation_service_init() != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: attestation service is not production-ready.\n");
         return 1;

@@ -2,7 +2,7 @@ CC ?= gcc
 PG_CONFIG ?= pg_config
 PG_INCLUDEDIR := $(shell $(PG_CONFIG) --includedir 2>/dev/null)
 PG_LIBDIR := $(shell $(PG_CONFIG) --libdir 2>/dev/null)
-CFLAGS ?= -Wall -Wextra -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong
+CFLAGS ?= -Wall -Wextra -O2 -Iinclude -Idb -Isecurity -Iaudit -Icontrollers -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 CPPFLAGS += -I$(PG_INCLUDEDIR) -DUSE_OPENSSL_TLS
 LDFLAGS ?= -lssl -lcrypto -lpthread -L$(PG_LIBDIR) -lpq -lm
 
@@ -31,7 +31,21 @@ SRCS = main.c \
        attestation/attestation_config.c \
        attestation/tpm_quote.c \
        gateway/key_release.c \
-       proctoring/second_camera.c
+       proctoring/second_camera.c \
+       db/db.c \
+       security/security.c \
+       audit/audit.c \
+       controllers/controller.c \
+       controllers/auth_controller.c \
+       controllers/institution_controller.c \
+       controllers/exam_controller.c \
+       controllers/candidate_controller.c \
+       controllers/device_controller.c \
+       controllers/tpm_controller.c \
+       controllers/session_controller.c \
+       controllers/release_controller.c \
+       controllers/policy_controller.c \
+       controllers/modules_controller.c
 
 BUILD_DIR ?= .
 COMMON_OBJ = $(BUILD_DIR)/common/examos_appliance.o

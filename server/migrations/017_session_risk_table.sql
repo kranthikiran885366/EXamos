@@ -56,6 +56,14 @@ COMMENT ON COLUMN examos_session_risk.should_terminate IS
     'TRUE when the risk engine recommends session termination. '
     'Invigilator must confirm before the server invalidates the session.';
 
+-- Add notes column to the migration registry if not already present.
+-- This column was referenced in this migration but never added to the schema
+-- created in migration 001.  ALTER TABLE ... ADD COLUMN IF NOT EXISTS is
+-- idempotent so it is safe to run on a cluster where the column was added
+-- by another route.
+ALTER TABLE examos_schema_migrations
+    ADD COLUMN IF NOT EXISTS notes text;
+
 -- Record migration
 INSERT INTO examos_schema_migrations (component, version, applied_at, notes)
 VALUES (

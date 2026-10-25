@@ -79,7 +79,11 @@ modprobe ext4 || fail "cannot load ext4 filesystem support"
 modprobe overlay || fail "cannot load overlay filesystem support"
 ROOT_LOOP="$(losetup --find --show --read-only "$ROOT_IMAGE")" ||
     fail "cannot attach the embedded root filesystem read-only"
-mount -t ext4 -o ro "$ROOT_LOOP" /run/lower ||
+# The loop is read-only, so the kernel cannot replay a journal. ISO build
+# must already have run e2fsck on this image (same H-12 reconciliation).
+# noload is still required here: this matches dm-verity-setup.sh and is the
+# only legal mount on write-unavailable optical media.
+mount -t ext4 -o ro,noload "$ROOT_LOOP" /run/lower ||
     fail "cannot mount the embedded ext4 root filesystem"
 
 ROOT_LABEL="$(blkid -p -s LABEL -o value "$ROOT_LOOP")" ||

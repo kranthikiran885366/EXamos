@@ -26,7 +26,7 @@ LimitNOFILE=65536
 
 # Sandboxing
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=true
 NoNewPrivileges=true
 ReadWritePaths=/run/user/1000 /tmp
 PrivateTmp=true

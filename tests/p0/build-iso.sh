@@ -68,7 +68,7 @@ cat > "$ISO_RESULT" <<EOF
 }
 EOF
 
-for tool in jq sfdisk xorriso sha256sum mcopy mmd mkfs.vfat objcopy ukify blkid cmp; do
+for tool in jq sfdisk xorriso sha256sum mcopy mmd mkfs.vfat objcopy ukify blkid cmp e2fsck tune2fs; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required ISO build tool is missing: $tool"
 done
 
@@ -205,6 +205,10 @@ ROOT_FS_LABEL="$(blkid -p -o value -s LABEL "$ROOT_FILE" 2>/dev/null || true)"
     fail "Extracted root partition label is not root-x86-64"
 ROOT_FS_UUID="$(blkid -p -o value -s UUID "$ROOT_FILE" 2>/dev/null || true)"
 [ -n "$ROOT_FS_UUID" ] || fail "Extracted root partition has no filesystem UUID"
+examos_ext4_replay_journal_for_readonly "$ROOT_FILE" ||
+    fail "Unable to replay the extracted root journal for read-only optical media"
+ROOT_FS_UUID="$(blkid -p -o value -s UUID "$ROOT_FILE" 2>/dev/null || true)"
+[ -n "$ROOT_FS_UUID" ] || fail "Root UUID missing after journal replay"
 
 objcopy --dump-section .linux="$TMP_DIR/source.linux" "$SOURCE_UKI_NATIVE" ||
     fail "Unable to extract the canonical UKI kernel"

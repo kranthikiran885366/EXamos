@@ -1,0 +1,181 @@
+import { all, get, put } from '../../core/db/db';
+import { clean } from '../../core/security/sanitize';
+import { id, need, fail, log, assertScope, requireReason, isEmail } from '../../core/services/common';
+import { can } from '../../core/security/rbac';
+
+export const DEPLOYMENT_MODELS = [
+  { v: 'usb-boot', l: 'Bootable USB (recommended)' },
+  { v: 'managed-lab', l: 'Managed lab devices' },
+  { v: 'hybrid', l: 'Hybrid USB + managed lab' },
+];
+export const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'UTC'];
+const codeOf = (name) => 'INS-' + clean(name, 20).replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X') + '-' + Math.floor(Math.random() * 900 + 100);
+
+export async function createInstitution(a, input) {
+  need(a, 'tenant.manage');
+  const name = clean(input.name, 80);
+  if (name.length < 3) fail('Institution name needs 3+ characters.');
+  const tenants = await all('tenants');
+  if (tenants.some((t) => t.name.toLowerCase() === name.toLowerCase())) fail('An institution with this name already exists.');
+  const code = clean(input.code, 20).toUpperCase() || codeOf(name);
+  if (tenants.some((t) => t.code === code)) fail('This institution code is already used.');
+  const domains = (Array.isArray(input.domains) ? input.domains : String(input.domains || '').split(/[\s,]+/)).map((d) => d.trim().toLowerCase()).filter(Boolean);
+  for (const d of domains) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
+  if (input.contactEmail && !isEmail(input.contactEmail)) fail('Enter a valid contact email.');
+  const now = Date.now();
+  const t = {
+    id: id('ten'), name, code, domains, contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
+    region: clean(input.region, 40) || 'India · Mumbai', timezone: input.timezone || 'Asia/Kolkata',
+    plan: input.plan || 'pilot', status: 'active', maxCenters: Number(input.maxCenters) || 5,
+    maxCandidates: Number(input.maxCandidates) || 500, deploymentModel: input.deploymentModel || 'usb-boot',
+    branding: { displayName: name, accent: '#2f5bea' }, notificationPrefs: { email: true, inApp: true },
+    examDefaults: { durationMin: 60, lateEntryMin: 15, attestationLevel: 'tpm' },
+    security: { requireTpm: true, requireSecureBoot: true, allowUsbStorage: false },
+    history: [{ at: now, by: a.id, action: 'Institution registered' }],
+    createdAt: now, createdBy: a.id,
+  };
+  await put('tenants', t); await log(a, 'TENANT_CREATED', `${name} (${code})`);
+  return t;
+}
+// Backwards-compatible alias used by the original provisioning flow.
+export const createTenant = createInstitution;
+
+export async function updateInstitution(a, t, patch) {
+  need(a, 'inst.manage'); assertScope(a, t.id);
+  const next = { ...t };
+  if (patch.name !== undefined) {
+    const n = clean(patch.name, 80); if (n.length < 3) fail('Institution name needs 3+ characters.');
+    if ((await all('tenants')).some((x) => x.id !== t.id && x.name.toLowerCase() === n.toLowerCase())) fail('Another institution already uses this name.');
+    next.name = n;
+  }
+  if (patch.domains !== undefined) {
+    const ds = (Array.isArray(patch.domains) ? patch.domains : String(patch.domains).split(/[\s,]+/)).map((d) => d.trim().toLowerCase()).filter(Boolean);
+    for (const d of ds) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
+    next.domains = ds;
+  }
+  for (const k of ['contactEmail', 'contactPhone', 'region', 'timezone', 'deploymentModel']) if (patch[k] !== undefined) next[k] = clean(patch[k], 120);
+  if (patch.contactEmail && !isEmail(patch.contactEmail)) fail('Enter a valid contact email.');
+  if (patch.maxCandidates !== undefined) { const n = Number(patch.maxCandidates); if (!(n >= 10 && n <= 100000)) fail('Candidate capacity must be 10–100,000.'); next.maxCandidates = n; }
+  if (patch.plan !== undefined) { if (a.role !== 'superadmin' && a.role !== 'ops_admin') fail('Only the platform can change a plan.'); next.plan = patch.plan; }
+  if (patch.examDefaults) next.examDefaults = { ...next.examDefaults, ...patch.examDefaults };
+  if (patch.security) next.security = { ...next.security, ...patch.security };
+  if (patch.notificationPrefs) next.notificationPrefs = { ...next.notificationPrefs, ...patch.notificationPrefs };
+  if (patch.branding) next.branding = { ...next.branding, ...patch.branding };
+  next.history = [...(t.history || []), { at: Date.now(), by: a.id, action: 'Institution settings updated' }];
+  await put('tenants', next); await log(a, 'TENANT_UPDATED', next.name);
+  return 'Institution updated.';
+}
+
+export async function setInstitutionStatus(a, t, status, reason) {
+  need(a, 'tenant.manage');
+  if (!['active', 'suspended', 'archived'].includes(status)) fail('Unknown institution status.');
+  const r = requireReason(reason, 8);
+  if (status === 'suspended') {
+    if ((await all('tenants')).filter((x) => x.status === 'active').length <= 1) fail('Cannot suspend the last active institution.');
+    if ((await all('exams')).some((e) => e.tenantId === t.id && e.status === 'live')) fail('Close live exams before suspending this institution.');
+  }
+  if (status === 'archived') {
+    if ((await all('exams')).some((e) => e.tenantId === t.id && ['live', 'published'].includes(e.status))) fail('Close or cancel published/live exams before archiving.');
+  }
+  const next = { ...t, status, statusReason: r, statusAt: Date.now(), history: [...(t.history || []), { at: Date.now(), by: a.id, action: `Status → ${status}`, reason: r }] };
+  await put('tenants', next); await log(a, 'TENANT_' + status.toUpperCase(), `${t.name}: ${r}`);
+  return `${t.name} is now ${status}.`;
+}
+
+export async function saveExamDefaults(a, t, defaults) {
+  need(a, 'settings.inst'); assertScope(a, t.id);
+  const next = { ...t, examDefaults: { ...t.examDefaults, ...defaults }, history: [...(t.history || []), { at: Date.now(), by: a.id, action: 'Exam defaults updated' }] };
+  await put('tenants', next); await log(a, 'TENANT_EXAM_DEFAULTS', t.name);
+  return 'Exam defaults saved.';
+}
+
+/* ---------------- Campuses ---------------- */
+export async function createCampus(a, { tenantId, name, code, city, address, capacity }) {
+  need(a, 'campus.manage'); assertScope(a, tenantId);
+  const t = await get('tenants', tenantId); if (!t) fail('Institution not found.');
+  if ((await all('campuses')).filter((c) => c.tenantId === tenantId).length >= 200) fail('Campus limit reached.');
+  const n = clean(name, 80); if (n.length < 3) fail('Campus name needs 3+ characters.');
+  const c = clean(code, 10).toUpperCase() || `CMP-${Math.floor(Math.random() * 900 + 100)}`;
+  if ((await all('campuses')).some((x) => x.tenantId === tenantId && x.code === c)) fail('Campus code already used.');
+  const cap = Number(capacity); if (!(cap >= 1 && cap <= 5000)) fail('Capacity must be 1–5,000.');
+  await put('campuses', { id: id('cmp'), tenantId, name: n, code: c, city: clean(city, 40), address: clean(address, 160), capacity: cap, status: 'active', adminIds: [], createdAt: Date.now() });
+  await log(a, 'CAMPUS_CREATED', `${t.name} · ${c}`); return `Campus ${c} created.`;
+}
+export async function updateCampus(a, c, patch) {
+  need(a, 'campus.manage'); assertScope(a, c.tenantId);
+  const next = { ...c, name: patch.name !== undefined ? clean(patch.name, 80) : c.name, city: patch.city !== undefined ? clean(patch.city, 40) : c.city, address: patch.address !== undefined ? clean(patch.address, 160) : c.address };
+  if (patch.capacity !== undefined) { const cap = Number(patch.capacity); if (!(cap >= 1 && cap <= 5000)) fail('Capacity must be 1–5,000.'); next.capacity = cap; }
+  await put('campuses', next); await log(a, 'CAMPUS_UPDATED', c.code); return 'Campus updated.';
+}
+export async function setCampusStatus(a, c, status, reason) {
+  need(a, 'campus.manage'); assertScope(a, c.tenantId);
+  if (!['active', 'inactive', 'archived'].includes(status)) fail('Unknown campus status.');
+  const r = requireReason(reason, 8);
+  if (status !== 'active') {
+    const centers = (await all('centers')).filter((x) => x.campusId === c.id);
+    const open = (await all('exams')).some((e) => e.centerIds.some((id) => centers.some((x) => x.id === id)) && ['published', 'live'].includes(e.status));
+    if (open) fail('An open exam uses a center in this campus.');
+  }
+  await put('campuses', { ...c, status, statusReason: r }); await log(a, 'CAMPUS_' + status.toUpperCase(), `${c.code}: ${r}`);
+  return `${c.code} is now ${status}.`;
+}
+export async function assignCampusAdmin(a, c, userId) {
+  need(a, 'campus.manage'); assertScope(a, c.tenantId);
+  const u = await get('users', userId); if (!u || u.tenantId !== c.tenantId) fail('Pick a user from this institution.');
+  await put('campuses', { ...c, adminIds: [...new Set([...(c.adminIds || []), u.id])] });
+  await log(a, 'CAMPUS_ADMIN_ASSIGNED', `${c.code} -> ${u.id}`); return 'Campus administrator assigned.';
+}
+
+/* ---------------- Departments ---------------- */
+export const DEPT_TYPES = [
+  { v: 'academic', l: 'Academic department' }, { v: 'examination', l: 'Examination unit' },
+  { v: 'laboratory', l: 'Laboratory' }, { v: 'administrative', l: 'Administrative' },
+];
+export async function createDepartment(a, { tenantId, name, code, campusId, type = 'academic' }) {
+  need(a, 'dept.manage'); assertScope(a, tenantId);
+  const n = clean(name, 80); if (n.length < 3) fail('Department name needs 3+ characters.');
+  const c = clean(code, 12).toUpperCase() || `DEP-${Math.floor(Math.random() * 900 + 100)}`;
+  if ((await all('departments')).some((x) => x.tenantId === tenantId && x.code === c)) fail('Department code already used.');
+  if (!DEPT_TYPES.some((t) => t.v === type)) fail('Pick a department type.');
+  if (campusId) { const cp = await get('campuses', campusId); if (!cp || cp.tenantId !== tenantId) fail('Pick a campus in this institution.'); }
+  await put('departments', { id: id('dep'), tenantId, name: n, code: c, type, campusId: campusId || null, status: 'active', createdAt: Date.now() });
+  await log(a, 'DEPARTMENT_CREATED', c); return `Department ${c} created.`;
+}
+export async function setDepartmentStatus(a, d, status, reason) {
+  need(a, 'dept.manage'); assertScope(a, d.tenantId);
+  const r = requireReason(reason, 8);
+  if (status === 'inactive' && (await all('users')).some((u) => u.departmentId === d.id && u.status === 'active')) fail('Reassign active staff before deactivating this department.');
+  await put('departments', { ...d, status, statusReason: r }); await log(a, 'DEPARTMENT_' + status.toUpperCase(), `${d.code}: ${r}`);
+  return `${d.code} is now ${status}.`;
+}
+
+/* ---------------- Staff assignments ---------------- */
+export async function assignStaff(a, { tenantId, userId, campusId = '', departmentId = '', roleTitle }) {
+  need(a, 'staff.manage'); assertScope(a, tenantId);
+  const u = await get('users', userId); if (!u || u.tenantId !== tenantId) fail('Pick a user from this institution.');
+  if (campusId) { const c = await get('campuses', campusId); if (!c || c.tenantId !== tenantId) fail('Pick a campus in this institution.'); }
+  if (departmentId) { const d = await get('departments', departmentId); if (!d || d.tenantId !== tenantId) fail('Pick a department in this institution.'); }
+  const existing = (await all('staff')).find((s) => s.tenantId === tenantId && s.userId === userId);
+  const rec = { id: existing?.id || id('stf'), tenantId, userId, name: u.name, roleTitle: clean(roleTitle, 60) || u.title, campusId, departmentId, status: 'active', createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() };
+  await put('staff', rec); await log(a, 'STAFF_ASSIGNED', `${u.id} ${campusId || 'all campuses'}`);
+  return 'Staff assignment saved.';
+}
+export async function removeStaff(a, s, reason) {
+  need(a, 'staff.manage'); assertScope(a, s.tenantId);
+  const r = requireReason(reason, 8);
+  await put('staff', { ...s, status: 'inactive', statusReason: r, updatedAt: Date.now() });
+  await log(a, 'STAFF_REMOVED', `${s.userId}: ${r}`); return 'Staff assignment removed.';
+}
+
+export async function institutionStats(tenantId, ctx = {}) {
+  const { centers = await all('centers'), devices = await all('devices'), candidates = await all('candidates'), exams = await all('exams'), campuses = await all('campuses'), departments = await all('departments'), users = await all('users') } = ctx;
+  const f = (x) => x.tenantId === tenantId;
+  const e = exams.filter(f), d = devices.filter(f), cm = campuses.filter(f);
+  return {
+    campuses: cm.length, departments: departments.filter(f).length, users: users.filter(f).length,
+    centers: centers.filter(f).length, devices: d.length, enrolledDevices: d.filter((x) => x.status === 'enrolled').length,
+    candidates: candidates.filter(f).length, exams: e.length, liveExams: e.filter((x) => x.status === 'live').length,
+    publishedExams: e.filter((x) => x.status === 'published').length, openIncidents: (await all('incidents')).filter((i) => f(i) && ['open', 'investigating', 'contained'].includes(i.status)).length,
+  };
+}
+export const canManageInstitution = (user, t) => can(user.role, 'tenant.manage') || (can(user.role, 'inst.manage') && user.tenantId === t.id);

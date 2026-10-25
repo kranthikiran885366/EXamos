@@ -2,7 +2,8 @@
  * ExamOS Kiosk Launcher (C Implementation)
  * Production-grade Wayland / Cage session supervisor for Chromium kiosk.
  * Manages ephemeral RAM user profile, handles POSIX signals, enforces security flags,
- * and loads the configured Exam URL from /etc/examos/exam.conf or EXAMOS_EXAM_URL.
+ * supports candidate accommodations (zoom, contrast, screen reader),
+ * detects crash signals (WIFSIGNALED), and limits rapid crash loops (MAX_CRASH_COUNT).
  */
 
 #define _GNU_SOURCE
@@ -20,7 +21,9 @@
 #include <errno.h>
 
 #define EXAM_CONF_PATH "/etc/examos/exam.conf"
+#define ACCOMMODATIONS_CONF_PATH "/etc/examos/accommodations.json"
 #define CHROMIUM_BIN "/usr/bin/chromium"
+#define MAX_CRASH_COUNT 5
 
 static volatile sig_atomic_t g_running = 1;
 static pid_t g_child_pid = -1;
@@ -46,7 +49,6 @@ static void handle_signal(int sig) {
 
 static int remove_directory_recursive(const char *path) {
     if (!path || !path[0]) return -1;
-    /* Validate path is under a safe prefix to prevent accidental root deletion */
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     const char *safe_prefix = (runtime && runtime[0]) ? runtime : "/tmp";
     if (strncmp(path, safe_prefix, strlen(safe_prefix)) != 0) return -1;
@@ -88,14 +90,71 @@ static int create_ephemeral_profile(char *out_path, size_t max_len) {
     return 0;
 }
 
-int main(void) {
-    exam_config_t exam_config = {0};
-    if (config_load(&exam_config) != 0 || !exam_config.configured ||
-        !config_validate_exam_url(exam_config.exam_url)) {
-        log_msg("ERROR", "Exam URL is missing or not approved; refusing to launch the kiosk browser");
-        return 1;
+/* Parse accommodations JSON for zoom, high contrast, and accessibility */
+static void load_accommodations(char *scale_flag, size_t scale_sz,
+                                int *out_high_contrast, int *out_screen_reader) {
+    scale_flag[0] = '\0';
+    *out_high_contrast = 0;
+    *out_screen_reader = 0;
+
+    const char *paths[] = {
+        getenv("EXAMOS_ACCOMMODATIONS_PATH"),
+        ACCOMMODATIONS_CONF_PATH,
+        NULL
+    };
+
+    FILE *fp = NULL;
+    for (int i = 0; paths[i]; i++) {
+        if (paths[i] && paths[i][0]) {
+            fp = fopen(paths[i], "r");
+            if (fp) break;
+        }
     }
-    const char *exam_url = exam_config.exam_url;
+    if (!fp) return;
+
+    char buf[4096];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    if (len == 0) return;
+    buf[len] = '\0';
+
+    char *zoom_ptr = strstr(buf, "\"zoom_factor\"");
+    if (zoom_ptr) {
+        char *col = strchr(zoom_ptr, ':');
+        if (col) {
+            float factor = 1.0f;
+            if (sscanf(col + 1, "%f", &factor) == 1 && factor >= 0.5f && factor <= 3.0f) {
+                snprintf(scale_flag, scale_sz, "--force-device-scale-factor=%.2f", factor);
+            }
+        }
+    }
+
+    if (strstr(buf, "\"high_contrast\": true") || strstr(buf, "\"high_contrast\":true")) {
+        *out_high_contrast = 1;
+    }
+    if (strstr(buf, "\"screen_reader\": true") || strstr(buf, "\"screen_reader\":true")) {
+        *out_screen_reader = 1;
+    }
+}
+
+int main(int argc, char *argv[]) {
+    const char *exam_url = NULL;
+    exam_config_t exam_config = {0};
+
+    if (argc > 1) {
+        if (!argv[1] || !argv[1][0] || !config_validate_exam_url(argv[1])) {
+            log_msg("ERROR", "Exam URL argument is missing or not approved; refusing to launch");
+            return 1;
+        }
+        exam_url = argv[1];
+    } else {
+        if (config_load(&exam_config) != 0 || !exam_config.configured ||
+            !config_validate_exam_url(exam_config.exam_url)) {
+            log_msg("ERROR", "Exam URL is missing or not approved; refusing to launch the kiosk browser");
+            return 1;
+        }
+        exam_url = exam_config.exam_url;
+    }
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -107,6 +166,8 @@ int main(void) {
     char launch_msg[600];
     snprintf(launch_msg, sizeof(launch_msg), "Target exam URL: %s", exam_url);
     log_msg("INFO", launch_msg);
+
+    int consecutive_crashes = 0;
 
     while (g_running) {
         if (create_ephemeral_profile(g_profile_dir, sizeof(g_profile_dir)) != 0) {
@@ -120,6 +181,12 @@ int main(void) {
         char app_flag[600];
         snprintf(app_flag, sizeof(app_flag), "--app=%s", exam_url);
 
+        /* Candidate accommodations */
+        char scale_flag[64] = {0};
+        int high_contrast = 0;
+        int screen_reader = 0;
+        load_accommodations(scale_flag, sizeof(scale_flag), &high_contrast, &screen_reader);
+
         time_t start_time = time(NULL);
         pid_t pid = fork();
 
@@ -131,52 +198,55 @@ int main(void) {
         }
 
         if (pid == 0) {
-            // Child Process - Execute Chromium with locked-down flags
-            char *const args[] = {
-                (char *)CHROMIUM_BIN,
-                user_data_flag,
-                (char *)"--kiosk",
-                (char *)"--no-first-run",
-                (char *)"--no-default-browser-check",
-                (char *)"--disable-sync",
-                (char *)"--disable-extensions",
-                (char *)"--disable-plugins",
-                (char *)"--disable-translate",
-                (char *)"--disable-save-password-bubble",
-                (char *)"--disable-infobars",
-                (char *)"--disable-session-crashed-bubble",
-                (char *)"--disable-component-update",
-                (char *)"--disable-background-networking",
-                (char *)"--disable-dev-tools",
-                (char *)"--disable-print-preview",
-                (char *)"--password-store=basic",
-                (char *)"--ozone-platform=wayland",
-                (char *)"--enable-features=UseOzonePlatform",
-                (char *)"--autoplay-policy=no-user-gesture-required",
-                /* --- Security hardening flags added below ---
-                 * --disable-developer-tools  : belt-and-suspenders alongside --disable-dev-tools
-                 *                              (flag name varies across Chromium builds).
-                 *                              the GPU sandbox cannot initialise; remove if the
-                 *                              target hardware supports it.
-                 * --disable-popup-blocking   : exam portals may open result/print pop-ups.
-                 * --disable-notifications    : suppress OS-level notification permission prompts.
-                 * --incognito                : ensures no residual session state is persisted
-                 *                             (defence-in-depth alongside the ephemeral profile).
-                 * --disable-pinch            : disable touchscreen pinch-to-zoom gesture.
-                 * --overscroll-history-navigation=0 : prevent swipe-back/forward navigation.
-                 */
-                (char *)"--disable-developer-tools",
-                (char *)"--disable-popup-blocking",
-                (char *)"--disable-notifications",
-                (char *)"--incognito",
-                (char *)"--disable-pinch",
-                (char *)"--overscroll-history-navigation=0",
-                app_flag,
-                NULL
-            };
+            // Child Process - Execute Chromium with locked-down flags and accommodations
+            char *args[48];
+            int arg_idx = 0;
+
+            args[arg_idx++] = (char *)CHROMIUM_BIN;
+            args[arg_idx++] = user_data_flag;
+            args[arg_idx++] = (char *)"--kiosk";
+            args[arg_idx++] = (char *)"--no-first-run";
+            args[arg_idx++] = (char *)"--no-default-browser-check";
+            args[arg_idx++] = (char *)"--disable-sync";
+            args[arg_idx++] = (char *)"--disable-extensions";
+            args[arg_idx++] = (char *)"--disable-plugins";
+            args[arg_idx++] = (char *)"--disable-translate";
+            args[arg_idx++] = (char *)"--disable-save-password-bubble";
+            args[arg_idx++] = (char *)"--disable-infobars";
+            args[arg_idx++] = (char *)"--disable-session-crashed-bubble";
+            args[arg_idx++] = (char *)"--disable-component-update";
+            args[arg_idx++] = (char *)"--disable-background-networking";
+            args[arg_idx++] = (char *)"--disable-dev-tools";
+            args[arg_idx++] = (char *)"--disable-print-preview";
+            args[arg_idx++] = (char *)"--password-store=basic";
+            args[arg_idx++] = (char *)"--ozone-platform=wayland";
+            args[arg_idx++] = (char *)"--enable-features=UseOzonePlatform";
+            args[arg_idx++] = (char *)"--autoplay-policy=no-user-gesture-required";
+            args[arg_idx++] = (char *)"--disable-developer-tools";
+            args[arg_idx++] = (char *)"--disable-popup-blocking";
+            args[arg_idx++] = (char *)"--disable-notifications";
+            args[arg_idx++] = (char *)"--incognito";
+            args[arg_idx++] = (char *)"--disable-pinch";
+            args[arg_idx++] = (char *)"--overscroll-history-navigation=0";
+
+            /* ExamOS Kiosk User-Agent enforcement */
+            args[arg_idx++] = (char *)"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 ExamOS-Kiosk/1.0 (ExamOS Secure Kiosk Environment; Cage/Wayland)";
+
+            /* Accommodations dynamically applied */
+            if (scale_flag[0]) {
+                args[arg_idx++] = scale_flag;
+            }
+            if (high_contrast) {
+                args[arg_idx++] = (char *)"--high-contrast-mode";
+            }
+            if (screen_reader) {
+                args[arg_idx++] = (char *)"--enable-features=AccessibilitySharedLibrary";
+            }
+
+            args[arg_idx++] = app_flag;
+            args[arg_idx] = NULL;
 
             execvp(CHROMIUM_BIN, args);
-            // If execvp fails:
             fprintf(stderr, "Fatal: execvp failed for %s: %s\n", CHROMIUM_BIN, strerror(errno));
             _exit(127);
         }
@@ -188,6 +258,15 @@ int main(void) {
         g_child_pid = -1;
 
         time_t uptime = time(NULL) - start_time;
+
+        /* Signal crash detection */
+        if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            char alert[128];
+            snprintf(alert, sizeof(alert), "SECURITY ALERT: Chromium killed by signal %d (%s)", sig, strsignal(sig));
+            log_msg("ERROR", alert);
+        }
+
         char msg[128];
         snprintf(msg, sizeof(msg), "Chromium exited (Uptime: %ld seconds). Cleaning profile...", (long)uptime);
         log_msg("WARN", msg);
@@ -198,10 +277,17 @@ int main(void) {
             break;
         }
 
-        // Prevent rapid CPU spin on instantaneous crash
+        // Anti-spin latching and crash throttling
         if (uptime < 5) {
+            consecutive_crashes++;
+            if (consecutive_crashes >= MAX_CRASH_COUNT) {
+                log_msg("FATAL", "Anti-spin latching triggered: rapid crashes exceeded MAX_CRASH_COUNT. Halting kiosk supervisor.");
+                break;
+            }
             log_msg("INFO", "Crash throttle: sleeping 3 seconds before respawning...");
             sleep(3);
+        } else {
+            consecutive_crashes = 0;
         }
     }
 

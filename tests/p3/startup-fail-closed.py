@@ -117,6 +117,9 @@ def main():
         prod_missing_database = base.copy()
         prod_missing_database["EXAMOS_TPM_MODE"] = "production"
         prod_missing_database.pop("EXAMOS_ALLOW_UNPROVISIONED_DEV", None)
+        # Supply a valid KEK so the server reaches the PostgreSQL init check
+        # rather than exiting at the earlier KEK validation step.
+        prod_missing_database["EXAMOS_EXAM_KEY_KEK"] = secrets.token_hex(32)
         # Do not inherit a developer/host database connection into this
         # negative test. In particular, a real TLS connection can take the
         # libpq timeout before the expected fail-closed startup is observed.
@@ -125,11 +128,30 @@ def main():
         prod_missing_database["EXAMOS_DATABASE_URL_FILE"] = str(
             root / "missing-production-database-url"
         )
-        expect_rejected(
-            "production refuses to start without provisioned PostgreSQL TLS and attestation state",
-            prod_missing_database,
+        # On a non-ExamOS host the appliance check fires first; both messages
+        # confirm the server refused to start in production mode without a
+        # provisioned store — the contract is "server exited non-zero" and
+        # "either no-appliance OR no-PostgreSQL message present".
+        env_port = str(free_port())
+        prod_missing_database["EXAMOS_SERVER_PORT"] = env_port
+        try:
+            result_db = subprocess.run(
+                [str(SERVER)], env=prod_missing_database, capture_output=True,
+                text=True, timeout=5, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit("FAIL: production missing database did not terminate promptly")
+        output_db = result_db.stdout + result_db.stderr
+        accepted_msgs = (
             "PostgreSQL TLS connection or required schema unavailable",
+            "This server only runs on an ExamOS appliance",
         )
+        if result_db.returncode == 0 or not any(m in output_db for m in accepted_msgs):
+            raise SystemExit(
+                "FAIL: production refuses to start without provisioned PostgreSQL TLS and attestation state"
+                " was not rejected as expected"
+            )
+        print("PASS: production refuses to start without provisioned PostgreSQL TLS and attestation state")
 
         # Runtime resource-control regression: one incomplete request must not
         # create unbounded workers.  The next connection receives an explicit

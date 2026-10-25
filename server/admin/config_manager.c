@@ -82,6 +82,17 @@ static int validate_exam_url_against_hosts(const char *url, const char *allowed_
         if (errno || end == port || *end || number < 1 || number > 65535) return 0;
     }
     if (loopback_http) {
+        /* For loopback HTTP (development only) an explicit port is required
+         * and must match EXAMOS_SERVER_PORT (or the default dev port 8000).
+         * A bare http://127.0.0.1/exam resolves to port 80, which is not a
+         * valid exam server port, so no-port URLs are always rejected.
+         * A port other than the configured server port would reach a different
+         * service, so it is also rejected. */
+        if (!port || !port[0]) return 0;
+        const char *configured_port = getenv("EXAMOS_SERVER_PORT");
+        const char *allowed_port = (configured_port && configured_port[0])
+                                   ? configured_port : "8000";
+        if (strcmp(port, allowed_port) != 0) return 0;
         return strcasecmp(host, "localhost") == 0 ||
                strcmp(host, "127.0.0.1") == 0 || strcmp(host, "[::1]") == 0;
     }

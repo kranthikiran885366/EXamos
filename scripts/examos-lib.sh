@@ -95,6 +95,48 @@ examos_p0_validate_run_dir() {
     [ "$marker" = "${resolved##*/}" ]
 }
 
+# Replay an ext4 journal on a writable *image file* so it can be packed onto
+# read-only optical/loop media. A guest disk that was live-booted still has
+# EXT4_FEATURE_INCOMPAT_RECOVER set; the kernel then refuses
+# `mount -o ro` on a read-only loop ("write access unavailable, try noload").
+# This is the same e2fsck journal reconciliation used after debugfs writes
+# (H-12). Do not skip this and rely on noload alone: noload would hide an
+# unreplayed journal instead of producing a consistent snapshot.
+examos_ext4_replay_journal_for_readonly() {
+    local image="${1:-}" rc=0 features="" state=""
+    [ -n "$image" ] && [ -f "$image" ] && [ -s "$image" ] && [ ! -L "$image" ] || {
+        echo "ext4 image is missing or not a regular file: ${image:-<empty>}" >&2
+        return 1
+    }
+    command -v e2fsck >/dev/null 2>&1 || { echo "e2fsck is required" >&2; return 1; }
+    command -v tune2fs >/dev/null 2>&1 || { echo "tune2fs is required" >&2; return 1; }
+    e2fsck -f -p "$image" || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 2 ]; then
+        rc=0
+        e2fsck -f -y "$image" || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 2 ]; then
+            echo "e2fsck could not reconcile the ext4 journal on $image (exit $rc)" >&2
+            return 1
+        fi
+    fi
+    features="$(tune2fs -l "$image" | awk -F': *' '/Filesystem features:/ { print $2 }')"
+    state="$(tune2fs -l "$image" | awk -F': *' '/Filesystem state:/ { print $2 }')"
+    case " $features " in
+        *" needs_recovery "*)
+            echo "ext4 still has needs_recovery after e2fsck: $image" >&2
+            return 1
+            ;;
+    esac
+    case "$state" in
+        clean*) ;;
+        *)
+            echo "ext4 state is '${state:-unknown}', expected clean: $image" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 # Find OVMF_CODE firmware. Prints path to stdout, returns 1 if not found.
 examos_find_ovmf_code() {
     local candidates=(

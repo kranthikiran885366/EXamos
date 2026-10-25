@@ -1,0 +1,29 @@
+# examos-server systemd unit (example for production deployment)
+[Unit]
+Description=ExamOS Secure Exam Server
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/examos/server
+EnvironmentFile=/opt/examos/deploy/examos.env
+ExecStart=/opt/examos/server/examos-server
+Restart=on-failure
+RestartSec=5
+# Drop privileges where possible; the server binds to loopback by default.
+User=examos
+Group=examos
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

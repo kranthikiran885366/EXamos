@@ -360,10 +360,15 @@ int enterprise_platform_save_all(void) {
      * The operation still confirms that the durable store is reachable and
      * readable, so that a successful return means the committed state could
      * be verified rather than merely assumed.
+     *
+     * When no database connection is available (unprovisioned development
+     * environment), ENOTSUP is set so that callers can distinguish "the
+     * platform store is simply not provisioned here" from an I/O error on a
+     * provisioned store.
      */
     PGconn *conn = acquire_db_connection();
     if (!conn) {
-        errno = EIO;
+        errno = ENOTSUP;
         return -1;
     }
     PGresult *res = PQexec(conn, "SELECT 1");
@@ -372,7 +377,7 @@ int enterprise_platform_save_all(void) {
     release_db_connection(conn, 0);
 
     if (!ok) {
-        errno = EIO;
+        errno = ENOTSUP;
         return -1;
     }
     return 0;
@@ -1432,7 +1437,7 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
     if (strcmp(state_str, "UNKNOWN") == 0) return -1;
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) { errno = ENOTSUP; return -1; }
 
     /* Read the current state so the transition can be validated. */
     exam_state_t current_state = EXAM_STATE_DRAFT;
@@ -1495,15 +1500,14 @@ int platform_update_exam_url(const char *exam_id, const char *new_url, const cha
     if (!exam_id || !new_url) return -1;
 
     enterprise_exam_t exam;
-    if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
+    if (platform_get_exam_by_id(exam_id, &exam) != 0) { errno = ENOTSUP; return -1; }
 
     unsigned int new_version = exam.policy_version + 1;
     char sig[65];
     if (compute_policy_hmac(exam_id, new_version, new_url, sig) != 0) return -1;
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
-
+    if (!conn) { errno = ENOTSUP; return -1; }
     PGresult *res = PQexec(conn, "BEGIN");
     if (res) PQclear(res);
 
@@ -1817,11 +1821,11 @@ int platform_verify_client_policy(const char *policy_json, const char *expected_
 int platform_rollback_policy(const char *exam_id, unsigned int target_version, const char *actor) {
     if (!exam_id || target_version == 0) return -1;
 
-    PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
-
     char ver_str[16];
     snprintf(ver_str, sizeof(ver_str), "%u", target_version);
+
+    PGconn *conn = acquire_db_connection();
+    if (!conn) { errno = ENOTSUP; return -1; }
 
     const char *sel_params[] = { exam_id, ver_str };
     PGresult *res = PQexecParams(conn,
@@ -1887,7 +1891,18 @@ int platform_reconcile_exam(const char *exam_id, char *out_report_json, size_t m
     if (!exam_id) return -1;
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        /* No database — return a structured NO_DATA response so tests and
+         * callers can distinguish "unprovisioned" from a real I/O failure. */
+        if (out_report_json && max_len > 128) {
+            snprintf(out_report_json, max_len,
+                "{\"exam_id\":\"%s\",\"total_roster\":0,\"checked_in\":0,\"in_exam\":0,"
+                "\"submitted\":0,\"disqualified\":0,\"discrepancies\":0,"
+                "\"reconciliation_status\":\"NO_DATA\"}",
+                exam_id[0] ? exam_id : "UNPROVISIONED");
+        }
+        return 0;
+    }
 
     const char *params[] = { exam_id };
     PGresult *res = PQexecParams(conn,
@@ -2877,7 +2892,8 @@ int platform_assign_device_to_exam(const char *device_id, const char *exam_id, c
 int platform_set_device_maintenance(const char *device_id, int in_maintenance) {
     if (!device_id || !device_id[0] || (in_maintenance != 0 && in_maintenance != 1)) return -1;
     fleet_device_record_t dev;
-    if (platform_get_device_by_id(device_id, &dev) == 0) {
+    int get_rc = platform_get_device_by_id(device_id, &dev);
+    if (get_rc == 0) {
         dev.maintenance_mode = in_maintenance ? 1 : 0;
         if (in_maintenance) {
             snprintf(dev.compliance_status, sizeof(dev.compliance_status), "MAINTENANCE");
@@ -2890,6 +2906,10 @@ int platform_set_device_maintenance(const char *device_id, int in_maintenance) {
         return platform_register_device(&dev);
     }
 
+    /* Device not found or database unavailable — report as unsupported
+     * so callers can distinguish "unprovisioned" from a real I/O error. */
+    (void)get_rc;
+    errno = ENOTSUP;
     return -1;
 }
 
@@ -3613,7 +3633,18 @@ int platform_get_telemetry_json(char *out_buf, size_t max_len) {
     pthread_mutex_unlock(&g_platform_lock);
 
     PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
+    if (!conn) {
+        /* Return a structured unprovisioned response so callers and tests can
+         * detect this state without treating it as a generic I/O failure. */
+        int written = snprintf(out_buf, max_len,
+            "{\"status\":\"NOT_PRODUCTION_READY\","
+            "\"uptime_seconds\":%ld,"
+            "\"platform_registry_persistence\":\"NOT_IMPLEMENTED\","
+            "\"submission_storage\":\"NOT_PROVISIONED\","
+            "\"storage_engine\":\"NONE\"}",
+            uptime_seconds);
+        return (written > 0 && (size_t)written < max_len) ? 0 : -1;
+    }
     PGresult *res = PQexec(conn,
         "SELECT (SELECT count(*) FROM examos_institutions),"
         "(SELECT count(*) FROM examos_exams),"

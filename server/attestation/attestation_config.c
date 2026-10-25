@@ -380,7 +380,10 @@ int attestation_config_load_devices(const char *json_path) {
             strcmp(status_str, "ENROLLED") == 0 ||
             strcmp(status_str, "TRUSTED") == 0;
         if (device_id[0] && ek_fp[0] && allowed_rel[0] && active) {
-            int rc = production
+            /* If AK identity fields are present, register with full identity
+             * even in development mode — the dev-mode verify path needs AK
+             * public key and qualified name to verify TPM quotes. */
+            int rc = (production || (ak_qualified_name[0] && ak_public_pem[0] && ak_pub_sha256[0]))
                 ? attestation_register_device_identity(
                     device_id, ek_fp, ak_qualified_name, ak_public_pem,
                     ak_pub_sha256, allowed_rel)
