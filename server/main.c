@@ -4213,6 +4213,7 @@ int main(int argc, char *argv[]) {
 
     /* In production, forbid the development bypass before any system check. */
     const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
+    int allow_dev_mode = allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
     if (production_mode && allow_unprovisioned) {
         fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
         return 2;
@@ -4313,9 +4314,6 @@ int main(int argc, char *argv[]) {
     candidate_session_init();
 
     /* --- ExamOS Console integration: PostgreSQL database --- */
-    const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
-    int allow_dev_mode = allow_unprovisioned && strcmp(allow_unprovisioned, "1") == 0;
-    
     if (db_init(NULL) != 0) {
         if (allow_dev_mode) {
             fprintf(stderr, "[ExamOS-Server] WARNING: database pool initialization failed; continuing in unprovisioned dev mode.\n");
