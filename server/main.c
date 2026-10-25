@@ -4325,15 +4325,10 @@ int main(int argc, char *argv[]) {
 
     /* --- ExamOS Console integration: audit hash chain --- */
     if (audit_init() != 0) {
-        if (allow_dev_mode) {
-            fprintf(stderr, "[ExamOS-Server] WARNING: audit chain initialization failed; continuing in unprovisioned dev mode.\n");
-        } else {
-            fprintf(stderr, "[ExamOS-Server] FATAL: audit chain initialization failed.\n");
-            return 1;
-        }
-    } else {
-        g_audit_initialized = 1;
+        fprintf(stderr, "[ExamOS-Server] FATAL: audit chain initialization failed.\n");
+        return 1;
     }
+    g_audit_initialized = 1;
 
     /* --- ExamOS Console integration: load console public key for request signing verification --- */
     {
