@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { seed } from './seed';
 import { initChain } from './security/auditChain';
-import { all, wipe } from './db/db';
+import { all, del, wipe } from './db/db';
 import { registerRoles } from './security/rbac';
 
 export default function Boot({ children }) {
@@ -9,8 +9,29 @@ export default function Boot({ children }) {
   useEffect(() => {
     (async () => {
       try {
-        setStep('Provisioning demo institution');
+        setStep('Provisioning institution');
         await seed();
+        setStep('Synchronizing production platform accounts');
+        // Purge all legacy demo/mock seed users from IndexedDB, preserving only platform administrators (root, admin)
+        const currentUsers = await all('users');
+        const allowedAdmins = new Set(['root', 'admin']);
+        for (const u of currentUsers) {
+          if (!allowedAdmins.has(u.id) && !allowedAdmins.has(u.username)) {
+            await del('users', u.id);
+          }
+        }
+        // Purge mock staff and mock invitations
+        const currentStaff = await all('staff');
+        for (const s of currentStaff) {
+          if (!allowedAdmins.has(s.userId)) {
+            await del('staff', s.id);
+          }
+        }
+        const currentInvites = await all('invitations');
+        for (const inv of currentInvites) {
+          await del('invitations', inv.id);
+        }
+
         setStep('Loading roles');
         registerRoles(await all('roles'));
         setStep('Verifying audit chain');

@@ -1,0 +1,52 @@
+============================================================
+ExamOS P0 — Server Runtime Smoke Test
+============================================================
+[SMOKE] Using port: 36841
+[SMOKE] Ledger: /tmp/examos-smoke-ledger-1666.log
+[SMOKE] Waiting for server readiness...
+[ExamOS-Server] Initializing ExamOS Security Server on port 36841 (Phase 4 Proctoring & Tamper-Evident Evidence)...
+[Ledger] HMAC-SHA256 signing enabled (key length: 64 bytes).
+[ExamOS-Server] Device config:  /tmp/examos-smoke-registry.h8HWI2/devices.json
+[ExamOS-Server] Release config: /tmp/examos-smoke-registry.h8HWI2/releases.json
+[ExamOS-Server] Ledger path:    /tmp/examos-smoke-ledger-1666.log
+[AttestService] Mode: development
+[AttestService] Nonce TTL: 120 seconds
+[AttestConfig] Loading devices from: /tmp/examos-smoke-registry.h8HWI2/devices.json
+[AttestConfig]   + device: p0-smoke-e1e37f813c2bf3f0 (ENROLLED)
+[AttestConfig] Loaded 1 device(s).
+[AttestConfig] Loading releases from: /tmp/examos-smoke-registry.h8HWI2/releases.json
+[AttestConfig]   + release: p0-smoke-fd1f8a9f833cbedc (revoked=false)
+[AttestConfig] Loaded 1 release(s).
+[AttestService] Dynamic config loaded.
+[BehaviourEngine] Phase 5 behaviour engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/behaviour
+[BehaviourEngine] Relay thresholds: pause=120000 ms, burst=80 ms
+[BehaviourEngine] Score weights: F1=0.20 F2=0.20 F3=0.10 F4=0.20 F5f=0.10 F5g=0.10 F6=0.10
+[VariantEngine] Phase 5 variant engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/variants Templates: 2
+[VivaEngine] Phase 5 viva engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/viva Timeout: 300s
+[ExamOS-Server] No external Exam URL configured; Candidate Portal active at http://127.0.0.1:36841/
+[ExamOS-Server] Server listening on 127.0.0.1:36841, max active requests=64 (Candidate Portal: /, Admin Dashboard: /admin, Attestation API: /api/v1/attestation/verify)
+[SMOKE] Server ready (PID=1705)
+[SMOKE] Non-loopback bind refused despite TLS assertion: PASS
+
+[SMOKE] Running endpoint test matrix...
+[SMOKE] health_check: PASS (expected=200 actual=200 44ms)
+[SMOKE] status_no_auth: PASS (expected=401 actual=401 33ms)
+[SMOKE] system_status_auth: PASS (expected=200 actual=200 349ms)
+[SMOKE] candidate_portal_ui: PASS (expected=200 actual=200 34ms)
+[SMOKE] heartbeat_no_auth: PASS (expected=401 actual=401 27ms)
+[SMOKE] heartbeat_valid: PASS (expected=202 actual=202 31ms)
+[AttestSvc] credential_challenge: invalid ak_name_hex for device p0-smoke-e1e37f813c2bf3f0
+[SMOKE] credential_challenge_rejects_shell_metacharacters: PASS (expected=500 actual=500 27ms)
+[SMOKE] ledger_query_auth: PASS (expected=200 actual=200 242ms)
+[SMOKE] admin_login_page: PASS (expected=200 actual=200 26ms)
+[SMOKE] not_found_route: PASS (expected=404 actual=404 20ms)
+
+[SMOKE] Server still alive after test barrage: PASS
+[SMOKE] Ledger recorded 1 event(s): PASS
+[SMOKE] Terminating smoke test server...
+[ExamOS-Server] Clean shutdown complete.
+[SMOKE] Clean shutdown: PASS
+
+============================================================
+[SMOKE] Result: 11/11 checks passed
+============================================================

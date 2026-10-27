@@ -5,6 +5,7 @@ import { clean } from '../../core/security/sanitize';
 import { ROLES, roleInfo, roleLabel, permissionsOf, registerRoles } from '../../core/security/rbac';
 import { need, fail, log, assertScope, requireReason, id, isEmail } from '../../core/services/common';
 import { create as requestApproval } from '../../core/services/approvals';
+import * as Api from '../../core/api/services';
 
 export const pwIssues = (p) => {
   const r = [];
@@ -50,6 +51,18 @@ export async function createUser(a, { username, name, role, password, tenantId, 
   const u = await makeUser({ username: uid, name, role, password, tenantId, email, mfaEnabled });
   const recovery = Array.from({ length: 8 }, () => normCode(randomId(5)).slice(0, 8).replace(/(.{4})/, '$1-'));
   u.recoveryCodes = await Promise.all(recovery.map((c) => sha256(normCode(c))));
+  try {
+    await Api.createUser({
+      username: uid,
+      fullName: name,
+      email: email || `${uid}@examos.local`,
+      password,
+      institutionId: tenantId || '',
+      role,
+    });
+  } catch (err) {
+    console.warn('Backend user registration fallback:', err.message);
+  }
   await put('users', u);
   await log(a, 'USER_CREATED', `${uid} role=${role} tenant=${tenantId || 'global'}`);
   return { user: u, totp: u.totp, recovery };

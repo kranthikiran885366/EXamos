@@ -1,0 +1,422 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+Inserted module 'autofs4'
+Successfully made /usr/ read-only.
+[!p]104[?7hsystemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+Detected virtualization kvm.
+Detected architecture x86-64.
+Running in initrd.
+[0;1;39mBooting initrd of [0m[1mDebian GNU/Linux 13 (trixie)[0m[0;1;39m.[0m
+No hostname configured, using default hostname.
+Hostname set to <localhost>.
+Initializing machine ID from random generator.
+Queued start job for default target initrd.target.
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-modprobe.slice[0m - Slice /system/modprobe.
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-systemd\x2dpc…lice[0m - Slice /system/systemd-pcrfs.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-ask-password-conso…[0mequests to Console Directory Watch.
+[[0;32m  OK  [0m] Set up automount [0;1;39mproc-sys-fs-binfm…[0mormats File System Automount Point.
+         Expecting device [0;1;39mdev-gpt\x2dauto\x…root.device[0m - /dev/gpt-auto-root...
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd-usr-fs.target[0m - Initrd /usr File System.
+[[0;32m  OK  [0m] Reached target [0;1;39mintegritysetup.targ…[0m Local Integrity Protected Volumes.
+[[0;32m  OK  [0m] Reached target [0;1;39mpaths.target[0m - Path Units.
+[[0;32m  OK  [0m] Reached target [0;1;39mremote-cryptsetup.target[0m - Remote Encrypted Volumes.
+[[0;32m  OK  [0m] Reached target [0;1;39mremote-veritysetup.…[0m - Remote Verity Protected Volumes.
+[[0;32m  OK  [0m] Reached target [0;1;39mslices.target[0m - Slice Units.
+[[0;32m  OK  [0m] Reached target [0;1;39mswap.target[0m - Swaps.
+[[0;32m  OK  [0m] Reached target [0;1;39mveritysetup.target[0m - Local Verity Protected Volumes.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-creds.socket[0m - Credential Encryption/Decryption.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-initctl.socke…[0m- initctl Compatibility Named Pipe.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald-audit.socket[0m - Journal Audit Socket.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald-dev-…socket[0m - Journal Socket (/dev/log).
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald.socket[0m - Journal Sockets.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-networkd.socket[0m - Network Service Netlink Socket.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-pcrextend.socket[0m - TPM PCR Measurements.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-pcrlock.socket[0m - Make TPM PCR Policy.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-control.socket[0m - udev Control Socket.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-kernel.socket[0m - udev Kernel Socket.
+         Mounting [0;1;39mdev-hugepages.mount[0m - Huge Pages File System...
+         Mounting [0;1;39mdev-mqueue.mount[0m - POSIX Message Queue File System...
+         Mounting [0;1;39mrun-lock.mount[0m - Legacy Locks Directory /run/lock...
+         Mounting [0;1;39msys-kernel-debug.mount[0m - Kernel Debug File System...
+         Mounting [0;1;39msys-kernel-tracing.mount[0m - Kernel Trace File System...
+         Mounting [0;1;39mtmp.mount[0m - Temporary Directory /tmp...
+         Starting [0;1;39mkmod-static-nodes.service[0m…eate List of Static Device Nodes...
+         Starting [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs...
+         Starting [0;1;39mmodprobe@dm_mod.service[0m - Load Kernel Module dm_mod...
+         Starting [0;1;39mmodprobe@efi_pstore.servi…[0m - Load Kernel Module efi_pstore...
+         Starting [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse...
+         Starting [0;1;39mmodprobe@loop.service[0m - Load Kernel Module loop...
+         Starting [0;1;39msystemd-journald.service[0m - Journal Service...
+         Starting [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules...
+         Starting [0;1;39msystemd-network-generator…[0mk Units from Kernel Command Line...
+         Starting [0;1;39msystemd-pcrphase-initrd.service[0m - TPM PCR Barrier (initrd)...
+         Starting [0;1;39msystemd-udev-load-credent…[0mLoad udev Rules from Credentials...
+         Starting [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices...
+[[0;32m  OK  [0m] Mounted [0;1;39mdev-hugepages.mount[0m - Huge Pages File System.
+[[0;32m  OK  [0m] Mounted [0;1;39mdev-mqueue.mount[0m - POSIX Message Queue File System.
+[[0;32m  OK  [0m] Mounted [0;1;39mrun-lock.mount[0m - Legacy Locks Directory /run/lock.
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-debug.mount[0m - Kernel Debug File System.
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-tracing.mount[0m - Kernel Trace File System.
+[[0;32m  OK  [0m] Mounted [0;1;39mtmp.mount[0m - Temporary Directory /tmp.
+[[0;32m  OK  [0m] Finished [0;1;39mkmod-static-nodes.service[0m…Create List of Static Device Nodes.
+modprobe@configfs.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs.
+modprobe@dm_mod.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@dm_mod.service[0m - Load Kernel Module dm_mod.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-journald.service[0m - Journal Service.
+modprobe@efi_pstore.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@efi_pstore.service[0m - Load Kernel Module efi_pstore.
+modprobe@fuse.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse.
+modprobe@loop.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@loop.service[0m - Load Kernel Module loop.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-network-generator…[0mork Units from Kernel Command Line.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-load-credent…[0m- Load udev Rules from Credentials.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-pcrphase-initrd.service[0m - TPM PCR Barrier (initrd).
+[[0;32m  OK  [0m] Reached target [0;1;39mcryptsetup.target[0m - Local Encrypted Volumes.
+[[0;32m  OK  [0m] Reached target [0;1;39mnetwork-pre.target[0m - Preparation for Network.
+         Mounting [0;1;39msys-fs-fuse-connections.mount[0m - FUSE Control File System...
+         Mounting [0;1;39msys-kernel-config.mount[0m - Kernel Configuration File System...
+         Starting [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables...
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0m Device Nodes in /dev gracefully...
+         Starting [0;1;39msystemd-tpm2-setup-early.service[0m - Early TPM SRK Setup...
+[[0;32m  OK  [0m] Mounted [0;1;39msys-fs-fuse-connections.mount[0m - FUSE Control File System.
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-config.mount[0m - Kernel Configuration File System.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mic Device Nodes in /dev gracefully.
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0meate Static Device Nodes in /dev...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mCreate Static Device Nodes in /dev.
+[[0;32m  OK  [0m] Reached target [0;1;39mlocal-fs-pre.target[0m…Preparation for Local File Systems.
+[[0;32m  OK  [0m] Reached target [0;1;39mlocal-fs.target[0m - Local File Systems.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-sysext.socket[0m… System Extension Image Management.
+         Starting [0;1;39msystemd-tmpfiles-setup.se…[0mate System Files and Directories...
+         Starting [0;1;39msystemd-udevd.service[0m - R…ager for Device Events and Files...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup.se…[0mreate System Files and Directories.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-udevd.service[0m - Ru…anager for Device Events and Files.
+[[0;32m  OK  [0m] Reached target [0;1;39mtpm2.target[0m - Trusted Platform Module.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tpm2-setup-early.service[0m - Early TPM SRK Setup.
+[[0;32m  OK  [0m] Reached target [0;1;39msysinit.target[0m - System Initialization.
+[[0;32m  OK  [0m] Reached target [0;1;39mtimers.target[0m - Timer Units.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-hostnamed.socket[0m - Hostname Service Socket.
+[[0;32m  OK  [0m] Reached target [0;1;39msockets.target[0m - Socket Units.
+[[0;32m  OK  [0m] Reached target [0;1;39mbasic.target[0m - Basic System.
+[0;1;39mSystem is tainted: unmerged-bin[0m
+         Starting [0;1;39msystemd-networkd.service[0m - Network Configuration...
+[[0;32m  OK  [0m] Found device [0;1;39mdev-gpt\x2dauto\x2droot.device[0m - /dev/gpt-auto-root.
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd-root-device.target[0m - Initrd Root Device.
+         Mounting [0;1;39msysroot.mount[0m - Root Partition...
+[[0;32m  OK  [0m] Started [0;1;39msystemd-networkd.service[0m - Network Configuration.
+[[0;32m  OK  [0m] Reached target [0;1;39mnetwork.target[0m - Network.
+[[0;32m  OK  [0m] Mounted [0;1;39msysroot.mount[0m - Root Partition.
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd-root-fs.target[0m - Initrd Root File System.
+         Starting [0;1;39minitrd-parse-etc.service[0m …ints Configured in the Real Root...
+initrd-parse-etc.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39minitrd-parse-etc.service[0m …points Configured in the Real Root.
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd-fs.target[0m - Initrd File Systems.
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd.target[0m - Initrd Default Target.
+         Starting [0;1;39minitrd-cleanup.service[0m - …ing Up and Shutting Down Daemons...
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd.target[0m - Initrd Default Target.
+[[0;32m  OK  [0m] Stopped target [0;1;39mbasic.target[0m - Basic System.
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd-root-device.target[0m - Initrd Root Device.
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd-usr-fs.target[0m - Initrd /usr File System.
+[[0;32m  OK  [0m] Stopped target [0;1;39mnetwork.target[0m - Network.
+[[0;32m  OK  [0m] Stopped target [0;1;39mpaths.target[0m - Path Units.
+[[0;32m  OK  [0m] Stopped target [0;1;39mremote-cryptsetup.target[0m - Remote Encrypted Volumes.
+[[0;32m  OK  [0m] Stopped target [0;1;39mremote-veritysetup.…[0m - Remote Verity Protected Volumes.
+[[0;32m  OK  [0m] Stopped target [0;1;39mslices.target[0m - Slice Units.
+[[0;32m  OK  [0m] Stopped target [0;1;39msockets.target[0m - Socket Units.
+[[0;32m  OK  [0m] Stopped target [0;1;39mtimers.target[0m - Timer Units.
+systemd-creds.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-creds.socket[0m - Credential Encryption/Decryption.
+systemd-hostnamed.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-hostnamed.socket[0m - Hostname Service Socket.
+[[0;32m  OK  [0m] Stopped target [0;1;39msysinit.target[0m - System Initialization.
+[[0;32m  OK  [0m] Stopped target [0;1;39mcryptsetup.target[0m - Local Encrypted Volumes.
+systemd-ask-password-console.path: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-ask-password-conso…[0mequests to Console Directory Watch.
+[[0;32m  OK  [0m] Stopped target [0;1;39mintegritysetup.targ…[0m Local Integrity Protected Volumes.
+[[0;32m  OK  [0m] Stopped target [0;1;39mswap.target[0m - Swaps.
+[[0;32m  OK  [0m] Stopped target [0;1;39mveritysetup.target[0m - Local Verity Protected Volumes.
+systemd-initctl.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-initctl.socket[0m - initctl Compatibility Named Pipe.
+systemd-pcrextend.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-pcrextend.socket[0m - TPM PCR Measurements.
+systemd-pcrlock.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-pcrlock.socket[0m - Make TPM PCR Policy.
+systemd-sysext.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-sysext.socket[0m - System Extension Image Management.
+         Starting [0;1;39mmodprobe@dm_mod.service[0m - Load Kernel Module dm_mod...
+         Starting [0;1;39mmodprobe@loop.service[0m - Load Kernel Module loop...
+         Stopping [0;1;39msystemd-networkd.service[0m - Network Configuration...
+systemd-tmpfiles-setup.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-tmpfiles-setup.ser…[0mreate System Files and Directories.
+[[0;32m  OK  [0m] Stopped target [0;1;39mlocal-fs.target[0m - Local File Systems.
+[[0;32m  OK  [0m] Stopped target [0;1;39mlocal-fs-pre.target[0m…Preparation for Local File Systems.
+systemd-tpm2-setup-early.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-tpm2-setup-early.service[0m - Early TPM SRK Setup.
+         Stopping [0;1;39msystemd-pcrphase-initrd.service[0m - TPM PCR Barrier (initrd)...
+systemd-udev-trigger.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices.
+systemd-networkd.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-networkd.service[0m - Network Configuration.
+modprobe@dm_mod.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@dm_mod.service[0m - Load Kernel Module dm_mod.
+modprobe@loop.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@loop.service[0m - Load Kernel Module loop.
+[[0;32m  OK  [0m] Stopped target [0;1;39mnetwork-pre.target[0m - Preparation for Network.
+systemd-networkd.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-networkd.socket[0m - Network Service Netlink Socket.
+systemd-sysctl.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables.
+systemd-modules-load.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules.
+         Stopping [0;1;39msystemd-udevd.service[0m - R…ager for Device Events and Files...
+initrd-cleanup.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39minitrd-cleanup.service[0m - …aning Up and Shutting Down Daemons.
+systemd-pcrphase-initrd.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-pcrphase-initrd.service[0m - TPM PCR Barrier (initrd).
+[[0;32m  OK  [0m] Stopped target [0;1;39mtpm2.target[0m - Trusted Platform Module.
+systemd-udevd.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-udevd.service[0m - Ru…anager for Device Events and Files.
+systemd-udevd.service: Consumed 1.474s CPU time, 12.3M memory peak.
+systemd-udevd-control.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-udevd-control.socket[0m - udev Control Socket.
+systemd-udevd-kernel.socket: Deactivated successfully.
+[[0;32m  OK  [0m] Closed [0;1;39msystemd-udevd-kernel.socket[0m - udev Kernel Socket.
+         Starting [0;1;39minitrd-udevadm-cleanup-db.service[0m - Cleanup udev Database...
+systemd-network-generator.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-network-generator.…[0mork Units from Kernel Command Line.
+systemd-tmpfiles-setup-dev.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-tmpfiles-setup-dev…[0mCreate Static Device Nodes in /dev.
+systemd-tmpfiles-setup-dev-early.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-tmpfiles-setup-dev…[0mic Device Nodes in /dev gracefully.
+kmod-static-nodes.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39mkmod-static-nodes.service[0m …Create List of Static Device Nodes.
+systemd-udev-load-credentials.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39msystemd-udev-load-credenti…[0m- Load udev Rules from Credentials.
+initrd-udevadm-cleanup-db.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39minitrd-udevadm-cleanup-db.service[0m - Cleanup udev Database.
+[[0;32m  OK  [0m] Reached target [0;1;39minitrd-switch-root.target[0m - Switch Root.
+         Starting [0;1;39minitrd-switch-root.service[0m - Switch Root...
+[0;1;39mSwitching root.[0m
+[!p]104[?7hsystemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+Detected virtualization kvm.
+Detected architecture x86-64.
+
+[0;1;39mWelcome to [0m[1mExamOS 0.3.0 (Phase 2 — Lockdown)[0m[0;1;39m![0m
+
+Hostname set to <examos-device>.
+Failed to open libbpf, cgroup BPF features disabled: Operation not supported
+Queued start job for default target graphical.target.
+systemd-journald.service: Deactivated successfully.
+initrd-switch-root.service: Deactivated successfully.
+[[0;32m  OK  [0m] Stopped [0;1;39minitrd-switch-root.service[0m - Switch Root.
+systemd-journald.service: Scheduled restart job, restart counter is at 1.
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-serial\x2dget…slice[0m - Slice /system/serial-getty.
+[[0;32m  OK  [0m] Created slice [0;1;39muser.slice[0m - User and Session Slice.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-ask-password-conso…[0mequests to Console Directory Watch.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-ask-password-wall.…[0md Requests to Wall Directory Watch.
+[[0;32m  OK  [0m] Set up automount [0;1;39mproc-sys-fs-binfm…[0mormats File System Automount Point.
+         Expecting device [0;1;39mdev-tpmrm0.device[0m - /dev/tpmrm0...
+         Expecting device [0;1;39mdev-ttyS0.device[0m - /dev/ttyS0...
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd-switch-root.target[0m - Switch Root.
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd-fs.target[0m - Initrd File Systems.
+[[0;32m  OK  [0m] Stopped target [0;1;39minitrd-root-fs.target[0m - Initrd Root File System.
+[[0;32m  OK  [0m] Reached target [0;1;39mpaths.target[0m - Path Units.
+[[0;32m  OK  [0m] Reached target [0;1;39mremote-fs.target[0m - Remote File Systems.
+[[0;32m  OK  [0m] Reached target [0;1;39mslices.target[0m - Slice Units.
+[[0;32m  OK  [0m] Reached target [0;1;39mswap.target[0m - Swaps.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-creds.socket[0m - Credential Encryption/Decryption.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-initctl.socke…[0m- initctl Compatibility Named Pipe.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-networkd.socket[0m - Network Service Netlink Socket.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-control.socket[0m - udev Control Socket.
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-kernel.socket[0m - udev Kernel Socket.
+         Mounting [0;1;39mtmp.mount[0m - Temporary Directory (/tmp) — ExamOS Hardened...
+[0;1;39mvar-log.mount: Directory /var/log to mount over is not empty, mounting anyway.[0m
+         Mounting [0;1;39mvar-log.mount[0m - ExamOS Ru…Log Directory (/var/log — tmpfs)...
+         Starting [0;1;39mkmod-static-nodes.service[0m…eate List of Static Device Nodes...
+         Starting [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs...
+         Starting [0;1;39mmodprobe@drm.service[0m - Load Kernel Module drm...
+         Starting [0;1;39mmodprobe@efi_pstore.servi…[0m - Load Kernel Module efi_pstore...
+         Starting [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse...
+         Starting [0;1;39msystemd-fsck-root.service[0m…File System Check on Root Device...
+         Starting [0;1;39msystemd-journald.service[0m - Journal Service...
+         Starting [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules...
+         Starting [0;1;39msystemd-network-generator…[0mk Units from Kernel Command Line...
+         Starting [0;1;39msystemd-udev-load-credent…[0mLoad udev Rules from Credentials...
+         Starting [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices...
+[[0;32m  OK  [0m] Mounted [0;1;39mtmp.mount[0m - Temporary Directory (/tmp) — ExamOS Hardened.
+[[0;32m  OK  [0m] Mounted [0;1;39mvar-log.mount[0m - ExamOS Run…e Log Directory (/var/log — tmpfs).
+[[0;32m  OK  [0m] Finished [0;1;39mkmod-static-nodes.service[0m…Create List of Static Device Nodes.
+modprobe@configfs.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs.
+modprobe@drm.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@drm.service[0m - Load Kernel Module drm.
+modprobe@efi_pstore.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@efi_pstore.service[0m - Load Kernel Module efi_pstore.
+modprobe@fuse.service: Deactivated successfully.
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules.
+         Starting [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables...
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0m Device Nodes in /dev gracefully...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-fsck-root.service[0m - File System Check on Root Device.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-network-generator…[0mork Units from Kernel Command Line.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-load-credent…[0m- Load udev Rules from Credentials.
+[[0;32m  OK  [0m] Started [0;1;39msystemd-journald.service[0m - Journal Service.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mic Device Nodes in /dev gracefully.
+         Starting [0;1;39msystemd-remount-fs.servic…[0munt Root and Kernel File Systems...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-remount-fs.servic…[0mmount Root and Kernel File Systems.
+         Starting [0;1;39msystemd-growfs-root.service[0m - Grow Root File System...
+         Starting [0;1;39msystemd-journal-flush.ser…[0msh Journal to Persistent Storage...
+         Starting [0;1;39msystemd-pcrlock-file-syst…[0mk File Systems to TPM PCR Policy...
+         Starting [0;1;39msystemd-pcrlock-machine-i…[0mock Machine ID to TPM PCR Policy...
+         Starting [0;1;39msystemd-random-seed.service[0m - Load/Save OS Random Seed...
+         Starting [0;1;39msystemd-sysusers.service[0m - Create System Users...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-journal-flush.ser…[0mlush Journal to Persistent Storage.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-pcrlock-file-syst…[0mock File Systems to TPM PCR Policy.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-growfs-root.service[0m - Grow Root File System.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-pcrlock-machine-i…[0m Lock Machine ID to TPM PCR Policy.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-random-seed.service[0m - Load/Save OS Random Seed.
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-sysusers.service[0m - Create System Users.
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0meate Static Device Nodes in /dev...
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mCreate Static Device Nodes in /dev.
+[[0;32m  OK  [0m] Reached target [0;1;39mlocal-fs-pre.target[0m…Preparation for Local File Systems.
+[[0;32m  OK  [0m] Set up automount [0;1;39mboot.automount[0m - EFI System Partition Automount.
+         Mounting [0;1;39mhome-exam.mount[0m - ExamOS Exam User Home Directory (tmpfs)...
+[[0;32m  OK  [0m] Mounted [0;1;39mhome-exam.mount[0m - ExamOS Exam User Home Directory (tmpfs).
+[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (4s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (5s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (5s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (6s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (6s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (7s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (7s / 1min 30s)
+M[K[     [0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (8s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (8s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (9s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (9s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (10s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (10s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (11s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (11s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (12s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (12s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (13s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (13s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (14s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (14s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (15s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (15s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (16s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (16s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (17s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (17s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (18s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (2 of 2) Job dev-tpmrm0.device/start running (18s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (19s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (19s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (20s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (20s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (21s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (21s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (22s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (22s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (23s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (23s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (24s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (24s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (25s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (25s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (26s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (26s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (27s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (27s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (28s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (28s / 1min 30s)
+M[K[     [0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (29s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (29s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (30s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (30s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (31s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (31s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (32s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (32s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (33s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (33s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (34s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (34s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (35s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (35s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (36s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (36s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (37s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (37s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (38s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (38s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (39s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (2 of 2) Job dev-tpmrm0.device/start running (39s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (40s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (40s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (41s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (41s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (42s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (42s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (43s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (43s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (44s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (44s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (45s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (45s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (46s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (46s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (47s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (47s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (48s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (48s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (49s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (49s / 1min 30s)
+M[K[     [0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (50s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (50s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (51s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (51s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (52s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (52s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (53s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (53s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (54s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (54s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (55s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (55s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (56s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (57s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (57s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (57s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (58s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (58s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (59s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (59s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min / 1min 30s)
+M[K[[0m[0;31m*     [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 1s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 1s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 2s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 2s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 3s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 3s / 1min 30s)
+M[K[     [0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 4s / 1min 30s)
+M[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (1min 4s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job dev-ttyS0.device/start running (1min 5s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 5s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 6s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 6s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 7s / 1min 30s)
+M[K[[0m[0;31m*     [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 7s / 1min 30s)
+M[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 8s / 1min 30s)
+M[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job dev-ttyS0.device/start running (1min 8s / 1min 30s)
+M[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 9s / 1min 30s)
+M[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 9s / 1min 30s)
+M[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job dev-tpmrm0.device/start running (1min 10s / 1min 30s)

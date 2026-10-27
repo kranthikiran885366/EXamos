@@ -10,6 +10,8 @@ export const ROUTE_DEFS = [
   // Administration
   D('/admin/institutions', 'Institutions', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionsPage'), 'Administration', { icon: 'building', end: true }),
   D('/admin/institutions/:id', 'Institution', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionDetailPage'), 'Administration', { nav: false }),
+  D('/admin/institution-applications', 'Applications queue', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionApplicationsPage'), 'Administration', { icon: 'checklist' }),
+  D('/admin/institution-applications/:id', 'Application details', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionApplicationDetailPage'), 'Administration', { nav: false }),
   D('/admin/users', 'Users', 'user.manage', page(() => import('../modules/users/pages'), 'UsersPage'), 'Administration', { icon: 'users', end: true }),
   D('/admin/users/:id', 'User', 'user.manage', page(() => import('../modules/users/pages'), 'UserDetailPage'), 'Administration', { nav: false }),
   D('/admin/roles', 'Roles & permissions', 'user.manage', page(() => import('../modules/users/pages'), 'RolesPage'), 'Administration', { icon: 'key' }),
@@ -122,6 +124,8 @@ export const GROUPS = [...new Set(ROUTE_DEFS.filter((r) => r.nav !== false).map(
 export const TITLES = {
   '/dashboard': 'Overview',
   '/admin/institutions': 'Institutions',
+  '/admin/institution-applications': 'Applications queue',
+  '/admin/institution-applications/:id': 'Application details',
   '/admin/users': 'Users',
   '/admin/roles': 'Roles & permissions',
   '/admin/approvals': 'Approvals',

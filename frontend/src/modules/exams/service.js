@@ -3,10 +3,25 @@ import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, genQuestions, score, assertScope, requireReason, validHttps, inScope } from '../../core/services/common';
 import { verifyPolicy } from '../policies/service';
 import { submitSession } from '../submissions/service';
+import * as Api from '../../core/api/services';
 
 export const TYPES = ['practice', 'internal', 'laboratory', 'midterm', 'final'];
-export const LIFECYCLE = ['draft', 'review', 'approved', 'published', 'live', 'closed', 'cancelled'];
-export const LIFECYCLE_LABEL = { draft: 'Draft', review: 'In review', approved: 'Approved', published: 'Published', live: 'Live', closed: 'Closed', cancelled: 'Cancelled' };
+export const LIFECYCLE = ['draft', 'configured', 'pending_approval', 'approved', 'scheduled', 'ready', 'in_progress', 'closed', 'finalized', 'cancelled'];
+export const LIFECYCLE_LABEL = {
+  draft: 'Draft',
+  configured: 'Configured',
+  pending_approval: 'Pending Approval',
+  review: 'In Review',
+  approved: 'Approved',
+  scheduled: 'Scheduled',
+  published: 'Published',
+  ready: 'Ready',
+  in_progress: 'In Progress',
+  live: 'Live',
+  closed: 'Closed',
+  finalized: 'Finalized',
+  cancelled: 'Cancelled',
+};
 export const AUTH_MODES = [
   { v: 'candidate-login', l: 'Candidate account sign-in' },
   { v: 'exam-token', l: 'Exam token issued at the desk' },
@@ -82,6 +97,30 @@ export async function createExam(a, input) {
     version: 1, locked: false,
     history: [{ at: now, by: a.id, to: 'draft', note: 'Exam created' }],
   };
+  try {
+    const backendRes = await Api.createExamination({
+      title: t,
+      name: t,
+      course: clean(course, 80) || 'General',
+      subject: clean(course, 80) || 'General',
+      code: c,
+      academicYear: clean(academicYear, 20) || '2026-2027',
+      examType: type,
+      durationMinutes: dur,
+      totalMarks: 100,
+      passingMarks: 40,
+      instructions: clean(instructions, 3000),
+      institutionId: tenantId,
+      examUrl: input.examUrl || 'https://exam.university.edu/cs201',
+      allowedOrigins: (origins || []).join(','),
+      timezone: timeZone || 'Asia/Kolkata',
+    });
+    if (backendRes?.exam_id) {
+      ex.id = backendRes.exam_id;
+    }
+  } catch (err) {
+    console.warn('Backend Module 9 exam creation fallback:', err.message);
+  }
   await put('exams', ex);
   await log(a, 'EXAM_CREATED', `${c} questions=${qs.length}`);
   return `Exam ${c} saved as draft with ${qs.length} question(s).`;
@@ -130,10 +169,35 @@ export async function duplicateExam(a, ex) {
 }
 
 const FLOW = {
-  draft: ['review', 'cancelled'], review: ['draft', 'approved', 'cancelled'], approved: ['published', 'draft', 'cancelled'],
-  published: ['live', 'approved', 'cancelled'], live: ['closed'], closed: [], cancelled: [],
+  draft: ['configured', 'review', 'pending_approval', 'cancelled'],
+  configured: ['draft', 'pending_approval', 'review', 'cancelled'],
+  pending_approval: ['configured', 'approved', 'draft', 'cancelled'],
+  review: ['draft', 'pending_approval', 'approved', 'cancelled'],
+  approved: ['scheduled', 'published', 'draft', 'cancelled'],
+  scheduled: ['ready', 'in_progress', 'live', 'approved', 'cancelled'],
+  published: ['ready', 'in_progress', 'live', 'approved', 'cancelled'],
+  ready: ['in_progress', 'live', 'cancelled'],
+  in_progress: ['closed'],
+  live: ['closed'],
+  closed: ['finalized'],
+  finalized: [],
+  cancelled: [],
 };
-const PERM = { review: 'exam.manage', draft: 'exam.manage', approved: 'exam.approve', published: 'exam.manage', live: 'exam.operate', closed: 'exam.operate', cancelled: 'exam.manage' };
+const PERM = {
+  draft: 'exam.manage',
+  configured: 'exam.manage',
+  pending_approval: 'exam.manage',
+  review: 'exam.manage',
+  approved: 'exam.approve',
+  scheduled: 'exam.manage',
+  published: 'exam.manage',
+  ready: 'exam.operate',
+  in_progress: 'exam.operate',
+  live: 'exam.operate',
+  closed: 'exam.operate',
+  finalized: 'exam.manage',
+  cancelled: 'exam.manage'
+};
 export const nextSteps = (s) => FLOW[s] || [];
 
 export function conflicts(exams, ex) {
@@ -208,6 +272,31 @@ export async function transition(a, ex, to, reason = '') {
   next.approvedBy = to === 'approved' ? a.id : next.approvedBy;
   next.status = to; next.updatedAt = Date.now();
   next.history = [...(ex.history || []), { at: Date.now(), by: a.id, to, reason: clean(reason, 300) }];
+
+  try {
+    if (to === 'configured') {
+      await Api.updateExamination(ex.id, { status: 'configured' });
+    } else if (to === 'pending_approval' || to === 'review') {
+      await Api.submitExaminationForApproval(ex.id);
+    } else if (to === 'approved') {
+      await Api.approveExamination(ex.id);
+    } else if (to === 'scheduled' || to === 'published') {
+      await Api.publishExamination(ex.id);
+    } else if (to === 'ready') {
+      await Api.readyExamination(ex.id);
+    } else if (to === 'in_progress' || to === 'live') {
+      await Api.startExamination(ex.id);
+    } else if (to === 'closed') {
+      await Api.closeExamination(ex.id);
+    } else if (to === 'finalized') {
+      await Api.finalizeExamination(ex.id);
+    } else if (to === 'cancelled') {
+      await Api.cancelExamination(ex.id, reason);
+    }
+  } catch (err) {
+    console.warn('Backend Module 9 lifecycle sync notice:', err.message);
+  }
+
   await put('exams', next);
   await log(a, 'EXAM_' + to.toUpperCase(), `${ex.code}${reason ? ': ' + reason : ''}`);
   await notifyExam(a, next, to, reason);

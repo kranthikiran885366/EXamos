@@ -1,0 +1,9 @@
+=== [P2-CHROMIUM] Policy Tests: 2026-10-18T03:49:37Z ===
+[POLICY-PASS]    CP-01: Managed policy source file found: /mnt/d/SEB BRO/image/overlay/etc/chromium/policies/managed/examos_policies.json (runtime deployment remains unverified)
+[POLICY-BLOCKED] CP-VERSION: Chromium binary is not installed in this environment
+[POLICY-PASS]    CP-02: All Chromium policy values valid
+[POLICY-PASS]    CP-03: Camera/mic URLs are scoped to exam origin (no wildcards)
+[POLICY-BLOCKED] CP-04: BLOCKED: Chromium not running — sandbox check deferred
+[POLICY-BLOCKED] CP-05: BLOCKED_ENVIRONMENT: chromium binary not in PATH
+
+=== [P2-CHROMIUM] PASS=3 FAIL=0 BLOCKED=3 ===

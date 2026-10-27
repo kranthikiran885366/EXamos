@@ -1,0 +1,18 @@
+    IsEnEnabled(0x140 = 'SetCommandCodeAuditStatus'): 1
+  Tested: RSA-1024-sign(SHA1, pkcs1-pss)
+  Tested: RSA-1024-sign(SHA1, pkcs1)
+  Tested: RSA-2048-sign(SHA1, pkcs1-pss)
+  Tested: RSA-2048-sign(SHA1, pkcs1)
+  Tested: camellia-128
+  Tested: camellia-256
+  Tested: tdes
+    IsEnEnabled(0x144 = 'Startup'): 1
+ Ctrl Cmd: length 4
+ 00 00 00 01 
+ Ctrl Rsp: length 8
+ 00 00 00 00 00 01 FF FF 
+ Ctrl Cmd: length 4
+ 00 00 00 01 
+ Ctrl Rsp: length 8
+ 00 00 00 00 00 01 FF FF 
+    IsEnEnabled(0x145 = 'Shutdown'): 1

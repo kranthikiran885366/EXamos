@@ -103,10 +103,42 @@ int ctrl_json_string(const char *body, const char *key, char *out, size_t out_le
 }
 
 int ctrl_json_int(const char *body, const char *key, int *out) {
+    if (!body || !key || !out) return 0;
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(body, search);
+    if (!p) return 0;
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (*p == '"') p++;
     char tmp[32] = {0};
-    if (!ctrl_json_string(body, key, tmp, sizeof(tmp))) return 0;
+    size_t i = 0;
+    if (*p == '-') { tmp[i++] = *p++; }
+    while (*p >= '0' && *p <= '9' && i + 1 < sizeof(tmp)) {
+        tmp[i++] = *p++;
+    }
+    if (i == 0) return 0;
     *out = atoi(tmp);
     return 1;
+}
+
+int ctrl_json_bool(const char *body, const char *key, int *out) {
+    if (!body || !key || !out) return 0;
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(body, search);
+    if (!p) return 0;
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (strncmp(p, "true", 4) == 0 || strncmp(p, "\"true\"", 6) == 0 || *p == '1') {
+        *out = 1;
+        return 1;
+    }
+    if (strncmp(p, "false", 5) == 0 || strncmp(p, "\"false\"", 7) == 0 || *p == '0') {
+        *out = 0;
+        return 1;
+    }
+    return 0;
 }
 
 int ctrl_extract_origin(const char *buffer, char *out, size_t out_len) {

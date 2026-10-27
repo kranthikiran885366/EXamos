@@ -1,0 +1,4 @@
+artifacts/iso/examos-appliance-v0.2.0.iso.sha256
+artifacts/p0/results.json
+image/examos
+image/mkosi.p0.conf

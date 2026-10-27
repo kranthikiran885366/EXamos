@@ -1,0 +1,30 @@
+{
+  "phase": "E1",
+  "check": "candidate_authenticated_consent_http_and_event_chain",
+  "status": "PASS",
+  "evidence_class": "development_http_integration_test_with_ephemeral_fixtures",
+  "timestamp": "2026-10-12T17:06:56.501256+00:00",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "dirty_path_count": 307,
+  "loopback_port": 49823,
+  "server_build": "complete native server built out-of-tree using server/Makefile",
+  "credential_and_trust_fixtures": "ephemeral test-only values in a private temporary directory",
+  "covered_behaviors": [
+    "candidate login and bearer session authentication",
+    "unauthenticated request rejection",
+    "session mismatch rejection",
+    "missing, duplicate, and unknown consent scope rejection",
+    "valid preference recorded against authenticated session",
+    "HTTP response and durable event both keep collection disabled"
+  ],
+  "collection_authorized_or_started": false,
+  "sensor_hardware_test": "NOT_RUN",
+  "source_sha256": {
+    "server/Makefile": "a48132c8085cb17c4d73ce94a4d2b71e170141280d092c25b4a9329fbf129e54",
+    "server/main.c": "7ec4f9abacebb26edd488b0e1fbad13fd92aed3a89f20da8325abe41e0f404af",
+    "server/environment/e1_consent.c": "8d19f15d9bbb38e33467f24731fdf79da0040d959205f9c2394a76e951972fa3",
+    "server/events/event_chain.c": "9a4ee2ba8aca41acea985485a3da963c2b936048d3622a1cab0b67c43646bb48",
+    "tests/e1/e1-consent-http-test.sh": "b6ecf4ffcb7b9186f516c36a7f5344d8c7151477708654b56658930098bf6967"
+  }
+}

@@ -1,0 +1,11 @@
+Captured UTC: 2026-10-18T03:18:31.856647+00:00
+Host platform: Windows-10-10.0.26200-SP0
+Python: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+git: git version 2.52.0.windows.1
+python: Python 3.11.9
+wsl-status: Default Distribution: docker-desktop
+Default Version: 2
+wsl-distros: docker-desktop
+Ubuntu-26.04
+qemu: UNAVAILABLE
+gcc: UNAVAILABLE

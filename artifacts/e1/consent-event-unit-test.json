@@ -1,0 +1,30 @@
+{
+  "phase": "E1",
+  "check": "session_bound_consent_event_chain",
+  "status": "PASS",
+  "test_kind": "integration_unit",
+  "timestamp": "2026-10-12T17:06:18Z",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "dirty_path_count": 307,
+  "command": "bash tests/e1/e1-consent-test.sh",
+  "event_chain": "real repository event_chain.c with temporary test storage",
+  "sensor_hardware_test": "NOT_RUN",
+  "collection_authorized_or_started": false,
+  "covered_behaviors": [
+    "required scope fields",
+    "duplicate scope rejection",
+    "unknown field rejection",
+    "session binding",
+    "durable event append and chain verification",
+    "collection remains disabled by policy"
+  ],
+  "source_sha256": {
+    "server/environment/e1_consent.c": "8d19f15d9bbb38e33467f24731fdf79da0040d959205f9c2394a76e951972fa3",
+    "server/include/e1_consent.h": "366835272c563320f865cce5a2ffbf534a043a27cab76d4e88989fc96203461e",
+    "server/events/event_chain.c": "9a4ee2ba8aca41acea985485a3da963c2b936048d3622a1cab0b67c43646bb48",
+    "server/main.c": "7ec4f9abacebb26edd488b0e1fbad13fd92aed3a89f20da8325abe41e0f404af",
+    "tests/e1/e1_consent_test.c": "e8bbaacf5690542dc85ad80e670649423661d85f22997c7928ed4227082a133f",
+    "tests/e1/e1-consent-test.sh": "9d4cab6e657b85c969ac3b8c50c25b65b38dbbf50696c8b7e7a71901ed318e56"
+  }
+}

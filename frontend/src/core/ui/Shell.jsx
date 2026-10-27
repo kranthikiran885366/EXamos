@@ -16,7 +16,8 @@ function Inner() {
   const { user, locked, lock, logout, touchSession, backendMode, backendReady } = useAuth();
   const { tenant } = useTenant();
   const meta = useCol('meta', false);
-  const platform = meta.find((m) => m.id === 'platform') || {};
+  const rawPlatform = meta.find((m) => m.id === 'platform');
+  const platform = rawPlatform?.value || rawPlatform || {};
   const [drawer, setDrawer] = useState(false);
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem('examos.sidebar') === '1'; } catch { return false; } });
   const loc = useLocation();
@@ -29,7 +30,7 @@ function Inner() {
   useEffect(() => { try { localStorage.setItem('examos.sidebar', collapsed ? '1' : '0'); } catch { /* storage may be blocked */ } }, [collapsed]);
   useEffect(() => { if (user) touchSession(); }, [user, loc.pathname, touchSession]);
 
-  const env = platform.environment === 'production' ? 'PROD' : platform.environment === 'staging' ? 'STG' : 'DEV';
+  const env = (platform.environment || 'production') === 'production' ? 'PROD' : platform.environment === 'staging' ? 'STG' : 'DEV';
   const backendLabel = backendMode === 'admin' ? 'Backend (C server)' : backendMode === 'candidate' ? 'Candidate exam' : 'Local';
   const backendOnline = backendReady ? 'online' : 'offline';
   return (

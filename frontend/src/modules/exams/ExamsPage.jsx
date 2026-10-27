@@ -13,11 +13,29 @@ import {
 } from './service';
 
 const STEP_LABEL = {
-  review: 'Submit for review', draft: 'Return to draft', approved: 'Approve', published: 'Publish',
-  live: 'Go live', closed: 'Close & score', cancelled: 'Cancel exam',
+  configured: 'Configure',
+  pending_approval: 'Submit for review',
+  review: 'Submit for review',
+  draft: 'Return to draft',
+  approved: 'Approve',
+  scheduled: 'Schedule & publish',
+  published: 'Publish',
+  ready: 'Mark ready',
+  in_progress: 'Start exam',
+  live: 'Go live',
+  closed: 'Close & score',
+  finalized: 'Finalize & lock',
+  cancelled: 'Cancel exam',
 };
-const STEP_PERM = { approved: 'exam.approve', live: 'exam.operate', closed: 'exam.operate' };
-const REASON = new Set(['live', 'cancelled', 'draft']);
+const STEP_PERM = {
+  approved: 'exam.approve',
+  ready: 'exam.operate',
+  in_progress: 'exam.operate',
+  live: 'exam.operate',
+  closed: 'exam.operate',
+  finalized: 'exam.manage',
+};
+const REASON = new Set(['live', 'in_progress', 'cancelled', 'draft']);
 
 export default function ExamsPage() {
   const { user } = useAuth();

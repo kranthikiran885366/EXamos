@@ -1,0 +1,11 @@
+{
+  "status": "FAIL",
+  "image_sha256": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "qemu_exit": 124,
+  "linux": 1,
+  "systemd": 1,
+  "graphical_target": 0,
+  "cage": 0,
+  "chromium": 0,
+  "image_unchanged": 1
+}

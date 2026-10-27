@@ -1,0 +1,3 @@
+[ExamOS-Server] Initializing ExamOS Security Server on port 9099 (Phase 3 Trusted Attestation)...
+[ExamOS-Server] No external Exam URL configured; Candidate Portal active at http://127.0.0.1:9099/
+[ExamOS-Server] Server listening on port 9099 (Candidate Portal: /, Admin Dashboard: /admin, Attestation API: /api/v1/attestation/verify)

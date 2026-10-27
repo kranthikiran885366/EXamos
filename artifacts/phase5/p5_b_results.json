@@ -1,0 +1,12 @@
+{
+  "gate": "Gate P5-B \u2014 Synthetic Relay Pattern Detection",
+  "status": "PASS",
+  "baseline_ready": true,
+  "practice_completions_accepted": true,
+  "practice_rejections": [],
+  "relay_ingestion_ok": true,
+  "relay_pause_detected": true,
+  "relay_burst_detected": true,
+  "relay_pattern_flagged": true,
+  "risk_score": 70
+}

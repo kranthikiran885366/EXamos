@@ -1,0 +1,15 @@
+Run ID: phase1-source-validation-20261018T0320Z
+Captured UTC: 2026-10-18T03:26:36.271091+00:00
+Classification: Windows development/source validation only
+Repository: D:\SEB BRO
+Branch: work/p0-secure-release-remediation-20261011
+HEAD: c8d8c6149458e9c1611966d5f2db66ed2f42e2d1
+Worktree: DIRTY
+Git status entries at capture: 350
+Source SHA-256 values: source-sha256.csv
+Test/evidence SHA-256 values: evidence-sha256.csv
+Tool/environment versions and limitations: tool-versions.txt
+Full test matrix: test-matrix.csv
+DYN-01 PASS is limited to policy-generation assertions under Windows Git Bash; it is not a Linux guest or runtime result.
+The C URL validator, full build, image/boot, and runtime gates were not run. P1 source validation remains BLOCKED by EXAM_URL=NOT_CONFIGURED.
+No image, VM, physical hardware, firmware, TPM, key, disk, or USB write operation was performed. No production/release status was promoted.

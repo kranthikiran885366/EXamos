@@ -1,0 +1,11 @@
+{
+  "build_time_seconds": 22,
+  "binaries_expected": 4,
+  "binaries_found": 4,
+  "binary_sizes": {
+    "examos-server": 317328,
+    "examos-agent": 63728,
+    "examos-kiosk-launcher": 17320,
+    "examos-proctor": 81248
+  }
+}

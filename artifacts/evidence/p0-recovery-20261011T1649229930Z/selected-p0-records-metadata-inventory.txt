@@ -1,0 +1,6 @@
+﻿artifacts/p0/iso-build-result.json | PRESENT | bytes=110 | last_write_utc=2026-10-11T13:14:34.7536112Z
+artifacts/p0/iso-boot-result.json | NOT_PRESENT
+artifacts/p0/iso-boot.log | PRESENT | bytes=69058 | last_write_utc=2026-10-11T04:15:10.0474784Z
+artifacts/p0/iso.sha256 | NOT_PRESENT
+artifacts/p0/examos-p0.iso | PRESENT | bytes=991741952 | last_write_utc=2026-10-11T04:02:41.4910649Z
+image/p0/output/examos-p0.raw | PRESENT | bytes=1014046720 | last_write_utc=2026-10-11T05:27:49.6765591Z

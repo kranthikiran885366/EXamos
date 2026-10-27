@@ -1,0 +1,10 @@
+﻿Phase 1 targeted integrity checks
+COMMAND: bash -n image/scripts/generate-chromium-policy.sh
+EXIT_CODE: 0
+COMMAND: bash -n tests/p1/chromium-policy-generator-test.sh
+EXIT_CODE: 0
+COMMAND: git diff --check -- image/scripts/generate-chromium-policy.sh server/admin/config_manager.c server/main.c tests/server/config-url-validation-test.c tests/p1/chromium-policy-generator-test.sh docs/EXAMOS_IMPLEMENTATION_PLAN_2026-10-17.md
+warning: in the working copy of 'server/admin/config_manager.c', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'server/main.c', LF will be replaced by CRLF the next time Git touches it
+EXIT_CODE: 0
+SUMMARY: PASS

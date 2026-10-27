@@ -1,0 +1,8 @@
+{
+  "gate": "Gate P5-F \u2014 Post-Exam Viva Generation",
+  "status": "BLOCKED",
+  "reason": "Configured viva provider is unavailable.",
+  "viva_id": null,
+  "question_count": 0,
+  "questions": []
+}

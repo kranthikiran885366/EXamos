@@ -1,0 +1,21 @@
+[ExamOS-Server] Initializing ExamOS Security Server on port 36842 (Phase 4 Proctoring & Tamper-Evident Evidence)...
+[Ledger] HMAC-SHA256 signing enabled (key length: 64 bytes).
+[ExamOS-Server] Device config:  /tmp/examos-smoke-registry.h8HWI2/devices.json
+[ExamOS-Server] Release config: /tmp/examos-smoke-registry.h8HWI2/releases.json
+[ExamOS-Server] Ledger path:    /mnt/d/SEB BRO/artifacts/p0/enterprise/nonloopback-ledger.log
+[AttestService] Mode: development
+[AttestService] Nonce TTL: 120 seconds
+[AttestConfig] Loading devices from: /tmp/examos-smoke-registry.h8HWI2/devices.json
+[AttestConfig]   + device: p0-smoke-e1e37f813c2bf3f0 (ENROLLED)
+[AttestConfig] Loaded 1 device(s).
+[AttestConfig] Loading releases from: /tmp/examos-smoke-registry.h8HWI2/releases.json
+[AttestConfig]   + release: p0-smoke-fd1f8a9f833cbedc (revoked=false)
+[AttestConfig] Loaded 1 release(s).
+[AttestService] Dynamic config loaded.
+[BehaviourEngine] Phase 5 behaviour engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/nonloopback-behaviour
+[BehaviourEngine] Relay thresholds: pause=120000 ms, burst=80 ms
+[BehaviourEngine] Score weights: F1=0.20 F2=0.20 F3=0.10 F4=0.20 F5f=0.10 F5g=0.10 F6=0.10
+[VariantEngine] Phase 5 variant engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/nonloopback-variants Templates: 2
+[VivaEngine] Phase 5 viva engine ready. Store: /mnt/d/SEB BRO/artifacts/p0/enterprise/nonloopback-viva Timeout: 300s
+[ExamOS-Server] No external Exam URL configured; Candidate Portal active at http://127.0.0.1:36842/
+[ExamOS-Server] FATAL: non-loopback binding is disabled; the HTTP service has no verified TLS/mTLS transport.

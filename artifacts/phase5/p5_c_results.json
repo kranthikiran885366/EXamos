@@ -1,0 +1,9 @@
+{
+  "gate": "Gate P5-C \u2014 Honest Session False-Flag Rate",
+  "status": "PASS",
+  "total_sessions": 30,
+  "false_flags": 0,
+  "invalid_baselines": 0,
+  "measured_rate_percent": 0.0,
+  "target_max_percent": 5.0
+}

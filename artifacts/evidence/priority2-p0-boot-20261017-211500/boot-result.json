@@ -1,0 +1,21 @@
+{
+  "phase": "P0",
+  "check": "guest_boot",
+  "status": "PASS",
+  "timestamp": "2026-10-17T15:45:14Z",
+  "image_sha256": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "image_sha256_after_boot": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "source_image_unchanged": true,
+  "qemu_acceleration": "KVM",
+  "qemu_memory_mib": 2564,
+  "qemu_vcpus": 2,
+  "qemu_stopped_after_readiness": true,
+  "qemu_exit_status": 0,
+  "markers": {
+    "kernel": true,
+    "systemd": true,
+    "multi_user_target": true,
+    "first_boot_setup_prompt": true,
+    "serial_login_prompt": true
+  }
+}

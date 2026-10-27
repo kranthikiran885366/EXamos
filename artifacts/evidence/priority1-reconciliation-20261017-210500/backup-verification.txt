@@ -1,0 +1,5 @@
+BackupPath=D:\SEB BRO-execution-backup-20261017-205900.zip
+Size=20287154
+SHA256=be8d45e55dd1ec0f5a491992d1618ba6f0d20180461ff56ab96e2d0d01b424fc
+ManifestContent=packed=672 skipped=4 size=20287154 sha256=be8d45e55dd1ec0f5a491992d1618ba6f0d20180461ff56ab96e2d0d01b424fc
+VerifiedAgainstManifest=True

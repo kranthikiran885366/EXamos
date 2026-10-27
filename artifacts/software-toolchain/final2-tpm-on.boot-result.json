@@ -1,0 +1,18 @@
+{
+  "phase": "SOFTWARE-TOOLCHAIN",
+  "test": "qemu-ovmf-swtpm-boot",
+  "label": "final2-tpm-on",
+  "result": "PASS",
+  "timestamp": "2026-10-23T02:55:52Z",
+  "source_commit": "ff2f040c3f463ee57062513d8deafe4e845fb546",
+  "image_path": "/home/krant/examos-work/examos.raw",
+  "image_sha256": "0f10d2105b6fc75d79b9f8411ef73449f473f0774d8ed8a05ea4b21fe29387d6",
+  "boot_marker": "graphical.target",
+  "emergency_shell": "no",
+  "tpm_mode": "on",
+  "qemu_exit_code": 124,
+  "elapsed_ms": 123200,
+  "acceleration": "-accel kvm",
+  "ovmf_firmware": "/usr/share/OVMF/OVMF_CODE_4M.fd",
+  "software_tpm": "swtpm-tpm2"
+}

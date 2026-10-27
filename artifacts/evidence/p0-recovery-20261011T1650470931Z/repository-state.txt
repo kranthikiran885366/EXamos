@@ -1,0 +1,369 @@
+﻿capture_utc=2026-10-11T16:50:47.3015099Z branch=work/p0-secure-release-remediation-20261011 head=c8d8c6149458e9c1611966d5f2db66ed2f42e2d1 working_tree_state=CAPTURED_BEFORE_EVIDENCE_DIRECTORY_CREATION  git_status_porcelain_v1:
+ M .github/workflows/p0.yml
+ M .github/workflows/p1.yml
+ M .gitignore
+ M Makefile
+ M README.md
+ M agent/Makefile
+ M agent/attestation/tpm_attestation.c
+ M agent/device-state/hardware_guard.c
+ M agent/environment/rf_scanner.c
+D  agent/examos-agent
+ M agent/include/attestation.h
+ M agent/main.c
+ D artifacts/iso/examos-appliance-v0.2.0.iso.sha256
+ M artifacts/p0/boot.log
+ M artifacts/p0/build.log
+ M artifacts/p0/image-size.txt
+ M artifacts/p0/image.sha256
+ D artifacts/p0/results.json
+ M artifacts/p1/image-size.txt
+ M artifacts/p1/image.sha256
+ M artifacts/p1/performance.txt
+ M artifacts/p1/results.json
+ M artifacts/p3/attestation-pass.json
+ M artifacts/p3/golden-pcr.json
+ M artifacts/p3/replay-test.json
+ M artifacts/p3/results.json
+ M artifacts/p3/revocation-test.json
+ M artifacts/p3/summary.md
+ M artifacts/p3/tool-versions.txt
+ M artifacts/phase4/detection-evaluation.json
+ M artifacts/phase4/phase4-manifest.json
+ M docs/development/p0-building.md
+ M docs/development/p0-gate.md
+ M docs/development/p0-testing.md
+ M docs/development/p1-overview.md
+ M docs/development/p1-running.md
+ M docs/development/p1-testing.md
+ M docs/development/p1-troubleshooting.md
+ M docs/phase4/detection-evaluation.md
+ M docs/phase4/existing-architecture-audit.md
+ M docs/phase4/gate-report.md
+ M docs/releases/p0-release.md
+ M docs/testing/p1-gate.md
+ M image/config/p3.conf
+D  image/dev.conf
+D  image/examos-build.conf
+D  image/examos.initrd
+D  image/examos.vmlinuz
+D  image/initrd.cpio.zst
+ M image/mkosi.conf
+ D image/mkosi.p0.conf
+ M image/overlay/etc/apparmor.d/usr.bin.chromium
+ M image/overlay/etc/chromium/policies/managed/examos_policies.json
+ M image/overlay/etc/examos/admin.conf
+ M image/overlay/etc/examos/candidates.conf
+ M image/overlay/etc/examos/proctor.env
+ M image/overlay/etc/nftables.conf
+ M image/overlay/etc/os-release
+ M image/overlay/etc/sysctl.d/99-examos-security.conf
+ M image/overlay/etc/systemd/system/examos-agent.service
+ M image/overlay/etc/systemd/system/examos-kiosk.service
+ M image/overlay/etc/systemd/system/examos-proctor.service
+ M image/overlay/etc/systemd/system/examos-server.service
+ M image/overlay/usr/local/bin/examos-agent
+ M image/overlay/usr/local/bin/examos-kiosk-launcher
+ M image/overlay/usr/local/bin/examos-proctor
+ M image/overlay/usr/local/bin/examos-server
+ M image/scripts/00-admin-setup.sh
+ M image/scripts/01-hardening.sh
+ M image/scripts/02-kiosk-setup.sh
+ M kiosk/launcher/examos-kiosk-launcher
+ M kiosk/launcher/launcher.c
+ M kiosk/launcher/launcher.sh
+ M kiosk/policies/managed_policies.json
+ M proctoring/Makefile
+ M proctoring/analysis/vision_engine.cpp
+ M proctoring/examos-proctor
+ M proctoring/main.cpp
+ M scripts/build-image.sh
+ M scripts/build-iso.sh
+ M scripts/examos-doctor.sh
+ M scripts/launch-server.sh
+ M scripts/p0.sh
+ M scripts/provision-candidate.sh
+ M scripts/run-qemu.sh
+ M server/Makefile
+ M server/admin/admin_dashboard.c
+ M server/admin/config_manager.c
+ M server/attestation/attestation_service.c
+D  server/attestation/examos-verifier
+ M server/attestation/verifier.go
+ M server/events/event_chain.c
+ M server/events/ledger.c
+D  server/examos-server
+ M server/gateway/key_release.c
+ M server/include/attestation_service.h
+ M server/include/candidate_login.h
+ M server/include/config_manager.h
+ M server/include/event_chain.h
+ M server/include/ledger.h
+ M server/login/candidate_login.c
+ M server/main.c
+ M tests/p0/boot.sh
+ M tests/p0/build.sh
+ M tests/p0/enterprise-validate.sh
+ M tests/p0/host-check.sh
+ M tests/p0/image-forensics.sh
+ M tests/p0/repository-check.sh
+ M tests/p0/server-smoke-test.sh
+ M tests/p1/boot.sh
+ M tests/p1/build.sh
+ M tests/p1/collect-artifacts.sh
+ M tests/p1/gate.sh
+ M tests/p1/kiosk.sh
+ M tests/p1/network.sh
+ M tests/p1/performance.sh
+ M tests/p3/attestation-suite.sh
+ M tests/p3/collect-artifacts.sh
+ M tests/p3/gate.sh
+ M tests/p3/test-matrix.yaml
+ M tests/phase4/concurrency-test.sh
+ M tests/phase4/detection-eval.sh
+ M tests/phase4/gate.sh
+ M tests/phase4/tamper-tests.sh
+?? .github/workflows/p2.yml
+?? .github/workflows/p3.yml
+?? .github/workflows/production-hardware.yml
+?? .github/workflows/production-release.yml
+?? artifacts/backups/worktree-20261011T112140Z/BRANCH.txt
+?? artifacts/backups/worktree-20261011T112140Z/DIFFSTAT.txt
+?? artifacts/backups/worktree-20261011T112140Z/HEAD.txt
+?? artifacts/backups/worktree-20261011T112140Z/LOG.txt
+?? artifacts/backups/worktree-20261011T112140Z/STAGED-STAT.txt
+?? artifacts/backups/worktree-20261011T112140Z/STATUS.txt
+?? artifacts/backups/worktree-20261011T112140Z/p3-oct11-MANIFEST.sha256
+?? artifacts/backups/worktree-20261011T112140Z/source.diff
+?? artifacts/evidence/CURRENT-P0.txt
+?? artifacts/evidence/p0-20261011T131622Z/MANIFEST.sha256
+?? artifacts/evidence/p0-20261011T131622Z/PROVENANCE.txt
+?? artifacts/evidence/p0-20261011T131622Z/boot-result.json
+?? artifacts/evidence/p0-20261011T131622Z/boot.log
+?? artifacts/evidence/p0-20261011T131622Z/build-result.json
+?? artifacts/evidence/p0-20261011T131622Z/enterprise/image-forensics.json
+?? artifacts/evidence/p0-20261011T131622Z/image-path.txt
+?? artifacts/evidence/p0-20261011T131622Z/image-size.txt
+?? artifacts/evidence/p0-20261011T131622Z/image.sha256
+?? artifacts/evidence/p0-20261011T131622Z/iso-boot-result.json
+?? artifacts/evidence/p0-20261011T131622Z/iso-boot.log
+?? artifacts/evidence/p0-20261011T131622Z/iso-build-result.json
+?? artifacts/evidence/p0-20261011T131622Z/iso.sha256
+?? artifacts/evidence/p0-recovery-20261011T1649229930Z/manifest.json
+?? artifacts/evidence/p0-recovery-20261011T1649229930Z/repository-state.txt
+?? artifacts/evidence/p0-recovery-20261011T1649229930Z/selected-p0-records-metadata-inventory.txt
+?? artifacts/iso/examos-appliance-v0.2.0-new.iso.sha256
+?? artifacts/p0/boot-result.json
+?? artifacts/p0/build-result.json
+?? artifacts/p0/enterprise/binary-security.json
+?? artifacts/p0/enterprise/boot-analysis.json
+?? artifacts/p0/enterprise/build-audit.json
+?? artifacts/p0/enterprise/build-output.log
+?? artifacts/p0/enterprise/certification.json
+?? artifacts/p0/enterprise/image-forensics-output.log
+?? artifacts/p0/enterprise/image-forensics.json
+?? artifacts/p0/enterprise/runtime-smoke.json
+?? artifacts/p0/enterprise/smoke-test-output.log
+?? artifacts/p0/enterprise/toolchain-matrix.json
+?? artifacts/p0/image-path.txt
+?? artifacts/p0/iso-boot.log
+?? artifacts/p0/iso-build-result.json
+?? artifacts/p0/qemu-sanity.log
+?? artifacts/p1/boot-status.json
+?? artifacts/p1/boot.log
+?? artifacts/p1/build.log
+?? artifacts/p1/image/examos.efi
+?? artifacts/p1/image/examos.initrd
+?? artifacts/p1/image/examos.vmlinuz
+?? artifacts/p1/kiosk.log
+?? artifacts/p1/network.log
+?? artifacts/p1/qemu.log
+?? artifacts/p1/swtpm.log
+?? artifacts/p3/attestation-suite-results.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/MANIFEST.sha256
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/PRESERVED_AT.txt
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/README.txt
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/SOURCE_COMMIT.txt
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/SOURCE_PATH.txt
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/SOURCE_TREE_STATE.txt
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/attestation-pass.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/attestation-suite-results.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/replay-test.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/revocation-test.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/runtime-tpm.json
+?? artifacts/p3/evidence-packages/examos-p3-results.BToS4h-20261011T053619Z/test-ledger.log
+?? artifacts/p3/runtime-tpm.json
+?? artifacts/p3/test-ledger.log
+?? artifacts/p3/test-server.log
+?? artifacts/phase2/chromium-policy-runtime-tests.json
+?? artifacts/phase2/chromium-policy-validation.json
+?? artifacts/phase2/ci-summary.json
+?? artifacts/phase2/dm-verity-clean-boot.txt
+?? artifacts/phase2/dm-verity-corruption-test.txt
+?? artifacts/phase2/external-port-scan.txt
+?? artifacts/phase2/firewall-allow-deny-tests.json
+?? artifacts/phase2/internal-disk-audit.txt
+?? artifacts/phase2/kernel-hardening-audit.json
+?? artifacts/phase2/module-lock-test.txt
+?? artifacts/phase2/p1-regression-results.json
+?? artifacts/phase2/p2-static-audit.log
+?? artifacts/phase2/p2-static-summary.json
+?? artifacts/phase2/phase2-manifest.json
+?? artifacts/phase2/release-package-audit.json
+?? artifacts/phase2/rootfs-mount-audit.txt
+?? artifacts/phase2/swap-core-dump-audit.txt
+?? artifacts/phase2/systemd-hardening-results.json
+?? artifacts/phase2/tmpfs-mount-flags.txt
+?? artifacts/phase2/usb-policy-tests.json
+?? artifacts/phase4/exam-event-verify
+?? artifacts/phase5/manifest.json
+?? artifacts/phase5/p5-event-ledger.log
+?? artifacts/phase5/p5_a_results.json
+?? artifacts/phase5/p5_b_results.json
+?? artifacts/phase5/p5_c_results.json
+?? artifacts/phase5/p5_d_results.json
+?? artifacts/phase5/p5_e_results.json
+?? artifacts/phase5/p5_f_results.json
+?? artifacts/phase5/p5_g_results.json
+?? artifacts/phase5/p5_h_results.json
+?? artifacts/phase5/p5_i_results.json
+?? artifacts/phase5/service-health.txt
+?? artifacts/phase5/variant-diversity.csv
+?? artifacts/phase6/prerequisite-status.json
+?? artifacts/production/hardware-trust.json
+?? audit/baseline-audit.md
+?? docs/phase2/architecture.md
+?? docs/phase2/dev-vs-release.md
+?? docs/phase2/dm-verity.md
+?? docs/phase2/gate-report.md
+?? docs/phase2/network-firewall.md
+?? docs/phase2/pre-change-audit.md
+?? docs/phase6/prerequisite-status.md
+?? docs/releases/p3-release.md
+?? docs/runbooks/p3-attestation-failure.md
+?? docs/security/BLOCKER_CLOSURE_REPORT.md
+?? docs/security/BOOT_CHAIN_CLOSURE_REPORT.md
+?? docs/security/CHANGE_LOG.md
+?? docs/security/END_TO_END_AUDIT.md
+?? docs/security/ISSUE_REGISTER.md
+?? docs/security/P4_MODEL_AND_DATA_GOVERNANCE.md
+?? docs/security/PHYSICAL_DEVICE_TEST_PLAN.md
+?? docs/security/RELEASE_READINESS.md
+?? docs/security/TCS_NQT_COMPARISON.md
+?? docs/security/TEST_MATRIX.md
+?? docs/security/THREAT_MODEL.md
+?? docs/security/p3-attestation.md
+?? docs/security/p3-key-release.md
+?? docs/security/p3-secure-boot.md
+?? docs/security/p3-tpm.md
+?? docs/security/p3-trust-model.md
+?? docs/testing/p3-test-matrix.md
+?? image/config/p1.conf
+?? image/mkosi.dev.conf
+?? image/overlay/etc/examos/agent.conf
+?? image/overlay/etc/examos/deployment.conf
+?? image/overlay/etc/systemd/system/examos-dev-shm-hardening.service
+?? image/overlay/etc/systemd/system/examos-kiosk-readiness.service
+?? image/overlay/etc/systemd/system/examos-lockdown-failed.target
+?? image/overlay/etc/systemd/system/examos-module-lock.service
+?? image/overlay/etc/systemd/system/examos-preflight.service
+?? image/overlay/etc/systemd/system/examos-unseal.service
+?? image/overlay/etc/systemd/system/examos-usb-lockdown.service
+?? image/overlay/etc/systemd/system/home-exam.mount
+?? image/overlay/etc/systemd/system/tmp.mount
+?? image/overlay/etc/systemd/system/var-log.mount
+?? image/overlay/etc/usbguard/rules.conf
+?? image/overlay/etc/usbguard/usbguard-daemon.conf
+?? image/overlay/usr/local/bin/examos-kiosk-readiness
+?? image/overlay/usr/local/bin/p2-startup-validator.sh
+?? image/p0/dev-console-tree/etc/systemd/system/getty@tty1.service.d/10-examos-dev-console-setup.conf
+?? image/p0/dev-console-tree/usr/local/sbin/examos-dev-console-setup
+?? image/p0/mkosi.conf
+?? image/scripts/03-p2-lockdown.sh
+?? image/scripts/dm-verity-corruption-test.sh
+?? image/scripts/dm-verity-setup.sh
+?? image/scripts/generate-nftables.sh
+?? image/scripts/p2-health-report.sh
+?? image/scripts/p2-startup-validator.sh
+?? image/scripts/release-audit.sh
+?? image/scripts/tpm-seal-secrets.sh
+?? image/trust/.gitkeep
+?? image/trust/README.md
+?? image/trust/generate-dev-keys.sh
+?? scripts/apply-ui-and-splash.sh
+?? scripts/build-and-sync-desktop.sh
+?? scripts/build-bootable-iso.sh
+?? scripts/build-complete-desktop-vmdk.sh
+?? scripts/build-full-image.sh
+?? scripts/build-perfect-uefi-iso.sh
+?? scripts/deploy-kiosk-gui-vmdk.sh
+?? scripts/enroll-physical-tpm.sh
+?? scripts/examos-lib.sh
+?? scripts/fix-and-install-gui.sh
+?? scripts/fix-vmware-console.sh
+?? scripts/inspect-and-fix-boot-gui.sh
+?? scripts/install-desktop-v2.sh
+?? scripts/install-secure-desktop-v2.sh
+?? scripts/install-secure-desktop.sh
+?? scripts/make-iso.sh
+?? scripts/preserve-p3-evidence.sh
+?? scripts/resize-and-install-desktop.sh
+?? scripts/set-root-pw.sh
+?? scripts/setup-build-host.sh
+?? scripts/setup-demo-candidate.sh
+?? scripts/setup-offline-gui.sh
+?? scripts/sync-image-final.sh
+?? scripts/universal-install.sh
+?? server/attestation/attestation_config.c
+?? server/behaviour/behaviour_engine.c
+?? server/behaviour/variant_engine.c
+?? server/behaviour/viva_engine.c
+?? server/config/devices.json
+?? server/config/releases.json
+?? server/exam/exam_engine.c
+?? server/include/attestation_config.h
+?? server/include/behaviour_engine.h
+?? server/include/exam_engine.h
+?? server/include/key_release.h
+?? server/include/session_store.h
+?? server/include/variant_engine.h
+?? server/include/viva_engine.h
+?? server/login/session_store.c
+?? tests/p0/boot-iso.sh
+?? tests/p0/build-iso.sh
+?? tests/p0/seal-evidence.sh
+?? tests/p1/p1-doctor.sh
+?? tests/p1/validate-source.sh
+?? tests/p2/p2-chromium-policy-tests.sh
+?? tests/p2/p2-gate.sh
+?? tests/p2/p2-guest-integration.sh
+?? tests/p2/p2-network-tests.sh
+?? tests/p2/p2-p1-regression.sh
+?? tests/p2/p2-secureboot-gate.sh
+?? tests/p2/p2-static-audit.sh
+?? tests/p2/p2-usb-tests.sh
+?? tests/p2/p2-verity-tests.sh
+?? tests/p3/__pycache__/release-gate.cpython-314.pyc
+?? tests/p3/__pycache__/startup-fail-closed.cpython-314.pyc
+?? tests/p3/__pycache__/test-eventlog-replay.cpython-314.pyc
+?? tests/p3/credential-activation-smoke.sh
+?? tests/p3/hardware-tpm-preflight.sh
+?? tests/p3/production-registry.sh
+?? tests/p3/release-gate.py
+?? tests/p3/startup-fail-closed.py
+?? tests/p3/swtpm-quote-smoke.sh
+?? tests/p3/test-eventlog-replay.py
+?? tests/p5/__pycache__/test_p5_suite.cpython-311-pytest-9.1.1.pyc
+?? tests/p5/__pycache__/test_p5_suite.cpython-314.pyc
+?? tests/p5/p5-gate.sh
+?? tests/p5/test_p5_suite.py
+?? tests/p6/prerequisite-audit.py
+?? tests/phase4/__pycache__/model-governance.cpython-314.pyc
+?? tests/phase4/model-governance.py
+?? tests/production/collect-boot-chain-evidence.sh
+?? tests/production/hardware-trust-gate.sh
+?? tests/test-vmdk-live.sh
+?? tests/verify-boot-and-esp.sh
+?? tools/__pycache__/examos-eventlog-replay.cpython-314.pyc
+?? tools/examos-eventlog-replay.py
+?? wsl

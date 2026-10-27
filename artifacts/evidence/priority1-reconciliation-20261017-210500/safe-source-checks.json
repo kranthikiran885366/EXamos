@@ -1,0 +1,58 @@
+[
+  {
+    "test": "tests/p0/private-key-check.sh",
+    "command": "bash tests/p0/private-key-check.sh",
+    "exit_code": 0,
+    "status": "PASS",
+    "start": "2026-10-17T15:34:44.049803+00:00",
+    "end": "2026-10-17T15:34:45.243801+00:00"
+  },
+  {
+    "test": "tests/p0/provenance-check-test.sh",
+    "command": "bash tests/p0/provenance-check-test.sh",
+    "exit_code": 0,
+    "status": "PASS",
+    "start": "2026-10-17T15:34:45.243801+00:00",
+    "end": "2026-10-17T15:34:45.724867+00:00"
+  },
+  {
+    "test": "tests/p0/tpm-secret-mapping-test.sh",
+    "command": "bash tests/p0/tpm-secret-mapping-test.sh",
+    "exit_code": 0,
+    "status": "PASS",
+    "start": "2026-10-17T15:34:45.724867+00:00",
+    "end": "2026-10-17T15:34:46.061290+00:00"
+  },
+  {
+    "test": "tests/p0/agent-config-contract-test.sh",
+    "command": "bash tests/p0/agent-config-contract-test.sh",
+    "exit_code": 0,
+    "status": "PASS",
+    "start": "2026-10-17T15:34:46.061290+00:00",
+    "end": "2026-10-17T15:34:46.282001+00:00"
+  },
+  {
+    "test": "tests/p0/repository-check.sh",
+    "command": "bash tests/p0/repository-check.sh",
+    "exit_code": 0,
+    "status": "PASS",
+    "start": "2026-10-17T15:34:46.282001+00:00",
+    "end": "2026-10-17T15:34:47.099601+00:00"
+  },
+  {
+    "test": "tests/p0/host-check.sh",
+    "command": "bash tests/p0/host-check.sh",
+    "exit_code": 1,
+    "status": "FAIL",
+    "start": "2026-10-17T15:34:47.099601+00:00",
+    "end": "2026-10-17T15:34:49.516809+00:00"
+  },
+  {
+    "test": "tests/p1/validate-source.sh",
+    "command": "bash tests/p1/validate-source.sh",
+    "exit_code": 2,
+    "status": "BLOCKED",
+    "start": "2026-10-17T15:34:49.516809+00:00",
+    "end": "2026-10-17T15:34:51.368202+00:00"
+  }
+]

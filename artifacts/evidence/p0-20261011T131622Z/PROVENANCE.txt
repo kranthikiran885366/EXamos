@@ -1,0 +1,7 @@
+schema=examos-p0-evidence-v1
+sealed_at=2026-10-11T14:04:57Z
+source_commit=c8d8c6149458e9c1611966d5f2db66ed2f42e2d1
+source_tree_state=DIRTY
+mkosi=mkosi 26
+qemu=QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+ovmf=/usr/share/OVMF/OVMF_CODE_4M.fd

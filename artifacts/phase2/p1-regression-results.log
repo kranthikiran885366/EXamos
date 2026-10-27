@@ -1,0 +1,24 @@
+=== [P2-P1-REGRESSION] P1 Regression: 2026-10-22T16:47:40Z ===
+--- Re-running P1 kiosk static check ---
+[P1-REG-PASS]    P1-REG-KIOSK: P1 kiosk.sh static check passed
+--- Re-running P1 network static check ---
+[P1-REG-PASS]    P1-REG-NETWORK: P1 network.sh static check passed
+[P1-REG-PASS]    P1-REG-USER: examos-kiosk.service User=exam preserved
+[P1-REG-PASS]    P1-REG-CAGE: cage compositor reference preserved
+[P1-REG-PASS]    P1-REG-TARGET: WantedBy=graphical.target preserved
+[P1-REG-PASS]    P1-REG-RESTART: Kiosk restart supervision preserved
+[P1-REG-PASS]    P1-REG-SANDBOX: launcher.c: no --no-sandbox flag
+[P1-REG-PASS]    P1-REG-GPUSB: launcher.c: no --disable-gpu-sandbox
+[P1-REG-PASS]    P1-REG-SYSUSERS: exam UID=1000 nologin in sysusers.d
+[P1-REG-PASS]    P1-REG-DE-gnome: No 'gnome' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-DE-kde: No 'kde' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-DE-xfce: No 'xfce' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-DE-lightdm: No 'lightdm' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-DE-gdm3: No 'gdm3' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-DE-lxde: No 'lxde' DE in mkosi.conf
+[P1-REG-PASS]    P1-REG-WANTS: graphical.target.wants/examos-kiosk.service created in build script
+[P1-REG-PASS]    P1-REG-EXAMCONF: /etc/examos/exam.conf present
+--- Re-running P1 boot test ---
+[P1-REG-BLOCKED] P1-REG-BOOT: P1 boot test cannot run in this environment (rc=2); see p1-regression-boot.log
+
+=== [P1-REGRESSION] PASS=17 FAIL=0 BLOCKED=1 ===

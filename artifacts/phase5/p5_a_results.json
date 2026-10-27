@@ -1,0 +1,13 @@
+{
+  "gate": "Gate P5-A \u2014 Personal Practice Baselines",
+  "status": "PASS",
+  "insufficient_handled": true,
+  "baseline_constructed": true,
+  "fifth_practice_event_status": 201,
+  "fifth_practice_status": 201,
+  "first_practice_rejections": [],
+  "fifth_practice_rejection": null,
+  "fifth_event_error": null,
+  "eligible_practice_count": 5,
+  "f1_median_ms": 4000.0
+}

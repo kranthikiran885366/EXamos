@@ -1,0 +1,5 @@
+{
+  "gate": "Gate P5-G \u2014 Human Review and Override",
+  "status": "BLOCKED",
+  "reason": "A successfully generated viva is required for review workflow validation."
+}

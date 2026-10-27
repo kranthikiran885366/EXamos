@@ -1,0 +1,73 @@
+make: Entering directory '/mnt/d/SEB BRO'
+=== Building kiosk/launcher ===
+make[1]: Entering directory '/mnt/d/SEB BRO/kiosk/launcher'
+cc -Wall -Wextra -O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -o /tmp/examos-p0-native-build.nSEaZd/kiosk/launcher/examos-kiosk-launcher launcher.c
+make[1]: Leaving directory '/mnt/d/SEB BRO/kiosk/launcher'
+=== Building agent ===
+make[1]: Entering directory '/mnt/d/SEB BRO/agent'
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c main.c -o /tmp/examos-p0-native-build.nSEaZd/agent/main.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c attestation/tpm_attestation.c -o /tmp/examos-p0-native-build.nSEaZd/agent/attestation/tpm_attestation.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c device-state/hardware_guard.c -o /tmp/examos-p0-native-build.nSEaZd/agent/device-state/hardware_guard.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c heartbeat/heartbeat.c -o /tmp/examos-p0-native-build.nSEaZd/agent/heartbeat/heartbeat.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c environment/rf_scanner.c -o /tmp/examos-p0-native-build.nSEaZd/agent/environment/rf_scanner.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -o /tmp/examos-p0-native-build.nSEaZd/agent/examos-agent /tmp/examos-p0-native-build.nSEaZd/agent/main.o /tmp/examos-p0-native-build.nSEaZd/agent/attestation/tpm_attestation.o /tmp/examos-p0-native-build.nSEaZd/agent/device-state/hardware_guard.o /tmp/examos-p0-native-build.nSEaZd/agent/heartbeat/heartbeat.o /tmp/examos-p0-native-build.nSEaZd/agent/environment/rf_scanner.o -lssl -lcrypto -lcurl -lpthread
+make[1]: Leaving directory '/mnt/d/SEB BRO/agent'
+=== Building proctoring ===
+make[1]: Entering directory '/mnt/d/SEB BRO/proctoring'
+[proctoring] OpenCV4 detected — real DNN detection enabled
+g++ -Wall -Wextra -Werror -Wno-error=deprecated-declarations -Wno-unused-parameter -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -DEXAMOS_USE_OPENCV -I/usr/include/opencv4 -c main.cpp -o /tmp/examos-p0-native-build.nSEaZd/proctoring/main.o
+g++ -Wall -Wextra -Werror -Wno-error=deprecated-declarations -Wno-unused-parameter -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -DEXAMOS_USE_OPENCV -I/usr/include/opencv4 -c client/media_capture.cpp -o /tmp/examos-p0-native-build.nSEaZd/proctoring/client/media_capture.o
+g++ -Wall -Wextra -Werror -Wno-error=deprecated-declarations -Wno-unused-parameter -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -DEXAMOS_USE_OPENCV -I/usr/include/opencv4 -c analysis/anomaly_detector.cpp -o /tmp/examos-p0-native-build.nSEaZd/proctoring/analysis/anomaly_detector.o
+g++ -Wall -Wextra -Werror -Wno-error=deprecated-declarations -Wno-unused-parameter -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -DEXAMOS_USE_OPENCV -I/usr/include/opencv4 -c analysis/vision_engine.cpp -o /tmp/examos-p0-native-build.nSEaZd/proctoring/analysis/vision_engine.o
+g++ -Wall -Wextra -Werror -Wno-error=deprecated-declarations -Wno-unused-parameter -O2 -std=c++17 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -DEXAMOS_USE_OPENCV -I/usr/include/opencv4 -o /tmp/examos-p0-native-build.nSEaZd/proctoring/examos-proctor /tmp/examos-p0-native-build.nSEaZd/proctoring/main.o /tmp/examos-p0-native-build.nSEaZd/proctoring/client/media_capture.o /tmp/examos-p0-native-build.nSEaZd/proctoring/analysis/anomaly_detector.o /tmp/examos-p0-native-build.nSEaZd/proctoring/analysis/vision_engine.o -lcurl -lpthread -lm -lopencv_stitching -lopencv_alphamat -lopencv_aruco -lopencv_bgsegm -lopencv_bioinspired -lopencv_ccalib -lopencv_cvv -lopencv_dnn_objdetect -lopencv_dnn_superres -lopencv_dpm -lopencv_face -lopencv_freetype -lopencv_fuzzy -lopencv_hdf -lopencv_hfs -lopencv_img_hash -lopencv_intensity_transform -lopencv_line_descriptor -lopencv_mcc -lopencv_quality -lopencv_rapid -lopencv_reg -lopencv_rgbd -lopencv_saliency -lopencv_shape -lopencv_signal -lopencv_stereo -lopencv_structured_light -lopencv_phase_unwrapping -lopencv_superres -lopencv_optflow -lopencv_surface_matching -lopencv_tracking -lopencv_highgui -lopencv_datasets -lopencv_text -lopencv_plot -lopencv_ml -lopencv_videostab -lopencv_videoio -lopencv_viz -lopencv_wechat_qrcode -lopencv_ximgproc -lopencv_video -lopencv_xobjdetect -lopencv_objdetect -lopencv_calib3d -lopencv_imgcodecs -lopencv_features2d -lopencv_dnn -lopencv_flann -lopencv_xphoto -lopencv_photo -lopencv_imgproc -lopencv_core
+make[1]: Leaving directory '/mnt/d/SEB BRO/proctoring'
+=== Building server ===
+make[1]: Entering directory '/mnt/d/SEB BRO/server'
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c main.c -o /tmp/examos-p0-native-build.nSEaZd/server/main.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c events/ledger.c -o /tmp/examos-p0-native-build.nSEaZd/server/events/ledger.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c events/event_chain.c -o /tmp/examos-p0-native-build.nSEaZd/server/events/event_chain.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c risk/risk_engine.c -o /tmp/examos-p0-native-build.nSEaZd/server/risk/risk_engine.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c exam/exam_service.c -o /tmp/examos-p0-native-build.nSEaZd/server/exam/exam_service.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c exam/exam_engine.c -o /tmp/examos-p0-native-build.nSEaZd/server/exam/exam_engine.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c admin/config_manager.c -o /tmp/examos-p0-native-build.nSEaZd/server/admin/config_manager.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c login/candidate_login.c -o /tmp/examos-p0-native-build.nSEaZd/server/login/candidate_login.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c login/session_store.c -o /tmp/examos-p0-native-build.nSEaZd/server/login/session_store.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c admin/admin_dashboard.c -o /tmp/examos-p0-native-build.nSEaZd/server/admin/admin_dashboard.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c attestation/attestation_service.c -o /tmp/examos-p0-native-build.nSEaZd/server/attestation/attestation_service.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c attestation/attestation_config.c -o /tmp/examos-p0-native-build.nSEaZd/server/attestation/attestation_config.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c gateway/key_release.c -o /tmp/examos-p0-native-build.nSEaZd/server/gateway/key_release.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c proctoring/second_camera.c -o /tmp/examos-p0-native-build.nSEaZd/server/proctoring/second_camera.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c environment/e1_consent.c -o /tmp/examos-p0-native-build.nSEaZd/server/environment/e1_consent.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c behaviour/behaviour_engine.c -o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/behaviour_engine.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c behaviour/variant_engine.c -o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/variant_engine.o
+behaviour/variant_engine.c: In function ‘seed_to_uniform’:
+behaviour/variant_engine.c:122:5: warning: ‘SHA256_Init’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  122 |     SHA256_Init(&ctx);
+      |     ^~~~~~~~~~~
+In file included from behaviour/variant_engine.c:23:
+/usr/include/openssl/sha.h:73:27: note: declared here
+   73 | OSSL_DEPRECATEDIN_3_0 int SHA256_Init(SHA256_CTX *c);
+      |                           ^~~~~~~~~~~
+behaviour/variant_engine.c:123:5: warning: ‘SHA256_Update’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  123 |     SHA256_Update(&ctx, seed, 32);
+      |     ^~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+behaviour/variant_engine.c:124:5: warning: ‘SHA256_Update’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  124 |     SHA256_Update(&ctx, input, strlen(input));
+      |     ^~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+behaviour/variant_engine.c:125:5: warning: ‘SHA256_Final’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  125 |     SHA256_Final(buf, &ctx);
+      |     ^~~~~~~~~~~~
+/usr/include/openssl/sha.h:76:27: note: declared here
+   76 | OSSL_DEPRECATEDIN_3_0 int SHA256_Final(unsigned char *md, SHA256_CTX *c);
+      |                           ^~~~~~~~~~~~
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -c behaviour/viva_engine.c -o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/viva_engine.o
+cc -Wall -Wextra -Werror -Wno-error=deprecated-declarations -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fno-omit-frame-pointer -Wformat=2 -Wformat-security -Wstringop-truncation -Wno-unused-parameter -o /tmp/examos-p0-native-build.nSEaZd/server/examos-server /tmp/examos-p0-native-build.nSEaZd/server/main.o /tmp/examos-p0-native-build.nSEaZd/server/events/ledger.o /tmp/examos-p0-native-build.nSEaZd/server/events/event_chain.o /tmp/examos-p0-native-build.nSEaZd/server/risk/risk_engine.o /tmp/examos-p0-native-build.nSEaZd/server/exam/exam_service.o /tmp/examos-p0-native-build.nSEaZd/server/exam/exam_engine.o /tmp/examos-p0-native-build.nSEaZd/server/admin/config_manager.o /tmp/examos-p0-native-build.nSEaZd/server/login/candidate_login.o /tmp/examos-p0-native-build.nSEaZd/server/login/session_store.o /tmp/examos-p0-native-build.nSEaZd/server/admin/admin_dashboard.o /tmp/examos-p0-native-build.nSEaZd/server/attestation/attestation_service.o /tmp/examos-p0-native-build.nSEaZd/server/attestation/attestation_config.o /tmp/examos-p0-native-build.nSEaZd/server/gateway/key_release.o /tmp/examos-p0-native-build.nSEaZd/server/proctoring/second_camera.o /tmp/examos-p0-native-build.nSEaZd/server/environment/e1_consent.o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/behaviour_engine.o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/variant_engine.o /tmp/examos-p0-native-build.nSEaZd/server/behaviour/viva_engine.o -lssl -lcrypto -lpthread -lm
+make[1]: Leaving directory '/mnt/d/SEB BRO/server'
+=== All ExamOS Native Subsystems Built Successfully ===
+make: Leaving directory '/mnt/d/SEB BRO'

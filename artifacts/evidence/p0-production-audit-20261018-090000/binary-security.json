@@ -1,0 +1,67 @@
+[
+  {
+    "binary": "examos-server",
+    "status": "FAIL",
+    "raw": "Usage: tests/p0/binary-hardening-check.sh <path-to-elf-binary> [json|text]"
+  },
+  {
+    "binary": "agent/examos-agent",
+    "name": "examos-agent",
+    "pie": true,
+    "canary": false,
+    "relro": "full",
+    "nx": true,
+    "fortify": true,
+    "rpath": false,
+    "score": "5/6",
+    "grade": "A",
+    "details": {
+      "pie": "ELF Type: DYN (shared object / PIE)",
+      "canary": "__stack_chk_fail symbol NOT found",
+      "relro": "GNU_RELRO + BIND_NOW (Full RELRO)",
+      "nx": "GNU_STACK flags: 0x0000000000000000 (no Execute \u00e2\u20ac\u201d NX enabled)",
+      "fortify": "5 fortified function(s) detected",
+      "rpath": "No RPATH/RUNPATH set (clean)"
+    }
+  },
+  {
+    "binary": "proctoring/examos-proctor",
+    "name": "examos-proctor",
+    "pie": true,
+    "canary": false,
+    "relro": "full",
+    "nx": true,
+    "fortify": true,
+    "rpath": false,
+    "score": "5/6",
+    "grade": "A",
+    "details": {
+      "pie": "ELF Type: DYN (shared object / PIE)",
+      "canary": "__stack_chk_fail symbol NOT found",
+      "relro": "GNU_RELRO + BIND_NOW (Full RELRO)",
+      "nx": "GNU_STACK flags: 0x0000000000000000 (no Execute \u00e2\u20ac\u201d NX enabled)",
+      "fortify": "3 fortified function(s) detected",
+      "rpath": "No RPATH/RUNPATH set (clean)"
+    }
+  },
+  {
+    "binary": "kiosk/launcher/examos-kiosk-launcher",
+    "name": "examos-kiosk-launcher",
+    "pie": true,
+    "canary": true,
+    "relro": "full",
+    "nx": true,
+    "fortify": true,
+    "rpath": false,
+    "score": "6/6",
+    "grade": "A+",
+    "details": {
+      "pie": "ELF Type: DYN (shared object / PIE)",
+      "canary": "__stack_chk_fail symbol found",
+      "relro": "GNU_RELRO + BIND_NOW (Full RELRO)",
+      "nx": "GNU_STACK flags: 0x0000000000000000 (no Execute \u00e2\u20ac\u201d NX enabled)",
+      "fortify": "2 fortified function(s) detected",
+      "rpath": "No RPATH/RUNPATH set (clean)"
+    }
+  }
+]

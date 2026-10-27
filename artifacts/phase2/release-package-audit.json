@@ -1,0 +1,15 @@
+{
+  "_note": "Populated by image/scripts/release-audit.sh during CI. Values below are defaults before first run.",
+  "tool": "examos-release-audit",
+  "version": "p2.1",
+  "timestamp": "NOT_RUN",
+  "rootfs_path": "NOT_RUN",
+  "source_only_mode": true,
+  "summary": {
+    "passed": 0,
+    "failed": 0,
+    "overall": "NOT_RUN"
+  },
+  "findings": [],
+  "passed_checks": []
+}

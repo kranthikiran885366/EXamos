@@ -1,0 +1,18 @@
+{
+  "audit_run_id": "p0-production-audit-20261018-090000",
+  "timestamp_utc": "2026-10-18T03:37:57.058420+00:00",
+  "raw_image": {
+    "path": "image/p0/output/examos-p0.raw",
+    "format": "GPT / ext4 + EFI System Partition",
+    "size_bytes": 1019408384,
+    "sha256_before": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+    "sha256_after": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+    "unchanged": true
+  },
+  "hybrid_iso": {
+    "path": "artifacts/p0/examos-p0.iso",
+    "format": "ISO9660 / El Torito UEFI + Appended GPT ESP + Root",
+    "size_bytes": 1500221440,
+    "sha256": "64fe70b0cce8c68834de0c6a73e9dbeb0f1e2fa3b09a22f5b231c791aba1eae7"
+  }
+}

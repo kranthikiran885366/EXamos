@@ -11,4 +11,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                         const char *body, const char *auth_header,
                         const char *origin, char *extra_headers, size_t extra_len);
 
+void kiosk_broadcast_os_update(const char *release_id, const char *channel, const char *security_profile);
+int kiosk_get_active_count(void);
+
 #endif /* EXAMOS_INSTITUTION_CONTROLLER_H */

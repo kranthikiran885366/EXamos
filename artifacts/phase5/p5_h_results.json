@@ -1,0 +1,13 @@
+{
+  "gate": "Gate P5-H \u2014 Authorization & Privacy Protection",
+  "status": "BLOCKED",
+  "reason": "Duplicate-response validation requires the unavailable viva provider.",
+  "answer_keys_isolated": true,
+  "reviewer_access_controlled": true,
+  "baseline_access_controlled": true,
+  "practice_access_controlled": true,
+  "unknown_viva_decision_rejected": true,
+  "first_response_accepted": false,
+  "duplicate_http_status": 403,
+  "mutation_rejected": false
+}

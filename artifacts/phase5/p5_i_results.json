@@ -1,0 +1,10 @@
+{
+  "gate": "Gate P5-I \u2014 P0\u2013P4 Regression Verification",
+  "status": "BLOCKED",
+  "reason": "Fresh, commit-bound P0-P4 gate evidence was not supplied and verified.",
+  "P0": "BLOCKED",
+  "P1": "BLOCKED",
+  "P2": "BLOCKED",
+  "P3": "BLOCKED",
+  "P4": "BLOCKED"
+}

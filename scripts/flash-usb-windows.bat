@@ -7,17 +7,17 @@ echo    ExamOS Enterprise - Bare-Metal Physical Laptop Flashing Guide
 echo ======================================================================
 echo.
 
-set "IMG_ISO=D:\SEB BRO\artifacts\p0\examos-p0.iso"
-set "IMG_RAW=D:\SEB BRO\image\p0\output\examos-p0.raw"
-set "IMG_FULL=D:\SEB BRO\image\examos.iso"
+set "IMG_RAW=D:\SEB BRO\image\examos.raw"
+set "IMG_ISO=D:\SEB BRO\output\examos.iso"
+set "IMG_VMDK=D:\SEB BRO\output\examos-flat.vmdk"
 
 set "TARGET_IMG="
-if exist "%IMG_ISO%" (
-    set "TARGET_IMG=%IMG_ISO%"
-) else if exist "%IMG_RAW%" (
+if exist "%IMG_RAW%" (
     set "TARGET_IMG=%IMG_RAW%"
-) else if exist "%IMG_FULL%" (
-    set "TARGET_IMG=%IMG_FULL%"
+) else if exist "%IMG_ISO%" (
+    set "TARGET_IMG=%IMG_ISO%"
+) else if exist "%IMG_VMDK%" (
+    set "TARGET_IMG=%IMG_VMDK%"
 )
 
 if "%TARGET_IMG%"=="" (

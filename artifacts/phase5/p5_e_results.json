@@ -1,0 +1,7 @@
+{
+  "gate": "Gate P5-E \u2014 Visible Watermark Leak Tracing",
+  "status": "PASS",
+  "positive_trace_success": true,
+  "traced_candidate_ref": "REF-7f0968e3",
+  "negative_control_handled": true
+}

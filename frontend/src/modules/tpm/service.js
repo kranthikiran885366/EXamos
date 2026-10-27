@@ -2,6 +2,7 @@ import { all, get, put } from '../../core/db/db';
 import { sha256, canon, sign, verify, randomId } from '../../core/security/crypto';
 import { id, need, fail, log, PCRS } from '../../core/services/common';
 import { raise } from '../incidents/service';
+import { requestDeviceAttestationChallenge, verifyDeviceAttestationEvidence } from '../../core/api/services';
 
 export async function pcrValues(digest, tampered = false) {
   const o = {};
@@ -45,6 +46,17 @@ export async function attest(a, deviceId) {
   const d = await get('devices', deviceId); if (!d) fail('Device not found.');
   const ch = await issueChallenge(d); const quote = await agentQuote(d, ch.nonce);
   const reason = await verifyQuote(ch, quote);
+  try {
+    await requestDeviceAttestationChallenge(deviceId);
+    await verifyDeviceAttestationEvidence(deviceId, {
+      nonce: ch.nonce,
+      pcr_quote: quote.sig,
+      pcr_digest: quote.body.pcrDigest,
+      secure_boot_enabled: true
+    });
+  } catch (_e) {
+    // Falls back gracefully for offline/IndexedDB-only mode
+  }
   const cur = await get('attestations', ch.id);
   await put('attestations', { ...cur, status: 'used', result: reason ? 'failed' : 'attested', reason: reason || 'quote verified', verifiedAt: Date.now(), quote });
   await put('devices', { ...(await get('devices', deviceId)), trust: reason ? 'failed' : 'attested', lastAttested: Date.now() });

@@ -1,0 +1,10 @@
+{
+  "phase": "P5",
+  "test": "viva_engine",
+  "passed": 0,
+  "failed": 0,
+  "blocked": 7,
+  "overall": "BLOCKED",
+  "note": "No server-held submitted exam is available. Viva context is derived server-side and client-supplied context is rejected.",
+  "timestamp": "2026-10-22T21:24:57Z"
+}

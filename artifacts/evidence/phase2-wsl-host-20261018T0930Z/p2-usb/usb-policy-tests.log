@@ -1,0 +1,11 @@
+=== [P2-USB] USB Policy Tests: 2026-10-18T03:50:50Z ===
+[USB-BLOCKED] U-01: BLOCKED_ENVIRONMENT: no USB host controllers found in /sys/bus/usb/devices/
+[USB-BLOCKED] U-02: BLOCKED_ENVIRONMENT: usbguard binary not available
+[USB-PASS]    U-03-STORAGE: USBGuard rule blocks USB Mass Storage (class 08)
+[USB-PASS]    U-03-COMPOSITE: USBGuard blocks composite HID+Storage devices
+[USB-PASS]    U-03-HID: USBGuard allows HID devices (class 03)
+[USB-PASS]    U-03-IMPLICIT: USBGuard ImplicitPolicyTarget=block
+[USB-PASS]    U-04: udev rule blocks USB Mass Storage (class 08, authorized=0)
+[USB-BLOCKED] U-05: BLOCKED_ENVIRONMENT: hardware test not enabled (set HARDWARE_TEST=1)
+
+=== [P2-USB] PASS=5 FAIL=0 BLOCKED=3 ===

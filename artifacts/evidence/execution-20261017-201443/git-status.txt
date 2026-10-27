@@ -1,0 +1,342 @@
+## work/p0-secure-release-remediation-20261011
+ M .github/workflows/p0.yml
+ M .github/workflows/p1.yml
+ M .gitignore
+ M Makefile
+ M README.md
+ M agent/Makefile
+ M agent/attestation/tpm_attestation.c
+ M agent/device-state/hardware_guard.c
+ M agent/environment/rf_scanner.c
+D  agent/examos-agent
+ M agent/heartbeat/heartbeat.c
+ M agent/include/attestation.h
+ M agent/include/heartbeat.h
+ M agent/include/rf_scanner.h
+ M agent/main.c
+ D artifacts/iso/examos-appliance-v0.2.0.iso.sha256
+ M artifacts/p0/boot.log
+ M artifacts/p0/build.log
+ M artifacts/p0/image-size.txt
+ M artifacts/p0/image.sha256
+ M artifacts/p0/ovmf-info.txt
+ D artifacts/p0/results.json
+ M artifacts/p1/image-size.txt
+ M artifacts/p1/image.sha256
+ M artifacts/p1/performance.txt
+ M artifacts/p1/results.json
+ M artifacts/p3/attestation-pass.json
+ M artifacts/p3/golden-pcr.json
+ M artifacts/p3/replay-test.json
+ M artifacts/p3/results.json
+ M artifacts/p3/revocation-test.json
+ M artifacts/p3/summary.md
+ M artifacts/p3/tool-versions.txt
+ M artifacts/phase4/concurrency-results.csv
+ M artifacts/phase4/concurrency-results.json
+ M artifacts/phase4/detection-evaluation.csv
+ M artifacts/phase4/detection-evaluation.json
+ M artifacts/phase4/phase4-manifest.json
+ M artifacts/phase4/tamper-test-results.json
+ M docs/development/enterprise-upgrade.md
+ M docs/development/p0-building.md
+ M docs/development/p0-gate.md
+ M docs/development/p0-requirements.md
+ M docs/development/p0-testing.md
+ M docs/development/p1-overview.md
+ M docs/development/p1-running.md
+ M docs/development/p1-testing.md
+ M docs/development/p1-troubleshooting.md
+ M docs/phase4/detection-evaluation.md
+ M docs/phase4/existing-architecture-audit.md
+ M docs/phase4/gate-report.md
+ M docs/releases/p0-release.md
+ M docs/testing/p1-gate.md
+ M image/config/p3.conf
+D  image/dev.conf
+ D image/examos
+D  image/examos-build.conf
+D  image/examos.initrd
+D  image/examos.vmlinuz
+D  image/initrd.cpio.zst
+ M image/mkosi.conf
+ D image/mkosi.p0.conf
+ M image/overlay/etc/apparmor.d/usr.bin.chromium
+ M image/overlay/etc/chromium/policies/managed/examos_policies.json
+ M image/overlay/etc/examos/admin.conf
+ M image/overlay/etc/examos/candidates.conf
+ M image/overlay/etc/examos/proctor.env
+ M image/overlay/etc/nftables.conf
+ M image/overlay/etc/os-release
+ M image/overlay/etc/sysctl.d/99-examos-security.conf
+ M image/overlay/etc/systemd/system/examos-agent.service
+ M image/overlay/etc/systemd/system/examos-kiosk.service
+ M image/overlay/etc/systemd/system/examos-proctor.service
+ M image/overlay/etc/systemd/system/examos-server.service
+ M image/overlay/etc/udev/rules.d/99-examos-usb-lockdown.rules
+ M image/overlay/usr/lib/sysusers.d/examos.conf
+ M image/overlay/usr/local/bin/examos-agent
+ M image/overlay/usr/local/bin/examos-kiosk-launcher
+ M image/overlay/usr/local/bin/examos-proctor
+ M image/overlay/usr/local/bin/examos-server
+ M image/scripts/00-admin-setup.sh
+ M image/scripts/01-hardening.sh
+ M image/scripts/02-kiosk-setup.sh
+ M kiosk/launcher/Makefile
+ M kiosk/launcher/examos-kiosk-launcher
+ M kiosk/launcher/launcher.c
+ M kiosk/launcher/launcher.sh
+ M kiosk/policies/managed_policies.json
+ M proctoring/Makefile
+ M proctoring/analysis/vision_engine.cpp
+ M proctoring/examos-proctor
+ M proctoring/include/vision_engine.h
+ M proctoring/main.cpp
+ M scripts/build-image.sh
+ M scripts/build-iso.sh
+ M scripts/examos-doctor.sh
+ M scripts/launch-server.sh
+ M scripts/launch-windows.bat
+ M scripts/p0.sh
+ M scripts/provision-candidate.sh
+ M scripts/run-qemu.sh
+ M server/Makefile
+ M server/admin/admin_dashboard.c
+ M server/admin/config_manager.c
+ M server/attestation/attestation_service.c
+D  server/attestation/examos-verifier
+ M server/attestation/verifier.go
+ M server/events/event_chain.c
+ M server/events/ledger.c
+D  server/examos-server
+ M server/gateway/key_release.c
+ M server/include/attestation_service.h
+ M server/include/candidate_login.h
+ M server/include/config_manager.h
+ M server/include/event_chain.h
+ M server/include/ledger.h
+ M server/login/candidate_login.c
+ M server/main.c
+ M tests/p0/boot.sh
+ M tests/p0/build.sh
+ M tests/p0/enterprise-validate.sh
+ M tests/p0/examos-doctor.sh
+ M tests/p0/host-check.sh
+ M tests/p0/image-forensics.sh
+ M tests/p0/repository-check.sh
+ M tests/p0/server-smoke-test.sh
+ M tests/p0/server-smoke.sh
+ M tests/p1/boot.sh
+ M tests/p1/build.sh
+ M tests/p1/collect-artifacts.sh
+ M tests/p1/gate.sh
+ M tests/p1/kiosk.sh
+ M tests/p1/network.sh
+ M tests/p1/performance.sh
+ M tests/p3/attestation-suite.sh
+ M tests/p3/collect-artifacts.sh
+ M tests/p3/gate.sh
+ M tests/p3/test-matrix.yaml
+ M tests/phase4/concurrency-test.sh
+ M tests/phase4/detection-eval.sh
+ M tests/phase4/gate.sh
+ M tests/phase4/tamper-tests.sh
+?? .github/workflows/p2.yml
+?? .github/workflows/p3.yml
+?? .github/workflows/p4.yml
+?? .github/workflows/p5.yml
+?? .github/workflows/production-hardware.yml
+?? .github/workflows/production-release.yml
+?? .wsl-io-probe.dXvAxC
+?? artifacts/backups/
+?? artifacts/e1/
+?? artifacts/evidence/
+?? artifacts/p0/boot-result.json
+?? artifacts/p0/build-result.json
+?? artifacts/p0/enterprise/
+?? artifacts/p0/first-boot-qemu.log
+?? artifacts/p0/first-boot-result.json
+?? artifacts/p0/first-boot.log
+?? artifacts/p0/image-path.txt
+?? artifacts/p0/iso-boot-result.json
+?? artifacts/p0/iso-boot.log
+?? artifacts/p0/iso-build-result.json
+?? artifacts/p0/iso.sha256
+?? artifacts/p0/qemu-sanity.log
+?? artifacts/p1/boot-status.json
+?? artifacts/p1/boot.log
+?? artifacts/p1/build.log
+?? artifacts/p1/kiosk.log
+?? artifacts/p1/network.log
+?? artifacts/p1/qemu.log
+?? artifacts/p1/swtpm.log
+?? artifacts/p3/attestation-suite-results.json
+?? artifacts/p3/evidence-packages/
+?? artifacts/p3/runtime-tpm.json
+?? artifacts/p3/test-ledger.log
+?? artifacts/p3/test-server.log
+?? artifacts/phase2/
+?? artifacts/phase4/exam-event-verify
+?? artifacts/phase5/
+?? artifacts/phase6/
+?? artifacts/production/
+?? audit/
+?? docs/EXAMOS_IMPLEMENTATION_PLAN_2026-10-17.md
+?? docs/e1/
+?? docs/phase2/
+?? docs/phase6/
+?? docs/production-deployment-plan.md
+?? docs/releases/p3-release.md
+?? docs/runbooks/p3-attestation-failure.md
+?? docs/security/BLOCKER_CLOSURE_REPORT.md
+?? docs/security/BOOT_CHAIN_CLOSURE_REPORT.md
+?? docs/security/CHANGE_LOG.md
+?? docs/security/END_TO_END_AUDIT.md
+?? docs/security/IMPLEMENTATION_INVENTORY.md
+?? docs/security/ISSUE_REGISTER.md
+?? docs/security/P4_MODEL_AND_DATA_GOVERNANCE.md
+?? docs/security/PHYSICAL_DEVICE_TEST_PLAN.md
+?? docs/security/PRODUCTION_RELEASE_TRUST_MODEL.md
+?? docs/security/RELEASE_READINESS.md
+?? docs/security/TCS_NQT_COMPARISON.md
+?? docs/security/TEST_MATRIX.md
+?? docs/security/THREAT_MODEL.md
+?? docs/security/p3-attestation.md
+?? docs/security/p3-key-release.md
+?? docs/security/p3-secure-boot.md
+?? docs/security/p3-tpm.md
+?? docs/security/p3-trust-model.md
+?? docs/testing/p3-test-matrix.md
+?? image/config/p1.conf
+?? image/mkosi.dev.conf
+?? image/overlay/etc/examos/agent.conf
+?? image/overlay/etc/examos/deployment.conf
+?? image/overlay/etc/systemd/system/examos-dev-shm-hardening.service
+?? image/overlay/etc/systemd/system/examos-kiosk-readiness.service
+?? image/overlay/etc/systemd/system/examos-lockdown-failed.target
+?? image/overlay/etc/systemd/system/examos-module-lock.service
+?? image/overlay/etc/systemd/system/examos-preflight.service
+?? image/overlay/etc/systemd/system/examos-unseal.service
+?? image/overlay/etc/systemd/system/examos-usb-lockdown.service
+?? image/overlay/etc/systemd/system/home-exam.mount
+?? image/overlay/etc/systemd/system/tmp.mount
+?? image/overlay/etc/systemd/system/var-log.mount
+?? image/overlay/etc/usbguard/
+?? image/overlay/usr/local/bin/examos-kiosk-readiness
+?? image/overlay/usr/local/bin/p2-startup-validator.sh
+?? image/p0/
+?? image/scripts/03-p2-lockdown.sh
+?? image/scripts/dm-verity-corruption-test.sh
+?? image/scripts/dm-verity-setup.sh
+?? image/scripts/generate-nftables.sh
+?? image/scripts/p2-health-report.sh
+?? image/scripts/p2-startup-validator.sh
+?? image/scripts/release-audit.sh
+?? image/scripts/tpm-seal-secrets.sh
+?? image/trust/.gitkeep
+?? image/trust/README.md
+?? image/trust/generate-dev-keys.sh
+?? schemas/
+?? scripts/apply-ui-and-splash.sh
+?? scripts/build-and-sync-desktop.sh
+?? scripts/build-bootable-iso.sh
+?? scripts/build-complete-desktop-vmdk.sh
+?? scripts/build-full-image.sh
+?? scripts/build-perfect-uefi-iso.sh
+?? scripts/build-vmware-image.sh
+?? scripts/deploy-kiosk-gui-vmdk.sh
+?? scripts/download-vision-models.sh
+?? scripts/enroll-physical-tpm.sh
+?? scripts/examos-lib.sh
+?? scripts/fix-and-install-gui.sh
+?? scripts/fix-vmware-console.sh
+?? scripts/flash-usb-windows.bat
+?? scripts/flash-usb.sh
+?? scripts/hardware-preflight.sh
+?? scripts/inspect-and-fix-boot-gui.sh
+?? scripts/install-desktop-v2.sh
+?? scripts/install-secure-desktop-v2.sh
+?? scripts/install-secure-desktop.sh
+?? scripts/make-iso.sh
+?? scripts/preserve-p3-evidence.sh
+?? scripts/resize-and-install-desktop.sh
+?? scripts/set-root-pw.sh
+?? scripts/setup-build-host.sh
+?? scripts/setup-demo-candidate.sh
+?? scripts/setup-offline-gui.sh
+?? scripts/sync-image-final.sh
+?? scripts/universal-install.sh
+?? server/attestation/attestation_config.c
+?? server/behaviour/
+?? server/config/
+?? server/environment/e1_consent.c
+?? server/environment/environment_engine.c
+?? server/exam/exam_engine.c
+?? server/include/attestation_config.h
+?? server/include/behaviour_engine.h
+?? server/include/e1_consent.h
+?? server/include/environment_engine.h
+?? server/include/exam_engine.h
+?? server/include/key_release.h
+?? server/include/session_store.h
+?? server/include/variant_engine.h
+?? server/include/viva_engine.h
+?? server/login/session_store.c
+?? tests/agent/
+?? tests/e1/e1-consent-http-test.sh
+?? tests/e1/e1-consent-test.sh
+?? tests/e1/e1_consent_test.c
+?? tests/e1/rf-scanner-test.sh
+?? tests/e1/rf_scanner_test.c
+?? tests/p0/agent-config-contract-test.sh
+?? tests/p0/boot-iso.sh
+?? tests/p0/build-iso.sh
+?? tests/p0/first-boot-test.cpp
+?? tests/p0/first-boot-test.sh
+?? tests/p0/iso-init.sh
+?? tests/p0/private-key-check.sh
+?? tests/p0/provenance-check-test.sh
+?? tests/p0/seal-evidence.sh
+?? tests/p0/tpm-secret-mapping-test.sh
+?? tests/p1/p1-doctor.sh
+?? tests/p1/validate-source.sh
+?? tests/p2/p2-chromium-policy-tests.sh
+?? tests/p2/p2-gate.sh
+?? tests/p2/p2-guest-integration.sh
+?? tests/p2/p2-network-tests.sh
+?? tests/p2/p2-p1-regression.sh
+?? tests/p2/p2-secureboot-gate.sh
+?? tests/p2/p2-static-audit.sh
+?? tests/p2/p2-usb-tests.sh
+?? tests/p2/p2-verity-tests.sh
+?? tests/p3/__pycache__/
+?? tests/p3/credential-activation-smoke.sh
+?? tests/p3/hardware-tpm-preflight.sh
+?? tests/p3/production-registry.sh
+?? tests/p3/release-gate.py
+?? tests/p3/startup-fail-closed.py
+?? tests/p3/swtpm-quote-smoke.sh
+?? tests/p3/test-eventlog-replay.py
+?? tests/p4/dataset/
+?? tests/p4/generate-test-dataset.sh
+?? tests/p4/p4-concurrency-test.sh
+?? tests/p4/p4-detection-gate.sh
+?? tests/p4/p4-gate.sh
+?? tests/p4/p4-tamper-test.sh
+?? tests/p5/__pycache__/
+?? tests/p5/p5-behaviour-test.sh
+?? tests/p5/p5-gate.sh
+?? tests/p5/p5-variant-test.sh
+?? tests/p5/p5-viva-test.sh
+?? tests/p5/test_p5_suite.py
+?? tests/p6/prerequisite-audit.py
+?? tests/phase4/__pycache__/
+?? tests/phase4/model-governance.py
+?? tests/production/
+?? tests/release/
+?? tests/test-vmdk-live.sh
+?? tests/verify-boot-and-esp.sh
+?? tools/__pycache__/
+?? tools/examos-eventlog-replay.py
+?? tools/release_provenance.py
+?? wsl

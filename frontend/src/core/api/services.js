@@ -165,10 +165,200 @@ export const getInstitution = wrap(async (id) => {
   return res.data;
 });
 
-export const createInstitution = wrap(async ({ name, code, contactEmail, retentionDays }) => {
+export const createInstitution = wrap(async (data) => {
+  const { name, code, contactEmail, contactPhone, region, timezone, plan, maxCenters, maxCandidates, deploymentModel, retentionDays, domains } = data || {};
   const res = await api.post(ENDPOINTS.institutions, {
-    name, code, contact_email: contactEmail, retention_days: retentionDays, active: 1,
+    name,
+    code: code || (name || 'INST').replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase(),
+    contact_email: contactEmail || 'admin@examos.local',
+    contact_phone: contactPhone || '',
+    region: region || 'India · Mumbai',
+    timezone: timezone || 'Asia/Kolkata',
+    plan: plan || 'pilot',
+    max_centers: Number(maxCenters) || 5,
+    max_candidates: Number(maxCandidates) || 500,
+    deployment_model: deploymentModel || 'usb-boot',
+    retention_days: Number(retentionDays) || 365,
+    domains: domains || [],
+    active: 1,
   }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const updateInstitution = wrap(async (id, patch) => {
+  const res = await api.put(ENDPOINTS.institutionById(id), patch, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setInstitutionStatus = wrap(async (id, status, reason) => {
+  const res = await api.post(ENDPOINTS.institutionStatus(id), { status, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const saveInstitutionExamDefaults = wrap(async (id, defaults) => {
+  const res = await api.post(ENDPOINTS.institutionExamDefaults(id), defaults, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const saveInstitutionSecurity = wrap(async (id, security) => {
+  const res = await api.post(ENDPOINTS.institutionSecurity(id), security, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getInstitutionStats = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.institutionStats(id), { actor: ACTOR });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Institution Lifecycle: Applications, Agreements, Licenses & Deployments
+// ---------------------------------------------------------------------------
+
+export const applyInstitution = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.institutionApply, data, { actor: ACTOR });
+  return res.data;
+});
+
+export const getInstitutionApplyStatus = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.institutionApplyStatus(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const listInstitutionApplications = wrap(async () => {
+  const res = await api.get(ENDPOINTS.institutionApplications, { actor: ACTOR });
+  return res.data;
+});
+
+export const getInstitutionApplication = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.institutionApplicationById(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const reviewInstitutionApplication = wrap(async (id, action, reviewNotes) => {
+  const res = await api.post(ENDPOINTS.institutionApplicationReview(id), { action, reviewNotes }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const provisionInstitutionApplication = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.institutionApplicationProvision(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listInstitutionAgreements = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionAgreements(institutionId), { actor: ACTOR });
+  return res.data;
+});
+
+export const createInstitutionAgreement = wrap(async (institutionId, data) => {
+  const res = await api.post(ENDPOINTS.institutionAgreements(institutionId), data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const signInstitutionAgreement = wrap(async (agreementId, signerData) => {
+  const res = await api.post(ENDPOINTS.signAgreement(agreementId), signerData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getInstitutionLicense = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionLicense(institutionId), { actor: ACTOR });
+  return res.data;
+});
+
+export const updateInstitutionLicense = wrap(async (institutionId, data) => {
+  const res = await api.post(ENDPOINTS.institutionLicense(institutionId), data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const checkInstitutionEntitlements = wrap(async (institutionId, resource) => {
+  const url = `${ENDPOINTS.institutionEntitlementsCheck(institutionId)}?resource=${encodeURIComponent(resource || 'exams')}`;
+  const res = await api.get(url, { actor: ACTOR });
+  return res.data;
+});
+
+export const listInstitutionDeployments = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionDeployments(institutionId), { actor: ACTOR });
+  return res.data;
+});
+
+export const assignInstitutionDeployment = wrap(async (institutionId, data) => {
+  const res = await api.post(ENDPOINTS.institutionDeployments(institutionId), data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const updateDeploymentStatus = wrap(async (deploymentId, status, devicesAcknowledged) => {
+  const res = await api.post(ENDPOINTS.deploymentStatus(deploymentId), { status, devicesAcknowledged }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const pushDeploymentToKiosks = wrap(async (deploymentId) => {
+  const res = await api.post(ENDPOINTS.pushDeploymentToKiosks(deploymentId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getInstitutionOnboarding = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionOnboarding(institutionId), { actor: ACTOR });
+  return res.data;
+});
+
+export const updateInstitutionOnboardingStep = wrap(async (institutionId, stepKey, completed, notes) => {
+  const res = await api.post(ENDPOINTS.institutionOnboardingStep(institutionId), { stepKey, completed, notes }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Campuses, Departments & Staff
+// ---------------------------------------------------------------------------
+
+export const listCampuses = wrap(async (institutionId) => {
+  const url = institutionId ? `${ENDPOINTS.campuses}?institution_id=${encodeURIComponent(institutionId)}` : ENDPOINTS.campuses;
+  const res = await api.get(url, { actor: ACTOR });
+  return res.data;
+});
+
+export const createCampus = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.campuses, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const updateCampus = wrap(async (id, patch) => {
+  const res = await api.put(ENDPOINTS.campusById(id), patch, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setCampusStatus = wrap(async (id, status, reason) => {
+  const res = await api.post(ENDPOINTS.campusStatus(id), { status, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listDepartments = wrap(async (institutionId) => {
+  const url = institutionId ? `${ENDPOINTS.departments}?institution_id=${encodeURIComponent(institutionId)}` : ENDPOINTS.departments;
+  const res = await api.get(url, { actor: ACTOR });
+  return res.data;
+});
+
+export const createDepartment = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.departments, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setDepartmentStatus = wrap(async (id, status, reason) => {
+  const res = await api.post(ENDPOINTS.departmentStatus(id), { status, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listStaff = wrap(async (institutionId) => {
+  const url = institutionId ? `${ENDPOINTS.staff}?institution_id=${encodeURIComponent(institutionId)}` : ENDPOINTS.staff;
+  const res = await api.get(url, { actor: ACTOR });
+  return res.data;
+});
+
+export const assignStaff = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.staff, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const removeStaff = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.staffRemove(id), { reason }, { actor: ACTOR, sign: true });
   return res.data;
 });
 
@@ -176,14 +366,33 @@ export const createInstitution = wrap(async ({ name, code, contactEmail, retenti
 // Users (admin)
 // ---------------------------------------------------------------------------
 
+const BACKEND_ROLE_TO_INT = {
+  superadmin: 1, platform_owner: 1, 1: 1,
+  inst_admin: 2, institution_admin: 2, 2: 2,
+  exam_controller: 3, exam_manager: 3, 3: 3,
+  security_engineer: 4, security_admin: 4, 4: 4,
+  invigilator: 5, 5: 5,
+  it_admin: 6, tech_operator: 6, ops_admin: 6, 6: 6,
+  auditor: 7, incident_investigator: 7, 7: 7,
+  readonly_auditor: 8, 8: 8,
+  support: 9, support_engineer: 9, 9: 9,
+};
+
 export const listUsers = wrap(async () => {
   const res = await api.get(ENDPOINTS.users, { actor: ACTOR });
   return res.data;
 });
 
 export const createUser = wrap(async ({ username, fullName, email, password, institutionId, role }) => {
+  const roleInt = typeof role === 'number' ? role : (BACKEND_ROLE_TO_INT[String(role).toLowerCase()] || 2);
   const res = await api.post(ENDPOINTS.users, {
-    username, full_name: fullName, email, password, institution_id: institutionId, role, active: 1,
+    username,
+    full_name: fullName || username,
+    email: email || `${username}@examos.local`,
+    password,
+    institution_id: institutionId || '',
+    role: roleInt,
+    active: 1,
   }, { actor: ACTOR, sign: true });
   return res.data;
 });
@@ -194,23 +403,6 @@ export const createUser = wrap(async ({ username, fullName, email, password, ins
 
 export const listRoles = wrap(async () => {
   const res = await api.get(ENDPOINTS.roles, { actor: ACTOR });
-  return res.data;
-});
-
-// ---------------------------------------------------------------------------
-// Campuses
-// ---------------------------------------------------------------------------
-
-export const listCampuses = wrap(async ({ institutionId } = {}) => {
-  const qs = institutionId ? `?institution_id=${encodeURIComponent(institutionId)}` : '';
-  const res = await api.get(`${ENDPOINTS.campuses}${qs}`, { actor: ACTOR });
-  return res.data;
-});
-
-export const createCampus = wrap(async ({ institutionId, name, address }) => {
-  const res = await api.post(ENDPOINTS.campuses, {
-    institution_id: institutionId, name, address,
-  }, { actor: ACTOR, sign: true });
   return res.data;
 });
 
@@ -234,6 +426,503 @@ export const createRoom = wrap(async ({ campusId, institutionId, name, superviso
 // ---------------------------------------------------------------------------
 // Exams (admin platform)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Module 9: Examination Management (C Server Module 9)
+// ---------------------------------------------------------------------------
+
+export const listExaminations = wrap(async () => {
+  const res = await api.get(ENDPOINTS.examinations, { actor: ACTOR });
+  return res.data;
+});
+
+export const createExamination = wrap(async (exam) => {
+  const res = await api.post(ENDPOINTS.examinations, {
+    name: exam.name || exam.title,
+    subject: exam.subject || exam.course,
+    code: exam.code,
+    academic_year: exam.academicYear,
+    exam_type: exam.examType || exam.type,
+    duration_minutes: exam.durationMinutes || exam.durationMin,
+    total_marks: exam.totalMarks || 100,
+    passing_marks: exam.passingMarks || 40,
+    instructions: exam.instructions,
+    exam_url: exam.examUrl,
+    allowed_origins: exam.allowedOrigins,
+    institution_id: exam.institutionId || exam.tenantId,
+  }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getExamination = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.examinationById(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const updateExamination = wrap(async (id, patch) => {
+  const res = await api.patch(ENDPOINTS.examinationById(id), patch, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const submitExaminationForApproval = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationSubmitForApproval(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const approveExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationApprove(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const publishExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationPublish(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const readyExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationReady(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const startExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationStart(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const closeExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationClose(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const finalizeExamination = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.examinationFinalize(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const cancelExamination = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.examinationCancel(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getExaminationStatus = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.examinationStatus(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const addExaminationSchedule = wrap(async (id, schedule) => {
+  const res = await api.post(ENDPOINTS.examinationSchedules(id), schedule, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const assignExaminationStudent = wrap(async (id, student) => {
+  const res = await api.post(ENDPOINTS.examinationStudents(id), student, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const configureExaminationPolicy = wrap(async (id, policy) => {
+  const res = await api.post(ENDPOINTS.examinationPolicy(id), policy, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Module 5: Student Management System (C Server Module 5)
+// ---------------------------------------------------------------------------
+
+export const createStudent = wrap(async (student) => {
+  const res = await api.post(ENDPOINTS.students, student, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getStudentById = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentById(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const updateStudentProfile = wrap(async (id, updates) => {
+  const res = await api.patch(ENDPOINTS.studentById(id), updates, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const verifyStudentIdentity = wrap(async (id, verification) => {
+  const res = await api.post(ENDPOINTS.studentVerify(id), verification, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const suspendStudentAccount = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.studentSuspend(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const reactivateStudentAccount = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.studentReactivate(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const archiveStudentAccount = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.studentArchive(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getStudentAuditHistory = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentHistory(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const getStudentEnrollments = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentEnrollments(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const progressStudentSemester = wrap(async (id, enrollment) => {
+  const res = await api.post(ENDPOINTS.studentEnrollments(id), enrollment, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const requestStudentCorrection = wrap(async (id, correction) => {
+  const res = await api.post(ENDPOINTS.studentCorrectionRequests(id), correction, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const reviewStudentCorrection = wrap(async (reqId, decision) => {
+  const res = await api.post(ENDPOINTS.studentCorrectionReview(reqId), decision, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const previewStudentImport = wrap(async (importData) => {
+  const res = await api.post(ENDPOINTS.studentImports, importData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const confirmStudentImport = wrap(async (jobId) => {
+  const res = await api.post(ENDPOINTS.studentImportConfirm(jobId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getStudentImportResults = wrap(async (jobId) => {
+  const res = await api.get(ENDPOINTS.studentImportResults(jobId), { actor: ACTOR });
+  return res.data;
+});
+
+export const getStudentEligibilityProfile = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentExamEligibility(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const getStudentAssignedDevices = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentDeviceAssignments(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const getStudentExamSessions = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.studentExamSessions(id), { actor: ACTOR });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Module 10: Examination Registration & Eligibility Management (C Server Module 10)
+// ---------------------------------------------------------------------------
+
+export const upsertStudent = wrap(async (student) => {
+  const res = await api.post(ENDPOINTS.students, student, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listStudents = wrap(async () => {
+  const res = await api.get(ENDPOINTS.students, { actor: ACTOR });
+  return res.data;
+});
+
+export const configureEligibilityRule = wrap(async (examId, rule) => {
+  const res = await api.post(ENDPOINTS.examinationRules(examId), rule, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listEligibilityRules = wrap(async (examId) => {
+  const res = await api.get(ENDPOINTS.examinationRules(examId), { actor: ACTOR });
+  return res.data;
+});
+
+export const registerStudentForExam = wrap(async (examId, registration) => {
+  const res = await api.post(ENDPOINTS.examinationRegistrations(examId), registration, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listExamRegistrations = wrap(async (examId) => {
+  const res = await api.get(ENDPOINTS.examinationRegistrations(examId), { actor: ACTOR });
+  return res.data;
+});
+
+export const getRegistration = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.registrationById(id), { actor: ACTOR });
+  return res.data;
+});
+
+export const evaluateRegistration = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.registrationEvaluate(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const approveRegistration = wrap(async (id) => {
+  const res = await api.post(ENDPOINTS.registrationApprove(id), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const rejectRegistration = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.registrationReject(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const grantRegistrationException = wrap(async (id, reason) => {
+  const res = await api.post(ENDPOINTS.registrationException(id), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const importRegistrations = wrap(async (examId, records) => {
+  const res = await api.post(ENDPOINTS.examinationRegistrationsImport(examId), { records }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getRegistrationImportStatus = wrap(async (jobId) => {
+  const res = await api.get(ENDPOINTS.registrationImportStatus(jobId), { actor: ACTOR });
+  return res.data;
+});
+
+export const publishExamRoster = wrap(async (examId) => {
+  const res = await api.post(ENDPOINTS.examinationRosterPublish(examId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const checkExamStudentEligibility = wrap(async (examId, studentId) => {
+  const res = await api.get(ENDPOINTS.examinationStudentEligibility(examId, studentId), { actor: ACTOR });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Module 11: Exam Session Management (C Server Module 11)
+// ---------------------------------------------------------------------------
+
+export const authorizeStudentExamSession = wrap(async (authData) => {
+  const res = await api.post(ENDPOINTS.examSessionsAuthorize, authData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const createAuthorizedExamSession = wrap(async (sessionData) => {
+  const res = await api.post(ENDPOINTS.examSessions, sessionData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getExamSessionDetails = wrap(async (sessionId) => {
+  const res = await api.get(ENDPOINTS.examSessionById(sessionId), { actor: ACTOR });
+  return res.data;
+});
+
+export const launchAuthorizedExamUrl = wrap(async (sessionId) => {
+  const res = await api.post(ENDPOINTS.examSessionLaunch(sessionId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const sendExamSessionHeartbeat = wrap(async (sessionId) => {
+  const res = await api.post(ENDPOINTS.examSessionHeartbeat(sessionId), {}, { actor: ACTOR });
+  return res.data;
+});
+
+export const recordExamSessionInterruption = wrap(async (sessionId, reason) => {
+  const res = await api.post(ENDPOINTS.examSessionInterrupt(sessionId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const resumeInterruptedExamSession = wrap(async (sessionId) => {
+  const res = await api.post(ENDPOINTS.examSessionResume(sessionId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const closeAuthorizedExamSession = wrap(async (sessionId, reason) => {
+  const res = await api.post(ENDPOINTS.examSessionClose(sessionId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listExaminationSessions = wrap(async (examId) => {
+  const res = await api.get(ENDPOINTS.examinationSessions(examId), { actor: ACTOR });
+  return res.data;
+});
+
+// ---------------------------------------------------------------------------
+// Module 13: Device Trust, Registration & Attestation (C Server Module 13)
+// ---------------------------------------------------------------------------
+
+export const registerDeviceIdentity = wrap(async (deviceData) => {
+  const res = await api.post(ENDPOINTS.devicesRegister, deviceData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listRegisteredDevices = wrap(async () => {
+  const res = await api.get(ENDPOINTS.devicesList, { actor: ACTOR });
+  return res.data;
+});
+
+export const getRegisteredDevice = wrap(async (deviceId) => {
+  const res = await api.get(ENDPOINTS.deviceById(deviceId), { actor: ACTOR });
+  return res.data;
+});
+
+export const approveDeviceRegistration = wrap(async (deviceId) => {
+  const res = await api.post(ENDPOINTS.deviceApprove(deviceId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const suspendDevice = wrap(async (deviceId, reason) => {
+  const res = await api.post(ENDPOINTS.deviceSuspend(deviceId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const revokeDeviceIdentity = wrap(async (deviceId, reason) => {
+  const res = await api.post(ENDPOINTS.deviceRevoke(deviceId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const retireDeviceIdentity = wrap(async (deviceId) => {
+  const res = await api.post(ENDPOINTS.deviceRetire(deviceId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const assignDeviceToStudentOrExam = wrap(async (deviceId, assignment) => {
+  const res = await api.post(ENDPOINTS.deviceAssign(deviceId), assignment, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const requestDeviceAttestationChallenge = wrap(async (deviceId) => {
+  const res = await api.post(ENDPOINTS.deviceAttestationChallenge(deviceId), {}, { actor: ACTOR });
+  return res.data;
+});
+
+export const verifyDeviceAttestationEvidence = wrap(async (deviceId, evidence) => {
+  const res = await api.post(ENDPOINTS.deviceAttestationVerify(deviceId), evidence, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getDeviceTrustStatus = wrap(async (deviceId) => {
+  const res = await api.get(ENDPOINTS.deviceTrustStatus(deviceId), { actor: ACTOR });
+  return res.data;
+});
+
+export const reportDeviceSecurityEvent = wrap(async (deviceId, event) => {
+  const res = await api.post(ENDPOINTS.deviceSecurityEvents(deviceId), event, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const createDeviceTrustPolicy = wrap(async (policy) => {
+  const res = await api.post(ENDPOINTS.deviceTrustPolicies, policy, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const approveDeviceTrustPolicy = wrap(async (policyId) => {
+  const res = await api.post(ENDPOINTS.deviceTrustPolicyApprove(policyId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const activateDeviceTrustPolicy = wrap(async (policyId) => {
+  const res = await api.post(ENDPOINTS.deviceTrustPolicyActivate(policyId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const requestExamLaunchAuthorization = wrap(async (launchParams) => {
+  const res = await api.post(ENDPOINTS.examLaunchAuthorize, launchParams, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+// ============================================================================
+// Module 14: Secure OS Release, Updates, Rollback & Deployment Management
+// ============================================================================
+
+export const createOsRelease = wrap(async (releaseData) => {
+  const res = await api.post(ENDPOINTS.osReleases, releaseData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const listOsReleases = wrap(async () => {
+  const res = await api.get(ENDPOINTS.osReleases, { actor: ACTOR });
+  return res.data;
+});
+
+export const getOsReleaseDetails = wrap(async (releaseId) => {
+  const res = await api.get(ENDPOINTS.osReleaseById(releaseId), { actor: ACTOR });
+  return res.data;
+});
+
+export const validateOsRelease = wrap(async (releaseId, validationData) => {
+  const res = await api.post(ENDPOINTS.osReleaseValidate(releaseId), validationData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const approveOsRelease = wrap(async (releaseId) => {
+  const res = await api.post(ENDPOINTS.osReleaseApprove(releaseId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const activateOsRelease = wrap(async (releaseId, options = {}) => {
+  const res = await api.post(ENDPOINTS.osReleaseActivate(releaseId), options, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const suspendOsRelease = wrap(async (releaseId) => {
+  const res = await api.post(ENDPOINTS.osReleaseSuspend(releaseId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const revokeOsRelease = wrap(async (releaseId, reason) => {
+  const res = await api.post(ENDPOINTS.osReleaseRevoke(releaseId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const retireOsRelease = wrap(async (releaseId) => {
+  const res = await api.post(ENDPOINTS.osReleaseRetire(releaseId), {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const createOsDeploymentGroup = wrap(async (groupData) => {
+  const res = await api.post(ENDPOINTS.osDeployments, groupData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getOsDeploymentGroup = wrap(async (deploymentId) => {
+  const res = await api.get(ENDPOINTS.osDeploymentById(deploymentId), { actor: ACTOR });
+  return res.data;
+});
+
+export const checkDeviceOsUpdate = wrap(async (deviceId) => {
+  const res = await api.get(ENDPOINTS.osDeviceUpdateCheck(deviceId), { actor: ACTOR });
+  return res.data;
+});
+
+export const reportDeviceOsUpdateEvent = wrap(async (deviceId, eventData) => {
+  const res = await api.post(ENDPOINTS.osDeviceUpdateEvents(deviceId), eventData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const verifyDeviceOsRelease = wrap(async (deviceId, verificationData) => {
+  const res = await api.post(ENDPOINTS.osDeviceVerifyRelease(deviceId), verificationData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const requestDeviceOsRecovery = wrap(async (deviceId, recoveryData) => {
+  const res = await api.post(ENDPOINTS.osDeviceRecovery(deviceId), recoveryData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+// Backward-compatibility and sync aliases
+export const getOsReleaseById = getOsReleaseDetails;
+export const listOsDeployments = listOsReleases;
+export const createOsDeployment = createOsDeploymentGroup;
+export const listDeviceTrustPolicies = listRegisteredDevices;
+export const publishExaminationRoster = publishExamRoster;
+export const listExaminationRegistrations = listExamRegistrations;
+export const importExaminationRegistrations = importRegistrations;
+export const launchExamSession = launchAuthorizedExamUrl;
+export const heartbeatExamSession = sendExamSessionHeartbeat;
+export const interruptExamSession = recordExamSessionInterruption;
+export const resumeExamSession = resumeInterruptedExamSession;
+export const closeExamSession = closeAuthorizedExamSession;
+
 
 export const listExams = wrap(async () => {
   const res = await api.get(ENDPOINTS.exams, { actor: ACTOR });
@@ -570,6 +1259,16 @@ export const adminReload = wrap(async () => {
 
 export const adminLock = wrap(async () => {
   const res = await api.post(ENDPOINTS.adminLock, {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const adminUnlock = wrap(async () => {
+  const res = await api.post(ENDPOINTS.adminUnlock, {}, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const getKiosks = wrap(async () => {
+  const res = await api.get(ENDPOINTS.kioskTerminals, { actor: ACTOR });
   return res.data;
 });
 

@@ -1,0 +1,2 @@
+wsl: Failed to start the systemd user session for 'krant'. See journalctl for more details.
+PASS: TPM secret mapping is consistent; VMware image uses unprovisioned inputs and isolated per-run outputs

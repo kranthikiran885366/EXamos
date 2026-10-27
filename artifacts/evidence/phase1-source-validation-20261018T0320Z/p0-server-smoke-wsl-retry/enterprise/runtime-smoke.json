@@ -1,0 +1,12 @@
+{
+  "evidence_class": "development_integration_test_with_ephemeral_fixtures",
+  "port": 49337,
+  "server_pid": 594,
+  "tests": [{"name":"nonloopback_bind_refused","method":"startup","path":"EXAMOS_SERVER_BIND","expected":"rejected","actual":"PASS","status":"PASS"},{"name":"health_check","method":"GET","path":"/api/v1/health","expected":200,"actual":200,"status":"PASS","latency_ms":34},{"name":"status_no_auth","method":"GET","path":"/api/v1/status","expected":401,"actual":401,"status":"PASS","latency_ms":37},{"name":"system_status_auth","method":"GET","path":"/api/v1/status","expected":200,"actual":200,"status":"PASS","latency_ms":239},{"name":"candidate_portal_ui","method":"GET","path":"/","expected":200,"actual":200,"status":"PASS","latency_ms":40},{"name":"heartbeat_no_auth","method":"POST","path":"/api/v1/heartbeat","expected":401,"actual":401,"status":"PASS","latency_ms":36},{"name":"heartbeat_valid","method":"POST","path":"/api/v1/heartbeat","expected":202,"actual":202,"status":"PASS","latency_ms":32},{"name":"credential_challenge_rejects_shell_metacharacters","method":"POST","path":"/api/v1/attestation/credential-challenge","expected":500,"actual":500,"status":"PASS","latency_ms":39},{"name":"ledger_query_auth","method":"GET","path":"/api/v1/ledger","expected":200,"actual":200,"status":"PASS","latency_ms":361},{"name":"admin_login_page","method":"GET","path":"/admin","expected":200,"actual":200,"status":"PASS","latency_ms":69},{"name":"not_found_route","method":"GET","path":"/api/v1/nonexistent","expected":404,"actual":404,"status":"PASS","latency_ms":51}],
+  "total": 11,
+  "passed": 11,
+  "server_alive_after_tests": "PASS",
+  "ledger_created": "PASS",
+  "clean_shutdown": "PASS",
+  "status": "PASS"
+}

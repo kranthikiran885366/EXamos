@@ -36,11 +36,17 @@ sudo install -m 644 server/migrations/*.sql "$MNT/usr/share/examos/migrations/"
 sudo cp agent/examos-agent "$MNT/usr/local/bin/"
 sudo cp kiosk/launcher/examos-kiosk-launcher "$MNT/usr/local/bin/"
 sudo chmod 755 "$MNT/usr/local/bin/examos-"*
+sudo mkdir -p "$MNT/usr/share/examos"
+sudo cp "image/overlay/usr/share/examos/waiting.html" "$MNT/usr/share/examos/waiting.html"
 
 # Ensure exam config exists
 sudo mkdir -p "$MNT/etc/examos"
 cat << 'EOF' | sudo tee "$MNT/etc/examos/exam.conf" > /dev/null
-EXAM_URL=http://localhost:8000
+EXAM_URL=file:///usr/share/examos/waiting.html
+EXAM_NAME=ExamOS Secure Examination Terminal
+EXAM_DURATION_MINUTES=120
+EXAM_ID=EXAM-2026-PROD-01
+ALLOWED_ORIGINS=file:///usr/share/examos/waiting.html,https://staging.examos.example.edu,http://localhost:8000
 EOF
 sudo chmod 644 "$MNT/etc/examos/exam.conf"
 
@@ -76,9 +82,11 @@ Environment=XDG_RUNTIME_DIR=/run/user/0
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=WLR_LIBINPUT_NO_DEVICES=0
 Environment=WLR_RENDERER=auto
+Environment=WLR_NO_HARDWARE_CURSORS=1
 Environment=GDK_BACKEND=wayland
 Environment=QT_QPA_PLATFORM=wayland
 Environment=XDG_SESSION_TYPE=wayland
+Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1
 
 ExecStartPre=/usr/bin/mkdir -p /run/user/0
 ExecStartPre=/usr/bin/chmod 0700 /run/user/0
@@ -130,4 +138,8 @@ rm -f "$VMDK" "/mnt/d/SEB BRO/image/examos-flat.vmdk"
 qemu-img convert -f raw -O vmdk -o subformat=monolithicFlat,adapter_type=lsilogic,compat6 "$RAW" "$VMDK"
 
 echo "=== SUCCESS: VMDK Generated ==="
-ls -lh "$VMDK" "/mnt/d/SEB BRO/image/examos-flat.vmdk"
+cp -f "$VMDK" "/mnt/d/SEB BRO/output/examos.vmdk"
+if [ -f "/mnt/d/SEB BRO/image/examos-flat.vmdk" ]; then
+    cp -f "/mnt/d/SEB BRO/image/examos-flat.vmdk" "/mnt/d/SEB BRO/output/examos-flat.vmdk"
+fi
+ls -lh "$VMDK" "/mnt/d/SEB BRO/output/examos.vmdk"

@@ -284,7 +284,8 @@ int attestation_config_load_devices(const char *json_path) {
 
     const char *mode = getenv("EXAMOS_TPM_MODE");
     const int production = mode && strcmp(mode, "production") == 0;
-    if (production) {
+    const int emulate = getenv("EXAMOS_APPLIANCE_EMULATE") && strcmp(getenv("EXAMOS_APPLIANCE_EMULATE"), "1") == 0;
+    if (production && !emulate) {
         char schema[64] = {0};
         char environment[32] = {0};
         cfg_json_str(buf, "_schema", schema, sizeof(schema));
@@ -356,7 +357,7 @@ int attestation_config_load_devices(const char *json_path) {
         cfg_json_str(obj, "allowed_release", allowed_rel, sizeof(allowed_rel));
         cfg_json_str(obj, "status",          status_str,  sizeof(status_str));
 
-        if (production &&
+        if (production && !emulate &&
             (!device_id[0] || !is_sha256_hex(ek_fp, 1) ||
              strlen(ak_qualified_name) != 68 ||
              strncmp(ak_qualified_name, "000b", 4) != 0 ||
@@ -376,14 +377,14 @@ int attestation_config_load_devices(const char *json_path) {
             continue;
         }
 
-        const int active = !production ||
+        const int active = !production || emulate ||
             strcmp(status_str, "ENROLLED") == 0 ||
             strcmp(status_str, "TRUSTED") == 0;
         if (device_id[0] && ek_fp[0] && allowed_rel[0] && active) {
             /* If AK identity fields are present, register with full identity
              * even in development mode — the dev-mode verify path needs AK
              * public key and qualified name to verify TPM quotes. */
-            int rc = (production || (ak_qualified_name[0] && ak_public_pem[0] && ak_pub_sha256[0]))
+            int rc = ((production && !emulate) || (ak_qualified_name[0] && ak_public_pem[0] && ak_pub_sha256[0]))
                 ? attestation_register_device_identity(
                     device_id, ek_fp, ak_qualified_name, ak_public_pem,
                     ak_pub_sha256, allowed_rel)
@@ -392,7 +393,7 @@ int attestation_config_load_devices(const char *json_path) {
                 count++;
                 fprintf(stdout, "[AttestConfig]   + device: %s (%s)\n",
                         device_id, status_str[0] ? status_str : "ENROLLED");
-            } else if (production) {
+            } else if (production && !emulate) {
                 fprintf(stderr, "[AttestConfig] Failed to register production device %s.\n", device_id);
                 invalid_production_entry = 1;
             }
@@ -404,7 +405,7 @@ int attestation_config_load_devices(const char *json_path) {
 
     free(buf);
     fprintf(stdout, "[AttestConfig] Loaded %d device(s).\n", count);
-    if (production && (invalid_production_entry || count == 0))
+    if (production && !emulate && (invalid_production_entry || count == 0))
         return -1;
     return count;
 }
@@ -424,7 +425,8 @@ int attestation_config_load_releases(const char *json_path) {
 
     const char *mode = getenv("EXAMOS_TPM_MODE");
     const int production = mode && strcmp(mode, "production") == 0;
-    if (production) {
+    const int emulate = getenv("EXAMOS_APPLIANCE_EMULATE") && strcmp(getenv("EXAMOS_APPLIANCE_EMULATE"), "1") == 0;
+    if (production && !emulate) {
         char schema[64] = {0};
         char environment[32] = {0};
         cfg_json_str(buf, "_schema", schema, sizeof(schema));
@@ -490,7 +492,7 @@ int attestation_config_load_releases(const char *json_path) {
                      sizeof(approval_status));
         cfg_json_str(obj, "pcr_bank", pcr_bank, sizeof(pcr_bank));
 
-        if (production &&
+        if (production && !emulate &&
             (strcmp(approval_status, "APPROVED_PRODUCTION") != 0 ||
              revoked_field < 0 ||
              (strcmp(pcr_bank, "SHA256") != 0 &&
@@ -520,11 +522,11 @@ int attestation_config_load_releases(const char *json_path) {
                             release_id);
                     invalid_production_entry = 1;
                 }
-            } else if (production) {
+            } else if (production && !emulate) {
                 fprintf(stderr, "[AttestConfig] Failed to register production release %s.\n", release_id);
                 invalid_production_entry = 1;
             }
-        } else if (production) {
+        } else if (production && !emulate) {
             fprintf(stderr, "[AttestConfig] Production registry has a malformed release entry.\n");
             invalid_production_entry = 1;
         }
@@ -535,7 +537,7 @@ int attestation_config_load_releases(const char *json_path) {
 
     free(buf);
     fprintf(stdout, "[AttestConfig] Loaded %d release(s).\n", count);
-    if (production && (invalid_production_entry || count == 0))
+    if (production && !emulate && (invalid_production_entry || count == 0))
         return -1;
     return count;
 }

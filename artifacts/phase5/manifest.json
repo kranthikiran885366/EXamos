@@ -1,0 +1,96 @@
+{
+  "phase": "P5",
+  "execution_ts": 1791810255,
+  "server_url": "http://127.0.0.1:9195",
+  "overall": "BLOCKED",
+  "gates": {
+    "P5-A": {
+      "gate": "Gate P5-A \u2014 Personal Practice Baselines",
+      "status": "PASS",
+      "insufficient_handled": true,
+      "baseline_constructed": true,
+      "fifth_practice_event_status": 201,
+      "fifth_practice_status": 201,
+      "first_practice_rejections": [],
+      "fifth_practice_rejection": null,
+      "fifth_event_error": null,
+      "eligible_practice_count": 5,
+      "f1_median_ms": 4000.0
+    },
+    "P5-B": {
+      "gate": "Gate P5-B \u2014 Synthetic Relay Pattern Detection",
+      "status": "PASS",
+      "baseline_ready": true,
+      "practice_completions_accepted": true,
+      "practice_rejections": [],
+      "relay_ingestion_ok": true,
+      "relay_pause_detected": true,
+      "relay_burst_detected": true,
+      "relay_pattern_flagged": true,
+      "risk_score": 70
+    },
+    "P5-C": {
+      "gate": "Gate P5-C \u2014 Honest Session False-Flag Rate",
+      "status": "PASS",
+      "total_sessions": 30,
+      "false_flags": 0,
+      "invalid_baselines": 0,
+      "measured_rate_percent": 0.0,
+      "target_max_percent": 5.0
+    },
+    "P5-D": {
+      "gate": "Gate P5-D \u2014 Individualized Numeric Parameter Diversity",
+      "status": "PASS",
+      "cohort_size": 20,
+      "total_pairs": 190,
+      "differing_parameters": 186,
+      "total_comparisons": 190,
+      "diversity_rate_percent": 97.89473684210527,
+      "target_min_percent": 95.0,
+      "csv_artifact": "artifacts/phase5/variant-diversity.csv"
+    },
+    "P5-E": {
+      "gate": "Gate P5-E \u2014 Visible Watermark Leak Tracing",
+      "status": "PASS",
+      "positive_trace_success": true,
+      "traced_candidate_ref": "REF-7f0968e3",
+      "negative_control_handled": true
+    },
+    "P5-F": {
+      "gate": "Gate P5-F \u2014 Post-Exam Viva Generation",
+      "status": "BLOCKED",
+      "reason": "Configured viva provider is unavailable.",
+      "viva_id": null,
+      "question_count": 0,
+      "questions": []
+    },
+    "P5-G": {
+      "gate": "Gate P5-G \u2014 Human Review and Override",
+      "status": "BLOCKED",
+      "reason": "A successfully generated viva is required for review workflow validation."
+    },
+    "P5-H": {
+      "gate": "Gate P5-H \u2014 Authorization & Privacy Protection",
+      "status": "BLOCKED",
+      "reason": "Duplicate-response validation requires the unavailable viva provider.",
+      "answer_keys_isolated": true,
+      "reviewer_access_controlled": true,
+      "baseline_access_controlled": true,
+      "practice_access_controlled": true,
+      "unknown_viva_decision_rejected": true,
+      "first_response_accepted": false,
+      "duplicate_http_status": 403,
+      "mutation_rejected": false
+    },
+    "P5-I": {
+      "gate": "Gate P5-I \u2014 P0\u2013P4 Regression Verification",
+      "status": "BLOCKED",
+      "reason": "Fresh, commit-bound P0-P4 gate evidence was not supplied and verified.",
+      "P0": "BLOCKED",
+      "P1": "BLOCKED",
+      "P2": "BLOCKED",
+      "P3": "BLOCKED",
+      "P4": "BLOCKED"
+    }
+  }
+}

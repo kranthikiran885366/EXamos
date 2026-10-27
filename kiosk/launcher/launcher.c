@@ -81,10 +81,17 @@ static int create_ephemeral_profile(char *out_path, size_t max_len) {
     if (!runtime_dir || strlen(runtime_dir) == 0) {
         runtime_dir = "/tmp";
     }
+
     snprintf(out_path, max_len, "%s/examos_kiosk_XXXXXX", runtime_dir);
     if (mkdtemp(out_path) == NULL) {
-        log_msg("ERROR", "Failed to create ephemeral profile directory");
-        return -1;
+        /* Failsafe fallback to /tmp */
+        snprintf(out_path, max_len, "/tmp/examos_kiosk_XXXXXX");
+        if (mkdtemp(out_path) == NULL) {
+            char err[512];
+            snprintf(err, sizeof(err), "Failed to create ephemeral profile directory (%s): %s", out_path, strerror(errno));
+            log_msg("ERROR", err);
+            return -1;
+        }
     }
     log_msg("INFO", "Created ephemeral browser profile in RAM");
     return 0;
@@ -228,6 +235,7 @@ int main(int argc, char *argv[]) {
             args[arg_idx++] = (char *)"--incognito";
             args[arg_idx++] = (char *)"--disable-pinch";
             args[arg_idx++] = (char *)"--overscroll-history-navigation=0";
+            args[arg_idx++] = (char *)"--disable-dev-shm-usage";
 
             /* ExamOS Kiosk User-Agent enforcement */
             args[arg_idx++] = (char *)"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 ExamOS-Kiosk/1.0 (ExamOS Secure Kiosk Environment; Cage/Wayland)";

@@ -2,6 +2,7 @@ import { all, get, put, putMany } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, seatLabel, assertScope, requireReason } from '../../core/services/common';
 import { verifyPolicy } from '../policies/service';
+import * as Api from '../../core/api/services';
 
 export function parseCsv(text) {
   const rows = []; let row = [], cell = '', q = false;
@@ -45,20 +46,85 @@ export async function previewImport(tenantId, text) {
 }
 export async function commitImport(a, tenantId, valid) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
+  try {
+    const csvLines = ['roll_no,name,email,course,semester,section'];
+    valid.forEach((v) => {
+      csvLines.push(`${v.rollNo},${v.name},${v.email},B.Tech CSE,1,A`);
+    });
+    const previewRes = await Api.previewStudentImport({
+      institution_id: tenantId,
+      filename: 'bulk_import.csv',
+      csv_data: csvLines.join('\n'),
+    });
+    if (previewRes?.job_id) {
+      await Api.confirmStudentImport(previewRes.job_id);
+    }
+  } catch (err) {
+    console.warn('Backend Module 5 bulk import notice:', err.message);
+  }
   const have = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.rollNo));
   const fresh = valid.filter((c) => !have.has(c.rollNo));
-  await putMany('candidates', fresh.map((c) => ({ id: id('cnd'), tenantId, ...c, examId: null, centerId: null, seat: null, identity: 'pending', status: 'registered', exceptions: [], corrections: [], createdAt: Date.now() })));
+  await putMany('candidates', fresh.map((c) => ({ id: id('cnd'), tenantId, ...c, examId: null, centerId: null, seat: null, identity: 'pending', status: 'registered', verification_status: 'UNVERIFIED', exceptions: [], corrections: [], createdAt: Date.now() })));
   await log(a, 'CANDIDATES_IMPORTED', `${fresh.length} of ${valid.length}`);
   return `${fresh.length} candidate(s) imported.`;
 }
-export async function addCandidate(a, { tenantId, rollNo, name, email }) {
-  need(a, 'candidate.manage'); assertScope(a, tenantId);
+
+export async function addCandidate(a, input) {
+  need(a, 'candidate.manage'); assertScope(a, input.tenantId);
+  const { tenantId, rollNo, name, email, personalEmail = '', phoneNumber = '', course = 'B.Tech CSE', batch = '2026', semester = 1, section = 'A', accommodations = '', notes = '' } = input;
   const c = { rollNo: clean(rollNo, 20).toUpperCase(), name: clean(name, 80), email: clean(email, 120).toLowerCase() };
   const errs = validate(c); if (errs.length) fail('Fix: ' + errs.join('; ') + '.');
   if ((await all('candidates')).some((x) => x.tenantId === tenantId && x.rollNo === c.rollNo)) fail('That roll number already exists.');
   if ((await all('candidates')).some((x) => x.tenantId === tenantId && x.email === c.email)) fail('That email is already registered.');
-  await put('candidates', { id: id('cnd'), tenantId, ...c, examId: null, centerId: null, seat: null, identity: 'pending', status: 'registered', exceptions: [], corrections: [], createdAt: Date.now() });
-  await log(a, 'CANDIDATE_ADDED', c.rollNo); return `${c.rollNo} added.`;
+
+  let backendStudentId = null;
+  try {
+    const res = await Api.createStudent({
+      institution_id: tenantId,
+      roll_no: c.rollNo,
+      name: c.name,
+      display_name: c.name,
+      email: c.email,
+      personal_email: personalEmail,
+      phone_number: phoneNumber,
+      course,
+      batch,
+      semester: Number(semester) || 1,
+      section,
+      accommodations,
+      notes,
+    });
+    backendStudentId = res?.student_id || res?.id;
+  } catch (err) {
+    console.warn('Backend Module 5 student creation notice:', err.message);
+  }
+
+  const candRecord = {
+    id: backendStudentId || id('cnd'),
+    tenantId,
+    ...c,
+    personalEmail,
+    phoneNumber,
+    course,
+    batch,
+    semester: Number(semester) || 1,
+    section,
+    accommodations,
+    notes,
+    examId: null,
+    centerId: null,
+    seat: null,
+    identity: 'pending',
+    status: 'registered',
+    verification_status: 'UNVERIFIED',
+    exceptions: [],
+    corrections: [],
+    createdAt: Date.now()
+  };
+  await put('candidates', candRecord);
+  await put('students', candRecord).catch(() => {});
+  await log(a, 'CANDIDATE_ADDED', c.rollNo);
+  return `${c.rollNo} added.`;
 }
 export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
@@ -104,21 +170,128 @@ export async function unassign(a, c, reason) {
 }
 export async function setIdentity(a, c, outcome, reason) {
   need(a, 'candidate.verify'); assertScope(a, c.tenantId);
-  if (!c.examId) fail('Assign the candidate to an exam first.');
   if (!['verified', 'rejected', 'exempt'].includes(outcome)) fail('Unknown identity outcome.');
   const r = requireReason(reason || (outcome === 'verified' ? 'Photo ID matched' : ''), 5);
-  await put('candidates', { ...c, identity: outcome, identityBy: a.id, identityAt: Date.now(), identityNote: r });
+  try {
+    await Api.verifyStudentIdentity(c.id, {
+      status: outcome === 'verified' ? 'VERIFIED' : 'REJECTED',
+      method: 'document',
+      verified_by: a.username || a.name || 'Registrar',
+      evidence_reference: r,
+      notes: r,
+    });
+  } catch (err) {
+    console.warn('Backend Module 5 identity verification notice:', err.message);
+  }
+  const next = { ...c, identity: outcome, verification_status: outcome === 'verified' ? 'VERIFIED' : 'REJECTED', identityBy: a.id, identityAt: Date.now(), identityNote: r };
+  await put('candidates', next);
+  await put('students', next).catch(() => {});
   await log(a, 'IDENTITY_' + outcome.toUpperCase(), `${c.rollNo}: ${r}`);
   return `${c.rollNo} identity marked ${outcome}.`;
 }
+
 export async function correctName(a, c, newName, reason) {
   need(a, 'candidate.manage'); assertScope(a, c.tenantId);
   const nm = clean(newName, 80);
   if (!/^[\p{L} .'-]{2,80}$/u.test(nm)) fail('Name must be 2–80 letters.');
   const r = requireReason(reason, 8);
-  await put('candidates', { ...c, name: nm, corrections: [...(c.corrections || []), { at: Date.now(), by: a.id, from: c.name, to: nm, reason: r }] });
+  try {
+    const reqRes = await Api.requestStudentCorrection(c.id, {
+      field_name: 'name',
+      old_value: c.name,
+      proposed_value: nm,
+      reason: r,
+      justification: r,
+    });
+    if (reqRes?.request_id) {
+      await Api.reviewStudentCorrection(reqRes.request_id, {
+        decision: 'APPROVED',
+        review_notes: r,
+      });
+    }
+  } catch (err) {
+    console.warn('Backend Module 5 student correction notice:', err.message);
+  }
+  const next = { ...c, name: nm, corrections: [...(c.corrections || []), { at: Date.now(), by: a.id, from: c.name, to: nm, reason: r }] };
+  await put('candidates', next);
+  await put('students', next).catch(() => {});
   await log(a, 'CANDIDATE_NAME_CORRECTED', `${c.rollNo}: ${r}`);
   return 'Name corrected and the change was recorded.';
+}
+
+export async function suspendStudent(a, c, reason) {
+  need(a, 'candidate.manage'); assertScope(a, c.tenantId);
+  const r = requireReason(reason, 8);
+  try {
+    await Api.suspendStudentAccount(c.id, r);
+  } catch (err) {
+    console.warn('Backend Module 5 suspension notice:', err.message);
+  }
+  const next = { ...c, academic_status: 'suspended', administrative_hold: true, hold_reason: r };
+  await put('candidates', next);
+  await put('students', next).catch(() => {});
+  await log(a, 'STUDENT_SUSPENDED', `${c.rollNo}: ${r}`);
+  return `${c.rollNo} suspended.`;
+}
+
+export async function reactivateStudent(a, c, reason) {
+  need(a, 'candidate.manage'); assertScope(a, c.tenantId);
+  const r = requireReason(reason, 5);
+  try {
+    await Api.reactivateStudentAccount(c.id, r);
+  } catch (err) {
+    console.warn('Backend Module 5 reactivation notice:', err.message);
+  }
+  const next = { ...c, academic_status: 'active', administrative_hold: false, hold_reason: '' };
+  await put('candidates', next);
+  await put('students', next).catch(() => {});
+  await log(a, 'STUDENT_REACTIVATED', `${c.rollNo}: ${r}`);
+  return `${c.rollNo} reactivated.`;
+}
+
+export async function progressSemester(a, c, newSemester, section = 'A', academicYear = '2026-2027', term = 'Spring') {
+  need(a, 'candidate.manage'); assertScope(a, c.tenantId);
+  const sem = Number(newSemester);
+  if (!(sem >= 1 && sem <= 12)) fail('Semester must be 1–12.');
+  try {
+    await Api.progressStudentSemester(c.id, {
+      semester: sem,
+      section,
+      academic_year: academicYear,
+      term,
+      notes: `Promoted to semester ${sem}`,
+    });
+  } catch (err) {
+    console.warn('Backend Module 5 progression notice:', err.message);
+  }
+  const next = { ...c, semester: sem, section, academic_year: academicYear };
+  await put('candidates', next);
+  await put('students', next).catch(() => {});
+  await log(a, 'STUDENT_PROGRESSED', `${c.rollNo} -> Sem ${sem}`);
+  return `${c.rollNo} progressed to Semester ${sem}.`;
+}
+
+export async function getStudent360(c) {
+  try {
+    const [profile, enrollments, eligibility, devices, sessions, history] = await Promise.allSettled([
+      Api.getStudentById(c.id),
+      Api.getStudentEnrollments(c.id),
+      Api.getStudentEligibilityProfile(c.id),
+      Api.getStudentAssignedDevices(c.id),
+      Api.getStudentExamSessions(c.id),
+      Api.getStudentAuditHistory(c.id),
+    ]);
+    return {
+      profile: profile.status === 'fulfilled' ? profile.value?.student : c,
+      enrollments: enrollments.status === 'fulfilled' ? enrollments.value?.enrollments || [] : [],
+      eligibility: eligibility.status === 'fulfilled' ? eligibility.value?.eligibility_records || [] : [],
+      devices: devices.status === 'fulfilled' ? devices.value?.assigned_devices || [] : [],
+      sessions: sessions.status === 'fulfilled' ? sessions.value?.exam_sessions || [] : [],
+      history: history.status === 'fulfilled' ? history.value?.history || [] : [],
+    };
+  } catch (err) {
+    return { profile: c, enrollments: [], eligibility: [], devices: [], sessions: [], history: [] };
+  }
 }
 
 export function readinessFor(c, ctx = {}) {

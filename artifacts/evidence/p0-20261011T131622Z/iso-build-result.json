@@ -1,0 +1,21 @@
+{
+  "phase": "P0",
+  "check": "iso_build",
+  "status": "PASS",
+  "timestamp": "2026-10-11T13:41:10Z",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state_at_start": "DIRTY",
+  "dirty_path_count_at_start": 346,
+  "iso_path": "artifacts/evidence/p0-20261011T131622Z/examos-p0.iso",
+  "iso_sha256": "493285c34a7ab8d0f318a036e4c52bac74763b3042564c0e56e3dff3fa451853",
+  "iso_size_bytes": 1013389312,
+  "source_disk_sha256": "2e55a1d616b7b14ff8bfd94cbd1035c6dddb9bb6200daa0e7add4fbf824e04d9",
+  "source_uki_sha256": "16bc391e8c6ea1c788886bcfc53e1969b1107fc78699b03a92dbf9965f2953a6",
+  "source_initrd_sha256": "a3a724105c76246057e82dde755e36998a0c4bf164f7f0821b1a96cc704262f5",
+  "uki_sha256": "883a79fcaf70b042d074c4ad0e1e5876ee1365ff541367ed72eeb619d84f278b",
+  "root_filesystem_sha256": "08027715dce8a9a99ff60f663a7ef679007f254ed2fcca65367e75e2f2fd645e",
+  "root_filesystem_uuid": "6d88bb39-5c92-43da-bd80-9cb321d2b17d",
+  "root_filesystem_label": "root-x86-64",
+  "root_filesystem_mount": "canonical ext4 GPT partition selected by root=LABEL=root-x86-64",
+  "layout": "UEFI El Torito with direct UKI fallback loader and appended GPT ESP and Linux root partition"
+}

@@ -112,8 +112,8 @@ try:
 except ValueError as error:
     reject("Malformed URL authority: " + str(error))
 
-if scheme not in ("https", "http") or not parsed.netloc or not host:
-    reject("URL must be an absolute HTTPS URL (or loopback HTTP for development)")
+if scheme != "https" or not parsed.netloc or not host:
+    reject("Production exam endpoints MUST use HTTPS exclusively (no plain HTTP)")
 if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
     reject("URL credentials are not permitted")
 if port is not None and not 1 <= port <= 65535:
@@ -122,7 +122,6 @@ if port is not None and not 1 <= port <= 65535:
 try:
     address = ipaddress.ip_address(host)
     canonical_host = address.compressed.lower()
-    is_loopback = canonical_host == "127.0.0.1"
     if address.version == 6:
         canonical_host = "[" + canonical_host + "]"
 except ValueError:
@@ -133,11 +132,7 @@ except ValueError:
     label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     if not re.fullmatch(label + r"(?:\." + label + r")*", canonical_host):
         reject("URL hostname is invalid")
-    is_loopback = canonical_host == "localhost"
 
-if scheme == "http":
-    if not is_loopback or port != 8000:
-        reject("Plain HTTP is permitted only for the exact 127.0.0.1:8000 or localhost:8000 development endpoints")
 if canonical_host in ("example.com", "example.org", "example.net", "test.invalid"):
     reject("Documentation/example hostnames are not valid exam endpoints")
 if "DEPLOYMENT_REQUIRED" in raw or "NOT_CONFIGURED" in raw:
@@ -231,9 +226,8 @@ def canonical_origin(raw):
         label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
         if not re.fullmatch(label + r"(?:\." + label + r")*", canonical_host):
             reject("additional origin hostname is invalid")
-        is_loopback = canonical_host == "localhost"
-    if scheme == "http" and (not is_loopback or port != 8000):
-        reject("plain HTTP is allowed only for loopback port 8000")
+    if scheme != "https":
+        reject("All additional origins must use HTTPS exclusively in production")
     authority = canonical_host + ((":" + str(port)) if port is not None else "")
     return scheme + "://" + authority
 

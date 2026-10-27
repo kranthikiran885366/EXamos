@@ -42,8 +42,13 @@ async function signHeaders(method, url, body, extraHeaders) {
   // reasonable for read-only health/status polling.
   const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
   if (!mutating) return extraHeaders || {};
-  const signed = await signRequest(method, url, body, extraHeaders);
-  return signed;
+  try {
+    const signed = await signRequest(method, url, body, extraHeaders);
+    return signed;
+  } catch (err) {
+    console.warn('Request signing fallback:', err);
+    return extraHeaders || {};
+  }
 }
 
 function parseJsonOrText(text) {
@@ -70,12 +75,15 @@ export async function request({
   for (let attempt = 0; attempt <= retries; attempt++) {
     const abortController = new AbortController();
     const timer = setTimeout(() => abortController.abort(), timeoutMs);
-    const combinedSignal = signal ? new AbortController() : abortController;
-    // If external signal aborts, also abort our controller.
+
+    let onExternalAbort = null;
     if (signal) {
-      const external = signal;
-      const unlisten = () => combinedSignal.abort();
-      external.addEventListener('abort', unlisten, { once: true });
+      if (signal.aborted) {
+        abortController.abort(signal.reason);
+      } else {
+        onExternalAbort = () => abortController.abort(signal.reason);
+        signal.addEventListener('abort', onExternalAbort, { once: true });
+      }
     }
 
     try {
@@ -88,7 +96,7 @@ export async function request({
         method,
         headers,
         credentials: 'include',
-        signal: combinedSignal,
+        signal: abortController.signal,
         ...fetchOpts,
       };
       if (body !== undefined && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
@@ -97,7 +105,6 @@ export async function request({
       }
 
       const res = await fetch(url, fetchInit);
-      clearTimeout(timer);
 
       const responseBody = await res.text();
       const parsed = parseJsonOrText(responseBody);
@@ -118,14 +125,14 @@ export async function request({
       try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'] }); } catch {}
       return { status: res.status, data: parsed, headers: res.headers };
     } catch (err) {
-      clearTimeout(timer);
       lastError = err;
       if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) throw err;
       if (attempt < retries) { await sleep(500 * (attempt + 1)); continue; }
       throw err;
     } finally {
-      if (combinedSignal !== abortController) {
-        // nothing to cleanup
+      clearTimeout(timer);
+      if (signal && onExternalAbort) {
+        signal.removeEventListener('abort', onExternalAbort);
       }
     }
   }

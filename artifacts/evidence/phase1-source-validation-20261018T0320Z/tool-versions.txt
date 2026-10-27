@@ -1,0 +1,7 @@
+Captured UTC: 2026-10-18T03:26:36.139216+00:00
+Windows Git Bash: 5.2.37
+Python runtime: 3.11.9 (Windows x64)
+Compiler: GCC unavailable; Clang unavailable
+QEMU: unavailable
+WSL Ubuntu-26.04: listed/installed but failed to start in this session (Wsl/Service/E_UNEXPECTED)
+Validation environment is Windows Git Bash; not Linux guest or image evidence.

@@ -1,0 +1,6 @@
+BuildRunId=p1-build-20261017-214500
+TimestampUTC=2026-10-17T16:32:33Z
+SourceCommit=c8d8c6149458e9c1611966d5f2db66ed2f42e2d1
+SourceTreeState=DIRTY
+ExamURL=https://exam.examos.security/
+MkosiConfigSha256=d6b3f43587ccf174643bec57beedfd1f8f675bb238250f03d6e83385dd571da7

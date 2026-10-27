@@ -1,0 +1,15 @@
+{
+  "phase": "SOFTWARE-TOOLCHAIN",
+  "test": "qemu-ovmf-iso-boot",
+  "label": "iso-clean-cdrom",
+  "result": "FAIL",
+  "timestamp": "2026-10-23T01:46:59Z",
+  "source_commit": "ff2f040c3f463ee57062513d8deafe4e845fb546",
+  "iso_path": "/home/krant/examos-work/examos-clean.iso",
+  "iso_size": 492300288,
+  "boot_marker": "uefi-firmware-only",
+  "emergency_shell": "yes",
+  "qemu_exit_code": 124,
+  "elapsed_ms": 130524,
+  "ovmf_firmware": "/usr/share/OVMF/OVMF_CODE_4M.fd"
+}

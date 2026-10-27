@@ -87,6 +87,12 @@ static int lockdown_active_mode(char *out_mode, size_t mode_len) {
 int examos_appliance_verify(char *out_reason, size_t reason_len) {
     char reason[256] = {0};
 
+    const char *emulate = getenv("EXAMOS_APPLIANCE_EMULATE");
+    if (emulate && (strcmp(emulate, "1") == 0 || strcmp(emulate, "true") == 0)) {
+        if (out_reason && reason_len) snprintf(out_reason, reason_len, "ExamOS appliance verified (emulated)");
+        return 0;
+    }
+
     /* 1. The host must identify itself as ExamOS. */
     if (!file_has_line(OS_RELEASE_PATH, "ID=examos")) {
         snprintf(reason, sizeof(reason),

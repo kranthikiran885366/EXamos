@@ -261,6 +261,12 @@ cp "$TMP_ISO" "$ISO_OUT"
 ISO_SIZE="$(du -sh "$ISO_OUT" | cut -f1)"
 sha256sum "$ISO_OUT" > "${ISO_OUT}.sha256"
 
+# Also sync to output/examos.iso and image/examos.iso
+cp "$ISO_OUT" "$WORKSPACE/output/examos.iso"
+sha256sum "$WORKSPACE/output/examos.iso" > "$WORKSPACE/output/examos.iso.sha256"
+cp "$ISO_OUT" "$WORKSPACE/image/examos.iso"
+sha256sum "$WORKSPACE/image/examos.iso" > "$WORKSPACE/image/examos.iso.sha256"
+
 log "============================================================"
 log "  DONE: $ISO_OUT ($ISO_SIZE)"
 log "  SHA256: $(cut -d' ' -f1 "${ISO_OUT}.sha256")"

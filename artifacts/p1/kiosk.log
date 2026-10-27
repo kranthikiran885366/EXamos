@@ -1,0 +1,7 @@
+=== [P1-KIOSK] Static Verification of Kiosk Configuration ===
+[KIOSK-CHECK] PASS: Kiosk service executes as unprivileged user 'exam'
+[KIOSK-CHECK] PASS: Kiosk service hooked to graphical.target
+[KIOSK-CHECK] PASS: No conventional desktop environments installed (pure Cage kiosk)
+[KIOSK-CHECK] PASS: /etc/examos/exam.conf configuration source exists
+[KIOSK-CHECK] PASS: Chromium AppArmor security profile exists
+[KIOSK-CHECK] PASS: Chromium enterprise managed policies configured

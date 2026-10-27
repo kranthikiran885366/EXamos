@@ -224,13 +224,17 @@ void auth_admin_login(int client_fd, const char *req_body,
     int password_ok = 0;
     if (found && strcmp(db_status, "active") == 0 && db_hash[0]) {
         if (db_salt[0]) {
+            /* users table: hash is bare PBKDF2 hex, salt is a separate column */
             char computed[256] = {0};
             if (security_pbkdf2_hash(password, db_salt, computed, sizeof(computed)) == 0 &&
                 security_safe_equal(computed, db_hash)) {
                 password_ok = 1;
             }
         } else {
-            if (config_verify_password_hash(password, db_hash) == 0) {
+            /* examos_admin_users table: hash is "iterations:salt_hex:hash_hex" —
+             * config_verify_password_hash returns 1 on match, 0 on no-match.
+             * Must NOT invert this: == 1 is the success condition. */
+            if (config_verify_password_hash(password, db_hash) == 1) {
                 password_ok = 1;
             }
         }
@@ -575,7 +579,9 @@ void auth_candidate_login(int client_fd, const char *req_body,
         if (security_pbkdf2_hash(pin, candidate_id, computed, sizeof(computed)) == 0 &&
             security_safe_equal(computed, db_pin)) {
             pin_ok = 1;
-        } else if (config_verify_password_hash(pin, db_pin) == 0) {
+        } else if (config_verify_password_hash(pin, db_pin) == 1) {
+            /* examos_exam_roster: hash is "iterations:salt_hex:hash_hex" format.
+             * config_verify_password_hash returns 1 = match. */
             pin_ok = 1;
         }
     } else if (!found) {

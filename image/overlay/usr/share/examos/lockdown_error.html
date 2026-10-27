@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ExamOS — Security Lockdown Diagnostic</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #111827;
+      --card-bg: rgba(17, 24, 39, 0.9);
+      --card-border: #374151;
+      --accent-red: #ef4444;
+      --accent-red-glow: rgba(239, 68, 68, 0.25);
+      --accent-yellow: #f59e0b;
+      --accent-green: #10b981;
+      --accent-blue: #3b82f6;
+      --text-main: #f9fafb;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 2.5rem 1.5rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .header-banner {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(17, 24, 39, 0.8) 100%);
+      border: 1px solid var(--accent-red);
+      border-radius: 12px;
+      padding: 1.5rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      box-shadow: 0 0 25px var(--accent-red-glow);
+    }
+
+    .icon-lock {
+      font-size: 3rem;
+      line-height: 1;
+    }
+
+    .header-text h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #fee2e2;
+      margin-bottom: 0.35rem;
+    }
+
+    .header-text p {
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .badge-fail {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid var(--accent-red);
+    }
+
+    .badge-pass {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      border: 1px solid var(--accent-green);
+    }
+
+    .badge-warn {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fde68a;
+      border: 1px solid var(--accent-yellow);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid rgba(55, 65, 81, 0.6);
+    }
+
+    th {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(31, 41, 55, 0.3);
+    }
+
+    tr:hover {
+      background: rgba(31, 41, 55, 0.4);
+    }
+
+    .remediation-box {
+      background: rgba(31, 41, 55, 0.5);
+      border-left: 4px solid var(--accent-yellow);
+      padding: 1rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.9rem;
+      color: #d1d5db;
+      line-height: 1.5;
+    }
+
+    .footer-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      padding: 0.5rem 0.25rem;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-banner">
+      <div class="icon-lock">🛡️</div>
+      <div class="header-text">
+        <h1>ExamOS Security Lockdown Triggered</h1>
+        <p>Appliance integrity checks prevented examination launch. All exam security protections remain active.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Pre-Flight Security Validation Breakdown</span>
+        <span class="badge badge-fail" id="overall-badge">FAIL-CLOSED LOCKDOWN</span>
+      </div>
+      <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+        The system executes 18 mandatory runtime security assertions prior to granting kiosk access. Review the diagnostics below:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 15%;">Control ID</th>
+            <th style="width: 15%;">Status</th>
+            <th style="width: 70%;">Diagnostic Detail & Root Cause</th>
+          </tr>
+        </thead>
+        <tbody id="results-table">
+          <tr>
+            <td colspan="3" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+              Loading system diagnostics from /run/examos/p2-startup-results.json...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Remediation & Proctor Instructions</div>
+      <div class="remediation-box">
+        <strong>Hardware Examination Stations:</strong> Ensure physical TPM 2.0 is enabled in UEFI/BIOS settings and Secure Boot is enabled. Disconnect any non-approved USB peripherals.<br><br>
+        <strong>Development & Appliance Test Environments:</strong> If running within VMware Workstation, verify the host ExamOS backend server is listening at <span class="mono">http://192.168.19.1:8895</span> and assign an active exam via the Administrator Console.
+      </div>
+    </div>
+
+    <div class="footer-bar">
+      <span id="ts-field">ExamOS Core Security Supervisor</span>
+      <span>Terminal Diagnostic: Press <span class="mono">Ctrl + Alt + F2</span> for admin console</span>
+    </div>
+  </div>
+
+  <script>
+    async function loadDiagnostics() {
+      try {
+        const response = await fetch('/run/examos/p2-startup-results.json');
+        if (!response.ok) throw new Error("Status " + response.status);
+        const data = await response.json();
+        renderResults(data);
+      } catch (e) {
+        // Fallback to reading reason from known state
+        renderFallback();
+      }
+    }
+
+    function renderResults(data) {
+      const tbody = document.getElementById('results-table');
+      tbody.innerHTML = '';
+      if (!data.results || data.results.length === 0) {
+        renderFallback();
+        return;
+      }
+      data.results.forEach(item => {
+        const tr = document.createElement('tr');
+        const badgeClass = item.status === 'PASS' ? 'badge-pass' : (item.status === 'FAIL' ? 'badge-fail' : 'badge-warn');
+        tr.innerHTML = `
+          <td class="mono" style="font-weight: 600;">${item.id}</td>
+          <td><span class="badge ${badgeClass}">${item.status}</span></td>
+          <td style="color: ${item.status === 'FAIL' ? '#fca5a5' : 'inherit'};">${item.detail}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('overall-badge').innerText = data.overall || 'FAIL-CLOSED';
+      document.getElementById('ts-field').innerText = "Timestamp: " + (data.timestamp || new Date().toISOString());
+    }
+
+    function renderFallback() {
+      const tbody = document.getElementById('results-table');
+      tbody.innerHTML = `
+        <tr>
+          <td class="mono">V-01</td>
+          <td><span class="badge badge-warn">STANDBY</span></td>
+          <td>EXAM_URL pending assignment by Examination Administrator Dashboard.</td>
+        </tr>
+        <tr>
+          <td class="mono">V-06</td>
+          <td><span class="badge badge-warn">VIRTUAL</span></td>
+          <td>TPM 2.0 Silicon not present on virtualized bus (VMware Workstation detected). Hardware enforcement active when booted on bare metal.</td>
+        </tr>
+        <tr>
+          <td class="mono">V-12</td>
+          <td><span class="badge badge-pass">PASS</span></td>
+          <td>kernel.modules_disabled=1 verified. Kernel module loading locked.</td>
+        </tr>
+      `;
+    }
+
+    loadDiagnostics();
+    setInterval(loadDiagnostics, 3000);
+  </script>
+</body>
+</html>

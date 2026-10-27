@@ -1,0 +1,18 @@
+============================================================
+ExamOS P0 — Disk Image Forensics
+============================================================
+[FORENSICS] Analyzing: /mnt/d/SEB BRO/image/p0/output/examos-p0.raw
+[FORENSICS] Image size: 973M (1019408384 bytes)
+[FORENSICS] Non-empty image: PASS
+[FORENSICS] GPT partition table: PASS
+[FORENSICS] EFI System Partition: PASS
+[FORENSICS] Linux root x86-64 partition: PASS
+[FORENSICS] SHA-256 integrity match: PASS
+
+[FORENSICS] Partition layout:
+/mnt/d/SEB BRO/image/p0/output/examos-p0.raw1    2048 1050623 1048576   512M EFI System
+/mnt/d/SEB BRO/image/p0/output/examos-p0.raw2 1050624 1990991  940368 459.2M Linux root (x86-64)
+
+============================================================
+[FORENSICS] Result: 5/5 passed
+============================================================

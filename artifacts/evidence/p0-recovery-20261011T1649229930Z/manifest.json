@@ -1,0 +1,17 @@
+﻿{
+    "evidence_classification":  "HISTORICAL_RECOVERY_EVIDENCE",
+    "capture_status":  "INCOMPLETE",
+    "capture_utc":  "2026-10-11T16:49:23.0229939Z",
+    "iso_path":  "artifacts/p0/examos-p0.iso",
+    "iso_size_bytes":  991741952,
+    "iso_sha256":  "83764CC4FF4B9198630B9382426F2E7A475064580A9770639E597512256347FC",
+    "source_branch":  "work/p0-secure-release-remediation-20261011",
+    "source_head":  "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+    "limitations":  [
+                        "Historical recovery evidence only; not release approval or production certification.",
+                        "The selected-record inventory is metadata-only.",
+                        "Stage 2 findings are prior observations, not a fresh inspection."
+                    ],
+    "capture_failure":  "xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.",
+    "checksum_status":  "STALE_OR_NOT_CREATED: SHA256SUMS.txt retained if present; not regenerated."
+}

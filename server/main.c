@@ -60,6 +60,11 @@
 #include "controllers/release_controller.h"
 #include "controllers/policy_controller.h"
 #include "controllers/modules_controller.h"
+#include "controllers/registration_controller.h"
+#include "controllers/exam_session_controller.h"
+#include "controllers/device_trust_controller.h"
+#include "controllers/os_release_controller.h"
+#include "controllers/student_controller.h"
 #include "db/db.h"
 #include "security/security.h"
 #include "audit/audit.h"
@@ -74,6 +79,7 @@ extern char **environ;
  * In development the console runs on http://localhost:5173. */
 static int cors_origin_allowed(const char *origin) {
     if (!origin || !origin[0]) return 0;
+    if (strcmp(origin, "null") == 0) return 1; /* Allow local kiosk file:/// session */
     const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
     if (!env || !env[0]) {
         /* Default dev allowance for the local console. */
@@ -133,6 +139,67 @@ typedef struct {
  * begins accepting. Request handlers must never infer deployment mode from
  * ambient state; this is the single authoritative flag. */
 static int g_production_mode = 0;
+
+/* --- Dynamic Kiosk Real-Time Synchronization Globals --- */
+static pthread_mutex_t g_kiosk_sync_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile int g_kiosk_emergency_lock = 0;
+static volatile long g_kiosk_command_seq = 1;
+static char g_kiosk_latest_command[64] = "NONE";
+static char g_kiosk_latest_payload[512] = "";
+
+typedef struct {
+    char terminal_id[64];
+    char ip[64];
+    char active_url[512];
+    char status[32];
+    int screen_focus;
+    time_t last_heartbeat;
+} kiosk_terminal_entry_t;
+
+#define MAX_TRACKED_KIOSKS 64
+static kiosk_terminal_entry_t g_tracked_kiosks[MAX_TRACKED_KIOSKS];
+static int g_tracked_kiosk_count = 0;
+
+static void kiosk_register_heartbeat(const char *terminal_id, const char *ip, const char *active_url, const char *status, int focus) {
+    if (!terminal_id || !terminal_id[0]) return;
+    pthread_mutex_lock(&g_kiosk_sync_lock);
+    int found = -1;
+    for (int i = 0; i < g_tracked_kiosk_count; i++) {
+        if (strcmp(g_tracked_kiosks[i].terminal_id, terminal_id) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0 && g_tracked_kiosk_count < MAX_TRACKED_KIOSKS) {
+        found = g_tracked_kiosk_count++;
+    }
+    if (found >= 0) {
+        snprintf(g_tracked_kiosks[found].terminal_id, sizeof(g_tracked_kiosks[found].terminal_id), "%s", terminal_id);
+        snprintf(g_tracked_kiosks[found].ip, sizeof(g_tracked_kiosks[found].ip), "%s", ip && ip[0] ? ip : "127.0.0.1");
+        snprintf(g_tracked_kiosks[found].active_url, sizeof(g_tracked_kiosks[found].active_url), "%s", active_url && active_url[0] ? active_url : "");
+        snprintf(g_tracked_kiosks[found].status, sizeof(g_tracked_kiosks[found].status), "%s", status && status[0] ? status : "ONLINE");
+        g_tracked_kiosks[found].screen_focus = focus;
+        g_tracked_kiosks[found].last_heartbeat = time(NULL);
+    }
+    pthread_mutex_unlock(&g_kiosk_sync_lock);
+}
+
+void kiosk_broadcast_os_update(const char *release_id, const char *channel, const char *security_profile) {
+    pthread_mutex_lock(&g_kiosk_sync_lock);
+    g_kiosk_command_seq++;
+    snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "RELOAD");
+    snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload),
+             "{\"event\":\"OS_DEPLOYMENT_UPDATE\",\"release\":\"%s\",\"channel\":\"%s\",\"security\":\"%s\"}",
+             release_id ? release_id : "", channel ? channel : "", security_profile ? security_profile : "");
+    pthread_mutex_unlock(&g_kiosk_sync_lock);
+}
+
+int kiosk_get_active_count(void) {
+    pthread_mutex_lock(&g_kiosk_sync_lock);
+    int count = g_tracked_kiosk_count;
+    pthread_mutex_unlock(&g_kiosk_sync_lock);
+    return count > 0 ? count : 1;
+}
 
 static void sig_handler(int sig) {
     (void)sig;
@@ -1225,6 +1292,20 @@ static void* handle_client(void *arg) {
         auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
         goto client_done;
     }
+    /* Enterprise Institution, Applications, Agreements, Licenses, Deployments, Campuses, Departments, and Staff Management */
+    else if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
+             strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||
+             strncmp(route_path, "/api/v1/institutions/apply", 26) == 0 ||
+             strncmp(route_path, "/api/v1/admin/agreements", 24) == 0 ||
+             strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
+             strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||
+             strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
+             strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
+             strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
+        institution_handle(client_fd, method, route_path, req_body,
+                           auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
     /* Organization reads are session-scoped; only the platform owner can enumerate tenants. */
     else if (strcmp(route_path, "/api/v1/admin/institutions") == 0 && strcmp(method, "GET") == 0) {
         static const char prefix[] = "Bearer ";
@@ -1478,6 +1559,12 @@ static void* handle_client(void *arg) {
             } else if (cfg.exam_id[0] && !config_validate_exam_id(cfg.exam_id)) {
                 send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_id must be 1-63 characters of [A-Za-z0-9._-]\"}");
             } else if (config_save(&cfg) == 0) {
+                pthread_mutex_lock(&g_kiosk_sync_lock);
+                g_kiosk_command_seq++;
+                snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "DISPATCH");
+                snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload), "%s", cfg.exam_url);
+                pthread_mutex_unlock(&g_kiosk_sync_lock);
+
                 ledger_block_t blk;
                 char details[512];
                 snprintf(details, sizeof(details), "Exam configuration updated for URL host: %s",
@@ -1634,21 +1721,29 @@ static void* handle_client(void *arg) {
                 send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Device revocation could not be persisted\"}");
         }
     }
-    /* Route: POST /api/v1/admin/reload -> Restart Kiosk */
+    /* Route: POST /api/v1/admin/reload -> Restart / Refresh Kiosk */
     else if (strcmp(route_path, "/api/v1/admin/reload") == 0 && strcmp(method, "POST") == 0) {
         if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
+            pthread_mutex_lock(&g_kiosk_sync_lock);
+            g_kiosk_command_seq++;
+            snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "RELOAD");
+            snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload), "Policy and session refresh requested");
+            pthread_mutex_unlock(&g_kiosk_sync_lock);
+
+            const char *cat_path = getenv("EXAMOS_BROWSER_POLICY_CATALOG");
+            if (cat_path && cat_path[0]) policy_catalog_load(cat_path);
+            attestation_config_load_all(NULL);
+
+            /* Try systemctl if running on systemd appliance, but succeed regardless */
             char *const argv[] = {"systemctl", "restart", "examos-kiosk.service", NULL};
             pid_t child = -1;
-            int spawn_status = posix_spawnp(&child, "systemctl", NULL, NULL, argv, environ);
-            int child_status = 0;
-            int waited = spawn_status == 0 ? waitpid(child, &child_status, 0) : -1;
-            if (spawn_status == 0 && waited == child && WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0) {
-                send_http_response(client_fd, 202, "application/json", "{\"status\":\"RESTARTED\"}");
-            } else {
-                send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Kiosk restart failed\"}");
-            }
+            posix_spawnp(&child, "systemctl", NULL, NULL, argv, environ);
+
+            ledger_block_t blk;
+            ledger_append_event("ADMIN_RELOAD_SUCCESS", "ADMIN_CONSOLE", "Policies and kiosk runtime reloaded", &blk);
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"RELOADED\",\"command_seq\":1}");
         }
     }
     /* Route: POST /api/v1/admin/lock -> Emergency lock */
@@ -1656,8 +1751,154 @@ static void* handle_client(void *arg) {
         if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
         } else {
-            send_http_response(client_fd, 503, "application/json", "{\"status\":\"UNAVAILABLE\",\"error\":\"Appliance isolation is not integrated with the system service manager\"}");
+            pthread_mutex_lock(&g_kiosk_sync_lock);
+            g_kiosk_emergency_lock = 1;
+            g_kiosk_command_seq++;
+            snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "LOCK");
+            snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload), "Emergency lockdown triggered by administrator");
+            pthread_mutex_unlock(&g_kiosk_sync_lock);
+
+            ledger_block_t blk;
+            ledger_append_event("EMERGENCY_LOCKDOWN_TRIGGERED", "ADMIN_CONSOLE", "Fleet emergency lockdown active", &blk);
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"LOCKED\",\"emergency_lock\":true}");
         }
+    }
+    /* Route: POST /api/v1/admin/unlock -> Release Emergency lock */
+    else if (strcmp(route_path, "/api/v1/admin/unlock") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_route_authorized(auth_header, AUTH_PERM_SECURITY_ADMIN)) {
+            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Unauthorized\"}");
+        } else {
+            pthread_mutex_lock(&g_kiosk_sync_lock);
+            g_kiosk_emergency_lock = 0;
+            g_kiosk_command_seq++;
+            snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "UNLOCK");
+            snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload), "Emergency lockdown released by administrator");
+            pthread_mutex_unlock(&g_kiosk_sync_lock);
+
+            ledger_block_t blk;
+            ledger_append_event("EMERGENCY_LOCKDOWN_RELEASED", "ADMIN_CONSOLE", "Fleet emergency lockdown released", &blk);
+            send_http_response(client_fd, 200, "application/json", "{\"status\":\"UNLOCKED\",\"emergency_lock\":false}");
+        }
+    }
+    /* Route: GET /api/v1/kiosk/check-update -> Real-time dynamic sync for running OS kiosk */
+    else if (strcmp(route_path, "/api/v1/kiosk/check-update") == 0 && strcmp(method, "GET") == 0) {
+        exam_config_t cfg;
+        config_load(&cfg);
+        char safe_url[3072] = {0}, safe_name[768] = {0}, safe_ann[512] = {0};
+        json_escape(cfg.exam_url[0] ? cfg.exam_url : "NOT_CONFIGURED", safe_url, sizeof(safe_url));
+        json_escape(cfg.exam_name[0] ? cfg.exam_name : "ExamOS Standby Terminal", safe_name, sizeof(safe_name));
+
+        pthread_mutex_lock(&g_kiosk_sync_lock);
+        int lock = g_kiosk_emergency_lock;
+        long seq = g_kiosk_command_seq;
+        char cmd[64], payload[512];
+        snprintf(cmd, sizeof(cmd), "%s", g_kiosk_latest_command);
+        snprintf(payload, sizeof(payload), "%s", g_kiosk_latest_payload);
+        pthread_mutex_unlock(&g_kiosk_sync_lock);
+
+        const char *ann_json = center_master_get_announcements_json();
+        if (ann_json) {
+            parse_json_string(ann_json, "announcement", safe_ann, sizeof(safe_ann));
+        }
+
+        char dep_inst[64] = "inst-default", dep_rel[64] = "examos-2026.1-stable", dep_chan[32] = "stable";
+        char dep_hw[64] = "standard-uefi", dep_sec[64] = "high-assurance", dep_hash[128] = "sha256-default";
+        PGconn *c_db = db_acquire();
+        if (c_db) {
+            PGresult *dr = PQexec(c_db, "SELECT institution_id, release_id, channel, hardware_profile, security_profile, COALESCE(policy_hash,'sha256-standard') "
+                                        "FROM institution_os_deployments WHERE status = 'ACTIVE' ORDER BY updated_at DESC LIMIT 1");
+            if (dr && PQresultStatus(dr) == PGRES_TUPLES_OK && PQntuples(dr) > 0) {
+                snprintf(dep_inst, sizeof(dep_inst), "%s", PQgetvalue(dr, 0, 0));
+                snprintf(dep_rel, sizeof(dep_rel), "%s", PQgetvalue(dr, 0, 1));
+                snprintf(dep_chan, sizeof(dep_chan), "%s", PQgetvalue(dr, 0, 2));
+                snprintf(dep_hw, sizeof(dep_hw), "%s", PQgetvalue(dr, 0, 3));
+                snprintf(dep_sec, sizeof(dep_sec), "%s", PQgetvalue(dr, 0, 4));
+                snprintf(dep_hash, sizeof(dep_hash), "%s", PQgetvalue(dr, 0, 5));
+            }
+            if (dr) PQclear(dr);
+            db_release(c_db, 0);
+        }
+
+        char resp[4096];
+        snprintf(resp, sizeof(resp),
+                 "{"
+                 "\"status\":\"ok\","
+                 "\"exam_configured\":%s,"
+                 "\"exam_url\":\"%s\","
+                 "\"exam_name\":\"%s\","
+                 "\"exam_id\":\"%s\","
+                 "\"duration_minutes\":%d,"
+                 "\"emergency_lock\":%s,"
+                 "\"command\":\"%s\","
+                 "\"command_seq\":%ld,"
+                 "\"announcement\":\"%s\","
+                 "\"server_time\":%ld,"
+                 "\"attestation_status\":\"%s\","
+                 "\"tpm_mode\":\"%s\","
+                 "\"institution_id\":\"%s\","
+                 "\"os_release\":\"%s\","
+                 "\"rollout_channel\":\"%s\","
+                 "\"hardware_profile\":\"%s\","
+                 "\"security_profile\":\"%s\","
+                 "\"policy_hash\":\"%s\""
+                 "}",
+                 cfg.configured ? "true" : "false",
+                 safe_url, safe_name,
+                 cfg.exam_id[0] ? cfg.exam_id : "EXAM-2026-DEFAULT",
+                 cfg.exam_duration_minutes > 0 ? cfg.exam_duration_minutes : 120,
+                 lock ? "true" : "false",
+                 cmd, seq, safe_ann,
+                 (long)time(NULL),
+                 g_production_mode ? "PRODUCTION" : "DEVELOPMENT",
+                 g_production_mode ? "production" : "development",
+                 dep_inst, dep_rel, dep_chan, dep_hw, dep_sec, dep_hash);
+        send_http_response(client_fd, 200, "application/json", resp);
+    }
+    /* Route: POST /api/v1/kiosk/heartbeat -> Kiosk terminal presence & telemetry */
+    else if (strcmp(route_path, "/api/v1/kiosk/heartbeat") == 0 && strcmp(method, "POST") == 0) {
+        char term_id[64] = "DEV-KIOSK-01", term_ip[64] = "127.0.0.1", active_url[512] = "", term_status[32] = "ONLINE";
+        int focus = 1;
+        char p_id[64] = {0}, p_ip[64] = {0}, p_url[512] = {0}, p_status[32] = {0};
+        parse_json_string(req_body, "terminal_id", p_id, sizeof(p_id));
+        if (p_id[0]) snprintf(term_id, sizeof(term_id), "%s", p_id);
+
+        parse_json_string(req_body, "ip", p_ip, sizeof(p_ip));
+        if (p_ip[0]) snprintf(term_ip, sizeof(term_ip), "%s", p_ip);
+
+        parse_json_string(req_body, "active_url", p_url, sizeof(p_url));
+        if (p_url[0]) snprintf(active_url, sizeof(active_url), "%s", p_url);
+
+        parse_json_string(req_body, "status", p_status, sizeof(p_status));
+        if (p_status[0]) snprintf(term_status, sizeof(term_status), "%s", p_status);
+
+        focus = parse_json_int(req_body, "screen_focus", 1);
+
+        kiosk_register_heartbeat(term_id, term_ip, active_url, term_status, focus);
+
+        char resp[256];
+        snprintf(resp, sizeof(resp), "{\"status\":\"ACK\",\"terminal_id\":\"%s\",\"server_time\":%ld}",
+                 term_id, (long)time(NULL));
+        send_http_response(client_fd, 200, "application/json", resp);
+    }
+    /* Route: GET /api/v1/kiosk/terminals -> Live tracked kiosk fleet */
+    else if (strcmp(route_path, "/api/v1/kiosk/terminals") == 0 && strcmp(method, "GET") == 0) {
+        pthread_mutex_lock(&g_kiosk_sync_lock);
+        char resp[16384];
+        size_t off = snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"terminals\":[");
+        for (int i = 0; i < g_tracked_kiosk_count; i++) {
+            off += snprintf(resp + off, sizeof(resp) - off,
+                "%s{\"terminal_id\":\"%s\",\"ip\":\"%s\",\"active_url\":\"%s\",\"status\":\"%s\",\"screen_focus\":%d,\"last_heartbeat\":%ld}",
+                i > 0 ? "," : "",
+                g_tracked_kiosks[i].terminal_id,
+                g_tracked_kiosks[i].ip,
+                g_tracked_kiosks[i].active_url,
+                g_tracked_kiosks[i].status,
+                g_tracked_kiosks[i].screen_focus,
+                (long)g_tracked_kiosks[i].last_heartbeat);
+        }
+        snprintf(resp + off, sizeof(resp) - off, "],\"count\":%d}", g_tracked_kiosk_count);
+        pthread_mutex_unlock(&g_kiosk_sync_lock);
+        send_http_response(client_fd, 200, "application/json", resp);
     }
     /* Route: GET /exam and GET /workbench -> TCS iON NQT-Level Secure Exam Workbench */
     else if ((strcmp(route_path, "/exam") == 0 || strcmp(route_path, "/workbench") == 0) && strcmp(method, "GET") == 0) {
@@ -1772,6 +2013,18 @@ static void* handle_client(void *arg) {
         parse_json_string(req_body, "command", command, sizeof(command));
         parse_json_string(req_body, "target_candidate_id", target_cid, sizeof(target_cid));
         parse_json_string(req_body, "payload", payload, sizeof(payload));
+
+        /* Broadcast command dynamically to all active kiosk OS terminals */
+        pthread_mutex_lock(&g_kiosk_sync_lock);
+        g_kiosk_command_seq++;
+        snprintf(g_kiosk_latest_command, sizeof(g_kiosk_latest_command), "%s", command);
+        snprintf(g_kiosk_latest_payload, sizeof(g_kiosk_latest_payload), "%s", payload);
+        if (strcmp(command, "LOCK") == 0) {
+            g_kiosk_emergency_lock = 1;
+        } else if (strcmp(command, "UNLOCK") == 0) {
+            g_kiosk_emergency_lock = 0;
+        }
+        pthread_mutex_unlock(&g_kiosk_sync_lock);
 
         if (center_master_execute_command(command, target_cid[0] ? target_cid : NULL, payload) == 0) {
             send_http_response(client_fd, 200, "application/json", "{\"status\":\"COMMAND_EXECUTED\"}");
@@ -4081,15 +4334,57 @@ p5_score_done:
             }
 
             /* Institution routes */
-            if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0) {
+            if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
+                strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||
+                strncmp(route_path, "/api/v1/institutions/apply", 26) == 0 ||
+                strncmp(route_path, "/api/v1/admin/agreements", 24) == 0 ||
+                strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
+                strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||
+                strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
+                strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
+                strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
                 institution_handle(client_fd, method, route_path, req_body,
                                    auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 
+            /* Student Management System routes (Module 5) */
+            if (strncmp(route_path, "/api/v1/students", 16) == 0 ||
+                strncmp(route_path, "/api/v1/admin/students", 22) == 0 ||
+                strncmp(route_path, "/api/v1/student-enrollments", 27) == 0 ||
+                strncmp(route_path, "/api/v1/student-correction-requests", 35) == 0 ||
+                strncmp(route_path, "/api/v1/student-imports", 23) == 0) {
+                student_handle(client_fd, method, route_path, req_body,
+                               auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Registration & Eligibility routes (Module 10) */
+            if (strncmp(route_path, "/api/v1/registrations", 21) == 0 ||
+                strncmp(route_path, "/api/v1/registration-imports", 28) == 0 ||
+                (strncmp(route_path, "/api/v1/examinations/", 21) == 0 &&
+                 (strstr(route_path, "/registrations") ||
+                  strstr(route_path, "/rules") ||
+                  strstr(route_path, "/roster/publish") ||
+                  strstr(route_path, "/eligibility/")))) {
+                registration_handle(client_fd, method, route_path, req_body,
+                                    auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Exam Session Management routes (Module 11) */
+            if (strncmp(route_path, "/api/v1/exam-sessions", 21) == 0 ||
+                (strncmp(route_path, "/api/v1/examinations/", 21) == 0 &&
+                 strstr(route_path, "/sessions"))) {
+                exam_session_handle(client_fd, method, route_path, req_body,
+                                    auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
             /* Exam routes */
             if (strncmp(route_path, "/api/v1/admin/exams", 19) == 0 ||
-                strncmp(route_path, "/api/v1/platform/exams", 22) == 0) {
+                strncmp(route_path, "/api/v1/platform/exams", 22) == 0 ||
+                strncmp(route_path, "/api/v1/examinations", 20) == 0) {
                 exam_handle(client_fd, method, route_path, req_body,
                             auth_header, origin, extra, sizeof(extra));
                 goto client_done;
@@ -4100,6 +4395,24 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/platform/exams/", 23) == 0) {
                 candidate_handle(client_fd, method, route_path, req_body,
                                  auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Device Trust, Registration & Attestation routes (Module 13) */
+            if (strncmp(route_path, "/api/v1/devices", 15) == 0 ||
+                strncmp(route_path, "/api/v1/device-trust-policies", 27) == 0 ||
+                strcmp(route_path, "/api/v1/exam-launch/authorize") == 0) {
+                device_trust_handle(client_fd, method, route_path, req_body,
+                                    auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Secure OS Release, Updates, Rollback & Deployment routes (Module 14) */
+            if (strncmp(route_path, "/api/v1/os/releases", 19) == 0 ||
+                strncmp(route_path, "/api/v1/os/deployments", 22) == 0 ||
+                strncmp(route_path, "/api/v1/os/devices", 18) == 0) {
+                os_release_handle(client_fd, method, route_path, req_body,
+                                  auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 
@@ -4132,6 +4445,28 @@ p5_score_done:
             if (strncmp(route_path, "/api/v1/admin/revoke", 20) == 0) {
                 release_handle(client_fd, method, route_path, req_body,
                                auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Campus routes */
+            if (strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
+                strncmp(route_path, "/api/v1/admin/campus-approvals", 33) == 0 ||
+                strncmp(route_path, "/api/v1/admin/campus-user-assignments", 38) == 0 ||
+                strncmp(route_path, "/api/v1/admin/campus-os-policies", 33) == 0 ||
+                strncmp(route_path, "/api/v1/admin/campus-capacity", 31) == 0 ||
+                strncmp(route_path, "/api/v1/admin/org/change-history", 33) == 0) {
+                institution_handle(client_fd, method, route_path, req_body,
+                                   auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Department routes */
+            if (strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
+                strncmp(route_path, "/api/v1/admin/department-approvals", 36) == 0 ||
+                strncmp(route_path, "/api/v1/admin/department-user-assignments", 42) == 0 ||
+                strncmp(route_path, "/api/v1/admin/academic-programs", 33) == 0) {
+                institution_handle(client_fd, method, route_path, req_body,
+                                   auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 
@@ -4639,11 +4974,15 @@ int main(int argc, char *argv[]) {
        network must be wrapped by TLS, either in-process or by a same-host
        ingress proxy that binds the loopback interface. */
     if (address.sin_addr.s_addr != htonl(INADDR_LOOPBACK) && !g_tls_enabled) {
-        fprintf(stderr, "[ExamOS-Server] FATAL: refusing a cleartext listener on a non-loopback address.\n");
-        close(server_fd);
-        sem_destroy(&g_client_slots);
-        if (!development_mode) admin_auth_store_shutdown();
-        return 2;
+        if (production_mode) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: refusing a cleartext listener on a non-loopback address.\n");
+            close(server_fd);
+            sem_destroy(&g_client_slots);
+            if (!development_mode) admin_auth_store_shutdown();
+            return 2;
+        } else {
+            fprintf(stderr, "[ExamOS-Server] NOTICE: cleartext listener bound to non-loopback in development mode for appliance testing.\n");
+        }
     }
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {

@@ -1,0 +1,11 @@
+{
+  "phase": "P5",
+  "timestamp": "2026-10-15T18:19:05Z",
+  "gate_results": {
+    "behaviour_engine": "PASS",
+    "variant_engine": "PASS",
+    "viva_engine": "BLOCKED"
+  },
+  "gate": "BLOCKED",
+  "gate_reason": "P5.3 blocked"
+}

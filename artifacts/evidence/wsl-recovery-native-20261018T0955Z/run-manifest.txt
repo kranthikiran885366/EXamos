@@ -1,0 +1,15 @@
+﻿Captured UTC: 2026-10-18T03:55:27.5848715Z
+Repository: D:\SEB BRO
+Branch: work/p0-secure-release-remediation-20261011
+HEAD: c8d8c6149458e9c1611966d5f2db66ed2f42e2d1
+Worktree: DIRTY
+Git status entries: 351
+Build output: D:\examos-native-run-20261018T0920Z
+Native build: from repository root, make BUILD_DIR=/mnt/d/examos-native-run-20261018T0920Z native in Ubuntu-26.04
+P0 smoke: tests/p0/server-smoke-test.sh; 11/11 assertions; output in ../phase1-source-validation-20261018T0320Z/p0-server-smoke-wsl-retry/
+C URL validation: 22 cases; output in ../phase1-source-validation-20261018T0320Z/config-url-validation-wsl-final.log
+Chromium policy generator: 13 assertions; output in ../phase1-source-validation-20261018T0320Z/chromium-policy-generator-test-wsl.log
+P1 source validation: 41 PASS, 0 FAIL, 1 BLOCKED; output in ../phase1-source-validation-20261018T0320Z/p1-source-validation-wsl-final.log
+P2 static/Chromium/USB outputs in ../phase2-wsl-host-20261018T0930Z/
+WSL tool versions: wsl-tool-versions.txt
+Source hashes: source-sha256.csv; binaries and selected test log hashes: artifact-sha256.csv

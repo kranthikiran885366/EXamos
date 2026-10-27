@@ -1,0 +1,52 @@
+=== [P2-STATIC] ExamOS P2 Static Audit: 2026-10-18T03:34:04Z ===
+[STATIC-PASS]    S-01: 'bash' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'openssh-server' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'gcc' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'g++' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'make' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'python3' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'perl' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'ruby' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'nodejs' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'sudo' absent from release mkosi.conf
+[STATIC-PASS]    S-01: 'su' absent from release mkosi.conf
+[STATIC-PASS]    S-02: lockdown=confidentiality in mkosi.conf KernelCommandLine
+[STATIC-PASS]    S-03: Required P2 package present: cryptsetup-bin
+[STATIC-PASS]    S-03: Required P2 package present: usbguard
+[STATIC-PASS]    S-03: Required P2 package present: nftables
+[STATIC-PASS]    S-03: Required P2 package present: apparmor
+[STATIC-PASS]    S-03: Required P2 package present: squashfs-tools
+[STATIC-PASS]    S-04: Chromium policy all mandatory fields correct
+[STATIC-PASS]    S-05: 'mask.*getty' present in hardening scripts
+[STATIC-PASS]    S-05: 'mask.*autovt' present in hardening scripts
+[STATIC-PASS]    S-05: 'mask.*serial-getty' present in hardening scripts
+[STATIC-PASS]    S-05: 'mask.*emergency' present in hardening scripts
+[STATIC-PASS]    S-05: 'mask.*rescue' present in hardening scripts
+[STATIC-PASS]    S-05: 'mask.*ssh' present in hardening scripts
+[STATIC-PASS]    S-06: No private key files in source tree
+[STATIC-PASS]    S-07: Service unit exists: examos-kiosk.service
+[STATIC-PASS]    S-07: Service unit exists: examos-module-lock.service
+[STATIC-PASS]    S-07: Service unit exists: examos-usb-lockdown.service
+[STATIC-PASS]    S-07: Service unit exists: examos-preflight.service
+[STATIC-PASS]    S-07: Service unit exists: examos-lockdown-failed.target
+[STATIC-PASS]    S-07: Service unit exists: examos-dev-shm-hardening.service
+[STATIC-PASS]    S-07: Service unit exists: examos-kiosk-readiness.service
+[STATIC-PASS]    S-07: Service unit exists: tmp.mount
+[STATIC-PASS]    S-07: Service unit exists: home-exam.mount
+[STATIC-PASS]    S-07: Service unit exists: var-log.mount
+[STATIC-PASS]    S-08: sysctl 'kernel.sysrq = 0' present
+[STATIC-PASS]    S-08: sysctl 'kernel.yama.ptrace_scope = 3' present
+[STATIC-PASS]    S-08: sysctl 'kernel.unprivileged_bpf_disabled = 1' present
+[STATIC-PASS]    S-08: sysctl 'net.ipv6.conf.all.disable_ipv6 = 1' present
+[STATIC-PASS]    S-08: sysctl 'vm.swappiness = 0' present
+[STATIC-PASS]    S-08: sysctl 'fs.suid_dumpable = 0' present
+[STATIC-PASS]    S-09: nftables has default-drop on all chains, no 0.0.0.0/0 accept
+[STATIC-PASS]    S-10: kiosk.service has 'NoNewPrivileges=true'
+[STATIC-PASS]    S-10: kiosk.service has 'ProtectSystem=strict'
+[STATIC-PASS]    S-10: kiosk.service has 'CapabilityBoundingSet='
+[STATIC-PASS]    S-10: kiosk.service has 'PrivateTmp=true'
+[STATIC-PASS]    S-10: kiosk.service has 'LockPersonality=true'
+[STATIC-PASS]    S-11: USBGuard rules include storage block and implicit deny
+[STATIC-PASS]    S-12: USBGuard is enabled and required before preflight
+
+=== [P2-STATIC] Summary: PASS=49 FAIL=0 BLOCKED=0 ===

@@ -8,7 +8,8 @@
 import { get, put } from '../db/db';
 
 const KEY_ID = 'examos_console_signing_key';
-const ALGO = { name: 'ECDSA', namedCurve: 'P-256' };
+const KEY_GEN_ALGO = { name: 'ECDSA', namedCurve: 'P-256' };
+const SIGN_ALGO = { name: 'ECDSA', hash: { name: 'SHA-256' } };
 const KEY_USAGES = ['sign'];
 
 async function sha256Hex(input) {
@@ -44,9 +45,9 @@ async function ensureSigningKey() {
 
     let key;
     if (storedJwk) {
-      key = await crypto.subtle.importKey('jwk', storedJwk, ALGO, true, KEY_USAGES);
+      key = await crypto.subtle.importKey('jwk', storedJwk, KEY_GEN_ALGO, true, KEY_USAGES);
     } else {
-      const pair = await crypto.subtle.generateKey(ALGO, true, KEY_USAGES);
+      const pair = await crypto.subtle.generateKey(KEY_GEN_ALGO, true, KEY_USAGES);
       key = pair.privateKey;
       try {
         const [privateJwk, publicJwk] = await Promise.all([
@@ -83,7 +84,7 @@ export async function signRequest(method, url, body = '', extraHeaders = {}) {
   };
 
   const toSign = await canonicalRequest(method, url, body, headers);
-  const sig = await crypto.subtle.sign(ALGO, key, new TextEncoder().encode(toSign));
+  const sig = await crypto.subtle.sign(SIGN_ALGO, key, new TextEncoder().encode(toSign));
   const signature = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
 
   return {

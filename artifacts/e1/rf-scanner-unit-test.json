@@ -1,0 +1,27 @@
+{
+  "phase": "E1",
+  "check": "rf_scanner_disabled_state_unit_test",
+  "status": "PASS",
+  "test_kind": "unit",
+  "timestamp": "2026-10-12T17:06:21Z",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "dirty_path_count": 307,
+  "command": "bash tests/e1/rf-scanner-test.sh",
+  "observations_collected": false,
+  "sensor_hardware_test": "NOT_RUN",
+  "covered_behaviors": [
+    "unconfigured sources are disabled by policy",
+    "disabled is distinct from zero observations",
+    "no identifiers or signal measurements are serialized",
+    "truncated JSON is reported",
+    "active scan invocation is absent"
+  ],
+  "source_sha256": {
+    "agent/environment/rf_scanner.c": "60a0ec235b3a4aeaab06d5e24e4bed91c5fd8e96a48b4122a372984cd027d071",
+    "agent/include/rf_scanner.h": "d0bbceb68e8ad65ff6654d0be518fc777a674513c7da9aa85e32040df2d27941",
+    "agent/main.c": "5602b1d64fc39d21d39cfef18667eb739ba234412501bc22e4f310aaf2f07b06",
+    "tests/e1/rf_scanner_test.c": "947519d611704ec7b60b93ab95b604b00e14b1d3b01003aaacf80cd82597684a",
+    "tests/e1/rf-scanner-test.sh": "1711fd6b6ba6705b34ebf2ad8cf3daf320fb82434f5f71285e82f4d81540b99e"
+  }
+}

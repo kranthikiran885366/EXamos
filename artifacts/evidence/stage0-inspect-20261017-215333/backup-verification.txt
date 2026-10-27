@@ -1,0 +1,38 @@
+ExamOS — Stage 0 backup verification
+Captured: 2026-10-17 21:53 (local) — read-only verification only; no files modified.
+
+Repository: d:\SEB BRO
+Branch:    work/p0-secure-release-remediation-20261011
+HEAD:      c8d8c6149458e9c1611966d5f2db66ed2f42e2d1 (short c8d8c61)
+Describe:  v0.1.0-1-gc8d8c61  (tag v0.2.0 also present at 878093c)
+Remote:    none (local-only repository)
+Stash:     none
+
+External backups recorded in docs/EXAMOS_IMPLEMENTATION_PLAN_2026-10-17.md
+were re-hashed with Get-FileHash -Algorithm SHA256 and CONFIRMED to match:
+
+  1) D:\SEB BRO-backup-20261017-200057.zip
+       Plan SHA-256: e2474e4aab17aec87d5aa269cc5dec1445e3ff2b39182465d933d252917ed4d4
+       Actual SHA-256: E2474E4AAB17AEC87D5AA269CC5DEC1445E3FF2B39182465D933D252917ED4D4
+       Size: 20,369,656 bytes  -> MATCH (case-insensitive)
+
+  2) D:\SEB BRO-execution-backup-20261017-201023.zip
+       Plan SHA-256: a6d8678cc1b0acc87f2c6db0dc5c0cae79781a71fc1bb227c385894d0c8c2893
+       Actual SHA-256: A6D8678CC1B0ACC87F2C6DB0DC5C0CAE79781A71FC1BB227C385894D0C8C2893
+       Size: 20,421,852 bytes  -> MATCH (case-insensitive)
+
+A worktree snapshot directory also exists: artifacts/backups/worktree-20261011T112140Z/
+
+A prior baseline evidence directory exists:
+  artifacts/evidence/baseline-20261017-200644/
+  (git-head.txt, git-status.txt, git-diff-stat.txt, untracked-files.txt, artifact-sha256.csv)
+
+Conclusion: a verified external recovery baseline exists. Because Stage 0 performs
+inspection only and modifies no source, the existing verified backups are the recovery
+baseline. A FRESH timestamped backup must be taken immediately before any source edit
+in Stage 1 or later; never overwrite the archives above or any existing evidence dir.
+
+Limitations: these archives are recovery aids, not a clean source baseline. They
+exclude ignored build outputs and Git internals. The working tree is heavily dirty
+(many modified / staged-deleted / untracked files), so any "clean commit" claim is
+blocked until changes are reviewed and committed or a clean worktree/clone is used.

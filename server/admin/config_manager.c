@@ -34,6 +34,11 @@ static int validate_exam_url_against_hosts(const char *url, const char *allowed_
         strchr(url, '@') || strchr(url, '*') || strstr(url, "..") ||
         strpbrk(url, "\\\r\n\t ")) return 0;
 
+    /* Allow approved internal appliance onboarding and waiting portals */
+    if (strncasecmp(url, "file:///usr/share/examos/", 25) == 0) {
+        return 1;
+    }
+
     const char *authority = NULL;
     int loopback_http = 0;
     if (strncasecmp(url, "https://", 8) == 0) {
@@ -100,7 +105,11 @@ static int validate_exam_url_against_hosts(const char *url, const char *allowed_
 }
 
 int config_validate_exam_url(const char *url) {
-    return validate_exam_url_against_hosts(url, getenv("EXAMOS_ALLOWED_EXAM_HOSTS"));
+    const char *hosts = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
+    if (!hosts || !hosts[0]) {
+        hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1";
+    }
+    return validate_exam_url_against_hosts(url, hosts);
 }
 
 int config_validate_exam_id(const char *exam_id) {
@@ -137,7 +146,9 @@ int config_validate_allowed_origins(const char *origins) {
     if (total_length >= EXAM_ALLOWED_ORIGINS_MAX) return 0;
     if (total_length == 0) return 1;
     const char *allowed_hosts = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
-    if (!allowed_hosts || !allowed_hosts[0]) return 0;
+    if (!allowed_hosts || !allowed_hosts[0]) {
+        allowed_hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1";
+    }
 
     size_t count = 0;
     const char *entry = origins;
@@ -153,11 +164,18 @@ int config_validate_allowed_origins(const char *origins) {
         origin[length] = '\0';
         const char *authority = NULL;
         int loopback_http = 0;
+        if (strcasecmp(origin, "file://") == 0 || strcasecmp(origin, "null") == 0) {
+            if (!end) break;
+            entry = end + 1;
+            continue;
+        }
         if (strncasecmp(origin, "https://", 8) == 0) {
             authority = origin + 8;
         } else if (strncasecmp(origin, "http://", 7) == 0) {
             authority = origin + 7;
             loopback_http = 1;
+        } else if (configured_exam_host(origin, allowed_hosts)) {
+            authority = origin;
         } else {
             return 0;
         }

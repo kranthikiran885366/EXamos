@@ -1,0 +1,13 @@
+test_id,requirement,status,result_or_block_reason,evidence
+DYN-01,Chromium exact-origin policy generator regression,PASS,13 assertions; Windows Git Bash + Python 3.11.9,chromium-policy-generator-test-final.log
+DYN-02,C config/platform URL validator unit test,NOT_RUN,No GCC/Clang; WSL compiler environment unavailable,tests/server/config-url-validation-test.c
+DYN-03,P1 source validator,BLOCKED,41 PASS; 0 FAIL; 1 BLOCKED: EXAM_URL=NOT_CONFIGURED,p1-source-validation-gitbash.log
+DYN-04,Changed shell syntax and targeted diff check,PASS,bash -n and git diff --check exit 0,validation-integrity.log
+BUILD-01,Full native server build,NOT_RUN,No compiler/build toolchain available,
+IMG-01,Current image build/boot/kiosk acceptance,NOT_RUN,"No approved staging URL, clean isolated build, or QEMU",
+P2-01,Mandatory guest runtime lockdown matrix,BLOCKED,Phase 1 candidate image absent; no isolated booted guest,
+P3-01,Physical device attestation/key release,BLOCKED,No production trust authority/key ceremony/physical evidence,
+P4-01,Governed proctoring evaluation,BLOCKED,No consented representative dataset/model governance/independent labels,
+P5-01,Operational candidate workflow rehearsal,BLOCKED,Provider and fresh upstream phase evidence unavailable,
+P6-01,Independent assessment and pilot,BLOCKED,No written authorization/assessor/approved device matrix/pilot roles,
+P7-01,Commercial launch readiness,NOT_RUN,Requires approved pilot and measured delivery/unit economics,

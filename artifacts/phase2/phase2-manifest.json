@@ -1,0 +1,27 @@
+{
+  "_note": "This file is written by tests/p2/p2-gate.sh after a full CI build. The values below are schema placeholders that CI replaces with real measurements. Do not submit this file as evidence.",
+  "phase": "P2",
+  "status": "NOT_RUN",
+  "gitCommit": "POPULATED_BY_CI",
+  "buildProfile": "release-test",
+  "buildTool": "mkosi 26",
+  "imageArtifact": "POPULATED_BY_CI",
+  "imageDigest": "POPULATED_BY_CI",
+  "squashfsArtifact": "POPULATED_BY_CI",
+  "squashfsDigest": "POPULATED_BY_CI",
+  "verityRootHash": "POPULATED_BY_CI",
+  "verityHashAlgorithm": "sha256",
+  "kernelVersion": "POPULATED_BY_CI",
+  "chromiumVersion": "POPULATED_BY_CI",
+  "firewallBackend": "nftables",
+  "configVersion": "p2.1",
+  "testExecutionTimestamp": "POPULATED_BY_CI",
+  "buildNote": "TEST_SIGNED — P3 Secure Boot chain not applied",
+  "mandatoryTests": {
+    "passed": 0,
+    "failed": 0,
+    "blocked": 0,
+    "notRun": 20
+  },
+  "artifacts": []
+}

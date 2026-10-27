@@ -1,0 +1,23 @@
+{
+  "phase": "P0",
+  "check": "iso_build",
+  "status": "PASS",
+  "timestamp": "2026-10-12T15:32:35Z",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state_at_start": "DIRTY",
+  "dirty_path_count_at_start": 399,
+  "iso_path": "artifacts/p0/examos-p0.iso",
+  "iso_sha256": "64fe70b0cce8c68834de0c6a73e9dbeb0f1e2fa3b09a22f5b231c791aba1eae7",
+  "iso_size_bytes": 1500221440,
+  "source_disk_sha256": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "source_uki_sha256": "834be4adbb5db80437e5d9c1cf7238c5a8b6348a5a07d3da1bd7a71847769ceb",
+  "source_initrd_sha256": "0d2bb349db9e8b9d671e682666961d5b99dc77762d70ac72ee0214b63779afaf",
+  "optical_root_loader_sha256": "2aa2ff980176976d73bd61b7be87ab1f8ed7f8256551a241a9e9d2dbc245f56c",
+  "uki_sha256": "a79a3cbf5adca22f8afc46a0ecda49aec0b8d696365331a53a7ba1c1a7c0ec35",
+  "root_filesystem_sha256": "f7cb1306ff774513cc6703443c7cc9f285ae923caa19e4a18337042e1947b9d9",
+  "root_filesystem_uuid": "8b75a414-b3d8-417c-b8dd-92c04d58aad0",
+  "root_filesystem_label": "root-x86-64",
+  "root_filesystem_mount": "embedded ext4 file on ISO9660, attached read-only as a loop device",
+  "root_persistence": "volatile overlay upper/work stored in RAM; changes are lost on reboot or power-off",
+  "layout": "UEFI El Torito with direct UKI fallback loader, appended GPT ESP and Linux root partition, and embedded ext4 root file for optical boot"
+}

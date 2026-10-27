@@ -1,0 +1,16 @@
+{
+  "phase": "P0",
+  "check": "guest_boot",
+  "status": "PASS",
+  "timestamp": "2026-10-11T13:55:59Z",
+  "image_sha256": "2e55a1d616b7b14ff8bfd94cbd1035c6dddb9bb6200daa0e7add4fbf824e04d9",
+  "image_sha256_after_boot": "2e55a1d616b7b14ff8bfd94cbd1035c6dddb9bb6200daa0e7add4fbf824e04d9",
+  "source_image_unchanged": true,
+  "qemu_exit_status": 124,
+  "markers": {
+    "kernel": true,
+    "systemd": true,
+    "multi_user_target": true,
+    "serial_login_prompt": true
+  }
+}

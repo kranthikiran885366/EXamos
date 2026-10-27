@@ -1,0 +1,6 @@
+﻿sbverify: sbverify 0.9.4
+xorriso: xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+sfdisk: sfdisk from util-linux 2.41.3
+objcopy: GNU objcopy (GNU Binutils for Ubuntu) 2.46
+file: file-5.46
+mdir: mdir (GNU mtools) 4.0.49

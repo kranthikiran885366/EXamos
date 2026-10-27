@@ -1,0 +1,13 @@
+{
+  "phase": "P0",
+  "check": "image_build",
+  "status": "PASS",
+  "timestamp": "2026-10-11T05:35:59Z",
+  "image_path": "image/p0/output/examos-p0.raw",
+  "image_sha256": "2e55a1d616b7b14ff8bfd94cbd1035c6dddb9bb6200daa0e7add4fbf824e04d9",
+  "image_size_bytes": 1014046720,
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "source_dirty_path_count": 307,
+  "build_config_sha256": "3de62bc9aecbca0d53b0ba14b6fb04a98152b33258f2250de2f5445333d0c190"
+}

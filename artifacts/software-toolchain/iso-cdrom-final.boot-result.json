@@ -1,0 +1,15 @@
+{
+  "phase": "SOFTWARE-TOOLCHAIN",
+  "test": "qemu-ovmf-iso-boot",
+  "label": "iso-cdrom-final",
+  "iso_presentation": "cdrom",
+  "result": "FAIL",
+  "timestamp": "2026-10-23T01:26:53Z",
+  "source_commit": "ff2f040c3f463ee57062513d8deafe4e845fb546",
+  "iso_path": "/home/krant/examos-work/examos.iso",
+  "iso_size": 4534398976,
+  "boot_marker": "initrd-reached",
+  "emergency_shell": "yes",
+  "qemu_exit_code": 124,
+  "elapsed_ms": 151953
+}

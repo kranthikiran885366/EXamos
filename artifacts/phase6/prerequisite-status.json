@@ -1,0 +1,141 @@
+{
+  "schema": "examos-phase6-prerequisite-v1",
+  "generatedAt": "2026-10-11T13:58:42Z",
+  "sourceCommit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "branch": "work/p0-secure-release-remediation-20261011",
+  "workingTree": "DIRTY",
+  "workingTreeEntryCount": 266,
+  "decision": "BLOCKED",
+  "phases": {
+    "P0": {
+      "phase": "P0",
+      "status": "PARTIAL",
+      "releaseEligible": false,
+      "evidence": "artifacts/p0/results.json",
+      "sha256": null,
+      "artifactCommit": null,
+      "reasons": [
+        "Split P0 build/boot records exist, but the consolidated artifacts/p0/results.json gate result is missing.",
+        "Split evidence does not establish a complete P0 PASS.",
+        "At least one split P0 artifact was produced from a dirty tree."
+      ],
+      "splitEvidence": [
+        {
+          "evidence": "artifacts/p0/build-result.json",
+          "status": "PASS",
+          "sourceCommit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+          "sourceTreeState": "DIRTY"
+        },
+        {
+          "evidence": "artifacts/p0/boot-result.json",
+          "status": "PASS",
+          "sourceCommit": null,
+          "sourceTreeState": null
+        },
+        {
+          "evidence": "artifacts/evidence/p0-20261011T131622Z/iso-build-result.json",
+          "status": "PASS",
+          "sourceCommit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+          "sourceTreeState": "DIRTY"
+        },
+        {
+          "evidence": "artifacts/evidence/p0-20261011T131622Z/iso-boot-result.json",
+          "status": "PASS",
+          "sourceCommit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+          "sourceTreeState": "DIRTY"
+        }
+      ]
+    },
+    "P1": {
+      "phase": "P1",
+      "status": "FAIL",
+      "releaseEligible": false,
+      "evidence": "artifacts/p1/results.json",
+      "sha256": "ba919067c994126ac97c1677e784cc121a6c77b99f58021dab29bc208b93cc3e",
+      "artifactCommit": null,
+      "reasons": [
+        "Evidence has no source commit binding.",
+        "Gate status is FAIL."
+      ]
+    },
+    "P2": {
+      "phase": "P2",
+      "status": "NOT_RUN",
+      "releaseEligible": false,
+      "evidence": "artifacts/phase2/phase2-manifest.json",
+      "sha256": "f53d67734ef90b34c78eb7f2b4c05772b0def1ce78bda95e617a7ebfb384af43",
+      "artifactCommit": "POPULATED_BY_CI",
+      "reasons": [
+        "Evidence is not bound to the current commit.",
+        "Gate status is NOT_RUN."
+      ]
+    },
+    "P3": {
+      "phase": "P3",
+      "status": "INVALIDATED",
+      "releaseEligible": false,
+      "evidence": "artifacts/p3/results.json",
+      "sha256": "4f2b3177e5bb687f3506e9b7b4d8f49c3f9a4f2657505963ed88e05f726d2972",
+      "artifactCommit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+      "reasons": [
+        "Evidence was produced from a dirty working tree.",
+        "Gate status is INVALIDATED."
+      ]
+    },
+    "P4": {
+      "phase": "P4",
+      "status": "INVALIDATED",
+      "releaseEligible": false,
+      "evidence": "artifacts/phase4/phase4-manifest.json",
+      "sha256": "4e5cc50c0bf784ca679b639e0c454c8902fb375dd4adc75b88dddfac8d90e826",
+      "artifactCommit": null,
+      "reasons": [
+        "Evidence has no source commit binding.",
+        "Gate status is INVALIDATED."
+      ]
+    },
+    "P5": {
+      "phase": "P5",
+      "status": "BLOCKED",
+      "releaseEligible": false,
+      "evidence": "artifacts/phase5/manifest.json",
+      "sha256": "15aa898aa0b0e4116d31267b81f68ce056457223faa113fec7bb775a0e761165",
+      "artifactCommit": null,
+      "reasons": [
+        "Evidence has no source commit binding.",
+        "Gate status is BLOCKED."
+      ]
+    }
+  },
+  "architectureDiscrepancy": {
+    "implemented": [
+      "native C/C++ server and agents",
+      "flat-file journals",
+      "development Go TPM verifier"
+    ],
+    "requiredByP6PromptButAbsent": [
+      "Node.js backend",
+      "MongoDB",
+      "Redis streams",
+      "Python inference workers",
+      "WebRTC SFU",
+      "Docker deployment"
+    ],
+    "decision": "BLOCKED",
+    "reason": "The frozen architecture named by the P6 prompt does not match this repository. Adding it would be an architectural replacement prohibited by the same prompt."
+  },
+  "mandatoryBlockers": [
+    "P0: Split P0 build/boot records exist, but the consolidated artifacts/p0/results.json gate result is missing., Split evidence does not establish a complete P0 PASS., At least one split P0 artifact was produced from a dirty tree.",
+    "P1: Evidence has no source commit binding., Gate status is FAIL.",
+    "P2: Evidence is not bound to the current commit., Gate status is NOT_RUN.",
+    "P3: Evidence was produced from a dirty working tree., Gate status is INVALIDATED.",
+    "P4: Evidence has no source commit binding., Gate status is INVALIDATED.",
+    "P5: Evidence has no source commit binding., Gate status is BLOCKED.",
+    "Physical matrix: three distinct laptop models have not supplied evidence.",
+    "Authorized red-team execution: written owner authorization and executed findings evidence are absent.",
+    "Pilot: no authorized 10-20 volunteer pilot evidence exists.",
+    "Production key custody and production signature ceremony evidence are absent.",
+    "P4 real labelled media dataset is absent.",
+    "P5 viva provider is unavailable; the fresh gate reports P5-F/G/H BLOCKED."
+  ]
+}

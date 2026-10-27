@@ -1,0 +1,139 @@
+=== TEST: tests/p0/private-key-check.sh (Exit: 0, Status: PASS) ===
+[KEY-CHECK] WARNING: Local P3 test keys are present but untracked and Git-ignored; they are not production keys.
+[KEY-CHECK] PASS: no tracked or unexpected key-like files.
+
+=== TEST: tests/p0/provenance-check-test.sh (Exit: 0, Status: PASS) ===
+[P0-PROVENANCE-TEST] PASS: generated outputs excluded; source changes detected
+
+=== TEST: tests/p0/tpm-secret-mapping-test.sh (Exit: 0, Status: PASS) ===
+PASS: TPM secret mapping is consistent; VMware image uses unprovisioned inputs and isolated per-run outputs
+
+=== TEST: tests/p0/agent-config-contract-test.sh (Exit: 0, Status: PASS) ===
+[P0-AGENT-CONFIG] PASS: no baked-in TPM handles; enrollment is required at startup
+
+=== TEST: tests/p0/repository-check.sh (Exit: 0, Status: PASS) ===
+============================================================
+ExamOS P0 — Repository Structure & Secret Integrity Check
+============================================================
+[REPO-CHECK] Directory (image): PASS
+[REPO-CHECK] Directory (image/config): PASS
+[REPO-CHECK] Directory (image/overlay): PASS
+[REPO-CHECK] Directory (image/scripts): PASS
+[REPO-CHECK] Directory (kiosk): PASS
+[REPO-CHECK] Directory (kiosk/launcher): PASS
+[REPO-CHECK] Directory (kiosk/policies): PASS
+[REPO-CHECK] Directory (agent): PASS
+[REPO-CHECK] Directory (agent/attestation): PASS
+[REPO-CHECK] Directory (agent/heartbeat): PASS
+[REPO-CHECK] Directory (agent/device-state): PASS
+[REPO-CHECK] Directory (agent/environment): PASS
+[REPO-CHECK] Directory (proctoring): PASS
+[REPO-CHECK] Directory (proctoring/client): PASS
+[REPO-CHECK] Directory (proctoring/analysis): PASS
+[REPO-CHECK] Directory (server): PASS
+[REPO-CHECK] Directory (server/gateway): PASS
+[REPO-CHECK] Directory (server/attestation): PASS
+[REPO-CHECK] Directory (server/exam): PASS
+[REPO-CHECK] Directory (server/events): PASS
+[REPO-CHECK] Directory (server/risk): PASS
+[REPO-CHECK] Directory (server/proctoring): PASS
+[REPO-CHECK] Directory (server/admin): PASS
+[REPO-CHECK] Directory (tests): PASS
+[REPO-CHECK] Directory (tests/p0): PASS
+[REPO-CHECK] Directory (tests/p1): PASS
+[REPO-CHECK] Directory (tests/p2): PASS
+[REPO-CHECK] Directory (tests/p3): PASS
+[REPO-CHECK] Directory (docs): PASS
+[REPO-CHECK] Directory (artifacts): PASS
+[REPO-CHECK] Scanning for prohibited private keys and credentials...
+[KEY-CHECK] WARNING: Local P3 test keys are present but untracked and Git-ignored; they are not production keys.
+[KEY-CHECK] PASS: no tracked or unexpected key-like files.
+[REPO-CHECK] Secret Material Check: PASS
+[REPO-CHECK] .gitignore file: PASS
+============================================================
+[REPO-CHECK] REPOSITORY INTEGRITY: PASS
+
+=== TEST: tests/p0/host-check.sh (Exit: 1, Status: FAIL) ===
+============================================================
+ExamOS P0 — Linux Build Host Verification
+============================================================
+[HOST-CHECK] Architecture (x86_64): PASS
+[HOST-CHECK] CPU Virtualization (16 cores): PASS
+[HOST-CHECK] Host memory (4010204 KiB): FAIL (minimum 4096 MiB required)
+[HOST-CHECK] QEMU KVM initialization: PASS
+[HOST-CHECK] Disk Storage (347 GB available): PASS
+[HOST-CHECK] Tool (git): PASS
+[HOST-CHECK] Tool (c++): PASS
+[HOST-CHECK] Tool (mkosi): PASS
+[HOST-CHECK] Tool (qemu-system-x86_64): PASS
+[HOST-CHECK] Tool (qemu-img): PASS
+[HOST-CHECK] Tool (timeout): PASS
+[HOST-CHECK] Tool (jq): PASS
+[HOST-CHECK] Tool (swtpm): PASS
+[HOST-CHECK] Tool (tpm2_pcrread): PASS
+[HOST-CHECK] Tool (sbsign): PASS
+[HOST-CHECK] Tool (veritysetup): PASS
+[HOST-CHECK] Tool (mksquashfs): PASS
+[HOST-CHECK] Tool (xorriso): PASS
+[HOST-CHECK] Tool (sfdisk): PASS
+[HOST-CHECK] Tool (mcopy): PASS
+[HOST-CHECK] Tool (mmd): PASS
+[HOST-CHECK] Tool (mkfs.vfat): PASS
+[HOST-CHECK] Tool (grub-mkstandalone): PASS
+[HOST-CHECK] Tool (objcopy): PASS
+[HOST-CHECK] Tool (ukify): PASS
+[HOST-CHECK] Tool (zstd): PASS
+[HOST-CHECK] Tool (cpio): PASS
+[HOST-CHECK] Tool (blkid): PASS
+[HOST-CHECK] OVMF Firmware: PASS
+============================================================
+[HOST-CHECK] OVERALL STATUS: FAIL (1 checks failed)
+
+=== TEST: tests/p1/validate-source.sh (Exit: 2, Status: BLOCKED) ===
+=== [P1-VALIDATE] Pre-Build Source Validation ===
+[PASS] file exists: image/mkosi.conf
+[PASS] file exists: image/overlay/etc/examos/exam.conf
+[PASS] file exists: image/overlay/etc/systemd/system/examos-kiosk.service
+[PASS] file exists: image/overlay/etc/systemd/system/examos-agent.service
+[PASS] file exists: image/overlay/etc/systemd/system/examos-server.service
+[PASS] file exists: image/overlay/etc/systemd/system/examos-preflight.service
+[PASS] file exists: image/overlay/etc/systemd/system/examos-dev-shm-hardening.service
+[PASS] file exists: image/overlay/etc/systemd/system/examos-kiosk-readiness.service
+[PASS] file exists: image/overlay/usr/local/bin/examos-kiosk-readiness
+[PASS] file exists: image/scripts/p2-startup-validator.sh
+[PASS] file exists: image/overlay/usr/lib/sysusers.d/examos.conf
+[PASS] file exists: image/overlay/etc/apparmor.d/usr.bin.chromium
+[PASS] file exists: image/overlay/etc/chromium/policies/managed/examos_policies.json
+[PASS] file exists: image/overlay/etc/nftables.conf
+[PASS] file exists: image/overlay/etc/sysctl.d/99-examos-security.conf
+[PASS] file exists: image/overlay/etc/udev/rules.d/99-examos-usb-lockdown.rules
+[PASS] file exists: kiosk/launcher/launcher.c
+[PASS] file exists: kiosk/launcher/Makefile
+[PASS] file exists: agent/main.c
+[PASS] file exists: server/main.c
+[PASS] file exists: Makefile
+[PASS] kiosk enablement is materialized inside BUILDROOT during image build
+[PASS] mkosi.conf: [Distribution] section
+[PASS] mkosi.conf: [Content] section
+[PASS] mkosi.conf: Bootable=yes
+[PASS] kiosk service: User=exam
+[PASS] kiosk service: ExecStart references cage
+[PASS] kiosk service: references examos-kiosk-launcher
+[PASS] launcher.c: no --no-sandbox
+[PASS] launcher.c: no --disable-gpu-sandbox
+[PASS] launcher.c: no --test-type
+[PASS] launcher.c: no hardcoded fallback URL
+[BLOCKED] exam.conf: EXAM_URL=NOT_CONFIGURED — set a real staging URL before P1 gate
+[PASS] sysusers: exam UID=1000
+[PASS] sysusers: exam nologin shell
+[PASS] no production secrets committed
+[PASS] admin.conf: no plaintext password
+[PASS] candidates.conf: no real candidate records
+[PASS] server/main.c: no hardcoded phase P4
+[PASS] server/main.c: no hardcoded version 0.4.0
+[PASS] exam_engine.c: no hardcoded secret in hash
+[PASS] launcher.sh: no dead Python reference
+
+=== [P1-VALIDATE] Summary ===
+[P1-VALIDATE] BLOCKED: 1 prerequisite(s) are unavailable
+

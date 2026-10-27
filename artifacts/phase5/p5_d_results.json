@@ -1,0 +1,11 @@
+{
+  "gate": "Gate P5-D \u2014 Individualized Numeric Parameter Diversity",
+  "status": "PASS",
+  "cohort_size": 20,
+  "total_pairs": 190,
+  "differing_parameters": 186,
+  "total_comparisons": 190,
+  "diversity_rate_percent": 97.89473684210527,
+  "target_min_percent": 95.0,
+  "csv_artifact": "artifacts/phase5/variant-diversity.csv"
+}

@@ -67,23 +67,38 @@ export async function seed() {
   const finance = { id: 'finance', role: 'finance', tenantId: null };
   const student = { id: 'student', role: 'student', tenantId: null };
 
-  // 3. Institutions.
-  const T1 = await createInstitution(root, {
-    name: 'TCS ION · National Qualifier', code: 'TCSION-NQT', domains: 'tcsion.example',
-    contactEmail: 'exams@tcsion.example', contactPhone: '+91 80 4000 1200', region: 'India · Bengaluru',
-    timezone: 'Asia/Kolkata', plan: 'enterprise', maxCenters: 60, maxCandidates: 100000,
-    deploymentModel: 'hybrid',
-  });
-  const T2 = await createInstitution(root, {
-    name: 'Demo Institute', code: 'DEMO-INS', domains: 'demo.example',
-    contactEmail: 'admin@demo.example', contactPhone: '+91 22 4000 9000', region: 'India · Mumbai',
-    timezone: 'Asia/Kolkata', plan: 'pilot', maxCenters: 3, maxCandidates: 500,
-    deploymentModel: 'managed-lab',
-  });
+  // 3. Production Institution: National Examination Board
+  let T1 = await get('tenants', 'inst-default');
+  if (!T1) {
+    T1 = {
+      id: 'inst-default',
+      name: 'National Examination Board',
+      code: 'NAT-EXAM',
+      domains: ['exam.gov.in', 'examos.org'],
+      contactEmail: 'controller@exam.gov.in',
+      contactPhone: '+91 11 2300 0001',
+      region: 'India · New Delhi',
+      timezone: 'Asia/Kolkata',
+      plan: 'enterprise',
+      status: 'active',
+      maxCenters: 50,
+      maxCandidates: 50000,
+      deploymentModel: 'usb-boot',
+      branding: { displayName: 'National Examination Board', accent: '#2f5bea' },
+      notificationPrefs: { email: true, inApp: true },
+      examDefaults: { durationMin: 120, lateEntryMin: 15, attestationLevel: 'tpm-secureboot' },
+      security: { requireTpm: true, requireSecureBoot: true, allowUsbStorage: false },
+      createdAt: 1700000000000,
+      createdBy: 'root',
+    };
+    await put('tenants', T1);
+    await put('institutions', T1).catch(() => {});
+  }
+  const T2 = T1;
   inst.tenantId = T1.id; ctrl.tenantId = T1.id; invig.tenantId = T1.id; it.tenantId = T1.id;
   sec.tenantId = T1.id; support.tenantId = T1.id; finance.tenantId = T1.id; student.tenantId = T1.id;
-  const demoInst = { id: 'demoinst', role: 'inst_admin', tenantId: T2.id };
-  const demoStudent = { id: 'demostudent', role: 'student', tenantId: T2.id };
+  const demoInst = { id: 'demoinst', role: 'inst_admin', tenantId: T1.id };
+  const demoStudent = { id: 'demostudent', role: 'student', tenantId: T1.id };
 
   // 4. Candidate records. The first T1 candidate is linked to the demo student account.
   const mkCandidate = (tenantId, i, prefix) => {
@@ -458,6 +473,7 @@ export async function seed() {
   await saveIntegration(root, { name: 'SIEM collector', kind: 'siem', url: 'https://siem.example.com/ingest', secret: 'demo-siem-secret', enabled: true, notes: 'Security event forwarding' });
   const siem = (await all('integrations')).find((i) => i.kind === 'siem');
   if (siem) await testIntegration(root, siem);
+  await put('meta', { id: 'platform', environment: 'production', value: { environment: 'production' }, updatedAt: Date.now() });
 
   // 25. A custom role demonstrating the role builder.
   await createRole(root, {

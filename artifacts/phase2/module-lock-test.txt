@@ -1,0 +1,5 @@
+# module-lock-test.txt
+# Status: NOT_RUN
+# Populated by CI after a full guest boot. Do not treat this file as evidence.
+# Run: bash tests/p2/p2-guest-integration.sh (inside booted ExamOS guest)
+

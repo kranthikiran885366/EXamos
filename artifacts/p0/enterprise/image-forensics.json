@@ -1,0 +1,16 @@
+{
+  "image_path": "/mnt/d/SEB BRO/image/p0/output/examos-p0.raw",
+  "image_path_source": "/mnt/d/SEB BRO/artifacts/p0/image-path.txt",
+  "image_size_bytes": 1019408384,
+  "image_size_human": "973M",
+  "sha256_computed": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "sha256_recorded": "c0b4619a7e1f3fb72cff284c493dd8988074bc61113926d29fead480997b00af",
+  "gpt_table": "PASS",
+  "esp_partition": "PASS",
+  "root_partition": "PASS",
+  "hash_integrity": "PASS",
+  "checks": 5,
+  "passed": 5,
+  "blocked": 0,
+  "status": "PASS"
+}

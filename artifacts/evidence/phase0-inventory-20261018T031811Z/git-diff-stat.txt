@@ -1,0 +1,145 @@
+ .github/workflows/p0.yml                           |   56 +-
+ .github/workflows/p1.yml                           |   86 +-
+ .gitignore                                         |  130 +-
+ Makefile                                           |   72 +-
+ README.md                                          |  188 +-
+ agent/Makefile                                     |   38 +-
+ agent/attestation/tpm_attestation.c                | 1176 ++++++++++--
+ agent/device-state/hardware_guard.c                |    2 +-
+ agent/environment/rf_scanner.c                     |  161 +-
+ agent/examos-agent                                 |  Bin 36256 -> 0 bytes
+ agent/heartbeat/heartbeat.c                        |   77 +-
+ agent/include/attestation.h                        |  135 +-
+ agent/include/heartbeat.h                          |    6 +-
+ agent/include/rf_scanner.h                         |   24 +-
+ agent/main.c                                       |  618 +++++-
+ artifacts/iso/examos-appliance-v0.2.0.iso.sha256   |    1 -
+ artifacts/p0/boot.log                              |  867 ++++++++-
+ artifacts/p0/build.log                             | 1720 +++--------------
+ artifacts/p0/image-size.txt                        |    2 +-
+ artifacts/p0/image.sha256                          |    2 +-
+ artifacts/p0/ovmf-info.txt                         |    4 +-
+ artifacts/p0/results.json                          |   21 -
+ artifacts/p1/image-size.txt                        |    2 +-
+ artifacts/p1/image.sha256                          |    2 +-
+ artifacts/p1/performance.txt                       |   18 +-
+ artifacts/p1/results.json                          |   28 +-
+ artifacts/p3/attestation-pass.json                 |    5 +-
+ artifacts/p3/golden-pcr.json                       |    2 +-
+ artifacts/p3/replay-test.json                      |    3 +-
+ artifacts/p3/results.json                          |   10 +-
+ artifacts/p3/revocation-test.json                  |    5 +-
+ artifacts/p3/summary.md                            |   20 +-
+ artifacts/p3/tool-versions.txt                     |    4 +-
+ artifacts/phase4/concurrency-results.csv           |   62 +-
+ artifacts/phase4/concurrency-results.json          |   15 +-
+ artifacts/phase4/detection-evaluation.csv          |   63 +-
+ artifacts/phase4/detection-evaluation.json         |   21 +-
+ artifacts/phase4/phase4-manifest.json              |   19 +-
+ artifacts/phase4/tamper-test-results.json          |   84 +-
+ docs/development/enterprise-upgrade.md             |    2 +-
+ docs/development/p0-building.md                    |   10 +-
+ docs/development/p0-gate.md                        |   28 +-
+ docs/development/p0-requirements.md                |   76 +-
+ docs/development/p0-testing.md                     |   38 +-
+ docs/development/p1-overview.md                    |   56 +-
+ docs/development/p1-running.md                     |  148 +-
+ docs/development/p1-testing.md                     |   88 +-
+ docs/development/p1-troubleshooting.md             |  210 ++-
+ docs/phase4/detection-evaluation.md                |    7 +
+ docs/phase4/existing-architecture-audit.md         |   47 +-
+ docs/phase4/gate-report.md                         |  159 +-
+ docs/releases/p0-release.md                        |   60 +-
+ docs/testing/p1-gate.md                            |  108 +-
+ image/config/p3.conf                               |  103 +-
+ image/dev.conf                                     |    4 -
+ image/examos                                       |    1 -
+ image/examos-build.conf                            |   13 -
+ image/examos.initrd                                |  Bin 126966504 -> 0 bytes
+ image/examos.vmlinuz                               |  Bin 12154816 -> 0 bytes
+ image/initrd.cpio.zst                              |  Bin 32042941 -> 0 bytes
+ image/mkosi.conf                                   |   95 +-
+ image/mkosi.p0.conf                                |   24 -
+ image/overlay/etc/apparmor.d/usr.bin.chromium      |  190 +-
+ .../chromium/policies/managed/examos_policies.json |  100 +-
+ image/overlay/etc/examos/admin.conf                |    6 +-
+ image/overlay/etc/examos/candidates.conf           |    8 +-
+ image/overlay/etc/examos/exam.conf                 |   17 +-
+ image/overlay/etc/examos/proctor.env               |    2 +-
+ image/overlay/etc/nftables.conf                    |  126 +-
+ .../chrome/policies/managed/examos_policies.json   |   38 +-
+ image/overlay/etc/os-release                       |   10 +-
+ image/overlay/etc/sysctl.d/99-examos-security.conf |   84 +-
+ .../etc/systemd/system/examos-agent.service        |   43 +-
+ .../etc/systemd/system/examos-kiosk.service        |  115 +-
+ .../etc/systemd/system/examos-proctor.service      |    7 +-
+ .../etc/systemd/system/examos-server.service       |   21 +-
+ .../etc/udev/rules.d/99-examos-usb-lockdown.rules  |    2 +-
+ image/overlay/usr/lib/sysusers.d/examos.conf       |    5 +
+ image/overlay/usr/local/bin/examos-agent           |  Bin 36256 -> 63728 bytes
+ image/overlay/usr/local/bin/examos-kiosk-launcher  |  Bin 17320 -> 17320 bytes
+ image/overlay/usr/local/bin/examos-proctor         |  Bin 18976 -> 81248 bytes
+ image/overlay/usr/local/bin/examos-server          |  Bin 75256 -> 325800 bytes
+ image/scripts/00-admin-setup.sh                    |   34 +-
+ image/scripts/01-hardening.sh                      |   35 +-
+ image/scripts/02-kiosk-setup.sh                    |   29 +-
+ kiosk/launcher/Makefile                            |   15 +-
+ kiosk/launcher/examos-kiosk-launcher               |  Bin 17320 -> 17320 bytes
+ kiosk/launcher/launcher.c                          |    9 +-
+ kiosk/launcher/launcher.sh                         |    3 +-
+ kiosk/policies/managed_policies.json               |   34 +-
+ proctoring/Makefile                                |   38 +-
+ proctoring/analysis/vision_engine.cpp              |  581 +++++-
+ proctoring/examos-proctor                          |  Bin 42040 -> 81248 bytes
+ proctoring/include/vision_engine.h                 |    4 +
+ proctoring/main.cpp                                |  232 ++-
+ scripts/build-image.sh                             |   24 +-
+ scripts/build-iso.sh                               |   22 +-
+ scripts/examos-doctor.sh                           |    7 +-
+ scripts/launch-server.sh                           |   40 +-
+ scripts/launch-windows.bat                         |    3 +-
+ scripts/p0.sh                                      |  345 +++-
+ scripts/provision-candidate.sh                     |    8 +-
+ scripts/run-qemu.sh                                |   71 +-
+ server/Makefile                                    |   50 +-
+ server/admin/admin_dashboard.c                     |  794 ++++++--
+ server/admin/config_manager.c                      |  257 ++-
+ server/attestation/attestation_service.c           | 1974 ++++++++++++++++----
+ server/attestation/examos-verifier                 |  Bin 3163032 -> 0 bytes
+ server/attestation/verifier.go                     |  334 +++-
+ server/events/event_chain.c                        |   73 +-
+ server/events/ledger.c                             |  451 ++++-
+ server/examos-server                               |  Bin 97712 -> 0 bytes
+ server/gateway/key_release.c                       |  139 +-
+ server/include/attestation_service.h               |  391 +++-
+ server/include/candidate_login.h                   |   12 +
+ server/include/config_manager.h                    |   27 +-
+ server/include/event_chain.h                       |    5 +-
+ server/include/ledger.h                            |   69 +-
+ server/login/candidate_login.c                     |  563 +++++-
+ server/main.c                                      | 1702 ++++++++++++++++-
+ tests/p0/boot.sh                                   |  307 ++-
+ tests/p0/build.sh                                  |  152 +-
+ tests/p0/enterprise-validate.sh                    |  508 +++--
+ tests/p0/examos-doctor.sh                          |   60 +-
+ tests/p0/host-check.sh                             |   41 +-
+ tests/p0/image-forensics.sh                        |  121 +-
+ tests/p0/repository-check.sh                       |   21 +-
+ tests/p0/server-smoke-test.sh                      |  260 ++-
+ tests/p0/server-smoke.sh                           |   93 +-
+ tests/p1/boot.sh                                   |  171 +-
+ tests/p1/build.sh                                  |   74 +-
+ tests/p1/collect-artifacts.sh                      |   63 +-
+ tests/p1/gate.sh                                   |  208 ++-
+ tests/p1/kiosk.sh                                  |  123 +-
+ tests/p1/network.sh                                |    2 +-
+ tests/p1/performance.sh                            |   67 +-
+ tests/p3/attestation-suite.sh                      | 1088 ++++++++---
+ tests/p3/collect-artifacts.sh                      |   36 +-
+ tests/p3/gate.sh                                   |  140 +-
+ tests/p3/test-matrix.yaml                          |   22 +-
+ tests/phase4/concurrency-test.sh                   |    2 +-
+ tests/phase4/detection-eval.sh                     |   19 +-
+ tests/phase4/gate.sh                               |   77 +-
+ tests/phase4/tamper-tests.sh                       |    4 +-
+ 144 files changed, 14961 insertions(+), 4873 deletions(-)

@@ -1,0 +1,21 @@
+Run ID: phase0-inventory-20261018T031811Z
+Captured UTC: 2026-10-18T03:18:31.856647+00:00
+Classification: local development inventory; not release evidence
+Repository: D:\SEB BRO
+Branch: work/p0-secure-release-remediation-20261011
+HEAD: c8d8c6149458e9c1611966d5f2db66ed2f42e2d1
+Worktree: DIRTY
+Tracked paths: 238
+Non-ignored untracked paths: 491
+Ignored files/paths inventoried: 115
+Tree entries hashed: 729
+Source tree manifest SHA-256: 636668f4e37e3d71aac72e75450d6cef9cb0552be332c19c09435368f8e37bce
+Artifact files hashed: 218
+Missing tracked/untracked paths: 4
+External backup: D:\SEB BRO-execution-backup-20261018-0847.zip
+Backup SHA-256: 9ffe313c3a24aac17e62b34e5738877fdf5a2d04243439ec4ea9dac38de942c7
+Backup archive CRC: PASS
+Backup file entries: 725
+Backup manifest: D:\SEB BRO-execution-backup-20261018-0847.zip.manifest.txt
+Commands: git rev-parse HEAD; git branch --show-current; git status --short --branch --untracked-files=all; git diff --stat HEAD; git ls-files; git ls-files --others --exclude-standard; git ls-files --others --ignored --exclude-standard
+Status: PASS for snapshot and inventory capture; no phase build/runtime/release gate inferred or promoted.

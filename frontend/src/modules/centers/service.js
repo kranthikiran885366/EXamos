@@ -17,7 +17,9 @@ export async function createCenter(a, { tenantId, campusId = '', code, name, cit
   if (!(seatsPerLab >= 8 && seatsPerLab <= 96)) fail('Seats per lab must be 8–96.');
   if (labs * seatsPerLab > 416) fail('Capacity cannot exceed 416 seats per center.');
   if (clean(name, 80).length < 3) fail('Enter a center name.');
-  await put('centers', { id: id('ctr'), tenantId, campusId, code, name: clean(name, 80), city: clean(city, 40), labs, seatsPerLab, capacity: labs * seatsPerLab, status: 'active', createdAt: Date.now() });
+  const centerObj = { id: id('ctr'), tenantId, campusId, code, name: clean(name, 80), city: clean(city, 40), labs, seatsPerLab, capacity: labs * seatsPerLab, status: 'active', createdAt: Date.now() };
+  await put('centers', centerObj);
+  await put('campuses', centerObj).catch(() => {});
   await log(a, 'CENTER_CREATED', code);
   return `Center ${code} created with ${labs * seatsPerLab} seats.`;
 }

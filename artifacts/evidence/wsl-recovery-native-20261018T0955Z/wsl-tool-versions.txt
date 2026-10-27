@@ -1,0 +1,6 @@
+﻿GCC: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+G++: g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Make: GNU Make 4.4.1
+OpenSSL: OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)
+QEMU: QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)
+mkosi: mkosi 26

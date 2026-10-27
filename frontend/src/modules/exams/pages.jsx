@@ -15,6 +15,14 @@ import {
   AUTH_MODES, SUBMISSION_MODES, ATTESTATION, REQUIRED_CHECKS,
 } from './service';
 import { assignToExam, unassign, setIdentity, readinessFor, isReady } from '../candidates/service';
+import {
+  listExaminationSessions, closeAuthorizedExamSession,
+  configureEligibilityRule, listEligibilityRules,
+  listExaminationRegistrations, evaluateRegistration, approveRegistration,
+  rejectRegistration, grantRegistrationException, importExaminationRegistrations,
+  publishExaminationRoster, launchExamSession, heartbeatExamSession,
+  interruptExamSession, resumeExamSession,
+} from '../../core/api/services';
 import ExamsPage from './ExamsPage';
 
 export { ExamsPage };
@@ -25,11 +33,29 @@ const local = (t) => {
 };
 const split = (v) => String(v || '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 const STEP_LABEL = {
-  review: 'Submit for review', draft: 'Return to draft', approved: 'Approve', published: 'Publish',
-  live: 'Go live', closed: 'Close & score', cancelled: 'Cancel exam',
+  configured: 'Configure exam',
+  pending_approval: 'Submit for review',
+  review: 'Submit for review',
+  draft: 'Return to draft',
+  approved: 'Approve exam',
+  scheduled: 'Schedule & publish',
+  published: 'Publish',
+  ready: 'Mark ready',
+  in_progress: 'Start exam (live)',
+  live: 'Go live',
+  closed: 'Close & score',
+  finalized: 'Finalize & lock',
+  cancelled: 'Cancel exam',
 };
-const STEP_PERM = { approved: 'exam.approve', live: 'exam.operate', closed: 'exam.operate' };
-const REASON = new Set(['live', 'cancelled', 'draft']);
+const STEP_PERM = {
+  approved: 'exam.approve',
+  ready: 'exam.operate',
+  in_progress: 'exam.operate',
+  live: 'exam.operate',
+  closed: 'exam.operate',
+  finalized: 'exam.manage',
+};
+const REASON = new Set(['live', 'in_progress', 'cancelled', 'draft']);
 
 /* ------------------------------------------------------------------ new exam */
 export function ExamNewPage() {
@@ -271,6 +297,7 @@ export function ExamDetailPage() {
         { key: 'overview', label: 'Overview' },
         { key: 'readiness', label: 'Readiness', count: checks ? `${readyCount}/${checks.length}` : undefined },
         { key: 'candidates', label: 'Candidates', count: assigned.length },
+        { key: 'sessions', label: 'Sessions' },
         { key: 'policy', label: 'Policy' },
         { key: 'history', label: 'History', count: e.history?.length || 0 },
       ]} />
@@ -337,6 +364,8 @@ export function ExamDetailPage() {
         }))} />
       </Card>}
 
+      {tab === 'sessions' && <ExamSessionsTab examId={e.id} />}
+
       {pending && <ActionDialog
         title={`${STEP_LABEL[pending.to]} · ${e.code}`}
         desc={pending.to === 'live' ? 'Starting before the window opens needs a reason. Live exams lock critical configuration.' : pending.to === 'cancelled' ? 'Cancelling is permanent and notifies candidates.' : 'This transition is recorded in the audit trail.'}
@@ -374,6 +403,47 @@ function PostponeModal({ exam, value, onChange, onClose, onDone }) {
   );
 }
 
+function ExamSessionsTab({ examId }) {
+  const { data: sessData, loading, reload } = useLoad(async () => {
+    try {
+      const res = await listExaminationSessions(examId);
+      return res?.sessions || [];
+    } catch {
+      return [];
+    }
+  }, [examId]);
+
+  if (loading) return <Loading />;
+  const sessions = sessData || [];
+
+  return (
+    <Card title="Live Exam Sessions" action={<button className="btn small" onClick={reload}>Refresh</button>}>
+      {sessions.length === 0 ? (
+        <Empty icon="candidate" title="No active or past sessions">
+          Sessions will appear here when authorized candidates connect from ExamOS terminals.
+        </Empty>
+      ) : (
+        <DataTable
+          rows={sessions}
+          cols={[
+            { key: 'roll_no', label: 'Roll Number' },
+            { key: 'student_name', label: 'Student' },
+            { key: 'device_id', label: 'Terminal Device', render: (d) => d || '—' },
+            { key: 'status', label: 'Status', render: (s) => (
+              <Badge tone={s === 'active' ? 'success' : s === 'interrupted' ? 'warn' : s === 'closed' ? 'muted' : 'info'}>
+                {String(s).toUpperCase()}
+              </Badge>
+            )},
+            { key: 'interruption_count', label: 'Interruptions' },
+            { key: 'last_heartbeat_at', label: 'Last Heartbeat', render: (t) => t ? fmt(Number(t)) : '—' },
+            { key: 'closure_reason', label: 'Closure Reason', render: (r) => r || '—' },
+          ]}
+        />
+      )}
+    </Card>
+  );
+}
+
 /* ------------------------------------------------------------------ exam candidates */
 export function ExamCandidatesPage() {
   const { id } = useParams();
@@ -386,9 +456,15 @@ export function ExamCandidatesPage() {
   const policies = useCol('policies');
   const releases = useCol('releases');
   const { msg, setMsg, run, busy } = useFlash();
+  const [activeTab, setActiveTab] = useState('seating');
   const [centerId, setCenterId] = useState('');
   const [count, setCount] = useState('');
   const [pending, setPending] = useState(null);
+
+  // Module 10: Eligibility state
+  const { data: rules, reload: reloadRules } = useLoad(async () => (id ? listEligibilityRules(id) : []), [id]);
+  const { data: liveSessions, reload: reloadSessions } = useLoad(async () => (id ? listExaminationSessions(id) : []), [id]);
+  const [newRule, setNewRule] = useState({ rule_type: 'min_attendance', rule_value: '75', is_strict: true });
 
   const e = exams.find((x) => x.id === id);
   const rows = candidates.filter((c) => c.examId === id);
@@ -402,58 +478,156 @@ export function ExamCandidatesPage() {
     if (ok) { setCount(''); }
   };
 
+  const handleAddRule = async (e2) => {
+    e2.preventDefault();
+    await run(async () => {
+      await configureEligibilityRule(e.id, newRule);
+      reloadRules();
+      return 'Eligibility rule configured.';
+    });
+  };
+
+  const handlePublishRoster = async () => {
+    await run(async () => {
+      const res = await publishExaminationRoster(e.id);
+      return `Roster v${res?.version || 1} published (hash: ${res?.roster_hash?.slice(0, 16) || 'sealed'}...).`;
+    });
+  };
+
   return (
     <Page
-      title={`${e.code} · Candidates`}
-      desc="Seat allocation, identity verification and per-candidate readiness for this exam."
+      title={`${e.code} · Candidates & Eligibility`}
+      desc="Seat allocation, eligibility rules (Module 10) and runtime live sessions (Module 11)."
       breadcrumb={<div className="crumbs-inline"><Link to="/college/exams">Exams</Link><Icon name="arrow" size={12} /><Link to={`/college/exams/${e.id}`}>{e.code}</Link><Icon name="arrow" size={12} /><span>Candidates</span></div>}
-      actions={<Link className="btn" to={`/college/exams/${e.id}`}>Back to exam</Link>}
+      actions={<>
+        <button className="btn" disabled={busy} onClick={() => { reloadRules(); reloadSessions(); }}>Refresh</button>
+        <button className="btn primary" disabled={busy || !may('exam.manage')} onClick={handlePublishRoster}>Publish official roster</button>
+        <Link className="btn" to={`/college/exams/${e.id}`}>Back to exam</Link>
+      </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <StatGrid cols={4}>
         <Stat label="Seated" value={rows.length} icon="candidate" />
         <Stat label="Identity verified" value={rows.filter((c) => c.identity === 'verified').length} icon="check" tone="green" />
-        <Stat label="Pending identity" value={rows.filter((c) => c.identity === 'pending').length} icon="clock" tone="amber" />
-        <Stat label="Ready to sit" value={rows.filter((c) => isReady(readinessFor(c, { devices, exams, policies, releases }))).length} icon="device" />
+        <Stat label="Eligibility rules" value={(rules?.rules || rules || []).length} icon="policy" tone="blue" />
+        <Stat label="Live sessions" value={(liveSessions?.sessions || liveSessions || []).length} icon="pulse" tone="violet" />
       </StatGrid>
 
-      {may('candidate.manage') && (
-        <Card title="Assign candidates" desc="Seats are allocated automatically from free centre capacity. Only unassigned candidates are seated.">
-          <div className="row wrap gap">
-            <Select aria-label="Centre" value={centerId} onChange={(e2) => setCenterId(e2.target.value)} options={examCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder="Choose a centre" />
-            <Input aria-label="Count" type="number" min={1} value={count} onChange={(e2) => setCount(e2.target.value)} placeholder="How many (blank = all)" />
-            <button className="btn primary" disabled={busy || !centerId} onClick={assign}>Assign</button>
-            <span className="muted sm">{candidates.filter((c) => !c.examId).length} unassigned candidate(s) available</span>
-          </div>
-        </Card>
+      <Tabs
+        value={activeTab}
+        onChange={setActiveTab}
+        tabs={[
+          { key: 'seating', label: 'Seating plan & readiness', count: rows.length },
+          { key: 'eligibility', label: 'Module 10 Eligibility rules', count: (rules?.rules || rules || []).length },
+          { key: 'sessions', label: 'Module 11 Live exam sessions', count: (liveSessions?.sessions || liveSessions || []).length },
+        ]}
+      />
+
+      {activeTab === 'seating' && (
+        <div className="stack gap">
+          {may('candidate.manage') && (
+            <Card title="Assign candidates" desc="Seats are allocated automatically from free centre capacity. Only unassigned candidates are seated.">
+              <div className="row wrap gap">
+                <Select aria-label="Centre" value={centerId} onChange={(e2) => setCenterId(e2.target.value)} options={examCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder="Choose a centre" />
+                <Input aria-label="Count" type="number" min={1} value={count} onChange={(e2) => setCount(e2.target.value)} placeholder="How many (blank = all)" />
+                <button className="btn primary" disabled={busy || !centerId} onClick={assign}>Assign</button>
+                <span className="muted sm">{candidates.filter((c) => !c.examId).length} unassigned candidate(s) available</span>
+              </div>
+            </Card>
+          )}
+
+          <Card title="Seating plan">
+            <DataTable
+              rows={rows}
+              search={(c) => `${c.rollNo} ${c.name} ${c.email} ${c.seat || ''}`}
+              filters={[
+                { key: 'centerId', label: 'All centres', options: examCenters.map((c) => ({ v: c.id, l: c.code })) },
+                { key: 'identity', label: 'Any identity', options: [{ v: 'verified', l: 'verified' }, { v: 'pending', l: 'pending' }, { v: 'rejected', l: 'rejected' }, { v: 'exempt', l: 'exempt' }] },
+              ]}
+              columns={[
+                { label: 'Roll no', key: 'rollNo' }, { label: 'Name', key: 'name' }, { label: 'Email', key: 'email' },
+                { label: 'Centre', render: (c) => centers.find((x) => x.id === c.centerId)?.code || '—' },
+                { label: 'Seat', key: 'seat' }, { label: 'Identity', key: 'identity', badge: true },
+                { label: 'Readiness', render: (c) => {
+                  const checks = readinessFor(c, { devices, exams, policies, releases });
+                  const fail = checks.filter((x) => x.status === 'FAIL');
+                  return <Badge value={isReady(checks) ? 'ready' : fail.length ? `${fail.length} blocker(s)` : 'not run'} />;
+                } },
+              ]}
+              actions={(c) => [
+                { label: 'Verify ID', disabled: !may('candidate.verify') || c.identity === 'verified', onClick: () => setPending({ kind: 'identity', c, outcome: 'verified' }) },
+                { label: 'Reject ID', danger: true, disabled: !may('candidate.verify') || c.identity === 'rejected', onClick: () => setPending({ kind: 'identity', c, outcome: 'rejected' }) },
+                { label: 'Unassign', danger: true, disabled: !may('candidate.manage'), onClick: () => setPending({ kind: 'unassign', c }) },
+              ]}
+              empty={<Empty icon="candidate" title="No candidates seated">Assign candidates to this exam to build the seating plan.</Empty>}
+            />
+          </Card>
+        </div>
       )}
 
-      <Card title="Seating plan">
-        <DataTable
-          rows={rows}
-          search={(c) => `${c.rollNo} ${c.name} ${c.email} ${c.seat || ''}`}
-          filters={[
-            { key: 'centerId', label: 'All centres', options: examCenters.map((c) => ({ v: c.id, l: c.code })) },
-            { key: 'identity', label: 'Any identity', options: [{ v: 'verified', l: 'verified' }, { v: 'pending', l: 'pending' }, { v: 'rejected', l: 'rejected' }, { v: 'exempt', l: 'exempt' }] },
-          ]}
-          columns={[
-            { label: 'Roll no', key: 'rollNo' }, { label: 'Name', key: 'name' }, { label: 'Email', key: 'email' },
-            { label: 'Centre', render: (c) => centers.find((x) => x.id === c.centerId)?.code || '—' },
-            { label: 'Seat', key: 'seat' }, { label: 'Identity', key: 'identity', badge: true },
-            { label: 'Readiness', render: (c) => {
-              const checks = readinessFor(c, { devices, exams, policies, releases });
-              const fail = checks.filter((x) => x.status === 'FAIL');
-              return <Badge value={isReady(checks) ? 'ready' : fail.length ? `${fail.length} blocker(s)` : 'not run'} />;
-            } },
-          ]}
-          actions={(c) => [
-            { label: 'Verify ID', disabled: !may('candidate.verify') || c.identity === 'verified', onClick: () => setPending({ kind: 'identity', c, outcome: 'verified' }) },
-            { label: 'Reject ID', danger: true, disabled: !may('candidate.verify') || c.identity === 'rejected', onClick: () => setPending({ kind: 'identity', c, outcome: 'rejected' }) },
-            { label: 'Unassign', danger: true, disabled: !may('candidate.manage'), onClick: () => setPending({ kind: 'unassign', c }) },
-          ]}
-          empty={<Empty icon="candidate" title="No candidates seated">Assign candidates to this exam to build the seating plan.</Empty>}
-        />
-      </Card>
+      {activeTab === 'eligibility' && (
+        <div className="stack gap">
+          <Card title="Configure eligibility rule (Module 10)" desc="Automatic gates for academic standing, prerequisites, and attendance.">
+            <form className="row wrap gap" onSubmit={handleAddRule}>
+              <Select
+                value={newRule.rule_type}
+                onChange={(e2) => setNewRule((s) => ({ ...s, rule_type: e2.target.value }))}
+                options={[
+                  { v: 'min_attendance', l: 'Minimum attendance percentage' },
+                  { v: 'prerequisite_course', l: 'Completed prerequisite course' },
+                  { v: 'allowed_semester', l: 'Enrolled semester match' },
+                  { v: 'max_backlogs', l: 'Maximum active backlogs' },
+                ]}
+              />
+              <Input
+                placeholder="Rule threshold (e.g. 75, CS101, 5)"
+                value={newRule.rule_value}
+                onChange={(e2) => setNewRule((s) => ({ ...s, rule_value: e2.target.value }))}
+              />
+              <button className="btn primary" disabled={busy || !newRule.rule_value}>Add rule</button>
+            </form>
+          </Card>
+
+          <Card title="Configured rules">
+            <DataTable
+              rows={rules?.rules || rules || []}
+              columns={[
+                { label: 'Rule type', key: 'rule_type', render: (r) => <Badge value={r.rule_type} tone="blue" /> },
+                { label: 'Threshold / Value', key: 'rule_value' },
+                { label: 'Enforcement', render: (r) => (r.is_strict ? <Badge value="STRICT BLOCK" tone="red" /> : <Badge value="WARNING" tone="amber" />) },
+                { label: 'Created at', render: (r) => (r.created_at ? fmt(Number(r.created_at)) : 'Active') },
+              ]}
+              empty={<Empty title="No rules configured" desc="Add an eligibility rule above to automatically evaluate candidate eligibility." />}
+            />
+          </Card>
+        </div>
+      )}
+
+      {activeTab === 'sessions' && (
+        <div className="stack gap">
+          <Card title="Active exam sessions (Module 11)" desc="Runtime session controls: cryptographic URL token launch, liveness heartbeats, and interruption recovery.">
+            <DataTable
+              rows={liveSessions?.sessions || liveSessions || []}
+              columns={[
+                { label: 'Session ID', key: 'id' },
+                { label: 'Student ID', key: 'student_id' },
+                { label: 'Status', render: (s) => <Badge value={s.status} tone={s.status === 'active' ? 'green' : s.status === 'interrupted' ? 'red' : 'blue'} /> },
+                { label: 'Heartbeats', key: 'heartbeat_count' },
+                { label: 'Interruptions', key: 'interrupt_count' },
+                { label: 'IP Address', key: 'ip_address' },
+                { label: 'Started', render: (s) => (s.start_time ? fmt(Number(s.start_time)) : '—') },
+              ]}
+              actions={(s) => [
+                { label: 'Send heartbeat', onClick: () => run(async () => { await heartbeatExamSession(s.id); reloadSessions(); return 'Heartbeat acknowledged.'; }) },
+                { label: 'Simulate interrupt', danger: true, disabled: s.status !== 'active', onClick: () => run(async () => { await interruptExamSession(s.id, 'Network packet loss simulated'); reloadSessions(); return 'Session interrupted.'; }) },
+                { label: 'Resume', disabled: s.status !== 'interrupted', onClick: () => run(async () => { await resumeExamSession(s.id); reloadSessions(); return 'Session resumed.'; }) },
+                { label: 'Close session', danger: true, disabled: s.status === 'closed', onClick: () => run(async () => { await closeAuthorizedExamSession(s.id); reloadSessions(); return 'Session closed.'; }) },
+              ]}
+              empty={<Empty title="No sessions recorded yet" desc="Candidates launch sessions from the secure ExamOS bootable kiosk terminal." />}
+            />
+          </Card>
+        </div>
+      )}
 
       {pending && <ActionDialog
         title={pending.kind === 'unassign' ? `Unassign ${pending.c.rollNo}` : `${pending.outcome === 'verified' ? 'Verify' : 'Reject'} ${pending.c.rollNo}`}

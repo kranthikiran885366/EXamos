@@ -210,9 +210,9 @@ int ledger_init(const char *ledger_file_path, const char *hmac_key) {
             if (line_len == 0 || line[line_len - 1] != '\n') { valid = 0; break; }
 
             long idx = 0, ts = 0;
-            char type[32] = {0}, dev[64] = {0}, details[256] = {0};
+            char type[32] = {0}, dev[64] = {0}, details[LEDGER_LINE_MAX] = {0};
             char prev[65] = {0}, mac_hex[65] = {0};
-            if (sscanf(line, "%ld|%ld|%31[^|]|%63[^|]|%255[^|]|%64[^|]|%64s",
+            if (sscanf(line, "%ld|%ld|%31[^|]|%63[^|]|%1023[^|]|%64[^|]|%64s",
                        &idx, &ts, type, dev, details, prev, mac_hex) != 7 ||
                 idx != verified_count + 1 || ts <= 0 ||
                 strlen(prev) != 64 || strlen(mac_hex) != 64 ||
@@ -221,7 +221,7 @@ int ledger_init(const char *ledger_file_path, const char *hmac_key) {
                 break;
             }
 
-            char payload[LEDGER_LINE_MAX];
+            char payload[LEDGER_LINE_MAX * 2];
             snprintf(payload, sizeof(payload), "%ld:%ld:%s:%s:%s:%s",
                      idx, ts, type, dev, details, prev);
             char computed[65];
@@ -262,13 +262,13 @@ int ledger_init(const char *ledger_file_path, const char *hmac_key) {
                 FILE *af = fopen(g_ledger_file, "r");
                 int matched = 0;
                 if (af) {
-                    char hline[256];
+                    char hline[LEDGER_LINE_MAX];
                     if (fgets(hline, sizeof(hline), af)) {
                         long idx = 0, ts = 0;
-                        char type[32] = {0}, dev[64] = {0}, details[256] = {0};
+                        char type[32] = {0}, dev[64] = {0}, details[LEDGER_LINE_MAX] = {0};
                         char prev[65] = {0}, mac_hex[65] = {0};
                         while (fgets(hline, sizeof(hline), af)) {
-                            if (sscanf(hline, "%ld|%ld|%31[^|]|%63[^|]|%255[^|]|%64[^|]|%64s",
+                            if (sscanf(hline, "%ld|%ld|%31[^|]|%63[^|]|%1023[^|]|%64[^|]|%64s",
                                        &idx, &ts, type, dev, details, prev, mac_hex) != 7) break;
                             if (idx == anchor_count) {
                                 matched = (strcmp(mac_hex, anchor_hash) == 0);

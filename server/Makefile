@@ -45,7 +45,12 @@ SRCS = main.c \
        controllers/session_controller.c \
        controllers/release_controller.c \
        controllers/policy_controller.c \
-       controllers/modules_controller.c
+       controllers/modules_controller.c \
+       controllers/registration_controller.c \
+       controllers/exam_session_controller.c \
+       controllers/device_trust_controller.c \
+       controllers/os_release_controller.c \
+       controllers/student_controller.c
 
 BUILD_DIR ?= .
 COMMON_OBJ = $(BUILD_DIR)/common/examos_appliance.o

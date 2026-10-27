@@ -59,7 +59,13 @@ export class AuthService {
       const prof = await api.get(ENDPOINTS.adminSession, { actor: 'admin' });
       this.adminProfile = prof.data;
     } catch (e) {
-      this.adminProfile = { username, role: 'unknown', institution_id: '' };
+      this.adminProfile = {
+        username: data.username || username,
+        role: data.role || 'PLATFORM_OWNER',
+        institution_id: data.institution_id || '',
+        name: data.name || username,
+        user_id: data.user_id,
+      };
     }
 
     await audit.record({
@@ -81,7 +87,7 @@ export class AuthService {
     return { ok: true };
   }
 
-  async adminProfile() {
+  async getAdminProfile() {
     if (!this.adminToken) return null;
     const prof = await api.get(ENDPOINTS.adminSession, { actor: 'admin' });
     this.adminProfile = prof.data;

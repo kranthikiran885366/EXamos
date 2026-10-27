@@ -23,6 +23,9 @@ int ctrl_json_string(const char *body, const char *key, char *out, size_t out_le
 /* Extract JSON int field from request body. Returns 0 if missing. */
 int ctrl_json_int(const char *body, const char *key, int *out);
 
+/* Extract JSON bool field from request body. Returns 0 if missing. */
+int ctrl_json_bool(const char *body, const char *key, int *out);
+
 /* Extract Origin header from request. */
 int ctrl_extract_origin(const char *buffer, char *out, size_t out_len);
 

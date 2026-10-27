@@ -1,0 +1,68 @@
+{
+  "phase": "E1",
+  "check": "local_host_hardware_capability_smoke",
+  "status": "PARTIAL",
+  "acceptance_status": "NOT_QUALIFIED",
+  "evidence_class": "physical_host_smoke_not_ExamOS_target_acceptance",
+  "observed_at": "2026-10-12T22:41:52.788+05:30",
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "dirty_path_count_at_observation": 307,
+  "host": {
+    "os": "Windows 11 Home Single Language",
+    "version": "10.0.26200",
+    "exam_os_image_booted": false
+  },
+  "wifi": {
+    "hardware": "Intel Wireless-AC 9462",
+    "driver_version": "24.40.0.4",
+    "link_state": "CONNECTED",
+    "link_speed": "433.3 Mbps",
+    "result": "HOST_LINK_SMOKE_PASS",
+    "e1_radio_observation_or_scan": "NOT_RUN_DISABLED_BY_POLICY"
+  },
+  "bluetooth_ble": {
+    "bluetooth_controller_present": true,
+    "bluetooth_controller_status": "OK",
+    "driver_version": "24.40.0.3",
+    "bluetooth_service": "RUNNING",
+    "ble_advertisement_scan": "NOT_RUN_DISABLED_BY_POLICY",
+    "result": "CONTROLLER_PRESENCE_ONLY"
+  },
+  "optional_rf": {
+    "receiver_declared_in_e1_inventory": false,
+    "receiver_hardware_test": "NOT_RUN",
+    "result": "NOT_TESTED"
+  },
+  "camera": {
+    "camera_device_present": true,
+    "capture_opened": true,
+    "one_frame_read": true,
+    "frame_dimensions": "640x480",
+    "capture_backend": "OpenCV DirectShow",
+    "opencv_version": "5.0.0",
+    "frame_saved": false,
+    "frame_transmitted": false,
+    "result": "ONE_FRAME_HOST_SMOKE_PASS"
+  },
+  "exam_os_wsl_passthrough": {
+    "video_device_present": false,
+    "rfkill_device_present": false,
+    "usb_bus_present": false,
+    "radio_tools_available": false
+  },
+  "privacy_and_scope": {
+    "camera_frame": "captured_once_in_memory_then_discarded",
+    "radio_scanning": false,
+    "nearby_device_identifiers_collected": false,
+    "sensor_collection_enabled": false
+  },
+  "limitations": [
+    "This is a Windows developer-host smoke test, not a booted ExamOS image or supported-device acceptance run.",
+    "Wi-Fi verification establishes an active link only; it does not test E1 observations or scan behavior.",
+    "Bluetooth verification establishes controller and service presence only; BLE advertisements were not scanned.",
+    "No dedicated RF receiver was declared or tested.",
+    "The camera check proves only that one frame could be read; it does not validate ExamOS camera integration, a second-camera media path, analysis, consent enforcement, or quality over time.",
+    "No production policy/signature, live sensor start/stop enforcement, retention, performance, or detection evaluation was tested."
+  ]
+}

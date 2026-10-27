@@ -1,0 +1,8 @@
+﻿performed:
+- ISO integrity verified before and after capture.
+- Git state captured before directory creation.
+- Metadata inventory, tool versions, file layout, and checksums captured/verified.
+
+not_performed:
+- No build, gate, boot, QEMU, mkosi, cleanup, signing, TPM, firmware, or physical-device action.
+- No fresh ISO inspection or production certification.

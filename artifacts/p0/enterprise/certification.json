@@ -1,0 +1,22 @@
+{
+  "phase": "P0",
+  "version": "0.1.0",
+  "evidence_level": "P0_FOUNDATION_VALIDATION",
+  "production_certification": false,
+  "timestamp": "2026-10-15T17:14:35Z",
+  "git_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY_ALLOWED",
+  "dirty_path_count": 297,
+  "grade": "A+",
+  "score": {
+    "total": 67,
+    "passed": 66,
+    "failed": 0,
+    "warned": 1,
+    "blocked": 0,
+    "percentage": 98
+  },
+  "domains": {"host":{"name":"Host Platform Integrity","checks":10,"passed":10,"status":"PASS"},"toolchain":{"name":"Toolchain Compatibility","checks":10,"passed":10,"status":"PASS"},"uefi":{"name":"OVMF/UEFI Firmware","checks":5,"passed":5,"status":"PASS"},"repo":{"name":"Repository Security","checks":10,"passed":9,"status":"WARN"},"build":{"name":"Build System","checks":6,"passed":6,"status":"PASS"},"binsec":{"name":"Binary Security","checks":4,"passed":4,"status":"PASS"},"image":{"name":"Disk Image Forensics","checks":6,"passed":6,"status":"PASS"},"boot":{"name":"Boot Log Analysis","checks":6,"passed":6,"status":"PASS"},"runtime":{"name":"Server Runtime","checks":5,"passed":5,"status":"PASS"},"config":{"name":"Config & Overlay","checks":5,"passed":5,"status":"PASS"}},
+  "gate": "PASS",
+  "gate_reason": "Every check passed"
+}

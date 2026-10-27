@@ -4,6 +4,7 @@ import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, cmpVer, ensureKey, requireReason } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
 import { create as requestApproval } from '../../core/services/approvals';
+import * as Api from '../../core/api/services';
 
 const SEMVER = /^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/;
 export const advisories = async () => (await get('meta', 'advisories'))?.list || [];
@@ -27,7 +28,26 @@ export async function createRelease(a, { version, components }) {
   const digest = await sha256(canon(manifest)); const k = await ensureKey('release-signer');
   const findings = scan(comps, await advisories());
   const r = { id: id('rel'), version, manifest, digest, sig: await sign(k.priv, digest), findings, criticalCves: findings.filter((f) => f.sev === 'critical').length, status: 'candidate', rollout: 0, createdBy: a.id, createdAt: Date.now() };
-  await put('releases', r); await log(a, 'RELEASE_CREATED', `${version} sha256=${digest.slice(0, 12)} cves=${findings.length}`);
+
+  try {
+    const backendRes = await Api.createOsRelease({
+      version,
+      name: `ExamOS ${version}`,
+      channel: 'stable',
+      uki_hash: digest,
+      rootfs_hash: digest,
+      signature: r.sig,
+    });
+    if (backendRes?.release_id) {
+      r.id = backendRes.release_id;
+    }
+  } catch (err) {
+    console.warn('Backend Module 14 release creation notice:', err.message);
+  }
+
+  await put('releases', r);
+  await put('os_releases', r).catch(() => {});
+  await log(a, 'RELEASE_CREATED', `${version} sha256=${digest.slice(0, 12)} cves=${findings.length}`);
   return `Release ${version} signed. ${findings.length ? findings.length + ' vulnerable component(s) found.' : 'SBOM is clean.'}`;
 }
 export async function verifyRelease(r) {
@@ -40,7 +60,16 @@ export async function approveRelease(a, r) {
   if (r.createdBy === a.id) fail('The builder cannot approve their own release (separation of duties).');
   if (r.criticalCves > 0) fail(`${r.criticalCves} critical CVE(s) in the SBOM. Fix the components first.`);
   if (!(await verifyRelease(r))) fail('Signature or digest verification failed.');
-  await put('releases', { ...r, status: 'approved', approvedBy: a.id }); await log(a, 'RELEASE_APPROVED', r.version);
+
+  try {
+    await Api.approveOsRelease(r.id);
+  } catch (err) {
+    console.warn('Backend Module 14 release approval notice:', err.message);
+  }
+
+  await put('releases', { ...r, status: 'approved', approvedBy: a.id });
+  await put('os_releases', { ...r, status: 'approved', approvedBy: a.id }).catch(() => {});
+  await log(a, 'RELEASE_APPROVED', r.version);
   return `${r.version} approved.`;
 }
 export const STEPS = [1, 5, 25, 50, 100];
@@ -60,13 +89,31 @@ export async function rollout(a, r, percent) {
   await putMany('devices', moved);
   if (percent === 100) { if (stable) await put('releases', { ...stable, status: 'superseded' }); await put('releases', { ...r, status: 'stable', rollout: 100 }); }
   else await put('releases', { ...r, status: 'rolling', rollout: percent });
+
+  try {
+    await Api.createOsDeployment({
+      release_id: r.id,
+      target_group: 'production',
+      rollout_percentage: percent,
+    });
+  } catch (err) {
+    console.warn('Backend Module 14 deployment rollout notice:', err.message);
+  }
+
   await log(a, 'RELEASE_ROLLOUT', `${r.version} ${percent}% devices=${moved.length}`);
   return `${r.version} at ${percent}%: ${moved.length} device(s) updated and queued for re-attestation.`;
 }
 export async function revokeRelease(a, r, reason) {
   need(a, 'release.manage'); if (r.status === 'revoked') fail('Already revoked.');
   if ((reason || '').length < 8) fail('Reason needs 8+ characters.');
-  await put('releases', { ...r, status: 'revoked', revokedReason: clean(reason, 200) }); await log(a, 'RELEASE_REVOKED', `${r.version}: ${reason}`);
+  try {
+    await Api.revokeOsRelease(r.id, reason);
+  } catch (err) {
+    console.warn('Backend Module 14 release revocation notice:', err.message);
+  }
+  await put('releases', { ...r, status: 'revoked', revokedReason: clean(reason, 200) });
+  await put('os_releases', { ...r, status: 'revoked', revokedReason: clean(reason, 200) }).catch(() => {});
+  await log(a, 'RELEASE_REVOKED', `${r.version}: ${reason}`);
   return `${r.version} revoked. Devices on it will fail attestation.`;
 }
 export async function recoverDevices(a) {

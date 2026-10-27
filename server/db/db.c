@@ -58,6 +58,7 @@ int db_init(const char *conninfo) {
     if (count > EXAMOS_DB_MAX_CONNECTIONS) count = EXAMOS_DB_MAX_CONNECTIONS;
 
     g_db_pool_count = count;
+    int ready = 0;
     for (int i = 0; i < count; i++) {
         PGconn *c = PQconnectdb(ci);
         if (PQstatus(c) != CONNECTION_OK) {
@@ -69,11 +70,12 @@ int db_init(const char *conninfo) {
         g_db_pool.conns[i].conn = c;
         g_db_pool.conns[i].in_use = 0;
         g_db_pool.conns[i].checked_out_at = 0;
+        ready++;
     }
-    int ready = 0;
-    for (int i = 0; i < count; i++)
-        if (g_db_pool.conns[i].conn) ready++;
-    if (ready == 0) return -1;
+    if (ready == 0) {
+        fprintf(stderr, "[DB] WARNING: no database connections available; will retry on demand.\n");
+        return 0; /* Don't fail startup; retry on demand */
+    }
     fprintf(stderr, "[DB] Pool ready: %d/%d connections\n", ready, count);
     return 0;
 }
@@ -98,8 +100,26 @@ PGconn *db_acquire(void) {
             if (!g_db_pool.conns[i].in_use) {
                 if (PQstatus(g_db_pool.conns[i].conn) != CONNECTION_OK) {
                     PQfinish(g_db_pool.conns[i].conn);
+                    /* Prefer EXAMOS_DATABASE_URL; fall back to reading the file,
+                     * then to the hardcoded development default. */
                     const char *ci = getenv("EXAMOS_DATABASE_URL");
-                    if (!ci) ci = "host=localhost port=5432 dbname=examos user=examos password=examos";
+                    char file_buf[1024] = {0};
+                    if (!ci || !ci[0]) {
+                        const char *fpath = getenv("EXAMOS_DATABASE_URL_FILE");
+                        if (fpath && fpath[0]) {
+                            FILE *fp = fopen(fpath, "r");
+                            if (fp) {
+                                if (fgets(file_buf, sizeof(file_buf) - 1, fp)) {
+                                    size_t flen = strlen(file_buf);
+                                    while (flen > 0 && (file_buf[flen-1]=='\n'||file_buf[flen-1]=='\r'))
+                                        file_buf[--flen] = '\0';
+                                    if (file_buf[0]) ci = file_buf;
+                                }
+                                fclose(fp);
+                            }
+                        }
+                    }
+                    if (!ci || !ci[0]) ci = "host=localhost port=5432 dbname=examos user=examos password=examos";
                     PGconn *nc = PQconnectdb(ci);
                     if (PQstatus(nc) != CONNECTION_OK) {
                         PQfinish(nc);
@@ -115,10 +135,8 @@ PGconn *db_acquire(void) {
             }
         }
         pthread_mutex_unlock(&g_db_pool.lock);
-        struct timespec ts = { 0, 1000000L };
-        nanosleep(&ts, NULL);
-        pthread_mutex_lock(&g_db_pool.lock);
     }
+    return NULL; /* No connections available */
 }
 
 void db_release(PGconn *conn, int broken) {
@@ -128,7 +146,23 @@ void db_release(PGconn *conn, int broken) {
             if (broken || PQstatus(conn) != CONNECTION_OK) {
                 PQfinish(conn);
                 const char *ci = getenv("EXAMOS_DATABASE_URL");
-                if (!ci) ci = "host=localhost port=5432 dbname=examos user=examos password=examos";
+                char file_buf[1024] = {0};
+                if (!ci || !ci[0]) {
+                    const char *fpath = getenv("EXAMOS_DATABASE_URL_FILE");
+                    if (fpath && fpath[0]) {
+                        FILE *fp = fopen(fpath, "r");
+                        if (fp) {
+                            if (fgets(file_buf, sizeof(file_buf) - 1, fp)) {
+                                size_t flen = strlen(file_buf);
+                                while (flen > 0 && (file_buf[flen-1]=='\n'||file_buf[flen-1]=='\r'))
+                                    file_buf[--flen] = '\0';
+                                if (file_buf[0]) ci = file_buf;
+                            }
+                            fclose(fp);
+                        }
+                    }
+                }
+                if (!ci || !ci[0]) ci = "host=localhost port=5432 dbname=examos user=examos password=examos";
                 PGconn *nc = PQconnectdb(ci);
                 if (PQstatus(nc) == CONNECTION_OK) {
                     g_db_pool.conns[i].conn = nc;
@@ -828,7 +862,117 @@ static const char *migration_sql =
 "  collection VARCHAR(80) NOT NULL,"
 "  days INTEGER DEFAULT 365,"
 "  updated_at BIGINT NOT NULL"
-");";
+");"
+
+"CREATE TABLE IF NOT EXISTS institution_applications ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  legal_name VARCHAR(160) NOT NULL,"
+"  display_name VARCHAR(160) NOT NULL,"
+"  entity_type VARCHAR(40) NOT NULL DEFAULT 'university',"
+"  registration_number VARCHAR(60) NOT NULL,"
+"  country VARCHAR(60) NOT NULL DEFAULT 'India',"
+"  state VARCHAR(60) NOT NULL DEFAULT 'Maharashtra',"
+"  address TEXT NOT NULL,"
+"  domain VARCHAR(120) NOT NULL,"
+"  rep_name VARCHAR(120) NOT NULL,"
+"  rep_role VARCHAR(60) NOT NULL,"
+"  rep_email VARCHAR(120) NOT NULL,"
+"  rep_phone VARCHAR(40) NOT NULL,"
+"  coord_name VARCHAR(120),"
+"  coord_email VARCHAR(120),"
+"  tech_name VARCHAR(120),"
+"  tech_email VARCHAR(120),"
+"  campus_count INTEGER DEFAULT 1,"
+"  student_count INTEGER DEFAULT 500,"
+"  device_count INTEGER DEFAULT 100,"
+"  deployment_model VARCHAR(40) DEFAULT 'usb-boot',"
+"  hardware_profile VARCHAR(60) DEFAULT 'standard-uefi',"
+"  plan VARCHAR(40) DEFAULT 'pilot',"
+"  status VARCHAR(40) NOT NULL DEFAULT 'SUBMITTED',"
+"  review_notes TEXT,"
+"  reviewed_by VARCHAR(64),"
+"  reviewed_at BIGINT,"
+"  institution_id VARCHAR(64),"
+"  documents JSONB NOT NULL DEFAULT '[]'::jsonb,"
+"  declarations JSONB NOT NULL DEFAULT '{}'::jsonb,"
+"  created_at BIGINT NOT NULL,"
+"  updated_at BIGINT NOT NULL"
+");"
+
+"CREATE TABLE IF NOT EXISTS institution_agreements ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  institution_id VARCHAR(64) NOT NULL,"
+"  type VARCHAR(60) NOT NULL DEFAULT 'msa',"
+"  title VARCHAR(160) NOT NULL,"
+"  version VARCHAR(20) NOT NULL DEFAULT '1.0',"
+"  status VARCHAR(40) NOT NULL DEFAULT 'DRAFT',"
+"  document_digest TEXT,"
+"  signer_name VARCHAR(120),"
+"  signer_email VARCHAR(120),"
+"  signer_role VARCHAR(80),"
+"  signed_at BIGINT,"
+"  effective_from BIGINT,"
+"  effective_until BIGINT,"
+"  terms_payload JSONB NOT NULL DEFAULT '{}'::jsonb,"
+"  audit_trail JSONB NOT NULL DEFAULT '[]'::jsonb,"
+"  created_at BIGINT NOT NULL,"
+"  CONSTRAINT fk_agreement_tenant FOREIGN KEY (institution_id) REFERENCES tenants(id)"
+");"
+
+"CREATE TABLE IF NOT EXISTS institution_licenses ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  institution_id VARCHAR(64) NOT NULL UNIQUE,"
+"  agreement_id VARCHAR(64),"
+"  plan VARCHAR(40) NOT NULL DEFAULT 'pilot',"
+"  plan_version VARCHAR(20) NOT NULL DEFAULT '2026.1',"
+"  status VARCHAR(40) NOT NULL DEFAULT 'ACTIVE',"
+"  valid_from BIGINT NOT NULL,"
+"  valid_until BIGINT NOT NULL,"
+"  grace_period_days INTEGER DEFAULT 14,"
+"  max_campuses INTEGER DEFAULT 5,"
+"  max_devices INTEGER DEFAULT 250,"
+"  max_candidates INTEGER DEFAULT 2000,"
+"  max_exams INTEGER DEFAULT 50,"
+"  allowed_channels JSONB NOT NULL DEFAULT '[\"stable\",\"pilot\"]'::jsonb,"
+"  enabled_modules JSONB NOT NULL DEFAULT '[\"exams\",\"kiosk\",\"tpm\",\"firewall\"]'::jsonb,"
+"  usage_current JSONB NOT NULL DEFAULT '{\"campuses\":0,\"devices\":0,\"candidates\":0,\"exams\":0}'::jsonb,"
+"  created_at BIGINT NOT NULL,"
+"  updated_at BIGINT NOT NULL,"
+"  CONSTRAINT fk_license_tenant FOREIGN KEY (institution_id) REFERENCES tenants(id)"
+");"
+
+"CREATE TABLE IF NOT EXISTS institution_os_deployments ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  institution_id VARCHAR(64) NOT NULL,"
+"  campus_id VARCHAR(64),"
+"  release_id VARCHAR(64) NOT NULL,"
+"  channel VARCHAR(40) NOT NULL DEFAULT 'stable',"
+"  hardware_profile VARCHAR(60) NOT NULL DEFAULT 'standard-uefi',"
+"  security_profile VARCHAR(60) NOT NULL DEFAULT 'high-assurance',"
+"  status VARCHAR(40) NOT NULL DEFAULT 'ACTIVE',"
+"  policy_hash TEXT,"
+"  devices_targeted INTEGER DEFAULT 0,"
+"  devices_acknowledged INTEGER DEFAULT 0,"
+"  created_at BIGINT NOT NULL,"
+"  updated_at BIGINT NOT NULL,"
+"  CONSTRAINT fk_os_deployment_tenant FOREIGN KEY (institution_id) REFERENCES tenants(id)"
+");"
+
+"CREATE TABLE IF NOT EXISTS institution_onboarding ("
+"  institution_id VARCHAR(64) PRIMARY KEY,"
+"  status VARCHAR(40) NOT NULL DEFAULT 'REGISTRATION_PENDING',"
+"  checklist JSONB NOT NULL DEFAULT '{}'::jsonb,"
+"  completed_steps INTEGER DEFAULT 0,"
+"  total_steps INTEGER DEFAULT 8,"
+"  first_admin_email VARCHAR(120),"
+"  first_admin_invited INTEGER DEFAULT 0,"
+"  mfa_enforced INTEGER DEFAULT 1,"
+"  updated_at BIGINT NOT NULL,"
+"  CONSTRAINT fk_onboarding_tenant FOREIGN KEY (institution_id) REFERENCES tenants(id)"
+");"
+
+"ALTER TABLE campuses ADD COLUMN IF NOT EXISTS updated_at BIGINT;"
+"ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at BIGINT;";
 
 static void db_seed_bootstrap(PGconn *conn) {
     if (!conn) return;

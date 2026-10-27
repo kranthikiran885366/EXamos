@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant, useCol } from '../../core/db/tenant';
-import { usePerm } from '../../core/ui/hooks';
+import { usePerm, useLoad } from '../../core/ui/hooks';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash, Empty,
-  Icon, Modal, Field, Input, Select, Textarea, KeyValue, Loading, CopyButton,
+  Icon, Modal, Field, Input, Select, Textarea, KeyValue, Loading, CopyButton, Tabs,
 } from '../../core/ui/kit';
 import { fmt } from '../../core/ui/format';
 import {
   addCandidate, previewImport, commitImport, assignToExam, unassign, setIdentity,
   correctName, readinessFor, isReady, CSV_TEMPLATE, notifyCandidate,
+  suspendStudent, reactivateStudent, progressSemester, getStudent360,
 } from './service';
 
 function ImportPanel({ tenantId, onDone }) {
@@ -85,45 +86,200 @@ function AssignPanel({ tenantId, onDone }) {
 function AddCandidate({ tenantId, onClose, onDone }) {
   const { user } = useAuth();
   const { msg, setMsg, run, busy } = useFlash();
-  const [v, setV] = useState({ rollNo: '', name: '', email: '' });
+  const [v, setV] = useState({
+    rollNo: '', name: '', email: '', personalEmail: '', phoneNumber: '',
+    course: 'B.Tech Computer Science and Engineering', batch: '2026', semester: 1, section: 'A',
+    accommodations: '', notes: ''
+  });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const submit = async (e) => {
     e.preventDefault();
-    const ok = await run(() => addCandidate(user, { tenantId, ...v }), 'Candidate added.');
+    const ok = await run(() => addCandidate(user, { tenantId, ...v }), 'Candidate profile registered.');
     if (ok) { onDone?.(); onClose(); }
   };
   return (
-    <Modal title="Add candidate" desc="Roll numbers must be 6–14 letters or digits and emails unique within the institution." onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" form="cand-form" disabled={busy}>{busy ? 'Saving…' : 'Add candidate'}</button></>}>
-      <form id="cand-form" className="stack" onSubmit={submit}>
+    <Modal title="Register candidate (Module 5)" desc="Create canonical student profile with institutional enrollment." onClose={onClose} wide footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" form="cand-form" disabled={busy}>{busy ? 'Saving…' : 'Add student'}</button></>}>
+      <form id="cand-form" className="formgrid" onSubmit={submit}>
         <Flash msg={msg} onClose={() => setMsg(null)} />
-        <Field label="Roll number" required><Input value={v.rollNo} onChange={(e) => set('rollNo', e.target.value.toUpperCase())} maxLength={14} autoFocus /></Field>
-        <Field label="Name" required><Input value={v.name} onChange={(e) => set('name', e.target.value)} maxLength={80} /></Field>
-        <Field label="Email" required><Input type="email" value={v.email} onChange={(e) => set('email', e.target.value)} maxLength={120} /></Field>
+        <Field label="Roll number" required><Input value={v.rollNo} onChange={(e) => set('rollNo', e.target.value.toUpperCase())} maxLength={20} autoFocus placeholder="e.g. VU-2026-CSE-001" /></Field>
+        <Field label="Full name" required><Input value={v.name} onChange={(e) => set('name', e.target.value)} maxLength={80} placeholder="e.g. Aarav Sharma" /></Field>
+        <Field label="Institutional email" required><Input type="email" value={v.email} onChange={(e) => set('email', e.target.value)} maxLength={120} placeholder="aarav@vignan.ac.in" /></Field>
+        <Field label="Personal email"><Input type="email" value={v.personalEmail} onChange={(e) => set('personalEmail', e.target.value)} maxLength={120} placeholder="aarav.personal@gmail.com" /></Field>
+        <Field label="Phone number"><Input value={v.phoneNumber} onChange={(e) => set('phoneNumber', e.target.value)} maxLength={20} placeholder="+919876543210" /></Field>
+        <Field label="Course / Program"><Input value={v.course} onChange={(e) => set('course', e.target.value)} maxLength={80} /></Field>
+        <Field label="Batch"><Input value={v.batch} onChange={(e) => set('batch', e.target.value)} maxLength={20} placeholder="2026" /></Field>
+        <Field label="Semester"><Input type="number" min={1} max={12} value={v.semester} onChange={(e) => set('semester', e.target.value)} /></Field>
+        <Field label="Section"><Input value={v.section} onChange={(e) => set('section', e.target.value)} maxLength={10} /></Field>
+        <Field label="Accommodations"><Input value={v.accommodations} onChange={(e) => set('accommodations', e.target.value)} maxLength={250} placeholder="e.g. Extra 15 mins for visual fatigue" /></Field>
+        <div className="full-width"><Field label="Administrative notes"><Textarea rows={2} value={v.notes} onChange={(e) => set('notes', e.target.value)} placeholder="e.g. Dean honors list, transfer credits verified" /></Field></div>
       </form>
     </Modal>
   );
 }
 
 function CandidateDetail({ c, exams, centers, devices, policies, releases, onClose }) {
+  const [tab, setTab] = useState('overview');
   const checks = readinessFor(c, { devices, exams, policies, releases });
   const exam = exams.find((e) => e.id === c.examId);
   const center = centers.find((x) => x.id === c.centerId);
+  const { data: s360, loading } = useLoad(() => getStudent360(c), [c?.id]);
+
+  const p = s360?.profile || c;
+
   return (
-    <Modal title={`${c.rollNo} · ${c.name}`} desc="Candidate record and readiness summary." onClose={onClose} wide footer={<button className="btn" onClick={onClose}>Close</button>}>
-      <KeyValue cols={2} items={[
-        ['Roll number', c.rollNo], ['Name', c.name], ['Email', c.email], ['Status', <Badge value={c.status} />],
-        ['Exam', exam ? `${exam.code} · ${exam.title}` : '—'], ['Centre', center?.code || '—'],
-        ['Seat', c.seat || '—'], ['Identity', <Badge value={c.identity} />],
-        ['Registered', fmt(c.createdAt)], ['Assigned', c.assignedAt ? fmt(c.assignedAt) : '—'],
-        ['Identity note', c.identityNote || '—'], ['Corrections', (c.corrections || []).length],
-      ]} />
-      <h3 className="mt">Readiness</h3>
-      <DataTable rows={checks} columns={[
-        { label: 'Check', key: 'label' }, { label: 'Status', key: 'status', badge: true }, { label: 'Detail', key: 'detail' },
-      ]} />
-      <Alert tone={isReady(checks) ? 'success' : 'warn'} title={isReady(checks) ? 'Ready to sit' : 'Not ready'}>
-        {isReady(checks) ? 'All blocking checks pass for this candidate.' : 'Resolve failed checks before the session can start.'}
-      </Alert>
+    <Modal title={`${c.rollNo} · ${c.name}`} desc="Student 360: canonical profile, multi-semester enrollments, eligibility, device trust & sessions." onClose={onClose} wide footer={<button className="btn" onClick={onClose}>Close</button>}>
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'overview', label: 'Overview' },
+          { key: 'enrollments', label: 'Enrollments', count: s360?.enrollments?.length || 0 },
+          { key: 'eligibility', label: 'Module 10 Eligibility', count: s360?.eligibility?.length || 0 },
+          { key: 'devices', label: 'Module 13 Devices', count: s360?.devices?.length || 0 },
+          { key: 'sessions', label: 'Module 11 Sessions', count: s360?.sessions?.length || 0 },
+          { key: 'history', label: 'Audit Trail', count: s360?.history?.length || 0 },
+        ]}
+      />
+
+      {tab === 'overview' && (
+        <div className="stack gap">
+          <KeyValue cols={3} items={[
+            ['Roll number', p.roll_no || p.rollNo || c.rollNo],
+            ['Full name', p.name || c.name],
+            ['Display name', p.display_name || p.name || c.name],
+            ['Institutional email', p.email || c.email],
+            ['Personal email', p.personal_email || p.personalEmail || '—'],
+            ['Phone number', p.phone_number || p.phoneNumber || '—'],
+            ['Program / Course', p.course || 'B.Tech CSE'],
+            ['Batch', p.batch || '2026'],
+            ['Current semester', `Sem ${p.semester || 1} (${p.section || 'A'})`],
+            ['Academic status', <Badge key="stat" value={p.academic_status || p.status || 'active'} tone={p.academic_status === 'suspended' ? 'red' : 'green'} />],
+            ['Administrative hold', p.administrative_hold ? <Badge key="hold" value="ON HOLD" tone="red" /> : <Badge key="nohold" value="CLEAR" tone="green" />],
+            ['Verification status', <Badge key="ver" value={p.verification_status || c.verification_status || c.identity || 'UNVERIFIED'} tone={p.verification_status === 'VERIFIED' ? 'green' : 'amber'} />],
+            ['Accommodations', p.accommodations || 'None requested'],
+            ['Assigned exam', exam ? `${exam.code} · ${exam.title}` : '—'],
+            ['Assigned seat', c.seat ? `${center?.code || 'Centre'} · Seat ${c.seat}` : '—'],
+          ]} />
+
+          <h4 className="mt">Readiness check</h4>
+          <DataTable rows={checks} columns={[
+            { label: 'Check', key: 'label' },
+            { label: 'Status', key: 'status', badge: true },
+            { label: 'Detail', key: 'detail' },
+          ]} />
+          <Alert tone={isReady(checks) ? 'success' : 'warn'} title={isReady(checks) ? 'Ready to sit' : 'Not ready'}>
+            {isReady(checks) ? 'All pre-exam gates passed.' : 'Resolve blockers before candidate can launch.'}
+          </Alert>
+        </div>
+      )}
+
+      {tab === 'enrollments' && (
+        <div className="stack gap">
+          <Alert tone="info" title="Multi-semester academic progression (Module 5)">
+            Past semesters are preserved permanently as completed records; the active semester is marked current.
+          </Alert>
+          {loading ? <Loading /> : (
+            <DataTable
+              rows={s360?.enrollments || []}
+              columns={[
+                { label: 'Academic year', key: 'academic_year' },
+                { label: 'Term', key: 'term' },
+                { label: 'Semester', render: (r) => `Semester ${r.semester} (${r.section || 'A'})` },
+                { label: 'Program', key: 'program_id' },
+                { label: 'Status', render: (r) => <Badge value={r.status} tone={r.status === 'current' ? 'green' : 'blue'} /> },
+                { label: 'Start date', render: (r) => (r.start_date ? fmt(Number(r.start_date)) : '—') },
+                { label: 'End date', render: (r) => (r.end_date ? fmt(Number(r.end_date)) : 'Active') },
+              ]}
+              empty={<Empty title="No historical enrollments found" desc="Enrollment records will appear as the student progresses." />}
+            />
+          )}
+        </div>
+      )}
+
+      {tab === 'eligibility' && (
+        <div className="stack gap">
+          <Alert tone="info" title="Examination eligibility & rules (Module 10)">
+            Live eligibility evaluations calculated from attendance, prerequisites, and administrative holds.
+          </Alert>
+          {loading ? <Loading /> : (
+            <DataTable
+              rows={s360?.eligibility || []}
+              columns={[
+                { label: 'Examination ID', key: 'examination_id' },
+                { label: 'Registration status', render: (r) => <Badge value={r.registration_status} /> },
+                { label: 'Eligibility', render: (r) => <Badge value={r.eligibility_status} tone={r.eligibility_status === 'eligible' ? 'green' : 'red'} /> },
+                { label: 'Approval decision', render: (r) => <Badge value={r.approval_decision} /> },
+                { label: 'Registered at', render: (r) => (r.registered_at ? fmt(Number(r.registered_at)) : '—') },
+              ]}
+              empty={<Empty title="No exam registrations" desc="Candidate has not yet registered for an upcoming exam roster." />}
+            />
+          )}
+        </div>
+      )}
+
+      {tab === 'devices' && (
+        <div className="stack gap">
+          <Alert tone="info" title="Authorized ExamOS hardware (Module 13)">
+            Attested TPM 2.0 hardware terminals bound to this candidate.
+          </Alert>
+          {loading ? <Loading /> : (
+            <DataTable
+              rows={s360?.devices || []}
+              columns={[
+                { label: 'Device ID', key: 'device_id' },
+                { label: 'Hostname', key: 'hostname' },
+                { label: 'Device name', key: 'device_name' },
+                { label: 'Trust status', render: (r) => <Badge value={r.device_status || 'TRUSTED'} tone="green" /> },
+                { label: 'Assignment', render: (r) => <Badge value={r.assignment_status || 'active'} /> },
+              ]}
+              empty={<Empty title="No hardware devices assigned" desc="Devices will be allocated during seating or attestation." />}
+            />
+          )}
+        </div>
+      )}
+
+      {tab === 'sessions' && (
+        <div className="stack gap">
+          <Alert tone="info" title="Runtime exam sessions (Module 11)">
+            Audit events, heartbeats, and network interruptions during live exam delivery.
+          </Alert>
+          {loading ? <Loading /> : (
+            <DataTable
+              rows={s360?.sessions || []}
+              columns={[
+                { label: 'Session ID', key: 'id' },
+                { label: 'Exam ID', key: 'examination_id' },
+                { label: 'Status', render: (r) => <Badge value={r.status} tone={r.status === 'active' ? 'green' : 'blue'} /> },
+                { label: 'Heartbeats', key: 'heartbeat_count' },
+                { label: 'Interruptions', key: 'interrupt_count' },
+                { label: 'IP address', key: 'ip_address' },
+                { label: 'Started at', render: (r) => (r.start_time ? fmt(Number(r.start_time)) : '—') },
+              ]}
+              empty={<Empty title="No active or past sessions" desc="Exam delivery runtime sessions will be tracked here in real-time." />}
+            />
+          )}
+        </div>
+      )}
+
+      {tab === 'history' && (
+        <div className="stack gap">
+          <Alert tone="info" title="Immutable student lifecycle audit log">
+            Durable PostgreSQL audit events recorded across all institutional operations.
+          </Alert>
+          {loading ? <Loading /> : (
+            <DataTable
+              rows={s360?.history || []}
+              columns={[
+                { label: 'Action', render: (r) => <Badge value={r.action} tone="blue" /> },
+                { label: 'Actor', key: 'actor_id' },
+                { label: 'Details', key: 'details' },
+                { label: 'Timestamp', render: (r) => (r.occurred_at ? fmt(Number(r.occurred_at)) : '—') },
+              ]}
+              empty={<Empty title="No audit entries" desc="Actions on this candidate profile will be logged here." />}
+            />
+          )}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -198,9 +354,11 @@ export default function CandidatesPage() {
             { label: 'Ready', render: (c) => (c.examId ? <Badge value={isReady(readinessFor(c, { devices, exams, policies, releases })) ? 'ready' : 'not ready'} /> : '—') },
           ]}
           actions={(c) => [
-            { label: 'View', onClick: () => setDetail(c) },
-            { label: 'Verify ID', disabled: !may('candidate.verify') || !c.examId || c.identity === 'verified', onClick: () => setPending({ kind: 'identity', c, outcome: 'verified' }) },
-            { label: 'Reject ID', danger: true, disabled: !may('candidate.verify') || !c.examId || c.identity === 'rejected', onClick: () => setPending({ kind: 'identity', c, outcome: 'rejected' }) },
+            { label: 'Student 360', onClick: () => setDetail(c) },
+            { label: 'Verify ID', disabled: !may('candidate.verify') || c.identity === 'verified', onClick: () => setPending({ kind: 'identity', c, outcome: 'verified' }) },
+            { label: 'Reject ID', danger: true, disabled: !may('candidate.verify') || c.identity === 'rejected', onClick: () => setPending({ kind: 'identity', c, outcome: 'rejected' }) },
+            { label: 'Progress sem', disabled: !may('candidate.manage'), onClick: () => setPending({ kind: 'progress', c }) },
+            { label: c.academic_status === 'suspended' ? 'Reactivate' : 'Suspend', danger: c.academic_status !== 'suspended', disabled: !may('candidate.manage'), onClick: () => setPending({ kind: c.academic_status === 'suspended' ? 'reactivate' : 'suspend', c }) },
             { label: 'Correct name', disabled: !may('candidate.manage'), onClick: () => setPending({ kind: 'name', c }) },
             { label: 'Unassign', danger: true, disabled: !may('candidate.manage') || !c.examId, onClick: () => setPending({ kind: 'unassign', c }) },
             { label: 'Notify', disabled: !may('candidate.manage') || !c.examId, onClick: () => run(() => notifyCandidate(user, c, 'Exam update', 'Please review your exam briefing for the latest instructions.')) },
@@ -214,17 +372,45 @@ export default function CandidatesPage() {
       {detail && <CandidateDetail c={detail} exams={exams} centers={centers} devices={devices} policies={policies} releases={releases} onClose={() => setDetail(null)} />}
 
       {pending && <ActionDialog
-        title={pending.kind === 'unassign' ? `Unassign ${pending.c.rollNo}` : pending.kind === 'name' ? `Correct name · ${pending.c.rollNo}` : `${pending.outcome === 'verified' ? 'Verify' : 'Reject'} identity · ${pending.c.rollNo}`}
-        desc={pending.kind === 'name' ? 'The previous name is retained in the correction history.' : pending.kind === 'unassign' ? 'The candidate returns to the unassigned pool.' : 'The decision and note are written to the audit trail.'}
-        confirmLabel={pending.kind === 'unassign' ? 'Unassign' : pending.kind === 'name' ? 'Save correction' : 'Record decision'}
-        danger={pending.kind === 'unassign' || pending.outcome === 'rejected'}
-        field={pending.kind === 'name' ? { label: 'Corrected name', type: 'text', default: pending.c.name } : undefined}
-        requireReason
+        title={
+          pending.kind === 'unassign' ? `Unassign ${pending.c.rollNo}` :
+          pending.kind === 'name' ? `Correct name · ${pending.c.rollNo}` :
+          pending.kind === 'suspend' ? `Suspend student · ${pending.c.rollNo}` :
+          pending.kind === 'reactivate' ? `Reactivate student · ${pending.c.rollNo}` :
+          pending.kind === 'progress' ? `Progress semester · ${pending.c.rollNo}` :
+          `${pending.outcome === 'verified' ? 'Verify' : 'Reject'} identity · ${pending.c.rollNo}`
+        }
+        desc={
+          pending.kind === 'name' ? 'The previous name is retained in the correction history.' :
+          pending.kind === 'unassign' ? 'The candidate returns to the unassigned pool.' :
+          pending.kind === 'suspend' ? 'Places student on administrative hold and blocks exam launch.' :
+          pending.kind === 'reactivate' ? 'Lifts administrative hold and restores active academic standing.' :
+          pending.kind === 'progress' ? 'Enrolls student in the next semester while preserving historical records.' :
+          'The decision and note are written to the audit trail.'
+        }
+        confirmLabel={
+          pending.kind === 'unassign' ? 'Unassign' :
+          pending.kind === 'name' ? 'Save correction' :
+          pending.kind === 'suspend' ? 'Suspend' :
+          pending.kind === 'reactivate' ? 'Reactivate' :
+          pending.kind === 'progress' ? 'Enroll in semester' :
+          'Record decision'
+        }
+        danger={pending.kind === 'unassign' || pending.kind === 'suspend' || pending.outcome === 'rejected'}
+        field={
+          pending.kind === 'name' ? { label: 'Corrected name', type: 'text', default: pending.c.name } :
+          pending.kind === 'progress' ? { label: 'New semester number', type: 'number', default: (pending.c.semester || 1) + 1 } :
+          undefined
+        }
+        requireReason={pending.kind !== 'progress'}
         onClose={() => setPending(null)}
         onConfirm={async (reason, value) => {
           await run(() => {
             if (pending.kind === 'unassign') return unassign(user, pending.c, reason);
             if (pending.kind === 'name') return correctName(user, pending.c, value, reason);
+            if (pending.kind === 'suspend') return suspendStudent(user, pending.c, reason);
+            if (pending.kind === 'reactivate') return reactivateStudent(user, pending.c, reason);
+            if (pending.kind === 'progress') return progressSemester(user, pending.c, value || (pending.c.semester || 1) + 1);
             return setIdentity(user, pending.c, pending.outcome, reason);
           });
           setPending(null);

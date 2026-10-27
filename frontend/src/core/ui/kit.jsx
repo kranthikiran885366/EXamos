@@ -358,6 +358,7 @@ export function LandNav() {
           <a href="#features">Features</a>
           <a href="#modules">Modules</a>
           <a href="#why">Security</a>
+          <a href="#trust">Trust</a>
           <a className="btn ghost" href="/login">Sign in</a>
         </nav>
       </div>
@@ -367,18 +368,32 @@ export function LandNav() {
 export function Hero() {
   return (
     <section className="hero">
-      <div>
+      <div className="hero-copy">
+        <span className="kicker">ExamOS Console · Secure examination platform</span>
         <h1>Secure exam delivery,<br /><span className="grad">engineered for trust.</span></h1>
-        <p>ExamOS is a frontend-only examination console. Device attestation, signed policies, two-person approvals and a hash-chained audit trail — all running in the browser through IndexedDB, with no backend required.</p>
+        <p>Device attestation, signed policies, two-person approvals and a hash-chained audit trail — all running in the browser through IndexedDB, with no backend required. Prevention-first secure examination delivery for high-stakes academic and corporate assessments.</p>
         <div className="hero-actions">
-          <button className="btn primary" onClick={() => { window.location.href = '/login'; }}>Get started</button>
-          <button className="btn outl" onClick={() => { document.getElementById('features')?.scrollIntoView(); }}>Explore features</button>
+          <button className="btn primary wide-sm" onClick={() => { window.location.href = '/login'; }}>Get started</button>
+          <button className="btn outl wide-sm" onClick={() => { document.getElementById('features')?.scrollIntoView(); }}>Explore features</button>
+        </div>
+        <div className="hero-stats">
+          <div className="hs"><span className="num">152+</span><span className="lab">Devices enrolled</span></div>
+          <div className="hs"><span className="num">120+</span><span className="lab">Candidates seeded</span></div>
+          <div className="hs"><span className="num">SHA-256</span><span className="lab">Hash-chained audit log</span></div>
         </div>
       </div>
       <div className="hero-visual">
-        <div className="stat"><div className="big">152</div><div><small>Devices enrolled</small></div></div>
-        <div className="stat"><div className="big">120</div><div><small>Candidates seeded</small></div></div>
-        <div className="stat"><div className="big">SHA-256</div><div><small>Hash-chained audit log</small></div></div>
+        <div className="hv-card">
+          <div className="hv-stat"><span className="big">152</span><span className="cap">Devices</span></div>
+          <div className="hv-stat"><span className="big">120</span><span className="cap">Candidates</span></div>
+          <div className="hv-stat"><span className="big">SHA-256</span><span className="cap">Audit chain</span></div>
+        </div>
+        <div className="hv-preview">
+          <div className="hv-frame">
+            <div className="hv-bar"><Icon name="grid" size={13} /><span className="hv-title">ExamOS Console</span><span className="hv-chip online">Online</span></div>
+            <div className="hv-body"><div className="hv-grid"><div className="hv-cell">Dashboard</div><div className="hv-cell">Exams</div><div className="hv-cell">Devices</div><div className="hv-cell">Security</div><div className="hv-cell">Reports</div><div className="hv-cell">Support</div></div></div>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -396,8 +411,9 @@ export function Feature({ icon, title, desc, tag }) {
 export function FeatureGrid() {
   return (
     <section id="features" className="features">
-      <h2>Everything you need to run secure exams</h2>
-      <p className="sub">Real validation, RBAC, ECDSA signing, TOTP, nonce/replay protection, receipts and a verified audit chain.</p>
+      <div className="sec-head">
+        <div><h2>Everything you need to run secure exams</h2><p className="sub">Real validation, RBAC, ECDSA signing, TOTP, nonce/replay protection, receipts and a verified audit chain.</p></div>
+      </div>
       <div className="featgrid">
         <Feature icon="🔐" title="Signed policies" desc="ECDSA P-256 signed, versioned kiosk policies with anti-downgrade and two-person rollback." tag="Security" />
         <Feature icon="🚀" title="Staged releases" desc="SBOM-scanned releases with staged rollout, revoke and device recovery." tag="Release" />
@@ -415,7 +431,7 @@ export function ModuleCard({ icon, title, desc, path, perm }) {
       <span className="ico">{icon}</span>
       <h3>{title}</h3>
       <p>{desc}</p>
-      <a href={path} className="btn" style={{ padding: '7px 14px', fontSize: '12px', marginTop: 'auto' }}>Open {title}</a>
+      <Link to={path} className="btn modbtn">Open {title}</Link>
     </div>
   );
 }
@@ -432,8 +448,9 @@ export function ModulesGrid() {
   ];
   return (
     <section id="modules" className="modules">
-      <h2>Modules</h2>
-      <p className="sub">One folder per module: service.js (rules + persistence) and Page.jsx (UI).</p>
+      <div className="sec-head">
+        <div><h2>Console modules</h2><p className="sub">One folder per module: service.js (rules + persistence) and Page.jsx (UI). Role-gated navigation throughout.</p></div>
+      </div>
       <div className="modgrid">{modules.map((m) => <ModuleCard key={m.title} {...m} />)}</div>
     </section>
   );
@@ -441,8 +458,9 @@ export function ModulesGrid() {
 export function WhySection() {
   return (
     <section id="why" className="why">
-      <h2>Built for high-stakes exams</h2>
-      <p>Every write is audited. Policies and releases are cryptographically signed. Devices converge to policy via heartbeats and fresh attestation before a session can start.</p>
+      <div className="sec-head">
+        <div><h2>Built for high-stakes exams</h2><p>Every write is audited. Policies and releases are cryptographically signed. Devices converge to policy via heartbeats and fresh attestation before a session can start.</p></div>
+      </div>
       <div className="whygrid">
         <div className="item"><div className="n">ECDSA</div><div className="l">Signed policies &amp; releases</div></div>
         <div className="item"><div className="n">2-Person</div><div className="l">Approval &amp; rollback</div></div>
@@ -452,13 +470,39 @@ export function WhySection() {
     </section>
   );
 }
+export function TrustSection() {
+  const items = [
+    { icon: 'shield', label: 'Zero-trust by design', desc: 'No implicit trust. Every device attests before a session starts; every write is signed and chained.' },
+    { icon: 'lock', label: 'Role-based access control', desc: 'Nine-tier RBAC with MFA, TOTP, failed-login throttling and account lockout.' },
+    { icon: 'cpu', label: 'Hardware-bound identity', desc: 'TPM 2.0 PCR quotes bind each appliance to its firmware and OS measurements.' },
+    { icon: 'alert', label: 'Tamper-evident ledger', desc: 'HMAC-SHA256 authenticated audit chain with truncation anchors prevents silent deletion.' },
+  ];
+  return (
+    <section id="trust" className="trust">
+      <div className="sec-head">
+        <div><h2>Trust, verified</h2><p>Prevention-first security across the entire examination lifecycle.</p></div>
+      </div>
+      <div className="trustgrid">
+        {items.map((it) => (
+          <div key={it.label} className="titem">
+            <div className="tico"><Icon name={it.icon} size={18} /></div>
+            <div><h3>{it.label}</h3><p className="muted sm">{it.desc}</p></div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 export function CtaSection() {
   return (
     <section className="landcta">
-      <div className="card">
+      <div className="cta-card">
         <h2>Ready to run secure exams?</h2>
         <p>Log in to the console and explore a pre-seeded workspace with devices, candidates, a live exam and sessions.</p>
-        <button className="btn" onClick={() => { window.location.href = '/login'; }}>Sign in to console</button>
+        <div className="cta-actions">
+          <button className="btn primary" onClick={() => { window.location.href = '/login'; }}>Sign in to console</button>
+          <a href="#features" className="btn ghost">Learn more</a>
+        </div>
       </div>
     </section>
   );
@@ -466,7 +510,11 @@ export function CtaSection() {
 export function LandFoot() {
   return (
     <footer className="landfoot">
-      ExamOS Console · Frontend-only examination platform · IndexedDB persistence · Session in memory only · No backend
+      <div className="lf-grid">
+        <div><strong>ExamOS Console</strong><br /><span className="muted sm">Prevention-first secure examination platform</span></div>
+        <nav className="lf-nav"><a href="#features">Features</a><a href="#modules">Modules</a><a href="#why">Security</a><a href="/login">Sign in</a></nav>
+        <div className="lf-note">Frontend-only · IndexedDB persistence · Session in memory only · No backend required</div>
+      </div>
     </footer>
   );
 }

@@ -1,0 +1,6 @@
+﻿BEFORE D5BA5F0F55FA53F63B7E0AF1354FD2785ACFD630CFF369C9A2121123A83EC99A  image\overlay\etc\examos\exam.conf
+BEFORE D96827EA3492FF40A1C53BE03472D1CBA2A73644CC7A38251051BC10629C2F18  image\overlay\etc\chromium\policies\managed\examos_policies.json
+BEFORE FB83FCA5363D5D2A874C3C4A95B2298C03C77C9E74A0B3726B98C9E9C210130B  image\overlay\etc\opt\chrome\policies\managed\examos_policies.json
+BEFORE BDC362835D92104B902F42E6BA1F0ED0F3E55782BF5B341B1BA55B42761A3316  image\overlay\etc\systemd\system\examos-kiosk.service
+NEW (will be created)  image\scripts\generate-chromium-policy.sh
+NEW (will be created)  image\overlay\etc\systemd\system\examos-chromium-policy.service
