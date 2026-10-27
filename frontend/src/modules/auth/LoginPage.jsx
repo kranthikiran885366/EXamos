@@ -6,110 +6,60 @@ import QrCodeSvg from '../../core/ui/QrCodeSvg';
 
 function LoginShowcase() {
   return (
-    <div className="login-split-showcase">
-      <div className="showcase-brand">
-        <div className="showcase-logo">E</div>
-        <div>
-          <div className="showcase-title">
-            ExamOS <span className="showcase-pill">Enterprise</span>
+    <div className="login-editorial-showcase">
+      <div className="editorial-content">
+        <div className="editorial-brand">
+          <div className="editorial-logo">E</div>
+          <div className="editorial-brand-text">
+            <span className="editorial-title">ExamOS</span>
+            <span className="editorial-badge">Enterprise Enclave</span>
           </div>
-          <small style={{ color: '#64748b', fontSize: '11.5px', fontWeight: 500 }}>High-Assurance Examination OS</small>
-        </div>
-      </div>
-
-      <div className="showcase-main">
-        <div className="showcase-headline">
-          Mission-Critical Security & <span>Zero-Trust Kiosk Enclave</span>
-        </div>
-        <p className="showcase-desc">
-          Hardware-rooted cryptographic attestation, strict peripheral lockdown, and real-time supervisory telemetry engineered for national assessments and institutional examinations.
-        </p>
-
-        {/* Dynamic Vector Graphic Diagram */}
-        <div className="showcase-vector-wrapper">
-          <svg viewBox="0 0 460 160" width="100%" height="auto" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#2563eb" />
-                <stop offset="100%" stopColor="#1d4ed8" />
-              </linearGradient>
-              <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#ffffff" />
-                <stop offset="100%" stopColor="#f8fafc" />
-              </linearGradient>
-            </defs>
-
-            {/* Hardware Layer Card */}
-            <rect x="15" y="15" width="125" height="130" rx="10" fill="url(#cardGrad)" stroke="#bfdbfe" strokeWidth="1.2" />
-            <circle cx="77" cy="46" r="18" fill="#eff6ff" stroke="#60a5fa" strokeWidth="1.5" />
-            <path d="M77 37 L87 42 V49 C87 55 82 59 77 61 C72 59 67 55 67 49 V42 Z" fill="url(#shieldGrad)" />
-            <text x="77" y="80" fill="#0f172a" fontSize="12" fontWeight="700" textAnchor="middle">TPM 2.0</text>
-            <text x="77" y="96" fill="#64748b" fontSize="9.5" textAnchor="middle">Hardware Root</text>
-            <rect x="35" y="112" width="85" height="18" rx="4" fill="#ecfdf5" stroke="#bbf7d0" />
-            <text x="77" y="124" fill="#15803d" fontSize="9" fontWeight="700" textAnchor="middle">PCR-7 LOCKED</text>
-
-            {/* Connecting cryptographic pipe */}
-            <path d="M140 80 L165 80" stroke="#3b82f6" strokeWidth="2" strokeDasharray="3 3" />
-            <circle cx="152" cy="80" r="4" fill="#3b82f6" />
-
-            {/* OS Kiosk Enclave Layer Card */}
-            <rect x="165" y="15" width="130" height="130" rx="10" fill="url(#cardGrad)" stroke="#c7d2fe" strokeWidth="1.2" />
-            <rect x="180" y="30" width="100" height="52" rx="6" fill="#f8fafc" stroke="#e2e8f0" />
-            <rect x="185" y="35" width="90" height="8" rx="2" fill="#edf2f7" />
-            <circle cx="191" cy="39" r="2" fill="#ef4444" />
-            <circle cx="197" cy="39" r="2" fill="#f59e0b" />
-            <circle cx="203" cy="39" r="2" fill="#10b981" />
-            <path d="M210 60 L225 50 L240 60" stroke="#2563eb" strokeWidth="1.5" fill="none" />
-            <text x="230" y="102" fill="#0f172a" fontSize="12" fontWeight="700" textAnchor="middle">Cage Enclave</text>
-            <text x="230" y="117" fill="#64748b" fontSize="9.5" textAnchor="middle">Wayland Lockdown</text>
-            <text x="230" y="132" fill="#4338ca" fontSize="9" fontWeight="700" textAnchor="middle">AIR-GAPPED</text>
-
-            {/* Connecting pipe */}
-            <path d="M295 80 L320 80" stroke="#6366f1" strokeWidth="2" strokeDasharray="3 3" />
-            <circle cx="308" cy="80" r="4" fill="#6366f1" />
-
-            {/* Real-time Ledger Card */}
-            <rect x="320" y="15" width="125" height="130" rx="10" fill="url(#cardGrad)" stroke="#bbf7d0" strokeWidth="1.2" />
-            <circle cx="382" cy="46" r="18" fill="#ecfdf5" stroke="#10b981" strokeWidth="1.5" />
-            <path d="M376 46 L380 50 L389 40" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            <text x="382" y="80" fill="#0f172a" fontSize="12" fontWeight="700" textAnchor="middle">Audit Ledger</text>
-            <text x="382" y="96" fill="#64748b" fontSize="9.5" textAnchor="middle">SHA-256 Chained</text>
-            <rect x="340" y="112" width="85" height="18" rx="4" fill="#f0fdf4" stroke="#bbf7d0" />
-            <text x="382" y="124" fill="#15803d" fontSize="9" fontWeight="700" textAnchor="middle">TAMPER-PROOF</text>
-          </svg>
         </div>
 
-        <div className="showcase-features">
-          <div className="showcase-feat-item">
-            <div className="showcase-feat-icon">🛡️</div>
-            <div className="showcase-feat-text">
-              <h4>Hardware-Rooted Attestation</h4>
-              <p>Cryptographic quote verification on TPM 2.0 PCR-0/4/7 prior to test station unlock.</p>
+        <div className="editorial-hero">
+          <h1 className="editorial-headline">
+            High-Assurance Infrastructure for <span>National & Institutional Exams</span>
+          </h1>
+          <p className="editorial-sub">
+            Engineered with hardware-rooted TPM 2.0 cryptographic attestation, strict peripheral containment, and real-time supervisory telemetry.
+          </p>
+
+          <div className="editorial-points">
+            <div className="editorial-point">
+              <div className="editorial-point-marker" />
+              <div>
+                <strong>Zero-Trust Station Lockdown</strong>
+                <p>Cage-Wayland compositor suppresses all virtual terminals, key combinations, and host OS access.</p>
+              </div>
             </div>
-          </div>
-          <div className="showcase-feat-item">
-            <div className="showcase-feat-icon">🔒</div>
-            <div className="showcase-feat-text">
-              <h4>Zero-Trust Kiosk Enclave</h4>
-              <p>Cage-Wayland session suppresses all OS shortcuts, virtual terminals, and unauthorized processes.</p>
+
+            <div className="editorial-point">
+              <div className="editorial-point-marker" />
+              <div>
+                <strong>Hardware Cryptographic Attestation</strong>
+                <p>Authenticates TPM PCR-0/4/7 measurements against tamper-evident golden release policies.</p>
+              </div>
             </div>
-          </div>
-          <div className="showcase-feat-item">
-            <div className="showcase-feat-icon">⚡</div>
-            <div className="showcase-feat-text">
-              <h4>Real-Time Supervisory Command</h4>
-              <p>Dynamic fleet synchronization, instant broadcast reload, and cryptographic single-use credentials.</p>
+
+            <div className="editorial-point">
+              <div className="editorial-point-marker" />
+              <div>
+                <strong>Immutable Audit Ledger</strong>
+                <p>Continuous SHA-256 chained session events with strict role-based separation of duties.</p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="showcase-footer">
-        <div>Trusted by Assessment Boards & Higher Education</div>
-        <div className="showcase-badges">
-          <span className="showcase-badge">TPM 2.0</span>
-          <span className="showcase-badge">FIPS 140-3</span>
-          <span className="showcase-badge">ISO 27001</span>
+        <div className="editorial-footer">
+          <div className="editorial-standards">
+            <span>TPM 2.0 Active</span>
+            <span className="sep">•</span>
+            <span>FIPS 140-3 Cryptography</span>
+            <span className="sep">•</span>
+            <span>ISO 27001 Aligned</span>
+          </div>
+          <div className="editorial-copy">© 2026 ExamOS Foundation. All rights reserved.</div>
         </div>
       </div>
     </div>
@@ -194,7 +144,7 @@ export default function LoginPage() {
   const handleCandidateSubmit = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!isInsideExamOS) {
-      setErr('ACCESS_DENIED: Candidate examination is restricted exclusively to the ExamOS secure bootable kiosk operating system. External operating systems and standard browsers cannot access candidate sessions.');
+      setErr('ACCESS_DENIED: Candidate examinations require the secure ExamOS bootable kiosk operating system.');
       return;
     }
     if (busy || !candId || !candPin) return;
@@ -229,6 +179,18 @@ export default function LoginPage() {
       setErr(x.message || 'MFA code verification failed.');
     }
     setBusy(false);
+  };
+
+  const fillAdmin = () => {
+    setU('admin');
+    setP('StrongAdminPassword#2026!');
+    setErr('');
+  };
+
+  const fillRoot = () => {
+    setU('root');
+    setP('Exam0S!Root#2026');
+    setErr('');
   };
 
   const openQrSetup = async (targetUser) => {
@@ -308,148 +270,216 @@ export default function LoginPage() {
     URL.revokeObjectURL(url);
   };
 
-  const serverStatus = (
-    <span className={`login-server ${backendReady ? 'online' : 'offline'}`}>
-      <span className="dot" style={{ boxShadow: backendReady ? '0 0 8px #10b981' : 'none' }} />
-      {backendReady ? 'Server Online (Port 8895)' : 'Server Disconnected'}
-    </span>
-  );
-
   return (
-    <div className="login-split-page">
-      {/* Left Column: Enterprise Security Enclave & Brand Showcase */}
+    <div className="login-flow-container">
+      {/* Left Column: Refined Editorial Showcase (No Cards / No Grids) */}
       <LoginShowcase />
 
-      {/* Right Column: Clean Light-Theme Authentication Form */}
-      <div className="login-split-form-pane">
-        <div className="login-form-box">
+      {/* Right Column: Polished Authentication Form */}
+      <div className="login-form-container">
+        <div className="login-form-inner">
           {!pending ? (
             <>
-              <div className="login-head">
-                <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px', fontWeight: 800 }}>
-                  <span className="logo" style={{ width: '30px', height: '30px', fontSize: '14px' }}>E</span> ExamOS
+              {/* Header with Connectivity Status */}
+              <div className="login-auth-header">
+                <div>
+                  <h2 className="login-auth-title">Welcome to ExamOS</h2>
+                  <p className="login-auth-subtitle">Sign in to access secure examination controls.</p>
                 </div>
-                {serverStatus}
+                <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>
+                  <span className="status-ping" />
+                  <span>{backendReady ? 'Backend Online' : 'Local Offline'}</span>
+                </div>
               </div>
 
-              <div className="login-realm">
+              {/* Segmented Realm Switcher */}
+              <div className="segmented-realm-control">
                 <button
                   type="button"
-                  className={realm === 'admin' ? 'on' : ''}
+                  className={`realm-btn ${realm === 'admin' ? 'active' : ''}`}
                   onClick={() => { setRealm('admin'); setErr(''); }}
                 >
-                  🛡️ Administrator Console
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  Admin Console
                 </button>
                 <button
                   type="button"
-                  className={realm === 'candidate' ? 'on' : ''}
+                  className={`realm-btn ${realm === 'candidate' ? 'active' : ''}`}
                   onClick={() => { setRealm('candidate'); setErr(''); }}
                 >
-                  🎓 Candidate Station
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                  </svg>
+                  Candidate Station
                 </button>
               </div>
 
               {realm === 'admin' ? (
-                <form onSubmit={handleAdminSubmit} className="stack">
-                  <h2>Sign In to Console</h2>
-                  <p className="login-desc">Enter your credentials to access the ExamOS administrative console.</p>
+                <form onSubmit={handleAdminSubmit} className="login-flow-form">
+                  <div className="input-group">
+                    <label htmlFor="login-username">Username</label>
+                    <div className="input-wrapper">
+                      <span className="input-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                          <circle cx="12" cy="7" r="4" />
+                        </svg>
+                      </span>
+                      <input
+                        id="login-username"
+                        className="polished-input with-icon"
+                        value={u}
+                        onChange={(e) => setU(e.target.value)}
+                        autoComplete="username"
+                        maxLength={64}
+                        placeholder="admin or root"
+                        autoFocus
+                      />
+                    </div>
+                  </div>
 
-                  <label>
-                    Username
-                    <input
-                      className="input"
-                      value={u}
-                      onChange={(e) => setU(e.target.value)}
-                      autoComplete="username"
-                      maxLength={64}
-                      placeholder="e.g. admin, instadmin, root..."
-                      autoFocus
-                    />
-                  </label>
+                  <div className="input-group">
+                    <div className="label-row">
+                      <label htmlFor="login-password">Password</label>
+                      <button
+                        type="button"
+                        className="text-action-link"
+                        onClick={() => setShowPw(!showPw)}
+                      >
+                        {showPw ? 'Hide password' : 'Show password'}
+                      </button>
+                    </div>
+                    <div className="input-wrapper">
+                      <span className="input-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                      </span>
+                      <input
+                        id="login-password"
+                        className="polished-input with-icon"
+                        type={showPw ? 'text' : 'password'}
+                        value={p}
+                        onChange={(e) => setP(e.target.value)}
+                        autoComplete="current-password"
+                        maxLength={128}
+                        placeholder="••••••••••••"
+                      />
+                    </div>
+                  </div>
 
-                  <label className="pw">
-                    Password
-                    <input
-                      className="input"
-                      type={showPw ? 'text' : 'password'}
-                      value={p}
-                      onChange={(e) => setP(e.target.value)}
-                      autoComplete="current-password"
-                      maxLength={128}
-                      placeholder="••••••••••••"
-                    />
-                    <button type="button" className="mini" onClick={() => setShowPw(!showPw)}>
-                      {showPw ? 'Hide' : 'Show'}
+                  {/* Quick-fill helper chips */}
+                  <div className="quick-fill-row">
+                    <span className="quick-fill-label">Quick autofill:</span>
+                    <button type="button" className="quick-chip" onClick={fillAdmin}>
+                      admin
                     </button>
-                  </label>
+                    <button type="button" className="quick-chip" onClick={fillRoot}>
+                      root
+                    </button>
+                  </div>
 
-                  {err && <div className="err" role="alert">{err}</div>}
-                  {info && <div className="alert success sm">{info}</div>}
+                  {err && (
+                    <div className="polished-error-banner" role="alert">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                      </svg>
+                      <span>{err}</span>
+                    </div>
+                  )}
+
+                  {info && (
+                    <div className="polished-success-banner">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      <span>{info}</span>
+                    </div>
+                  )}
 
                   <button
-                    className="btn primary wide"
+                    className="polished-submit-btn"
                     disabled={busy || !u || !p}
                   >
-                    {busy ? 'Verifying Credentials…' : 'Sign In'}
+                    {busy ? (
+                      <span className="btn-loading">
+                        <span className="spinner-dots" />
+                        Authenticating…
+                      </span>
+                    ) : (
+                      'Sign In to Console'
+                    )}
                   </button>
 
-                  <div className="login-links">
-                    <Link to="/recovery">Lost Phone / Recovery Code</Link>
+                  <div className="form-secondary-links">
+                    <Link to="/recovery" className="secondary-link">Lost Phone / Recovery Code</Link>
                     <button
                       type="button"
-                      className="link"
+                      className="secondary-btn-link"
                       onClick={() => openQrSetup(u || 'root')}
                     >
-                      📱 Setup Google Authenticator QR
+                      Setup Google Authenticator 2FA
                     </button>
                   </div>
                 </form>
               ) : (
-                <form onSubmit={handleCandidateSubmit} className="stack">
-                  <h2>Candidate Examination Login</h2>
-                  <p className="login-desc">Enter your assigned candidate ID and 6-digit security PIN.</p>
-
-                  {isInsideExamOS ? (
-                    <div className="login-kiosk">
-                      <span>🔒 ExamOS Hardware Kiosk Enclave Active</span>
-                      <span className="right">CAGE-WAYLAND</span>
-                    </div>
-                  ) : (
-                    <div className="login-denied">
-                      <div className="head">⚠️ ExamOS Kiosk Runtime Required</div>
-                      <div>Candidate examinations are restricted exclusively to the verified ExamOS bootable kiosk operating system. Standard desktop browsers and outside operating systems cannot access examination sessions.</div>
-                      <small>Please boot this workstation from the official ExamOS USB or ISO drive.</small>
+                <form onSubmit={handleCandidateSubmit} className="login-flow-form">
+                  {!isInsideExamOS && (
+                    <div className="kiosk-notice-banner">
+                      <div className="notice-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                          <line x1="12" y1="9" x2="12" y2="13"/>
+                          <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        ExamOS Hardware Kiosk Required
+                      </div>
+                      <p>
+                        Candidate examinations are restricted exclusively to workstations booted from the official ExamOS bootable USB drive. Standard web browsers cannot run candidate sessions.
+                      </p>
                     </div>
                   )}
 
-                  <label>
-                    Candidate Registration ID
+                  <div className="input-group">
+                    <label htmlFor="cand-id">Candidate Registration ID</label>
                     <input
-                      className="input"
+                      id="cand-id"
+                      className="polished-input"
                       value={candId}
                       onChange={(e) => setCandId(e.target.value.trim())}
                       maxLength={64}
-                      placeholder="e.g. CAND-001"
+                      placeholder="e.g. CAND-001 or roll number"
                       autoFocus
                     />
-                  </label>
+                  </div>
 
-                  <label>
-                    Examination Security PIN
+                  <div className="input-group">
+                    <label htmlFor="cand-pin">Examination Security PIN</label>
                     <input
-                      className="input"
+                      id="cand-pin"
+                      className="polished-input"
                       type="password"
                       value={candPin}
                       onChange={(e) => setCandPin(e.target.value)}
                       maxLength={32}
                       placeholder="6-digit examination PIN"
                     />
-                  </label>
+                  </div>
 
-                  {err && <div className="err" role="alert">{err}</div>}
+                  {err && (
+                    <div className="polished-error-banner" role="alert">
+                      <span>{err}</span>
+                    </div>
+                  )}
 
                   <button
-                    className="btn primary wide"
+                    className="polished-submit-btn"
                     disabled={busy || !candId || !candPin || !isInsideExamOS}
                   >
                     {!isInsideExamOS
@@ -462,197 +492,156 @@ export default function LoginPage() {
               )}
             </>
           ) : (
-            <div className="login-mfa">
-              <div className="login-head" style={{ marginBottom: '16px' }}>
-                <div style={{ width: '40px', height: '40px', borderRadius: '10px', backgroundColor: 'rgba(37, 99, 235, 0.12)', border: '1px solid rgba(37, 99, 235, 0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>
-                  🔐
-                </div>
-                <div>
-                  <h2 style={{ fontSize: '18px', margin: 0 }}>Two-Factor Authentication</h2>
-                  <div className="who" style={{ fontSize: '12px', color: '#64748b' }}>Signing in as: <strong>{pending}</strong></div>
-                </div>
+            /* Two-Factor Authentication View */
+            <div className="mfa-flow-view">
+              <div className="mfa-icon-badge">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
               </div>
-
-              <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '18px' }}>
-                {isRecoveryCode
-                  ? 'Enter one of your 8 single-use emergency recovery codes (e.g. ABCD-1234).'
-                  : 'Open the Google Authenticator app on your phone and enter the 6-digit verification code.'}
+              <h2 className="login-auth-title" style={{ marginTop: '12px' }}>Two-Factor Authentication</h2>
+              <p className="login-auth-subtitle">
+                Enter code for <strong>{pending}</strong> from your Google Authenticator app.
               </p>
 
-              <label style={{ fontSize: '12px', fontWeight: 700, color: '#0f172a', display: 'block', marginBottom: '6px' }}>
-                {isRecoveryCode ? 'Emergency Recovery Code' : 'Google Authenticator 6-Digit Code'}
-              </label>
+              <div className="input-group" style={{ marginTop: '20px' }}>
+                <input
+                  ref={mfaInputRef}
+                  className="polished-mfa-input"
+                  inputMode={isRecoveryCode ? 'text' : 'numeric'}
+                  value={code}
+                  onChange={(e) => {
+                    const val = isRecoveryCode
+                      ? e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 16)
+                      : e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                    setCode(val);
+                  }}
+                  autoComplete="one-time-code"
+                  placeholder={isRecoveryCode ? 'XXXX-XXXX' : '••••••'}
+                  autoFocus
+                />
+              </div>
 
-              <input
-                ref={mfaInputRef}
-                className="code-input"
-                inputMode={isRecoveryCode ? 'text' : 'numeric'}
-                value={code}
-                onChange={(e) => {
-                  const val = isRecoveryCode
-                    ? e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 16)
-                    : e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-                  setCode(val);
-                }}
-                autoComplete="one-time-code"
-                placeholder={isRecoveryCode ? 'XXXX-XXXX' : '000000'}
-                style={{
-                  fontSize: '22px',
-                  letterSpacing: '8px',
-                  textAlign: 'center',
-                  fontFamily: 'monospace',
-                  fontWeight: 650,
-                  padding: '12px',
-                  width: '100%',
-                  borderRadius: '10px',
-                  border: '1px solid #cbd5e1',
-                  background: '#ffffff',
-                  marginBottom: '14px',
-                }}
-              />
-
-              {err && <div className="err" role="alert">{err}</div>}
+              {err && <div className="polished-error-banner">{err}</div>}
 
               <button
-                className="btn primary wide"
+                className="polished-submit-btn"
                 disabled={busy || code.length < (isRecoveryCode ? 8 : 6)}
                 onClick={handleMfaSubmit}
+                style={{ marginTop: '16px' }}
               >
                 {busy ? 'Verifying Code…' : 'Verify & Access Console'}
               </button>
 
-              <div className="bottom" style={{ marginTop: '16px' }}>
+              <div className="mfa-footer-actions">
                 <button
                   type="button"
-                  className="toggle-link"
+                  className="text-action-link"
                   onClick={() => {
                     setIsRecoveryCode(!isRecoveryCode);
                     setCode('');
                     setErr('');
                   }}
-                  style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '12px', padding: 0 }}
                 >
-                  {isRecoveryCode ? '← Use 6-Digit Code from Authenticator App' : 'Lost your phone? Use Emergency Recovery Code'}
+                  {isRecoveryCode ? 'Use 6-digit Authenticator Code' : 'Use emergency recovery code'}
                 </button>
-                <div className="pair" style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
-                  <button
-                    type="button"
-                    onClick={() => window.location.reload()}
-                    className="ghost"
-                    style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 0, fontSize: '12px' }}
-                  >
-                    ← Sign in as different user
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openQrSetup(pending)}
-                    className="ghost"
-                    style={{ background: 'none', border: 'none', color: '#10b981', cursor: 'pointer', padding: 0, fontSize: '12px' }}
-                  >
-                    Scan QR Code on Phone
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="text-secondary-link"
+                >
+                  ← Sign in as different user
+                </button>
               </div>
             </div>
           )}
 
-          {/* Google Authenticator Enrollment Modal */}
+          {/* Minimalist Google Authenticator Setup Modal */}
           {showQrModal && (
-            <div className="qr-modal">
-              <div className="qr-card">
-                <div className="qr-head">
+            <div className="polished-modal-backdrop">
+              <div className="polished-modal-dialog">
+                <div className="modal-header-row">
                   <div>
-                    <h3>📱 Google Authenticator Setup</h3>
-                    <div className="enroll">Enrolling account: <strong>{setupUsername}</strong></div>
+                    <h3 className="modal-title">Configure Google Authenticator</h3>
+                    <p className="modal-sub">Account: <strong>{setupUsername}</strong></p>
                   </div>
-                  <button type="button" className="close-btn" onClick={() => setShowQrModal(false)}>×</button>
+                  <button type="button" className="modal-close-icon" onClick={() => setShowQrModal(false)}>
+                    ×
+                  </button>
                 </div>
 
                 {qrLoading ? (
-                  <div style={{ padding: '40px', textAlign: 'center', color: '#64748b' }}>
-                    <div style={{ fontSize: '14px', marginBottom: '8px' }}>Generating cryptographic key…</div>
-                  </div>
+                  <div className="modal-loader">Generating cryptographic secret…</div>
                 ) : qrData ? (
-                  <div>
-                    <div className="qr-step">
-                      <div className="qr-step-title">Step 1: Scan with Google Authenticator on your phone</div>
-                      <div className="qr-frame" style={{ display: 'flex', justifyContent: 'center', padding: '16px' }}>
-                        <QrCodeSvg value={qrData.otpauth_url} size={220} />
-                      </div>
-                      <div className="qr-hint" style={{ marginTop: '10px' }}>
-                        Open <strong>Google Authenticator</strong> → tap <strong>+</strong> → tap <strong>Scan a QR code</strong>
+                  <div className="modal-flow-content">
+                    <div className="modal-step-section">
+                      <span className="step-tag">Step 1</span>
+                      <p className="step-instruction">Scan this QR code with Google Authenticator on your mobile phone:</p>
+                      <div className="qr-render-box">
+                        <QrCodeSvg value={qrData.otpauth_url} size={200} />
                       </div>
                     </div>
 
-                    <div style={{ marginBottom: '16px' }}>
-                      <div className="qr-step-title">Or enter setup key manually in Google Authenticator:</div>
-                      <div className="qr-secret">
-                        <input readOnly value={qrData.secret} style={{ letterSpacing: '1px', fontWeight: 600 }} />
+                    <div className="modal-step-section">
+                      <span className="step-tag">Step 2</span>
+                      <p className="step-instruction">Manual setup key (if camera is unavailable):</p>
+                      <div className="secret-copy-box">
+                        <code>{qrData.secret}</code>
                         <button
                           type="button"
-                          className="btn sm"
+                          className="chip-btn"
                           onClick={() => copyToClipboard(qrData.secret, setCopiedKey)}
                         >
-                          {copiedKey ? '✓ Copied' : 'Copy Key'}
+                          {copiedKey ? 'Copied' : 'Copy Key'}
                         </button>
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
-                        In Google Authenticator: tap <strong>+</strong> → <strong>Enter a setup key</strong> → Account: <code>{qrData.username || 'root'}</code>, Key: paste the code above, Type: <strong>Time-based</strong>.
                       </div>
                     </div>
 
-                    <div className="qr-step warn">
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                        <div className="qr-step-title" style={{ color: '#b45309' }}>Step 2: Save Emergency Recovery Codes</div>
-                        <div style={{ display: 'flex', gap: '4px' }}>
+                    <div className="modal-step-section recovery-section">
+                      <div className="label-row">
+                        <span className="step-tag">Step 3</span>
+                        <div className="recovery-actions">
                           <button
                             type="button"
-                            className="btn sm mini"
+                            className="chip-btn"
                             onClick={() => copyToClipboard(qrData.recovery_codes.join('\n'), setCopiedCodes)}
                           >
-                            {copiedCodes ? '✓ Copied' : 'Copy All'}
+                            {copiedCodes ? 'Copied' : 'Copy Codes'}
                           </button>
                           <button
                             type="button"
-                            className="btn sm mini"
+                            className="chip-btn"
                             onClick={downloadRecoveryCodes}
                           >
                             Download .txt
                           </button>
                         </div>
                       </div>
-                      <div className="recovery">
+                      <p className="step-instruction">Single-use emergency recovery codes:</p>
+                      <div className="recovery-codes-flow">
                         {qrData.recovery_codes.map((rc, idx) => (
-                          <div key={idx}><span className="idx">{idx + 1}.</span> {rc}</div>
+                          <span key={idx} className="recovery-code-pill">{rc}</span>
                         ))}
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#b45309', marginTop: '6px' }}>
-                        Each code is single-use. If you ever lose your phone, a recovery code will restore access.
                       </div>
                     </div>
 
-                    <div className="qr-step verify">
-                      <div className="verify-title">Step 3: Enter the 6-digit code from Google Authenticator</div>
-                      <div className="verify-row">
+                    <div className="modal-step-section verify-section">
+                      <span className="step-tag">Step 4</span>
+                      <p className="step-instruction">Enter the 6-digit code shown in Google Authenticator:</p>
+                      <div className="verify-input-row">
                         <input
+                          className="polished-input"
                           inputMode="numeric"
                           maxLength={6}
                           placeholder="000000"
                           value={confirmCode}
                           onChange={(e) => setConfirmCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                          style={{
-                            fontSize: '18px',
-                            letterSpacing: '5px',
-                            textAlign: 'center',
-                            fontFamily: 'monospace',
-                            fontWeight: 650,
-                            padding: '10px',
-                            flex: 1,
-                          }}
+                          style={{ textAlign: 'center', letterSpacing: '4px', fontSize: '18px', fontWeight: 700 }}
                         />
                         <button
                           type="button"
-                          className="btn primary verify-btn"
+                          className="polished-submit-btn compact"
                           disabled={busy || confirmCode.length < 6}
                           onClick={handleConfirmMfa}
                         >
