@@ -991,16 +991,17 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
 .login-flow-container {
   min-height: 100vh;
   display: flex;
-  background: #ffffff;
+  background: #F6F2ED;
   color: var(--ink);
   overflow-x: hidden;
 }
 
 /* Left Column: Sophisticated Editorial Showcase */
 .login-editorial-showcase {
-  flex: 1 1 52%;
-  max-width: 52%;
-  background: linear-gradient(135deg, #1C1221 0%, #302337 50%, #44324D 100%);
+  flex: 1 1 50%;
+  max-width: 50%;
+  background: #302337;
+  background: linear-gradient(145deg, #1E1424 0%, #302337 55%, #3F2E47 100%);
   color: #F6F2ED;
   padding: 64px 72px;
   display: flex;
@@ -1008,30 +1009,31 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
   justify-content: space-between;
   position: relative;
   overflow: hidden;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(220, 213, 210, 0.15);
 }
 
+/* 45° Open Aperture Architectural Motif in background */
 .login-editorial-showcase::before {
   content: '';
   position: absolute;
-  top: -20%;
-  left: -10%;
-  width: 600px;
-  height: 600px;
-  background: radial-gradient(circle, rgba(181, 79, 52, 0.20) 0%, transparent 70%);
-  border-radius: 50%;
+  top: -80px;
+  right: -80px;
+  width: 280px;
+  height: 280px;
+  border: 36px solid rgba(181, 79, 52, 0.14);
+  transform: rotate(45deg);
   pointer-events: none;
 }
 
 .login-editorial-showcase::after {
   content: '';
   position: absolute;
-  bottom: -20%;
-  right: -10%;
-  width: 550px;
-  height: 550px;
-  background: radial-gradient(circle, rgba(117, 111, 121, 0.18) 0%, transparent 70%);
-  border-radius: 50%;
+  bottom: -100px;
+  left: -100px;
+  width: 320px;
+  height: 320px;
+  border: 44px solid rgba(117, 111, 121, 0.12);
+  transform: rotate(45deg);
   pointer-events: none;
 }
 
@@ -1199,25 +1201,43 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
   opacity: 0.4;
 }
 
-/* Right Column: Clean Light-Theme Form */
+/* Right Column: Clean Architectural Form Container */
 .login-form-container {
-  flex: 1 1 48%;
-  max-width: 48%;
+  flex: 1 1 50%;
+  max-width: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 48px 64px;
-  background: #ffffff;
+  background: #F6F2ED;
   overflow-y: auto;
 }
 
 .login-form-inner {
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
+  background: #FFFFFF;
+  border: 1px solid #DCD5D2;
+  border-radius: 16px;
+  padding: 40px;
+  box-shadow: 0 12px 36px rgba(48, 35, 55, 0.05);
+  position: relative;
+}
+
+/* 45° corner aperture cut on form card */
+.login-form-inner::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(225deg, #B54F34 0%, #B54F34 50%, transparent 50%);
+  border-top-right-radius: 16px;
 }
 
 .login-form-brand {
-  margin-bottom: 28px;
+  margin-bottom: 24px;
   display: flex;
   align-items: center;
 }
@@ -1795,10 +1815,10 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
 
 
 /* ---------- Login (polished) ---------- */
-.loginwrap { min-height: 100vh; display: grid; place-items: center; padding: 28px 18px; background: radial-gradient(1200px 600px at 50% -10%, #e8effc 0%, #f6f8fb 55%, #eef2f7 100%); }
+.loginwrap { min-height: 100vh; display: grid; place-items: center; padding: 28px 18px; background: var(--porcelain); }
 .login { width: min(460px, 100%); background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 34px 36px; box-shadow: var(--shadow2); }
 .login .brand { display: flex; align-items: center; gap: 9px; font-size: 20px; font-weight: 800; color: var(--ink); margin: 0 0 6px; }
-.login .brand .logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 15px; background: linear-gradient(135deg, var(--brand), var(--violet)); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35); flex: none; }
+.login .brand .logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--copper); font-weight: 800; font-size: 15px; background: var(--aubergine); box-shadow: 0 4px 12px rgba(48, 35, 55, 0.25); flex: none; }
 .login-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
 .login-tag { font-size: 10px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mut2); margin: 12px 0 22px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .login-tag .tpm { font-size: 10px; font-family: var(--mono); opacity: 0.7; }

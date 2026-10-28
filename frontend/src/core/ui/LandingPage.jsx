@@ -187,7 +187,8 @@ export default function LandingPage() {
 
             <nav className="sppio-nav" aria-label="Primary navigation">
               <a href="#capabilities" className="sppio-nav-item">Capabilities</a>
-              <a href="#technology" className="sppio-nav-item">Technology</a>
+              <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
+              <Link to="/solutions" className="sppio-nav-item">Solutions</Link>
               <a href="#deployments" className="sppio-nav-item">Deployments</a>
               <a href="#company" className="sppio-nav-item">Company</a>
               <a href="#contact" className="sppio-nav-item">Briefing</a>
@@ -223,7 +224,8 @@ export default function LandingPage() {
           <div className="sppio-mobile-drawer" style={{ background: '#F6F2ED', borderBottom: '1px solid #DCD5D2', padding: '20px 32px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <a href="#capabilities" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Capabilities</a>
-              <a href="#technology" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Technology</a>
+              <Link to="/architecture" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Architecture</Link>
+              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Solutions</Link>
               <a href="#deployments" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Deployments</a>
               <a href="#company" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Company</a>
               <a href="#contact" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Request Briefing</a>
@@ -684,12 +686,12 @@ export default function LandingPage() {
             </div>
 
             <div className="sppio-footer-col">
-              <h5>Platform</h5>
+              <h5>Public Architecture</h5>
               <ul className="sppio-footer-links">
-                <li><a href="#capabilities">Hardware Attestation</a></li>
-                <li><a href="#capabilities">Cage-Wayland Enclave</a></li>
-                <li><a href="#capabilities">Immutable Audit Ledger</a></li>
-                <li><a href="#capabilities">Fleet Synchronization</a></li>
+                <li><Link to="/landing">Platform Overview</Link></li>
+                <li><Link to="/architecture">Silicon Attestation</Link></li>
+                <li><Link to="/solutions">Enterprise Solutions</Link></li>
+                <li><a href="#capabilities">Enclave Capabilities</a></li>
               </ul>
             </div>
 

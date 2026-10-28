@@ -4,6 +4,8 @@ import Shell from './core/ui/Shell';
 import ProtectedRoute from './core/auth/ProtectedRoute';
 import LoginPage from './modules/auth/LoginPage';
 import LandingPage from './core/ui/LandingPage';
+import ArchitecturePage from './core/ui/ArchitecturePage';
+import SolutionsPage from './core/ui/SolutionsPage';
 import { ROUTES, LEGACY, GROUPS } from './core/nav';
 import { useAuth } from './core/auth/AuthContext';
 import { can } from './core/security/rbac';
@@ -54,6 +56,8 @@ export default function App() {
           {/* Direct redirect to login on root visit */}
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/landing" element={<LandingPage />} />
+          <Route path="/architecture" element={<ArchitecturePage />} />
+          <Route path="/solutions" element={<SolutionsPage />} />
 
           {/* Public auth routes */}
           <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
