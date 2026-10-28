@@ -1,9 +1,9 @@
-NAME="ExamOS"
-PRETTY_NAME="ExamOS 0.1.0 Enterprise Security Edition"
-ID=examos
+NAME="SPPIO-Isolation™ Base OS"
+PRETTY_NAME="SPPIO-Isolation™ Base OS 2.18 (Open Aperture Enclave)"
+ID=sppio-isolation
 ID_LIKE=debian
-VERSION="0.1.0"
-VERSION_ID="0.1.0"
-HOME_URL="https://examos.security"
-SUPPORT_URL="https://examos.security/support"
-BUG_REPORT_URL="https://examos.security/bugs"
+VERSION="2.18.4"
+VERSION_ID="2.18.4"
+HOME_URL="https://sppio.systems"
+SUPPORT_URL="https://sppio.systems/support"
+BUG_REPORT_URL="https://sppio.systems/bugs"

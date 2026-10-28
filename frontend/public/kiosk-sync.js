@@ -1,10 +1,10 @@
 /**
- * ExamOS Kiosk Production-Grade Dynamic Synchronization Engine
- * Runs continuously inside the ExamOS Cage Wayland Chromium kiosk session.
+ * SPPIO-Isolation™ Kiosk Production-Grade Dynamic Synchronization Engine
+ * Runs continuously inside the SPPIO-Kiosk™ Cage Wayland Chromium kiosk session.
  * Features:
  *  - Multi-Gateway Auto-Discovery & Zero-Config Failover (127.0.0.1, 192.168.19.1, 10.0.2.2)
  *  - Real-Time Command Execution (RELOAD, DISPATCH, LOCK, UNLOCK, PING)
- *  - Dynamic Exam URL Redirection with Visual Countdown Toast
+ *  - Dynamic Assessment URL Redirection with Visual Countdown Toast
  *  - Impenetrable Emergency Terminal Lockdown Modal with Controller Announcements
  *  - High-Resolution Live Telemetry & Heartbeat Reporting (focus, latency, battery)
  */
@@ -20,7 +20,7 @@
   let dispatchToast = null;
   let consecutiveFailures = 0;
 
-  // Candidate gateway endpoints to probe for the ExamOS C security server
+  // Candidate gateway endpoints to probe for the SPPIO-Core™ security server
   const GATEWAY_CANDIDATES = [
     'http://127.0.0.1:8895',
     'http://192.168.19.1:8895',
@@ -67,7 +67,7 @@
         if (res.ok) {
           activeGateway = base;
           consecutiveFailures = 0;
-          console.log('[ExamOS-Kiosk] Active gateway discovered:', activeGateway);
+          console.log('[SPPIO-Kiosk] Active gateway discovered:', activeGateway);
           return activeGateway;
         }
       } catch (err) {
@@ -81,7 +81,7 @@
   function ensureSyncPill() {
     if (!syncPill && document.body) {
       syncPill = document.createElement('div');
-      syncPill.id = 'examos-kiosk-live-pill';
+      syncPill.id = 'sppio-kiosk-live-pill';
       syncPill.style.cssText = `
         position: fixed;
         top: 10px;
@@ -90,10 +90,10 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        background: rgba(9, 14, 26, 0.94);
-        border: 1px solid #1e293b;
-        color: #f1f5f9;
-        padding: 5px 14px;
+        background: rgba(30, 20, 36, 0.94);
+        border: 1px solid #3D2C44;
+        color: #F6F2ED;
+        padding: 6px 14px;
         border-radius: 9999px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         font-size: 11px;
@@ -113,27 +113,27 @@
 
     if (connected) {
       syncPill.innerHTML = `
-        <span style="width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 10px #22c55e; display: inline-block;"></span>
-        <span>Gateway: <b style="color:#38bdf8">SYNC LIVE</b></span>
-        <span style="color:#475569">|</span>
-        <span style="color:#94a3b8">${latencyMs}ms</span>
-        <span style="color:#475569">|</span>
-        <span style="color:#a7f3d0">TPM: ${tpmStatus || 'ACTIVE'}</span>
-        ${examId ? `<span style="color:#475569">|</span><span style="color:#cbd5e1">${examId}</span>` : ''}
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #10B981; box-shadow: 0 0 10px #10B981; display: inline-block;"></span>
+        <span>Gateway: <b style="color:#B54F34">SPPIO-SYNC LIVE</b></span>
+        <span style="color:#5A4A62">|</span>
+        <span style="color:#DCD5D2">${latencyMs}ms</span>
+        <span style="color:#5A4A62">|</span>
+        <span style="color:#34D399">TPM: ${tpmStatus || 'ACTIVE'}</span>
+        ${examId ? `<span style="color:#5A4A62">|</span><span style="color:#DCD5D2">${examId}</span>` : ''}
       `;
-      syncPill.style.borderColor = '#0284c7';
+      syncPill.style.borderColor = '#B54F34';
     } else {
       syncPill.innerHTML = `
-        <span style="width: 7px; height: 7px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; display: inline-block;"></span>
-        <span style="color:#f87171">Gateway Reconnecting...</span>
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #EF4444; box-shadow: 0 0 8px #EF4444; display: inline-block;"></span>
+        <span style="color:#FCA5A5">Gateway Reconnecting...</span>
       `;
-      syncPill.style.borderColor = '#dc2626';
+      syncPill.style.borderColor = '#DC2626';
     }
   }
 
   function flashPillGlow() {
     if (!syncPill) return;
-    syncPill.style.boxShadow = '0 0 25px #0284c7';
+    syncPill.style.boxShadow = '0 0 25px #B54F34';
     setTimeout(() => {
       if (syncPill) syncPill.style.boxShadow = '0 8px 24px rgba(0,0,0,0.6)';
     }, 600);
@@ -147,43 +147,43 @@
     if (locked) {
       if (!lockOverlay) {
         lockOverlay = document.createElement('div');
-        lockOverlay.id = 'examos-lockdown-overlay';
+        lockOverlay.id = 'sppio-lockdown-overlay';
         lockOverlay.style.cssText = `
           position: fixed;
           top: 0; left: 0; right: 0; bottom: 0;
-          background: rgba(8, 12, 22, 0.98);
+          background: rgba(24, 15, 29, 0.98);
           z-index: 99999999;
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          color: #f8fafc;
+          color: #F6F2ED;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           text-align: center;
           padding: 32px;
           user-select: none;
         `;
         lockOverlay.innerHTML = `
-          <div style="width: 80px; height: 80px; border-radius: 50%; background: rgba(220,38,38,0.18); border: 2px solid #ef4444; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 24px; color: #ef4444; box-shadow: 0 0 30px rgba(239,68,68,0.4);">
+          <div style="width: 80px; height: 80px; border-radius: 50%; background: rgba(181,79,52,0.18); border: 2px solid #B54F34; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 24px; color: #B54F34; box-shadow: 0 0 30px rgba(181,79,52,0.4);">
             &#128274;
           </div>
-          <h1 style="font-size: 32px; font-weight: 800; color: #f87171; margin-bottom: 14px; letter-spacing: -0.02em;">
-            EMERGENCY WORKSTATION LOCKDOWN
+          <h1 style="font-size: 32px; font-weight: 800; color: #F87171; margin-bottom: 14px; letter-spacing: -0.02em;">
+            SPPIO-PHYSICALGUARD™ ENCLAVE LOCKDOWN
           </h1>
-          <p id="examos-lock-reason" style="font-size: 16px; color: #cbd5e1; max-width: 580px; line-height: 1.6; margin-bottom: 28px;">
-            ${reason || 'The exam controller has enforced an appliance security lockdown.'}
+          <p id="sppio-lock-reason" style="font-size: 16px; color: #DCD5D2; max-width: 580px; line-height: 1.6; margin-bottom: 28px;">
+            ${reason || 'The SPPIO security controller has enforced an appliance hardware lockdown.'}
           </p>
-          <div style="background: #111a2e; border: 1px solid #1e293b; padding: 14px 28px; border-radius: 10px; font-size: 13px; color: #94a3b8; display: flex; gap: 16px;">
-            <span>Terminal: <b style="color: #38bdf8">DEV-KIOSK-01</b></span>
+          <div style="background: #302337; border: 1px solid #4A3852; padding: 14px 28px; border-radius: 10px; font-size: 13px; color: #DCD5D2; display: flex; gap: 16px;">
+            <span>Terminal: <b style="color: #B54F34">SPPIO-KIOSK-01</b></span>
             <span>&bull;</span>
-            <span style="color: #f59e0b">All Inputs Suspended</span>
+            <span style="color: #F59E0B">All Inputs Suspended</span>
             <span>&bull;</span>
             <span>Do Not Power Off</span>
           </div>
         `;
         document.body.appendChild(lockOverlay);
       }
-      const reasonEl = document.getElementById('examos-lock-reason');
+      const reasonEl = document.getElementById('sppio-lock-reason');
       if (reasonEl && reason) reasonEl.textContent = reason;
       lockOverlay.style.display = 'flex';
     } else if (lockOverlay) {
@@ -200,30 +200,30 @@
       bottom: 28px;
       left: 50%;
       transform: translateX(-50%);
-      background: linear-gradient(135deg, #0284c7 0%, #1e40af 100%);
-      color: #ffffff;
+      background: linear-gradient(135deg, #302337 0%, #1E1424 100%);
+      color: #F6F2ED;
       padding: 18px 32px;
       border-radius: 14px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       box-shadow: 0 20px 50px rgba(0,0,0,0.7);
       z-index: 9999999;
       text-align: center;
-      border: 1px solid rgba(255,255,255,0.25);
+      border: 1px solid rgba(181, 79, 52, 0.6);
       font-size: 15px;
       font-weight: 600;
-      animation: examosSlideUp 0.3s ease;
+      animation: sppioSlideUp 0.3s ease;
     `;
     dispatchToast.innerHTML = `
-      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.9; margin-bottom: 4px; color: #a7f3d0;">Examination Dispatched by Controller</div>
-      <div style="font-size: 17px; font-weight: 700;">${examName || 'Candidate Examination Session'}</div>
-      <div style="font-size: 13px; opacity: 0.85; margin-top: 6px;">Launching exam portal in <b id="examos-redir-count" style="color:#fef08a">3</b>s...</div>
+      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.9; margin-bottom: 4px; color: #B54F34;">Assessment Dispatched by Controller</div>
+      <div style="font-size: 17px; font-weight: 700;">${examName || 'Candidate Evaluation Session'}</div>
+      <div style="font-size: 13px; opacity: 0.85; margin-top: 6px;">Launching assessment portal in <b id="sppio-redir-count" style="color:#B54F34">3</b>s...</div>
     `;
     document.body.appendChild(dispatchToast);
 
     let count = 3;
     const interval = setInterval(() => {
       count--;
-      const el = document.getElementById('examos-redir-count');
+      const el = document.getElementById('sppio-redir-count');
       if (el) el.textContent = count;
       if (count <= 0) {
         clearInterval(interval);
@@ -259,7 +259,7 @@
 
       // 2. Handle Emergency Lock
       if (data.emergency_lock) {
-        setEmergencyLock(true, data.announcement || 'Terminal locked by exam controller');
+        setEmergencyLock(true, data.announcement || 'Terminal locked by controller');
       } else {
         setEmergencyLock(false);
       }
@@ -269,11 +269,11 @@
         lastCommandSeq = data.command_seq;
         flashPillGlow();
         if (data.command === 'RELOAD') {
-          console.log('[ExamOS-Kiosk] RELOAD command received from server');
+          console.log('[SPPIO-Kiosk] RELOAD command received from server');
           window.location.reload();
           return;
         } else if (data.command === 'PING') {
-          console.log('[ExamOS-Kiosk] PING command acknowledged');
+          console.log('[SPPIO-Kiosk] PING command acknowledged');
         }
       }
 
@@ -282,7 +282,7 @@
         const currentNorm = window.location.href.split('?')[0].replace(/\/+$/, '');
         const targetNorm = data.exam_url.split('?')[0].replace(/\/+$/, '');
         if (currentNorm !== targetNorm && !window.location.href.includes('/exam') && !window.location.href.includes('/workbench')) {
-          console.log('[ExamOS-Kiosk] Dynamic exam URL transition triggered:', data.exam_url);
+          console.log('[SPPIO-Kiosk] Dynamic assessment URL transition triggered:', data.exam_url);
           triggerExamTransition(data.exam_url, data.exam_name);
         }
       }
@@ -292,7 +292,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          terminal_id: 'DEV-KIOSK-01',
+          terminal_id: 'SPPIO-KIOSK-01',
           ip: window.location.hostname || '127.0.0.1',
           active_url: window.location.href,
           status: isLocked ? 'LOCKDOWN' : (window.location.href.includes('/exam') ? 'IN_EXAM' : 'ONLINE'),

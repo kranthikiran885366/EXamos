@@ -3,21 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ExamOS — Security Lockdown Diagnostic</title>
+  <title>SPPIO-Isolation™ — Security Lockdown Diagnostic</title>
   <style>
     :root {
-      --bg-primary: #0b0f19;
-      --bg-secondary: #111827;
-      --card-bg: rgba(17, 24, 39, 0.9);
-      --card-border: #374151;
-      --accent-red: #ef4444;
-      --accent-red-glow: rgba(239, 68, 68, 0.25);
-      --accent-yellow: #f59e0b;
-      --accent-green: #10b981;
-      --accent-blue: #3b82f6;
-      --text-main: #f9fafb;
-      --text-secondary: #9ca3af;
-      --text-muted: #6b7280;
+      --bg-primary: #1E1424;
+      --bg-secondary: #302337;
+      --card-bg: rgba(48, 35, 55, 0.95);
+      --card-border: #48394F;
+      --accent-copper: #B54F34;
+      --accent-copper-glow: rgba(181, 79, 52, 0.35);
+      --accent-red: #E05252;
+      --accent-green: #34D399;
+      --accent-yellow: #FBBF24;
+      --text-main: #F6F2ED;
+      --text-secondary: #C3B7C6;
+      --text-muted: #8C8490;
+      --porcelain: #F6F2ED;
     }
 
     * {
@@ -48,43 +49,60 @@
     }
 
     .header-banner {
-      background: linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(17, 24, 39, 0.8) 100%);
-      border: 1px solid var(--accent-red);
-      border-radius: 12px;
-      padding: 1.5rem 2rem;
+      background: linear-gradient(135deg, rgba(181, 79, 52, 0.25) 0%, rgba(48, 35, 55, 0.9) 100%);
+      border: 1px solid var(--accent-copper);
+      border-radius: 14px;
+      padding: 1.75rem 2rem;
       display: flex;
       align-items: center;
       gap: 1.5rem;
-      box-shadow: 0 0 25px var(--accent-red-glow);
+      box-shadow: 0 0 30px var(--accent-copper-glow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .header-banner::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(225deg, var(--accent-copper) 0%, var(--accent-copper) 50%, transparent 50%);
     }
 
     .icon-lock {
-      font-size: 3rem;
-      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
 
     .header-text h1 {
       font-size: 1.75rem;
-      font-weight: 700;
-      color: #fee2e2;
+      font-weight: 800;
+      color: #FFFFFF;
       margin-bottom: 0.35rem;
+      letter-spacing: -0.02em;
     }
 
     .header-text p {
       font-size: 0.95rem;
       color: var(--text-secondary);
+      line-height: 1.5;
     }
 
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 1.5rem;
+      border-radius: 14px;
+      padding: 1.75rem;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
     }
 
     .card-title {
       font-size: 1.15rem;
-      font-weight: 600;
+      font-weight: 700;
       color: var(--text-main);
       margin-bottom: 1rem;
       display: flex;
@@ -94,29 +112,29 @@
 
     .badge {
       display: inline-block;
-      padding: 0.25rem 0.75rem;
+      padding: 0.3rem 0.85rem;
       border-radius: 9999px;
       font-size: 0.8rem;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
 
     .badge-fail {
-      background: rgba(239, 68, 68, 0.2);
-      color: #fca5a5;
+      background: rgba(224, 82, 82, 0.2);
+      color: #FCA5A5;
       border: 1px solid var(--accent-red);
     }
 
     .badge-pass {
-      background: rgba(16, 185, 129, 0.2);
-      color: #6ee7b7;
+      background: rgba(52, 211, 153, 0.2);
+      color: #6EE7B7;
       border: 1px solid var(--accent-green);
     }
 
     .badge-warn {
-      background: rgba(245, 158, 11, 0.2);
-      color: #fde68a;
+      background: rgba(251, 191, 36, 0.2);
+      color: #FDE68A;
       border: 1px solid var(--accent-yellow);
     }
 
@@ -128,31 +146,35 @@
     }
 
     th, td {
-      padding: 0.75rem 1rem;
+      padding: 0.85rem 1rem;
       text-align: left;
-      border-bottom: 1px solid rgba(55, 65, 81, 0.6);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     th {
-      color: var(--text-muted);
-      font-size: 0.8rem;
+      color: #FFAE99;
+      font-size: 0.75rem;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      background: rgba(31, 41, 55, 0.3);
+      letter-spacing: 0.08em;
+      background: rgba(0, 0, 0, 0.2);
     }
 
     tr:hover {
-      background: rgba(31, 41, 55, 0.4);
+      background: rgba(255, 255, 255, 0.03);
     }
 
     .remediation-box {
-      background: rgba(31, 41, 55, 0.5);
-      border-left: 4px solid var(--accent-yellow);
-      padding: 1rem 1.25rem;
+      background: rgba(0, 0, 0, 0.25);
+      border-left: 4px solid var(--accent-copper);
+      padding: 1.25rem 1.5rem;
       border-radius: 0 8px 8px 0;
       font-size: 0.9rem;
-      color: #d1d5db;
-      line-height: 1.5;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .remediation-box strong {
+      color: #FFFFFF;
     }
 
     .footer-bar {
@@ -172,10 +194,17 @@
 <body>
   <div class="container">
     <div class="header-banner">
-      <div class="icon-lock">🛡️</div>
+      <div class="icon-lock">
+        <svg width="48" height="48" viewBox="0 0 200 200" fill="none">
+          <path d="M 64 30 L 146 30 L 110 66 L 64 66 Z" fill="#B54F34"/>
+          <path d="M 170 64 L 170 146 L 134 110 L 134 64 Z" fill="#B54F34"/>
+          <path d="M 136 170 L 54 170 L 90 134 L 136 134 Z" fill="#B54F34"/>
+          <path d="M 30 136 L 30 54 L 66 90 L 66 136 Z" fill="#B54F34"/>
+        </svg>
+      </div>
       <div class="header-text">
-        <h1>ExamOS Security Lockdown Triggered</h1>
-        <p>Appliance integrity checks prevented examination launch. All exam security protections remain active.</p>
+        <h1>SPPIO Station Security Lockdown Triggered</h1>
+        <p>SPPIO-PhysicalGuard™ and SPPIO-TrustEngine™ pre-flight integrity assertions prevented station admission. All enclave isolation protections remain strictly active.</p>
       </div>
     </div>
 
@@ -185,7 +214,7 @@
         <span class="badge badge-fail" id="overall-badge">FAIL-CLOSED LOCKDOWN</span>
       </div>
       <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-        The system executes 18 mandatory runtime security assertions prior to granting kiosk access. Review the diagnostics below:
+        The SPPIO-Isolation™ Base OS executes mandatory runtime assertions prior to granting kiosk session admission. Review the diagnostics below:
       </p>
 
       <table>
@@ -193,7 +222,7 @@
           <tr>
             <th style="width: 15%;">Control ID</th>
             <th style="width: 15%;">Status</th>
-            <th style="width: 70%;">Diagnostic Detail & Root Cause</th>
+            <th style="width: 70%;">Diagnostic Detail &amp; Root Cause</th>
           </tr>
         </thead>
         <tbody id="results-table">
@@ -207,15 +236,15 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Remediation & Proctor Instructions</div>
+      <div class="card-title">Remediation &amp; Supervisory Instructions</div>
       <div class="remediation-box">
-        <strong>Hardware Examination Stations:</strong> Ensure physical TPM 2.0 is enabled in UEFI/BIOS settings and Secure Boot is enabled. Disconnect any non-approved USB peripherals.<br><br>
-        <strong>Development & Appliance Test Environments:</strong> If running within VMware Workstation, verify the host ExamOS backend server is listening at <span class="mono">http://192.168.19.1:8895</span> and assign an active exam via the Administrator Console.
+        <strong>Hardware Examination &amp; Recruitment Stations:</strong> Ensure physical hardware silicon attestation is enabled in UEFI/BIOS settings and Secure Boot is active. Disconnect any unapproved secondary displays, HDMI splitters, or external USB storage endpoints.<br><br>
+        <strong>Development &amp; Appliance Test Environments:</strong> If running within a virtualized appliance, verify the SPPIO backend server is listening at <span class="mono">http://192.168.19.1:8895</span> and assign an active assessment payload via the SPPIO-Command™ Console.
       </div>
     </div>
 
     <div class="footer-bar">
-      <span id="ts-field">ExamOS Core Security Supervisor</span>
+      <span id="ts-field">SPPIO-Core™ Security Supervisor · Open Aperture Architecture</span>
       <span>Terminal Diagnostic: Press <span class="mono">Ctrl + Alt + F2</span> for admin console</span>
     </div>
   </div>
@@ -228,7 +257,6 @@
         const data = await response.json();
         renderResults(data);
       } catch (e) {
-        // Fallback to reading reason from known state
         renderFallback();
       }
     }
@@ -244,9 +272,9 @@
         const tr = document.createElement('tr');
         const badgeClass = item.status === 'PASS' ? 'badge-pass' : (item.status === 'FAIL' ? 'badge-fail' : 'badge-warn');
         tr.innerHTML = `
-          <td class="mono" style="font-weight: 600;">${item.id}</td>
+          <td class="mono" style="font-weight: 600; color: #FFFFFF;">${item.id}</td>
           <td><span class="badge ${badgeClass}">${item.status}</span></td>
-          <td style="color: ${item.status === 'FAIL' ? '#fca5a5' : 'inherit'};">${item.detail}</td>
+          <td style="color: ${item.status === 'FAIL' ? '#FCA5A5' : 'inherit'};">${item.detail}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -258,19 +286,19 @@
       const tbody = document.getElementById('results-table');
       tbody.innerHTML = `
         <tr>
-          <td class="mono">V-01</td>
+          <td class="mono" style="color: #FFFFFF;">V-01</td>
           <td><span class="badge badge-warn">STANDBY</span></td>
-          <td>EXAM_URL pending assignment by Examination Administrator Dashboard.</td>
+          <td>ASSESSMENT_URL pending dispatch by SPPIO-Command™ Console.</td>
         </tr>
         <tr>
-          <td class="mono">V-06</td>
+          <td class="mono" style="color: #FFFFFF;">V-06</td>
           <td><span class="badge badge-warn">VIRTUAL</span></td>
-          <td>TPM 2.0 Silicon not present on virtualized bus (VMware Workstation detected). Hardware enforcement active when booted on bare metal.</td>
+          <td>Physical hardware silicon root not present on virtualized bus. Full hardware attestation active when booted on bare metal.</td>
         </tr>
         <tr>
-          <td class="mono">V-12</td>
+          <td class="mono" style="color: #FFFFFF;">V-12</td>
           <td><span class="badge badge-pass">PASS</span></td>
-          <td>kernel.modules_disabled=1 verified. Kernel module loading locked.</td>
+          <td>Station kernel modules disabled verified. Enclave execution locked.</td>
         </tr>
       `;
     }

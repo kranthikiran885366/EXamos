@@ -3,25 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ExamOS — Candidate Onboarding & Examination Guide</title>
+  <title>SPPIO-Isolation™ — Candidate Onboarding &amp; Assessment Guide</title>
   <style>
     :root {
-      --bg-primary: #0b0f19;
-      --bg-secondary: #111827;
-      --bg-tertiary: #1f2937;
-      --card-bg: rgba(17, 24, 39, 0.85);
-      --card-border: #374151;
-      --card-border-active: #3b82f6;
-      --accent-blue: #3b82f6;
-      --accent-blue-hover: #2563eb;
-      --accent-glow: rgba(59, 130, 246, 0.3);
-      --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.25);
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --text-main: #f9fafb;
-      --text-secondary: #9ca3af;
-      --text-muted: #6b7280;
+      --bg-primary: #1E1424;
+      --bg-secondary: #302337;
+      --bg-tertiary: #48394F;
+      --card-bg: rgba(48, 35, 55, 0.95);
+      --card-border: #48394F;
+      --card-border-active: #B54F34;
+      --accent-blue: #B54F34;
+      --accent-blue-hover: #973D25;
+      --accent-glow: rgba(181, 79, 52, 0.35);
+      --success: #34D399;
+      --success-glow: rgba(52, 211, 153, 0.25);
+      --warning: #FBBF24;
+      --danger: #E05252;
+      --text-main: #F6F2ED;
+      --text-secondary: #C3B7C6;
+      --text-muted: #8C8490;
+      --porcelain: #F6F2ED;
+      --copper: #B54F34;
       --font-scale: 1;
     }
 
@@ -695,15 +697,18 @@
   <!-- Top Header -->
   <header>
     <div class="brand-section">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+      <div class="brand-logo" style="background: transparent; box-shadow: none;">
+        <svg width="36" height="36" viewBox="0 0 200 200" fill="none">
+          <path d="M 64 30 L 146 30 L 110 66 L 64 66 Z" fill="#B54F34"/>
+          <path d="M 170 64 L 170 146 L 134 110 L 134 64 Z" fill="#B54F34"/>
+          <path d="M 136 170 L 54 170 L 90 134 L 136 134 Z" fill="#B54F34"/>
+          <path d="M 30 136 L 30 54 L 66 90 L 66 136 Z" fill="#B54F34"/>
         </svg>
       </div>
       <div>
-        <div class="brand-title">Exam<span>OS</span></div>
+        <div class="brand-title" style="letter-spacing: -0.01em;">SPPIO<span>-Isolation™</span></div>
       </div>
-      <div class="brand-tag">Secure Appliance 2.0</div>
+      <div class="brand-tag" style="background: rgba(181, 79, 52, 0.15); border-color: #B54F34; color: #FFAE99;">Open Aperture 2.18</div>
     </div>
 
     <div class="accessibility-controls">
@@ -712,7 +717,7 @@
       <button class="btn-acc" onclick="toggleHighContrast()" title="Toggle High Contrast">Contrast</button>
       <div class="status-pill">
         <div class="pulse-dot"></div>
-        <span>HARDWARE SECURED</span>
+        <span>HARDWARE SEALED</span>
       </div>
     </div>
   </header>
@@ -757,48 +762,48 @@
   <!-- Content Panels -->
   <main>
 
-    <!-- STEP 1: Overview & About ExamOS -->
+    <!-- STEP 1: Overview & About SPPIO -->
     <div class="step-panel active" id="step-1">
       <div class="panel-card">
         <div class="panel-header">
-          <h1 class="panel-title">Welcome to ExamOS</h1>
-          <p class="panel-subtitle">An enterprise-grade, zero-trust examination operating system engineered for fair, secure, and resilient high-stakes assessments.</p>
+          <h1 class="panel-title">Welcome to SPPIO-Isolation™ Base OS</h1>
+          <p class="panel-subtitle">High-assurance workstation isolation, real-time sensor proctoring, and cryptographic attestation engineered for enterprise recruitment and high-stakes assessments.</p>
         </div>
 
         <div class="grid-3">
           <div class="feature-card">
-            <div class="feature-icon">
-              <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+            <div class="feature-icon" style="background: rgba(181, 79, 52, 0.15);">
+              <svg viewBox="0 0 24 24" style="fill: #B54F34;"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
             </div>
-            <h3 class="feature-title">Total System Lockdown</h3>
-            <p class="feature-desc">All unauthorized processes, external storage devices, key combinations, and secondary displays are strictly quarantined at the Linux kernel level.</p>
+            <h3 class="feature-title">SPPIO-PhysicalGuard™ Lockdown</h3>
+            <p class="feature-desc">All unauthorized background processes, external storage devices, keystroke injection USBs, and secondary display splitters are strictly suppressed at the kernel level.</p>
           </div>
 
           <div class="feature-card">
-            <div class="feature-icon">
-              <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+            <div class="feature-icon" style="background: rgba(181, 79, 52, 0.15);">
+              <svg viewBox="0 0 24 24" style="fill: #B54F34;"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
             </div>
-            <h3 class="feature-title">Zero Data Loss Protocol</h3>
-            <p class="feature-desc">Every response and keystroke is encrypted in real time to local memory and non-volatile buffers. If network connectivity drops, you continue testing without interruption.</p>
+            <h3 class="feature-title">SPPIO-Kiosk™ Air-Gap Resilience</h3>
+            <p class="feature-desc">Every response and keystroke is securely saved in real time to local memory and cryptographic cache. If network connectivity drops, testing continues without interruption.</p>
           </div>
 
           <div class="feature-card">
-            <div class="feature-icon">
-              <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+            <div class="feature-icon" style="background: rgba(181, 79, 52, 0.15);">
+              <svg viewBox="0 0 24 24" style="fill: #B54F34;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
             </div>
-            <h3 class="feature-title">Cryptographic Integrity</h3>
-            <p class="feature-desc">Exam sessions are digitally sealed using HMAC-SHA256 chained audit ledgers and hardware-backed TPM 2.0 attestation, ensuring verifiable authenticity.</p>
+            <h3 class="feature-title">SPPIO-TrustEngine™ Attestation</h3>
+            <p class="feature-desc">Assessment sessions are digitally authenticated using SPPIO-Ledger™ chained audit streams and hardware silicon attestation, providing complete non-repudiation.</p>
           </div>
         </div>
 
         <div class="rule-box">
           <div class="rule-item">
             <div class="rule-bullet">&rarr;</div>
-            <div class="rule-text"><strong>Candidate Privacy First:</strong> Proctored video and audio streams are analyzed locally and securely transmitted solely for academic review. No personal data is stored beyond the exam window.</div>
+            <div class="rule-text"><strong>Candidate Privacy First:</strong> SPPIO-Proctor™ analyzes video and sensor streams locally with privacy-preserving on-device AI. No personal biometric data is stored beyond the assessment window.</div>
           </div>
           <div class="rule-item">
             <div class="rule-bullet">&rarr;</div>
-            <div class="rule-text"><strong>Fair Assessment Standard:</strong> ExamOS provides uniform rendering, high-contrast modes, and dynamic zoom scales to ensure an equal testing environment for all students.</div>
+            <div class="rule-text"><strong>Universal Standard:</strong> SPPIO-Isolation™ provides uniform rendering, high-contrast modes, and dynamic zoom scales to ensure an equal testing environment for all candidates.</div>
           </div>
         </div>
 
@@ -821,8 +826,8 @@
           <div class="camera-preview-box">
             <video id="video-preview" autoplay playsinline muted></video>
             <div class="camera-placeholder" id="camera-placeholder">
-              <svg style="width:36px;height:36px;fill:#6b7280" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-              <span>Click "Test Camera" to verify proctoring video feed</span>
+              <svg style="width:36px;height:36px;fill:#8C8490" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+              <span>Click &ldquo;Test Camera&rdquo; to verify proctoring video feed</span>
             </div>
           </div>
 
@@ -830,7 +835,7 @@
             <div class="diag-row">
               <div class="diag-info">
                 <div class="diag-name">Firmware &amp; Kernel Boot Chain</div>
-                <div class="diag-detail">UEFI 2.7 + UKI Linux 6.12.113+deb13-amd64</div>
+                <div class="diag-detail">SPPIO-Isolation™ UKI Linux Enclave (Verified)</div>
               </div>
               <div class="diag-badge pass">&#10003; PASS (ENFORCED)</div>
             </div>
@@ -838,7 +843,7 @@
             <div class="diag-row">
               <div class="diag-info">
                 <div class="diag-name">Display &amp; Compositor Architecture</div>
-                <div class="diag-detail">Cage Wayland Sandbox (Direct DRM/KMS, 60 Hz)</div>
+                <div class="diag-detail">SPPIO-Kiosk™ Sandbox Compositor (Direct DRM/KMS, 60 Hz)</div>
               </div>
               <div class="diag-badge pass">&#10003; PASS (SECURE)</div>
             </div>
@@ -846,8 +851,10 @@
             <div class="diag-row">
               <div class="diag-info">
                 <div class="diag-name">Backend Service &amp; Database Gateway</div>
-                <div class="diag-detail" id="net-diag-detail">Checking connection to 127.0.0.1:8895...</div>
+                <div class="diag-detail" id="net-diag-detail">Checking connection to SPPIO-Core™ 127.0.0.1:8895...</div>
               </div>
+              <div class="diag-badge pass" id="net-diag-badge">&#10003; LIVE (OK)</div>
+            </div>
               <div class="diag-badge pass" id="net-diag-badge">&#10003; LIVE (OK)</div>
             </div>
 
@@ -911,7 +918,7 @@
 
         <label class="checkbox-container">
           <input type="checkbox" id="rules-agree" onchange="toggleRulesNext()">
-          <span class="checkbox-label"><strong>I acknowledge and agree:</strong> I have reviewed the code of conduct, have removed all unauthorized items, and accept real-time proctoring under ExamOS integrity policies.</span>
+          <span class="checkbox-label"><strong>I acknowledge and agree:</strong> I have reviewed the code of conduct, have removed all unauthorized items, and accept real-time monitoring under SPPIO-Isolation™ integrity policies.</span>
         </label>
 
         <div class="action-bar">
@@ -925,7 +932,7 @@
     <div class="step-panel" id="step-4">
       <div class="panel-card">
         <div class="panel-header">
-          <h1 class="panel-title">How to Navigate Your Examination</h1>
+          <h1 class="panel-title">How to Navigate Your Assessment</h1>
           <p class="panel-subtitle">A quick reference guide on question types, saving answers, review flags, and final submission.</p>
         </div>
 
@@ -969,13 +976,13 @@
       <div class="panel-card">
         <div class="panel-header">
           <h1 class="panel-title">Interactive Practice Question</h1>
-          <p class="panel-subtitle">Experience how questions, option selections, review flags, and instant auto-save indicators behave in ExamOS.</p>
+          <p class="panel-subtitle">Experience how questions, option selections, review flags, and instant auto-save indicators behave in SPPIO-Kiosk™ Sandbox.</p>
         </div>
 
         <div class="demo-question-card">
           <div class="demo-q-num">Practice Question 1 of 1 &bull; Single Choice</div>
           <div class="demo-q-text">
-            Which cryptographic mechanism guarantees that answers recorded during an ExamOS session cannot be altered, forged, or reordered after completion?
+            Which cryptographic mechanism guarantees that answers and assessment submissions recorded during a SPPIO session cannot be altered, forged, or reordered after completion?
           </div>
 
           <div class="demo-options">
@@ -985,7 +992,7 @@
             </div>
             <div class="demo-opt" onclick="selectDemoOpt(this, 2)">
               <div class="demo-opt-radio"></div>
-              <span>B) HMAC-SHA256 authenticated immutable event chain with TPM hardware attestation</span>
+              <span>B) SPPIO-Ledger™ continuous cryptographic event chain with hardware silicon attestation</span>
             </div>
             <div class="demo-opt" onclick="selectDemoOpt(this, 3)">
               <div class="demo-opt-radio"></div>
@@ -1024,9 +1031,9 @@
         <div class="rule-box" style="text-align: left; margin-bottom: 2rem;">
           <div style="font-weight: 700; font-size: 0.95rem; margin-bottom: 0.75rem; color: var(--text-main);">Session Metadata:</div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.85rem; color: var(--text-secondary);">
-            <div><strong>Terminal Host:</strong> ExamOS Secure Appliance</div>
-            <div><strong>Attestation:</strong> Active &bull; Development TPM</div>
-            <div><strong>Examination URL:</strong> https://staging.examos.example.edu</div>
+            <div><strong>Terminal Host:</strong> SPPIO-Isolation™ Secure Enclave Appliance</div>
+            <div><strong>Attestation:</strong> Active &bull; Development TPM / SPPIO-TrustEngine™</div>
+            <div><strong>Examination URL:</strong> https://assessment.sppio.systems</div>
             <div><strong>Local Gateway:</strong> http://127.0.0.1:8895/portal</div>
           </div>
         </div>
@@ -1034,7 +1041,7 @@
         <div style="display: flex; justify-content: center; gap: 1rem;">
           <button class="btn btn-secondary" onclick="goToStep(1)">Review Instructions</button>
           <a href="http://localhost:5173/portal" class="btn btn-success" id="btn-launch-exam" style="font-size: 1.1rem; padding: 0.85rem 2.25rem;">
-            Enter Examination Portal &rarr;
+            Enter Assessment Portal &rarr;
           </a>
         </div>
       </div>
@@ -1045,7 +1052,7 @@
   <!-- Bottom Footer -->
   <footer>
     <div id="clock-display">Terminal Time: Synchronizing...</div>
-    <div>ExamOS Enterprise Edition &bull; Build 2026.10 &bull; Kernel 6.12.113</div>
+    <div>SPPIO-Isolation™ Enterprise Edition &bull; Build 2026.10 &bull; Open Aperture Enclave</div>
   </footer>
 
   <script>
@@ -1130,7 +1137,7 @@
       })
       .catch(() => {});
   </script>
-  <!-- ExamOS Production Real-Time Dynamic Kiosk Synchronization Engine -->
+  <!-- SPPIO Production Real-Time Dynamic Kiosk Synchronization Engine -->
   <script src="kiosk-sync.js"></script>
 </body>
 </html>
