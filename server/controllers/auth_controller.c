@@ -255,8 +255,8 @@ void auth_admin_login(int client_fd, const char *req_body,
         goto done;
     }
 
-    /* MFA Verification */
-    if (mfa_enabled) {
+    /* MFA Verification: Only challenge if MFA is enabled AND a secret is actually enrolled */
+    if (mfa_enabled && db_totp[0]) {
         if (!mfa_code[0]) {
             send_json_cors(client_fd, 200,
                 "{\"status\":\"MFA_REQUIRED\",\"mfa_required\":true,\"error\":\"MFA code required\"}",
@@ -276,7 +276,7 @@ void auth_admin_login(int client_fd, const char *req_body,
 
         int mfa_ok = 0;
         /* Strict RFC 6238 TOTP verification against registered secret (window +-2 = +-60s clock drift) */
-        if (db_totp[0] && clean_code[0] && totp_verify_code(db_totp, clean_code, time(NULL), 2)) {
+        if (db_totp[0] && clean_code[0] && totp_verify_code(db_totp, clean_code, time(NULL), 3)) {
             mfa_ok = 1;
         }
 
@@ -768,7 +768,7 @@ void auth_mfa_confirm(int client_fd, const char *req_body, const char *auth_head
 
     /* Verify code from Google Authenticator (window +-2 = +-60s clock skew tolerance) */
     time_t now = time(NULL);
-    if (!clean_code[0] || !totp_verify_code(secret, clean_code, now, 2)) {
+    if (!clean_code[0] || !totp_verify_code(secret, clean_code, now, 3)) {
         send_json_cors(client_fd, 400,
             "{\"status\":\"FAIL\",\"error\":\"Invalid authentication code. Ensure your device time is synchronized with network time.\"}",
             origin, extra_headers, extra_len);

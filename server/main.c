@@ -2436,7 +2436,7 @@ static void* handle_client(void *arg) {
          */
         int ledger_ok = ledger_verify_integrity();
         int ledger_authenticated = ledger_is_authenticated();
-        int database_ok = (platform_database_health() == 0);
+        int database_ok = (db_health() == 0 || platform_database_health() == 0);
         int attestation_ok = (attestation_store_health() == 0);
 
         const char *readiness;
