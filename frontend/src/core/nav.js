@@ -1,5 +1,20 @@
 // Navigation and route registry. Sidebar, route table and permissions derive from this list.
-const page = (loader, name) => (() => loader().then((m) => ({ default: m[name] })));
+const page = (loader, name) => (() => {
+  return loader()
+    .then((m) => ({ default: m[name] }))
+    .catch((err) => {
+      const isChunkError = /Failed to fetch dynamically imported module|Importing a module script failed/i.test(err?.message || '');
+      if (isChunkError) {
+        const key = 'examos_reload_' + (name || 'chunk');
+        if (!sessionStorage.getItem(key)) {
+          sessionStorage.setItem(key, '1');
+          window.location.reload();
+          return new Promise(() => {});
+        }
+      }
+      throw err;
+    });
+});
 
 const D = (path, label, perm, load, group, opts = {}) => ({ path, label, perm, load, group, ...opts });
 

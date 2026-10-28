@@ -26,7 +26,32 @@ class ErrorBoundary extends Component {
   static getDerivedStateFromError(error) { return { error }; }
   componentDidCatch(error, info) { console.error('ExamOS render error', error, info); this.setState({ stack: info?.componentStack || '' }); }
   render() {
-    if (this.state.error) return <div className="pad"><div className="card denied"><h2>Something went wrong on this page</h2><p className="muted">The rest of the console is unaffected. No security state was changed.</p><pre className="code">{String(this.state.error?.message || this.state.error)}{this.state.stack ? '\n' + this.state.stack : ''}</pre><button className="btn primary" onClick={() => this.setState({ error: null, stack: '' })}>Try again</button></div></div>;
+    if (this.state.error) {
+      const isChunkError = /Failed to fetch dynamically imported module|Importing a module script failed/i.test(this.state.error?.message || '');
+      return (
+        <div className="pad">
+          <div className="card denied">
+            <h2>Something went wrong on this page</h2>
+            <p className="muted">
+              {isChunkError ? 'A new update was deployed to ExamOS. Please reload the console to load the latest version.' : 'The rest of the console is unaffected. No security state was changed.'}
+            </p>
+            <pre className="code">{String(this.state.error?.message || this.state.error)}{this.state.stack ? '\n' + this.state.stack : ''}</pre>
+            <button
+              className="btn primary"
+              onClick={() => {
+                if (isChunkError) {
+                  window.location.reload();
+                } else {
+                  this.setState({ error: null, stack: '' });
+                }
+              }}
+            >
+              {isChunkError ? 'Reload Console' : 'Try again'}
+            </button>
+          </div>
+        </div>
+      );
+    }
     return this.props.children;
   }
 }
