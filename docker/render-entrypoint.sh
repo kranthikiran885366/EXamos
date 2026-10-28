@@ -32,9 +32,14 @@ fi
 export EXAMOS_DATA_DIR="${EXAMOS_DATA_DIR:-/var/lib/examos}"
 export EXAMOS_LEDGER_PATH="${EXAMOS_LEDGER_PATH:-/var/lib/examos/ledger.log}"
 export EXAMOS_EVENT_CHAIN_PATH="${EXAMOS_EVENT_CHAIN_PATH:-/var/lib/examos/events}"
-mkdir -p "$EXAMOS_DATA_DIR" "$EXAMOS_EVENT_CHAIN_PATH" /tmp/examos /tmp/examos_secrets
+mkdir -p "$EXAMOS_DATA_DIR" "$EXAMOS_EVENT_CHAIN_PATH" /tmp/examos /tmp/examos_secrets /var/log/examos /etc/examos
 
-# 6. Database URL mapping
+# 6. Configuration & Policy Catalogs
+export EXAMOS_BROWSER_POLICY_CATALOG="${EXAMOS_BROWSER_POLICY_CATALOG:-/opt/sppio/config/browser_policies.json}"
+export EXAMOS_DEVICES_CONFIG="${EXAMOS_DEVICES_CONFIG:-/opt/sppio/config/devices.json}"
+export EXAMOS_RELEASES_CONFIG="${EXAMOS_RELEASES_CONFIG:-/opt/sppio/config/releases.json}"
+
+# 7. Database URL mapping
 if [ -n "$DATABASE_URL" ] && [ -z "$EXAMOS_DATABASE_URL" ]; then
     export EXAMOS_DATABASE_URL="$DATABASE_URL"
 fi

@@ -49,8 +49,13 @@ COPY --from=builder /app/server/examos-admin-provision /usr/local/bin/sppio-admi
 # Copy database schema migrations
 COPY server/migrations /opt/sppio/migrations
 
+# Copy server configuration and browser policy catalog
+COPY server/config /opt/sppio/config
+COPY server/config /usr/local/bin/config
+COPY server/config /etc/examos
+
 # Setup runtime storage directories
-RUN mkdir -p /var/lib/examos /opt/sppio
+RUN mkdir -p /var/lib/examos /opt/sppio /var/log/examos /etc/examos
 
 # Setup Render entrypoint
 COPY docker/render-entrypoint.sh /usr/local/bin/render-entrypoint.sh
