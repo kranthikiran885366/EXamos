@@ -51,8 +51,9 @@ export default function App() {
     <ErrorBoundary key={loc.pathname}>
       <Suspense fallback={<Fallback />}>
         <Routes>
-          {/* Public landing page */}
-          <Route path="/" element={<LandingPage />} />
+          {/* Direct redirect to login on root visit */}
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/landing" element={<LandingPage />} />
 
           {/* Public auth routes */}
           <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />

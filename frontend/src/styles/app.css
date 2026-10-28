@@ -1093,6 +1093,29 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
   max-width: 560px;
 }
 
+.editorial-telemetry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(181, 79, 52, 0.16);
+  border: 1px solid rgba(181, 79, 52, 0.4);
+  color: #FFAE99;
+  margin-bottom: 20px;
+}
+
+.editorial-ping {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #B54F34;
+  box-shadow: 0 0 8px #B54F34;
+}
+
 .editorial-headline {
   font-size: 38px;
   line-height: 1.2;
@@ -1191,6 +1214,12 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
 .login-form-inner {
   width: 100%;
   max-width: 420px;
+}
+
+.login-form-brand {
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
 }
 
 .login-auth-header {

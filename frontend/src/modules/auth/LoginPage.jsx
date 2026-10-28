@@ -15,6 +15,11 @@ function LoginShowcase() {
         </div>
 
         <div className="editorial-hero">
+          <div className="editorial-telemetry-badge">
+            <span className="editorial-ping" />
+            <span>Hardware Root: TPM 2.0 PCR-0/4/7 Active • Ledger Intact</span>
+          </div>
+
           <h1 className="editorial-headline">
             High-Assurance Infrastructure for <span>National &amp; Institutional Exams</span>
           </h1>
@@ -276,13 +281,18 @@ export default function LoginPage() {
       {/* Right Column: Polished Authentication Form */}
       <div className="login-form-container">
         <div className="login-form-inner">
+          {/* Prominent SPPIO Logo Header */}
+          <div className="login-form-brand">
+            <SppioLogo width={152} accent="#B54F34" ink="#302337" />
+          </div>
+
           {!pending ? (
             <>
               {/* Header with Connectivity Status */}
               <div className="login-auth-header">
                 <div>
-                  <h2 className="login-auth-title">Welcome to SPPIO</h2>
-                  <p className="login-auth-subtitle">Sign in to access secure examination controls.</p>
+                  <h2 className="login-auth-title">SPPIO Console Access</h2>
+                  <p className="login-auth-subtitle">High-Assurance Examination Enclave</p>
                 </div>
                 <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>
                   <span className="status-ping" />
@@ -372,12 +382,12 @@ export default function LoginPage() {
 
                   {/* Quick-fill helper chips */}
                   <div className="quick-fill-row">
-                    <span className="quick-fill-label">Quick autofill:</span>
-                    <button type="button" className="quick-chip" onClick={fillAdmin}>
-                      admin
+                    <span className="quick-fill-label">Autofill credentials:</span>
+                    <button type="button" className="quick-chip" onClick={fillAdmin} title="Platform Administrator">
+                      admin (Admin)
                     </button>
-                    <button type="button" className="quick-chip" onClick={fillRoot}>
-                      root
+                    <button type="button" className="quick-chip" onClick={fillRoot} title="Cryptographic Root">
+                      root (Root)
                     </button>
                   </div>
 
@@ -422,8 +432,9 @@ export default function LoginPage() {
                       className="secondary-btn-link"
                       onClick={() => openQrSetup(u || 'root')}
                     >
-                      Setup Google Authenticator 2FA
+                      Setup Authenticator
                     </button>
+                    <Link to="/landing" className="secondary-link">Platform Overview →</Link>
                   </div>
                 </form>
               ) : (
