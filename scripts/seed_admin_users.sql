@@ -1,6 +1,5 @@
 -- Production Platform Admin Provisioning
 -- Safe to run multiple times (idempotent).
-BEGIN;
 
 -- 1. Ensure default tenant T1 exists in tenants table
 INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at)
@@ -71,17 +70,13 @@ UPDATE examos_admin_users
 SET mfa_enabled = false, totp_secret = NULL
 WHERE username IN ('admin', 'root');
 
--- 4. Clear all login throttle records so there is no lockout on first login
+-- 4. Login throttle table ensure and clear
+CREATE TABLE IF NOT EXISTS examos_admin_login_throttle (
+    subject_hash varchar(64) PRIMARY KEY,
+    failed_attempts integer NOT NULL DEFAULT 0,
+    window_started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    locked_until timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
 DELETE FROM examos_admin_login_throttle WHERE 1=1;
-
--- 5. Ensure default institution
-INSERT INTO examos_institutions (institution_id, name, code, domain_email, retention_days)
-VALUES ('inst-default', 'Default Institution', 'DEFAULT', 'admin@examos.local', 365)
-ON CONFLICT (institution_id) DO NOTHING;
-
--- 6. Ensure at least one enrolled kiosk device
-INSERT INTO examos_devices (device_id, hostname, group_name, hardware_platform, attestation_status, compliance_status, enrollment_status)
-VALUES ('DEV-KIOSK-01', 'DEV-KIOSK-01.kiosk.internal', 'DEFAULT', 'x86_64 / UEFI TPM 2.0', 'TRUSTED', 'COMPLIANT', 'ENROLLED')
-ON CONFLICT (device_id) DO NOTHING;
-
-COMMIT;

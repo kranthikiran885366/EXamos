@@ -239,6 +239,11 @@ export function AuthProvider({ children }) {
     return { ok: true };
   }, [pending, pendingCredentials, beginSession]);
 
+  const cancelPending = useCallback(() => {
+    setPending(null);
+    setPendingCredentials(null);
+  }, []);
+
   /* ---------- Backend admin login ---------- */
   const backendLogin = useCallback(async ({ username, password, mfaCode }) => {
     let ready = backendReady;
@@ -598,7 +603,7 @@ export function AuthProvider({ children }) {
 
   return <Ctx.Provider value={{
     user, pending, pendingCredentials, locked, sessionId, backendMode, backendReady,
-    login, verifyMfa, backendLogin, backendLogout, backendCandidateLogin, backendCandidateLogout,
+    login, verifyMfa, cancelPending, backendLogin, backendLogout, backendCandidateLogin, backendCandidateLogout,
     reauth, logout, lock, unlock, changePassword, regenerateRecovery, rotateMfa,
     mfaSetup, mfaConfirm,
     resetWithRecovery, touchSession, listSessions, revokeSession, revokeOthers,

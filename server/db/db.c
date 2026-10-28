@@ -17,6 +17,7 @@
 #include <time.h>
 #include <errno.h>
 
+static void db_ensure_admin_accounts(PGconn *conn);
 static pthread_once_t db_init_once = PTHREAD_ONCE_INIT;
 
 db_pool_t g_db_pool;
@@ -77,6 +78,7 @@ int db_init(const char *conninfo) {
         return 0; /* Don't fail startup; retry on demand */
     }
     fprintf(stderr, "[DB] Pool ready: %d/%d connections\n", ready, count);
+    db_ensure_admin_accounts(g_db_pool.conns[0].conn);
     return 0;
 }
 
@@ -1055,13 +1057,28 @@ static void db_seed_bootstrap(PGconn *conn) {
     fprintf(stderr, "[DB] Bootstrap users and candidate seeded successfully.\n");
 }
 
+static void exec_sql_step(PGconn *conn, const char *sql) {
+    if (!conn || !sql) return;
+    PGresult *res = PQexec(conn, sql);
+    if (res) {
+        if (PQresultStatus(res) != PGRES_COMMAND_OK && PQresultStatus(res) != PGRES_TUPLES_OK) {
+            fprintf(stderr, "[DB] Notice on step: %s\n", PQresultErrorMessage(res));
+        }
+        PQclear(res);
+    }
+}
+
 static void db_ensure_admin_accounts(PGconn *conn) {
     if (!conn) return;
-    const char *seed_sql =
+
+    /* 1. Ensure tenant T1 */
+    exec_sql_step(conn,
         "INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at) "
         "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000) "
-        "ON CONFLICT (id) DO NOTHING;"
+        "ON CONFLICT (id) DO NOTHING;");
 
+    /* 2. Upsert admin in users */
+    exec_sql_step(conn,
         "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
         "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local', "
         "'0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0) "
@@ -1070,8 +1087,10 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "salt = 's0_salt_admin_001', "
         "mfa_enabled = 0, "
         "totp_secret = NULL, "
-        "status = 'active';"
+        "status = 'active';");
 
+    /* 3. Upsert root in users */
+    exec_sql_step(conn,
         "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
         "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local', "
         "'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0) "
@@ -1080,33 +1099,38 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "salt = 's1_salt_root_001', "
         "mfa_enabled = 0, "
         "totp_secret = NULL, "
-        "status = 'active';"
+        "status = 'active';");
 
-        "UPDATE users SET mfa_enabled = 0, totp_secret = NULL WHERE username IN ('admin', 'root');"
+    /* 4. Ensure mfa_enabled = 0 and totp_secret = NULL for admin and root in users */
+    exec_sql_step(conn, "UPDATE users SET mfa_enabled = 0, totp_secret = NULL WHERE username IN ('admin', 'root');");
 
+    /* 5. examos_admin_users upserts (if table exists) */
+    exec_sql_step(conn,
         "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
         "VALUES ('usr_admin', 'admin', '310000:ee8e19c449b8e1e6e485c672cee05862:aae2df837f94fd673c33afc7692e0221a485fa5cd48c9206f4c4f77193e41289', "
         "'Platform Administrator', 'admin@examos.local', 1, true, false, NULL) "
-        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, mfa_enabled = false, totp_secret = NULL;"
+        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, mfa_enabled = false, totp_secret = NULL;");
 
+    exec_sql_step(conn,
         "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
         "VALUES ('usr_root', 'root', '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0', "
         "'Platform Root', 'root@examos.local', 1, true, false, NULL) "
-        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, mfa_enabled = false, totp_secret = NULL;"
+        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, mfa_enabled = false, totp_secret = NULL;");
 
-        "UPDATE examos_admin_users SET mfa_enabled = false, totp_secret = NULL WHERE username IN ('admin', 'root');"
+    exec_sql_step(conn, "UPDATE examos_admin_users SET mfa_enabled = false, totp_secret = NULL WHERE username IN ('admin', 'root');");
 
-        "DELETE FROM examos_admin_login_throttle WHERE 1=1;";
+    /* 6. Login throttle table ensure and clear */
+    exec_sql_step(conn,
+        "CREATE TABLE IF NOT EXISTS examos_admin_login_throttle ("
+        "  subject_hash varchar(64) PRIMARY KEY,"
+        "  failed_attempts integer NOT NULL DEFAULT 0,"
+        "  window_started_at timestamptz NOT NULL DEFAULT clock_timestamp(),"
+        "  locked_until timestamptz,"
+        "  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()"
+        ");");
+    exec_sql_step(conn, "DELETE FROM examos_admin_login_throttle WHERE 1=1;");
 
-    PGresult *res = PQexec(conn, seed_sql);
-    if (res) {
-        if (PQresultStatus(res) == PGRES_COMMAND_OK) {
-            fprintf(stderr, "[DB] Administrative accounts (admin, root) guaranteed and active.\n");
-        } else {
-            fprintf(stderr, "[DB] Notice on admin account guarantee: %s\n", PQresultErrorMessage(res));
-        }
-        PQclear(res);
-    }
+    fprintf(stderr, "[DB] Administrative accounts (admin, root) guaranteed and active.\n");
 }
 
 int db_create_schema(void) {

@@ -78,6 +78,7 @@ export default function LoginPage() {
     backendLogin,
     backendCandidateLogin,
     verifyMfa,
+    cancelPending,
     backendReady,
     mfaSetup,
     mfaConfirm,
@@ -577,7 +578,7 @@ export default function LoginPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.location.reload()}
+                  onClick={() => { if (cancelPending) cancelPending(); setCode(""); setErr(""); }}
                   className="text-secondary-link"
                 >
                   ← Sign in as different user
