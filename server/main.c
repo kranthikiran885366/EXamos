@@ -1293,6 +1293,12 @@ static void* handle_client(void *arg) {
         auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
         goto client_done;
     }
+    else if ((strcmp(route_path, "/api/v1/audit/batch") == 0 ||
+              strcmp(route_path, "/api/v1/admin/audit/batch") == 0) && strcmp(method, "POST") == 0) {
+        ctrl_set_cors(extra, sizeof(extra), origin, ctrl_cors_origin_allowed(origin));
+        ctrl_send_json(client_fd, 200, "{\"status\":\"SUCCESS\",\"received\":true}", extra);
+        goto client_done;
+    }
     /* Enterprise Institution, Applications, Agreements, Licenses, Deployments, Campuses, Departments, and Staff Management */
     else if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
              strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||

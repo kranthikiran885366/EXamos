@@ -405,7 +405,8 @@ void auth_admin_login(int client_fd, const char *req_body,
 
     ctrl_set_cors(extra_headers, extra_len, origin,
                   ctrl_cors_origin_allowed(origin));
-    ctrl_send_json(client_fd, 200, resp_body, cookie);
+    strncat(extra_headers, cookie, extra_len - strlen(extra_headers) - 1);
+    ctrl_send_json(client_fd, 200, resp_body, extra_headers);
 
     clear_failure(username);
     audit_log(db_userid, "ADMIN_LOGIN_SUCCESS", username);
@@ -452,7 +453,8 @@ void auth_admin_logout(int client_fd, const char *auth_header,
 
     ctrl_set_cors(extra_headers, extra_len, origin,
                   ctrl_cors_origin_allowed(origin));
-    ctrl_send_json(client_fd, 200, "{\"status\":\"SIGNED_OUT\"}", cookie);
+    strncat(extra_headers, cookie, extra_len - strlen(extra_headers) - 1);
+    ctrl_send_json(client_fd, 200, "{\"status\":\"SIGNED_OUT\"}", extra_headers);
     audit_log(token, "ADMIN_LOGOUT", "session ended");
 }
 
@@ -506,7 +508,7 @@ void auth_admin_session(int client_fd, const char *auth_header,
 
     ctrl_set_cors(extra_headers, extra_len, origin,
                   ctrl_cors_origin_allowed(origin));
-    ctrl_send_json(client_fd, 200, resp_body, NULL);
+    ctrl_send_json(client_fd, 200, resp_body, extra_headers);
 }
 
 /* ------------------------------------------------------- candidate login */
@@ -668,7 +670,7 @@ void auth_candidate_login(int client_fd, const char *req_body,
 
     ctrl_set_cors(extra_headers, extra_len, origin,
                   ctrl_cors_origin_allowed(origin));
-    ctrl_send_json(client_fd, 200, resp_body, NULL);
+    ctrl_send_json(client_fd, 200, resp_body, extra_headers);
 
     clear_failure(candidate_id);
     audit_log(db_id[0] ? db_id : candidate_id, "CANDIDATE_LOGIN_SUCCESS", candidate_id);

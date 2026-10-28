@@ -42,15 +42,18 @@ export class AuditClient {
     if (!this.serverEnabled || this.queue.length === 0) return;
     const batch = this.queue.splice(0);
     try {
-      await fetch('/api/v1/audit/batch', {
+      const res = await fetch('/api/v1/audit/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-ExamOS-Console': '1' },
         body: JSON.stringify({ events: batch }),
-      }).catch(() => {
-        // Server may not expose /api/v1/audit/batch; events remain local only.
-        this.queue.unshift(...batch);
       });
-    } catch { /* ignore */ }
+      if (!res.ok) {
+        // Stop server push attempts on 404/error to avoid spam; audit remains local in IndexedDB
+        this.serverEnabled = false;
+      }
+    } catch {
+      this.serverEnabled = false;
+    }
   }
 }
 
