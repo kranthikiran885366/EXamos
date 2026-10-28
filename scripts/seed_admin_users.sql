@@ -2,41 +2,41 @@
 -- Safe to run multiple times (idempotent).
 BEGIN;
 
--- 1. Remove all demo/test accounts from examos_admin_users (keep only admin and root)
-DELETE FROM examos_admin_recovery_codes
-WHERE user_id IN (SELECT user_id FROM examos_admin_users WHERE username NOT IN ('admin', 'root'));
+-- 1. Ensure default tenant T1 exists in tenants table
+INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at)
+VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000)
+ON CONFLICT (id) DO NOTHING;
 
-DELETE FROM examos_admin_sessions
-WHERE user_id IN (SELECT user_id FROM examos_admin_users WHERE username NOT IN ('admin', 'root'));
-
-DELETE FROM examos_admin_users
-WHERE username NOT IN ('admin', 'root');
-
--- 2. Remove demo seed users from public.users table (if present)
-DELETE FROM users
-WHERE username NOT IN ('admin', 'root');
-
--- 3. Upsert root account
---    password: Exam0S!Root#2026
---    hash: PBKDF2-HMAC-SHA256, 310000 iters, 16-byte random salt (generated fresh)
-INSERT INTO examos_admin_users
-    (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret)
+-- 2. Upsert admin and root in public.users table (queried first by auth_controller)
+--    PBKDF2-SHA256, 210000 iterations, with separate salt column
+--    admin: StrongAdminPassword#2026! (salt: s0_salt_admin_001)
+--    root:  Exam0S!Root#2026          (salt: s1_salt_root_001)
+INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled)
 VALUES
-    ('usr_root', 'root',
-     '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0',
-     'Platform Root', 'root@examos.local', 1, true, false, NULL)
+    ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local',
+     '0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0)
 ON CONFLICT (username) DO UPDATE SET
-    password_hash  = EXCLUDED.password_hash,
-    user_id        = EXCLUDED.user_id,
-    full_name      = EXCLUDED.full_name,
-    role           = EXCLUDED.role,
-    active         = EXCLUDED.active,
-    mfa_enabled    = false,
-    totp_secret    = NULL;
+    password_hash = '0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c',
+    salt          = 's0_salt_admin_001',
+    mfa_enabled   = 0,
+    totp_secret   = NULL,
+    status        = 'active';
 
--- 4. Upsert admin account
---    password: StrongAdminPassword#2026!
---    hash: PBKDF2-HMAC-SHA256, 310000 iters, 16-byte random salt (generated fresh)
+INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled)
+VALUES
+    ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local',
+     'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0)
+ON CONFLICT (username) DO UPDATE SET
+    password_hash = 'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a',
+    salt          = 's1_salt_root_001',
+    mfa_enabled   = 0,
+    totp_secret   = NULL,
+    status        = 'active';
+
+UPDATE users SET mfa_enabled = 0, totp_secret = NULL WHERE username IN ('admin', 'root');
+
+-- 3. Upsert admin and root in examos_admin_users table (queried second by auth_controller)
+--    PBKDF2-SHA256, 310000 iterations, format "310000:salt_hex:hash_hex"
 INSERT INTO examos_admin_users
     (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret)
 VALUES
@@ -52,21 +52,34 @@ ON CONFLICT (username) DO UPDATE SET
     mfa_enabled    = false,
     totp_secret    = NULL;
 
--- 5. Force-clear MFA on both accounts regardless of upsert path
+INSERT INTO examos_admin_users
+    (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret)
+VALUES
+    ('usr_root', 'root',
+     '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0',
+     'Platform Root', 'root@examos.local', 1, true, false, NULL)
+ON CONFLICT (username) DO UPDATE SET
+    password_hash  = EXCLUDED.password_hash,
+    user_id        = EXCLUDED.user_id,
+    full_name      = EXCLUDED.full_name,
+    role           = EXCLUDED.role,
+    active         = EXCLUDED.active,
+    mfa_enabled    = false,
+    totp_secret    = NULL;
+
 UPDATE examos_admin_users
 SET mfa_enabled = false, totp_secret = NULL
 WHERE username IN ('admin', 'root');
 
--- 6. Clear all login throttle records so there is no lockout on first login
--- (safe: throttle resets on successful login anyway)
+-- 4. Clear all login throttle records so there is no lockout on first login
 DELETE FROM examos_admin_login_throttle WHERE 1=1;
 
--- 7. Ensure default institution
+-- 5. Ensure default institution
 INSERT INTO examos_institutions (institution_id, name, code, domain_email, retention_days)
 VALUES ('inst-default', 'Default Institution', 'DEFAULT', 'admin@examos.local', 365)
 ON CONFLICT (institution_id) DO NOTHING;
 
--- 8. Ensure at least one enrolled kiosk device
+-- 6. Ensure at least one enrolled kiosk device
 INSERT INTO examos_devices (device_id, hostname, group_name, hardware_platform, attestation_status, compliance_status, enrollment_status)
 VALUES ('DEV-KIOSK-01', 'DEV-KIOSK-01.kiosk.internal', 'DEFAULT', 'x86_64 / UEFI TPM 2.0', 'TRUSTED', 'COMPLIANT', 'ENROLLED')
 ON CONFLICT (device_id) DO NOTHING;
