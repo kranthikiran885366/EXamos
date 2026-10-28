@@ -2,13 +2,18 @@ import { NavLink } from 'react-router-dom';
 import { GROUPS } from '../nav';
 import { can } from '../security/rbac';
 import { Icon } from './kit';
+import { SppioSymbol } from './SppioLogo';
 
 export default function Sidebar({ user, collapsed, onNavigate, version, env, backend }) {
   return (
     <aside className={'side' + (collapsed ? ' collapsed' : '')} aria-label="Main navigation">
       <div className="brand">
-        <span className="logo">▣</span>
-        <span className="brand-text">ExamOS <em>{env || 'ENT'}</em></span>
+        <span className="logo sppio-sidebar-logo" style={{ background: '#302337', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(48, 35, 55, 0.2)' }}>
+          <SppioSymbol size={20} accent="#B54F34" />
+        </span>
+        <span className="brand-text" style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--aubergine)' }}>
+          SPPIO <em>{env || 'PROD'}</em>
+        </span>
         <span className={`backend-status ${backend?.online === 'online' ? 'online' : 'offline'}`} title={`Backend: ${backend?.mode || 'none'} — ${backend?.online}`}>
           {backend?.mode === 'none' ? '● LOCAL' : backend?.online === 'online' ? '● BACKEND' : '● BACKEND OFFLINE'}
         </span>

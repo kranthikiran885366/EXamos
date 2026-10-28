@@ -3,22 +3,20 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { safeRedirect } from '../../core/security/sanitize';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
+import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
 
 function LoginShowcase() {
   return (
     <div className="login-editorial-showcase">
       <div className="editorial-content">
         <div className="editorial-brand">
-          <div className="editorial-logo">E</div>
-          <div className="editorial-brand-text">
-            <span className="editorial-title">ExamOS</span>
-            <span className="editorial-badge">Enterprise Enclave</span>
-          </div>
+          <SppioLogo width={164} accent="#B54F34" ink="#FFFFFF" />
+          <span className="editorial-badge">Open Aperture</span>
         </div>
 
         <div className="editorial-hero">
           <h1 className="editorial-headline">
-            High-Assurance Infrastructure for <span>National & Institutional Exams</span>
+            High-Assurance Infrastructure for <span>National &amp; Institutional Exams</span>
           </h1>
           <p className="editorial-sub">
             Engineered with hardware-rooted TPM 2.0 cryptographic attestation, strict peripheral containment, and real-time supervisory telemetry.
@@ -59,7 +57,7 @@ function LoginShowcase() {
             <span className="sep">•</span>
             <span>ISO 27001 Aligned</span>
           </div>
-          <div className="editorial-copy">© 2026 ExamOS Foundation. All rights reserved.</div>
+          <div className="editorial-copy">© 2026 SPPIO Systems. All rights reserved.</div>
         </div>
       </div>
     </div>
@@ -253,19 +251,19 @@ export default function LoginPage() {
     if (!qrData?.recovery_codes) return;
     const content =
       `====================================================\n` +
-      `ExamOS Enterprise — Emergency Single-Use Recovery Codes\n` +
+      `SPPIO Enterprise — Emergency Single-Use Recovery Codes\n` +
       `====================================================\n` +
       `Account:   ${qrData.username}\n` +
       `Generated: ${new Date().toISOString()}\n\n` +
       `Keep these codes in a secure, confidential offline location.\n` +
       `Each code can be used exactly once if your phone is lost:\n\n` +
       qrData.recovery_codes.map((c, i) => `[Code ${i + 1}]  ${c}`).join('\n') +
-      `\n\nExamOS Hardware-Rooted Security (RFC 6238 TOTP)`;
+      `\n\nSPPIO Hardware-Rooted Security (RFC 6238 TOTP)`;
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `examos-recovery-codes-${qrData.username}.txt`;
+    a.download = `sppio-recovery-codes-${qrData.username}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -283,7 +281,7 @@ export default function LoginPage() {
               {/* Header with Connectivity Status */}
               <div className="login-auth-header">
                 <div>
-                  <h2 className="login-auth-title">Welcome to ExamOS</h2>
+                  <h2 className="login-auth-title">Welcome to SPPIO</h2>
                   <p className="login-auth-subtitle">Sign in to access secure examination controls.</p>
                 </div>
                 <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>

@@ -3,6 +3,7 @@ import { seed } from './seed';
 import { initChain } from './security/auditChain';
 import { all, del, wipe } from './db/db';
 import { registerRoles } from './security/rbac';
+import { SppioSymbol } from './ui/SppioLogo';
 
 export default function Boot({ children }) {
   const [state, setState] = useState('boot'); const [err, setErr] = useState(''); const [step, setStep] = useState('Preparing secure workspace');
@@ -41,7 +42,7 @@ export default function Boot({ children }) {
     })();
   }, []);
   if (state === 'ready') return children;
-  return <div className="loginwrap"><div className="card login bootcard"><div className="brand dark"><span className="logo">▣</span> ExamOS <em>ENT</em></div>
+  return <div className="loginwrap"><div className="card login bootcard"><div className="brand dark"><span className="logo" style={{ background: 'transparent', boxShadow: 'none' }}><SppioSymbol size={26} accent="#B54F34" /></span> SPPIO <em>ENT</em></div>
     {state === 'boot' ? <><h2>Preparing secure workspace</h2><p className="muted">First run provisions signing keys, hashed credentials, seeded institutions and a hash-chained audit log. This takes a few seconds.</p><div className="bootstep"><span className="spinner" /> {step}</div></> : <><h2>Could not start</h2><div className="err">{err}</div><p className="muted sm">If the local store is corrupt you can reset it. This deletes all demo data on this browser only.</p><button className="btn" onClick={async () => { await wipe(); location.reload(); }}>Reset local data and retry</button></>}
   </div></div>;
 }
