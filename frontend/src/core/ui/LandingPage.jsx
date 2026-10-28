@@ -271,18 +271,17 @@ export default function LandingPage() {
             </Link>
 
             <nav className="sppio-nav" aria-label="Primary navigation">
-              <a href="#suite" className="sppio-nav-item">Product Suite</a>
+              <a href="#suite" className="sppio-nav-item">Products</a>
+              <Link to="/solutions" className="sppio-nav-item">Solutions</Link>
               <a href="#capabilities" className="sppio-nav-item">Capabilities</a>
               <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
-              <Link to="/solutions" className="sppio-nav-item">Recruitment &amp; Solutions</Link>
               <a href="#deployments" className="sppio-nav-item">Deployments</a>
               <a href="#company" className="sppio-nav-item">Company</a>
-              <a href="#contact" className="sppio-nav-item">Briefing</a>
             </nav>
 
             <div className="sppio-header-actions">
               <Link to="/login" className="sppio-btn-ghost">
-                Console Sign In
+                Sign In
               </Link>
               <a href="#contact" className="sppio-btn-primary">
                 Request Briefing
@@ -309,14 +308,14 @@ export default function LandingPage() {
         {mobileMenuOpen && (
           <div className="sppio-mobile-drawer" style={{ background: '#F6F2ED', borderBottom: '1px solid #DCD5D2', padding: '20px 32px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <a href="#suite" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Product Suite</a>
+              <a href="#suite" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Products</a>
+              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Solutions</Link>
               <a href="#capabilities" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Capabilities</a>
               <Link to="/architecture" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Architecture</Link>
-              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Recruitment &amp; Solutions</Link>
               <a href="#deployments" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Deployments</a>
               <a href="#company" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Company</a>
               <a href="#contact" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Request Briefing</a>
-              <Link to="/login" onClick={() => setMobileMenuOpen(false)} style={{ color: '#B54F34', fontWeight: 700, textDecoration: 'none' }}>Console Sign In →</Link>
+              <Link to="/login" onClick={() => setMobileMenuOpen(false)} style={{ color: '#B54F34', fontWeight: 700, textDecoration: 'none' }}>Sign In →</Link>
             </div>
           </div>
         )}

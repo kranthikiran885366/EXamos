@@ -68,12 +68,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 32px;
   height: 72px;
 }
 
 .sppio-brand-link {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   text-decoration: none;
   transition: opacity 0.2s ease;
 }
@@ -85,7 +87,8 @@
 .sppio-nav {
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 24px;
+  flex-wrap: nowrap;
 }
 
 .sppio-nav-item {
@@ -95,7 +98,9 @@
   letter-spacing: -0.01em;
   text-decoration: none;
   position: relative;
-  padding: 6px 0;
+  padding: 8px 0;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: color 0.2s ease;
 }
 
@@ -122,6 +127,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .sppio-btn-ghost {
@@ -137,6 +143,8 @@
   border: 1px solid var(--sppio-border);
   border-radius: 8px;
   text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -161,6 +169,8 @@
   border: 1px solid var(--sppio-copper);
   border-radius: 8px;
   text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(181, 79, 52, 0.22);
   transition: all 0.2s ease;
@@ -1165,6 +1175,15 @@
    RESPONSIVE DESIGN
    ------------------------------------------------------------ */
 @media (max-width: 1024px) {
+  .sppio-nav,
+  .sppio-header-actions .sppio-btn-ghost {
+    display: none;
+  }
+  
+  .sppio-mobile-toggle {
+    display: block;
+  }
+  
   .sppio-hero-grid,
   .sppio-capabilities-layout,
   .sppio-company-grid,
@@ -1191,15 +1210,6 @@
 }
 
 @media (max-width: 768px) {
-  .sppio-nav,
-  .sppio-header-actions .sppio-btn-ghost {
-    display: none;
-  }
-  
-  .sppio-mobile-toggle {
-    display: block;
-  }
-  
   .sppio-hero-section {
     padding: 56px 0 64px;
   }

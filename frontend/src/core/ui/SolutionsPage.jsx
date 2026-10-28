@@ -84,15 +84,17 @@ export default function SolutionsPage() {
             </Link>
 
             <nav className="sppio-nav" aria-label="Primary navigation">
-              <Link to="/landing" className="sppio-nav-item">Platform</Link>
-              <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
+              <Link to="/landing#suite" className="sppio-nav-item">Products</Link>
               <Link to="/solutions" className="sppio-nav-item" style={{ color: '#B54F34' }}>Solutions</Link>
-              <a href="/landing#contact" className="sppio-nav-item">Briefing</a>
+              <Link to="/landing#capabilities" className="sppio-nav-item">Capabilities</Link>
+              <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
+              <Link to="/landing#deployments" className="sppio-nav-item">Deployments</Link>
+              <Link to="/landing#company" className="sppio-nav-item">Company</Link>
             </nav>
 
             <div className="sppio-header-actions">
               <Link to="/login" className="sppio-btn-ghost">
-                Console Sign In
+                Sign In
               </Link>
               <a href="/landing#contact" className="sppio-btn-primary">
                 Request Briefing
