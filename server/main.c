@@ -82,9 +82,10 @@ static int cors_origin_allowed(const char *origin) {
     if (strcmp(origin, "null") == 0) return 1; /* Allow local kiosk file:/// session */
     const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
     if (!env || !env[0]) {
-        /* Default dev allowance for the local console. */
+        /* Default dev allowance for the local console and Vercel cloud frontend. */
         return strcmp(origin, "http://localhost:5173") == 0
-            || strcmp(origin, "http://127.0.0.1:5173") == 0;
+            || strcmp(origin, "http://127.0.0.1:5173") == 0
+            || strcmp(origin, "https://sppio-os.vercel.app") == 0;
     }
     char buf[1024];
     size_t n = strlen(env);

@@ -1,9 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// All API traffic goes through the Vite proxy (/api/* → http://127.0.0.1:8895),
-// so connect-src only needs 'self' + WebSocket origins for HMR.
-const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:5173 ws://127.0.0.1:5173; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'; worker-src 'self'";
+// Allow same-origin, Vite HMR, and production backend cloud origins in connect-src.
+const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.onrender.com https://*.render.com ws://localhost:5173 ws://127.0.0.1:5173 http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'; worker-src 'self'";
 // Vite's dev client injects an inline React refresh preamble, so development needs
 // 'unsafe-inline'. Production builds keep the strict policy above.
 const devCsp = csp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
