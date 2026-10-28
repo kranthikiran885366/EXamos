@@ -256,14 +256,6 @@ void auth_admin_login(int client_fd, const char *req_body,
     }
 
     /* MFA Verification */
-    const char *disable_mfa_env = getenv("EXAMOS_DEV_DISABLE_MFA");
-    const char *tpm_mode_env = getenv("EXAMOS_TPM_MODE");
-    int is_dev_mode = (tpm_mode_env && strcmp(tpm_mode_env, "development") == 0);
-    if ((disable_mfa_env && strcmp(disable_mfa_env, "1") == 0) ||
-        (is_dev_mode && !mfa_code[0] && (!disable_mfa_env || strcmp(disable_mfa_env, "0") != 0))) {
-        mfa_enabled = 0;
-    }
-
     if (mfa_enabled) {
         if (!mfa_code[0]) {
             send_json_cors(client_fd, 200,
@@ -274,13 +266,17 @@ void auth_admin_login(int client_fd, const char *req_body,
             goto done;
         }
 
+        /* Sanitize 6-digit TOTP code (strip spaces/dashes) */
+        char clean_code[16] = {0};
+        size_t c_idx = 0;
+        for (size_t i = 0; mfa_code[i] && c_idx < 6; i++) {
+            if (isdigit((unsigned char)mfa_code[i])) clean_code[c_idx++] = mfa_code[i];
+        }
+        clean_code[c_idx] = '\0';
+
         int mfa_ok = 0;
-        /* Strict RFC 6238 TOTP verification with clock drift tolerance (±90s) */
-        if (db_totp[0] && totp_verify_code(db_totp, mfa_code, time(NULL), 3)) {
-            mfa_ok = 1;
-        } else if (totp_verify_code("JBSWY3DPEHPK3PXP", mfa_code, time(NULL), 3)) {
-            mfa_ok = 1;
-        } else if (is_dev_mode && (strcmp(mfa_code, "000000") == 0 || strcmp(mfa_code, "123456") == 0)) {
+        /* Strict RFC 6238 TOTP verification against registered secret (window +-2 = +-60s clock drift) */
+        if (db_totp[0] && clean_code[0] && totp_verify_code(db_totp, clean_code, time(NULL), 2)) {
             mfa_ok = 1;
         }
 
@@ -762,9 +758,17 @@ void auth_mfa_confirm(int client_fd, const char *req_body, const char *auth_head
         return;
     }
 
-    /* Verify code from Google Authenticator (window +-1 = 30s drift) */
+    /* Sanitize 6-digit TOTP code (strip spaces/dashes) */
+    char clean_code[16] = {0};
+    size_t c_idx = 0;
+    for (size_t i = 0; code[i] && c_idx < 6; i++) {
+        if (isdigit((unsigned char)code[i])) clean_code[c_idx++] = code[i];
+    }
+    clean_code[c_idx] = '\0';
+
+    /* Verify code from Google Authenticator (window +-2 = +-60s clock skew tolerance) */
     time_t now = time(NULL);
-    if (!totp_verify_code(secret, code, now, 1)) {
+    if (!clean_code[0] || !totp_verify_code(secret, clean_code, now, 2)) {
         send_json_cors(client_fd, 400,
             "{\"status\":\"FAIL\",\"error\":\"Invalid authentication code. Ensure your device time is synchronized with network time.\"}",
             origin, extra_headers, extra_len);

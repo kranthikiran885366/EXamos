@@ -2,7 +2,6 @@ import { useEffect, useState, useRef } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { safeRedirect } from '../../core/security/sanitize';
-import { totp } from '../../core/security/totp';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
 
