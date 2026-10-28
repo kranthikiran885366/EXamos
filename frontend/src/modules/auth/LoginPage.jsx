@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { safeRedirect } from '../../core/security/sanitize';
+import { totp } from '../../core/security/totp';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
 
@@ -198,6 +199,18 @@ export default function LoginPage() {
     setErr('');
   };
 
+  const fillController = () => {
+    setU('controller');
+    setP('Exam0S!Ctrl#2026');
+    setErr('');
+  };
+
+  const fillInstadmin = () => {
+    setU('instadmin');
+    setP('Exam0S!Inst#2026');
+    setErr('');
+  };
+
   const openQrSetup = async (targetUser) => {
     const userToEnroll = targetUser || pending || u || 'root';
     setSetupUsername(userToEnroll);
@@ -383,13 +396,19 @@ export default function LoginPage() {
                   </div>
 
                   {/* Quick-fill helper chips */}
-                  <div className="quick-fill-row">
+                  <div className="quick-fill-row" style={{ flexWrap: 'wrap', gap: '6px' }}>
                     <span className="quick-fill-label">Autofill credentials:</span>
+                    <button type="button" className="quick-chip" onClick={fillRoot} title="Cryptographic Root Superadmin">
+                      root (Superadmin)
+                    </button>
+                    <button type="button" className="quick-chip" onClick={fillController} title="Exam Controller">
+                      controller (Exam Controller)
+                    </button>
+                    <button type="button" className="quick-chip" onClick={fillInstadmin} title="Institution Admin">
+                      instadmin (Institution Admin)
+                    </button>
                     <button type="button" className="quick-chip" onClick={fillAdmin} title="Platform Administrator">
                       admin (Admin)
-                    </button>
-                    <button type="button" className="quick-chip" onClick={fillRoot} title="Cryptographic Root">
-                      root (Root)
                     </button>
                   </div>
 
