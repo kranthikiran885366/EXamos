@@ -11,44 +11,44 @@ function LoginShowcase() {
       <div className="editorial-content">
         <div className="editorial-brand">
           <SppioLogo width={164} accent="#B54F34" ink="#FFFFFF" />
-          <span className="editorial-badge">Open Aperture</span>
+          <span className="editorial-badge">SPPIO-Command™ Console</span>
         </div>
 
         <div className="editorial-hero">
           <div className="editorial-telemetry-badge">
             <span className="editorial-ping" />
-            <span>Hardware Attestation Active • Tamper-Evident Ledger Intact</span>
+            <span>SPPIO-TrustEngine™ Active • SPPIO-Ledger™ Intact</span>
           </div>
 
           <h1 className="editorial-headline">
-            High-Assurance Infrastructure for <span>National &amp; Institutional Exams</span>
+            High-Assurance Infrastructure for <span>Enterprise Recruitment &amp; Exams</span>
           </h1>
           <p className="editorial-sub">
-            Engineered with hardware-rooted cryptographic attestation, strict peripheral containment, and real-time supervisory telemetry.
+            Engineered with SPPIO-TrustEngine™ silicon attestation, SPPIO-PhysicalGuard™ port containment, and SPPIO-Proctor™ real-time telemetry.
           </p>
 
           <div className="editorial-points">
             <div className="editorial-point">
               <div className="editorial-point-marker" />
               <div>
-                <strong>Zero-Trust Station Lockdown</strong>
-                <p>Single-application enclave suppresses all unauthorized shortcuts, key combinations, and host OS access.</p>
+                <strong>SPPIO-Isolation™ &amp; Kiosk™ Sandbox</strong>
+                <p>Bare-metal execution blocks candidate ghosting, unauthorized AI tools, and remote desktop exploits.</p>
               </div>
             </div>
 
             <div className="editorial-point">
               <div className="editorial-point-marker" />
               <div>
-                <strong>Hardware Cryptographic Attestation</strong>
-                <p>Authenticates hardware integrity measurements against tamper-evident golden release policies.</p>
+                <strong>SPPIO-Proctor™ &amp; Forensics™</strong>
+                <p>Client-side vision tracking, keystroke cadence analysis, and time-lapse code replay for technical viva defense.</p>
               </div>
             </div>
 
             <div className="editorial-point">
               <div className="editorial-point-marker" />
               <div>
-                <strong>Immutable Audit Ledger</strong>
-                <p>Continuous cryptographic chained session events with strict role-based separation of duties.</p>
+                <strong>SPPIO-Ledger™ &amp; Core™ Storage</strong>
+                <p>Immutable cryptographic audit stream providing talent acquisition with legally defensible compliance proof.</p>
               </div>
             </div>
           </div>
@@ -56,13 +56,15 @@ function LoginShowcase() {
 
         <div className="editorial-footer">
           <div className="editorial-standards">
-            <span>Hardware Root Active</span>
+            <span>SPPIO-TrustEngine™</span>
             <span className="sep">•</span>
-            <span>FIPS 140-3 Cryptography</span>
+            <span>SPPIO-PhysicalGuard™</span>
             <span className="sep">•</span>
-            <span>ISO 27001 Aligned</span>
+            <span>SPPIO-Forensics™</span>
+            <span className="sep">•</span>
+            <span>FIPS 140-3 Aligned</span>
           </div>
-          <div className="editorial-copy">© 2026 SPPIO Systems. All rights reserved.</div>
+          <div className="editorial-copy">© 2026 SPPIO Systems Enclave. All rights reserved.</div>
         </div>
       </div>
     </div>

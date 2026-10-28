@@ -7,40 +7,40 @@ export default function ArchitecturePage() {
 
   const quoteSteps = [
     {
-      step: '01 / Cold Boot Hardware Attestation',
-      title: 'Platform Firmware & Core Hardware Validation',
-      desc: 'Upon station power-on, platform measurement routines execute in silicon microcode. Firmware stages and bootloader components are cryptographically measured and isolated before execution begins.',
-      boundary: 'Platform Firmware & Hardware Roots',
+      step: '01 / Cold Boot Silicon Attestation',
+      title: 'SPPIO-TrustEngine™ Hardware Attestation',
+      desc: 'Upon station power-on, platform measurement routines execute in silicon microcode. Firmware stages and bootloader components are cryptographically measured and isolated before execution begins, ensuring zero firmware tampering or hypervisor evasion.',
+      boundary: 'SPPIO-TrustEngine™ Silicon Roots',
       enforcement: 'Hardware-Enforced State Hashing',
       status: 'VERIFIED AT COLD BOOT',
       compliance: 'FIPS 140-3 Hardware Boundary',
     },
     {
-      step: '02 / Nonce Injection & Hardware Quote',
-      title: 'Cryptographic Identity & State Challenge',
-      desc: 'The supervisory node injects an unpredictable 32-byte cryptographic challenge. The station cryptoprocessor bundles current measured states with the challenge and signs the payload using its factory hardware key.',
-      boundary: 'Physical Motherboard & Key Store',
-      enforcement: 'Asymmetric Challenge-Response Validation',
-      status: 'SEALED SILICON ATTESTED',
-      compliance: 'Asymmetric Digital Signature',
-    },
-    {
-      step: '03 / Golden Policy Verification',
-      title: 'Supervisory Enclave Policy Validation',
-      desc: 'The supervisory authority validates the hardware signature against certified manufacturer baselines and verifies measured states against authorized golden release policies. Any unapproved modification triggers automatic quarantine.',
-      boundary: 'Supervisory Enclave Authority',
-      enforcement: 'Zero-Tolerance Policy Conformance',
-      status: 'INTEGRITY POLICY ENFORCED',
-      compliance: 'Tamper-Evident Golden Baseline',
-    },
-    {
-      step: '04 / Enclave Display Lockdown',
-      title: 'Isolated Single-Application Compositor',
-      desc: 'Once authenticated, the station initializes a dedicated, single-application graphical enclave. Operating system escape commands, background desktop multitasking, and unauthorized peripheral endpoints are suppressed.',
-      boundary: 'Display Compositor & Peripheral Bus',
-      enforcement: 'Deterministic Single-Task Isolation',
-      status: 'EXAMINATION ENCLAVE ACTIVE',
+      step: '02 / Peripheral & Port Lockdown',
+      title: 'SPPIO-PhysicalGuard™ Interface Control',
+      desc: 'Enforces kernel-level peripheral whitelist policies. Suppresses unauthorized USB keystroke injectors, external storage, secondary display splitters (HDMI/DP), and Bluetooth devices to prevent recruitment prompt injection.',
+      boundary: 'SPPIO-PhysicalGuard™ Port Whitelist',
+      enforcement: 'Deterministic Device Whitelisting',
+      status: 'INTERFACES SEALED',
       compliance: 'Strict Peripheral Lockdown',
+    },
+    {
+      step: '03 / Single-Task Graphical Enclave',
+      title: 'SPPIO-Isolation™ Base OS & Kiosk™ Sandbox',
+      desc: 'The station initializes an immutable read-only system running a dedicated single-application evaluation environment. OS escape combinations, background multitasking, and unauthorized communications are suppressed during candidate coding rounds.',
+      boundary: 'SPPIO-Isolation™ Base OS & Kiosk™',
+      enforcement: 'Zero-Escape Application Sandbox',
+      status: 'ENCLAVE ACTIVE',
+      compliance: 'Zero Residual Host Footprint',
+    },
+    {
+      step: '04 / Vision Intelligence & Code Forensics',
+      title: 'SPPIO-Proctor™ & SPPIO-Forensics™ Engine',
+      desc: 'Captures continuous on-device sensor intelligence: multi-face detection, acoustic anomaly tracking, and millisecond keystroke velocity telemetry for post-assessment technical viva defense and code construction replay.',
+      boundary: 'SPPIO-Proctor™ & Forensics™ Telemetry',
+      enforcement: 'Client-Side AI Sensor Pipeline',
+      status: 'SENSORS & FORENSICS ACTIVE',
+      compliance: 'Privacy-Preserving On-Device AI',
     },
   ];
 
@@ -48,25 +48,31 @@ export default function ArchitecturePage() {
     {
       threat: 'Host OS Escape & Multitasking',
       legacy: 'Software lockdown browser runs atop vulnerable Windows/macOS with background task exploits.',
-      sppio: 'Bare-metal boot into dedicated single-task graphical enclave; zero underlying host OS exists.',
+      sppio: 'SPPIO-Isolation™ Base OS provides a bare-metal boot into a dedicated single-task graphical enclave; zero host OS exists.',
       status: 'PREVENTED',
     },
     {
       threat: 'Virtual Machine / Sandbox Evasion',
       legacy: 'Easily tricked by patched hypervisors, nested virtualization, and GPU pass-through hooks.',
-      sppio: 'Physical hardware silicon attestation validates cryptographic identity bound to physical motherboard.',
+      sppio: 'SPPIO-TrustEngine™ silicon attestation validates cryptographic identity bound to the physical motherboard.',
       status: 'VERIFIED SILICON',
     },
     {
-      threat: 'Hardware Keyloggers & USB Storage',
-      legacy: 'OS drivers automatically mount USB drives; software monitoring detects intrusions after the fact.',
-      sppio: 'Kernel-level peripheral whitelist permits exclusively known input devices; external storage endpoints are suppressed.',
+      threat: 'Hardware Keyloggers & Secondary Displays',
+      legacy: 'OS drivers automatically mount USBs and external display splitters without detection.',
+      sppio: 'SPPIO-PhysicalGuard™ rejects unauthorized USB keystroke injection and suppresses unapproved external video splitters.',
       status: 'BLOCKED AT KERNEL',
+    },
+    {
+      threat: 'Recruitment Proxy Fraud & AI Assistance',
+      legacy: 'Remote proctors cannot verify if candidate is typing or receiving whisper coaching / off-screen ChatGPT answers.',
+      sppio: 'SPPIO-Proctor™ gaze tracking combined with SPPIO-Forensics™ keystroke playback and viva defense tools expose proxy cheating.',
+      status: 'FORENSICS REPLAY',
     },
     {
       threat: 'Post-Exam Retrospective Alteration',
       legacy: 'Standard database updates where rogue operators can alter responses or delete audit logs.',
-      sppio: 'Cryptographically chained ledger with dual-custody authorization; any alteration breaks all downstream anchors.',
+      sppio: 'SPPIO-Ledger™ continuous cryptographic chain with dual-custody authorization; any alteration breaks downstream anchors.',
       status: 'CRYPTOGRAPHIC CHAIN',
     },
   ];
@@ -105,16 +111,16 @@ export default function ArchitecturePage() {
         <div className="sppio-container">
           <div className="sppio-kicker-badge">
             <span className="sppio-kicker-dot" />
-            <span>Open Aperture · Technical Architecture</span>
+            <span>Open Aperture · Corporate Recruitment &amp; Institutional Architecture</span>
           </div>
 
           <h1 className="sppio-hero-headline" style={{ maxWidth: '820px' }}>
             Zero-trust execution.<br />
-            <span className="sppio-highlight">Silicon-rooted hardware attestation.</span>
+            <span className="sppio-highlight">Silicon-rooted recruitment &amp; assessment integrity.</span>
           </h1>
 
           <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            A comprehensive technical breakdown of how SPPIO enforces station isolation, cryptographically authenticates physical device integrity, and guarantees tamper-evident examination delivery.
+            A comprehensive technical breakdown of how the SPPIO product suite—from SPPIO-Isolation™ Base OS to SPPIO-TrustEngine™, SPPIO-Proctor™, and SPPIO-Forensics™—enforces station lockdown, eliminates hiring fraud, and guarantees tamper-evident assessment delivery.
           </p>
 
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>

@@ -70,6 +70,72 @@ export default function LandingPage() {
     }, 600);
   };
 
+  const productSuite = [
+    {
+      name: 'SPPIO-Isolation™ Base OS',
+      tag: 'Operating System',
+      tagline: 'Bare-Metal Secure Assessment OS',
+      desc: 'Immutable, read-only operating system running directly on commodity workstations. Eliminates host OS escapes, background tasks, remote desktop tools (AnyDesk, TeamViewer), and multitasking during corporate hiring and examinations.',
+      hiringRole: 'Prevents candidate ghosting, remote desktop takeovers, and dual-boot tampering during coding assessments.',
+    },
+    {
+      name: 'SPPIO-PhysicalGuard™',
+      tag: 'Hardware Lockdown',
+      tagline: 'Peripheral Port & Interface Control',
+      desc: 'Kernel-level enforcement engine that suppresses unauthorized USB keystroke injectors, external storage, secondary display splitters (HDMI/DP), and Bluetooth eavesdropping devices.',
+      hiringRole: 'Blocks external secondary-screen cheating, hardware keystroke injection, and unauthorized peripheral dongles.',
+    },
+    {
+      name: 'SPPIO-Proctor™',
+      tag: 'Sensors & Vision',
+      tagline: 'Vision & Multi-Sensor Intelligence',
+      desc: 'Real-time client-side sensor intelligence analyzing continuous face presence, multi-face presence, gaze diversion, and acoustic anomalies without sending raw video streams off-premise.',
+      hiringRole: 'Eliminates proxy candidate substitution, third-party whispering, and off-screen prompt coaching during technical interviews.',
+    },
+    {
+      name: 'SPPIO-Kiosk™ Sandbox',
+      tag: 'Application Runtime',
+      tagline: 'Deterministic Single-Task Kiosk',
+      desc: 'Secure candidate evaluation and IDE sandbox. Enforces strict clipboard isolation, virtual desktop suppression, hotkey locks, and a zero-leak RAM-only runtime environment.',
+      hiringRole: 'Delivers a contained, cheat-proof coding workspace preventing unauthorized tab switching and LLM copy-pasting.',
+    },
+    {
+      name: 'SPPIO-TrustEngine™',
+      tag: 'Hardware Attestation',
+      tagline: 'Silicon Cryptographic Attestation',
+      desc: 'Authenticates workstation hardware identity and platform firmware measurements against verified golden baselines before issuing assessment or interview tokens.',
+      hiringRole: 'Guarantees the technical assessment is executed on verified physical workstation hardware, never in a spoofed VM.',
+    },
+    {
+      name: 'SPPIO-Ledger™',
+      tag: 'Audit Stream',
+      tagline: 'Tamper-Evident Audit Chain',
+      desc: 'Continuous cryptographic ledger chaining candidate answer commits, supervisor actions, proctoring alerts, and scoring decisions into non-repudiable sequential records.',
+      hiringRole: 'Provides enterprise talent acquisition with mathematically defensible, audit-ready compliance proof for equal-opportunity hiring.',
+    },
+    {
+      name: 'SPPIO-Forensics™',
+      tag: 'Traceability & Viva',
+      tagline: 'Code Construction & Viva Defense Engine',
+      desc: 'Millisecond keystroke velocity telemetry, time-lapse code replay, and structured technical viva examination tooling for senior engineering evaluations.',
+      hiringRole: 'Enables engineering leads to replay how candidate code was constructed line-by-line and conduct structured viva defenses.',
+    },
+    {
+      name: 'SPPIO-Core™ Server & Storage',
+      tag: 'Enterprise Backend',
+      tagline: 'High-Throughput Assessment Backend',
+      desc: 'Enterprise assessment orchestrator with TLS-authenticated storage, automated batch submission reconciliation, and multi-tenant corporate partition models.',
+      hiringRole: 'Powers mass campus hiring drives with thousands of concurrent test-takers with zero latency and zero data loss.',
+    },
+    {
+      name: 'SPPIO-Command™ Console',
+      tag: 'Web Portal',
+      tagline: 'Unified Recruiter & Proctoring Portal',
+      desc: 'Role-gated centralized web portal for corporate recruiters, proctors, college administrators, and technical interviewers with live fleet telemetry and candidate tracking.',
+      hiringRole: 'Gives recruitment teams a live cockpit for real-time candidate proctoring, session flags, and one-click candidate scorecards.',
+    },
+  ];
+
   const capabilities = [
     {
       number: '01',
@@ -77,9 +143,9 @@ export default function LandingPage() {
       title: 'Hardware Cryptographic Attestation',
       summary: 'Physical device attestation authenticated against verified golden release policies.',
       description:
-        'Before any assessment payload initializes, the physical device cryptoprocessor calculates cryptographic integrity measurements of the core system firmware and kernel. These measurements are validated against tamper-evident golden release policies, guaranteeing zero firmware tampering or bootkit persistence.',
+        'Powered by SPPIO-TrustEngine™ and SPPIO-PhysicalGuard™, every candidate workstation is authenticated at the hardware silicon level. Measurements are verified against golden release policies, guaranteeing zero firmware tampering, unapproved VM sandboxes, or bootkit persistence.',
       specs: [
-        { label: 'Attestation Root', value: 'Hardware Cryptoprocessor' },
+        { label: 'Attestation Root', value: 'SPPIO-TrustEngine™ Silicon' },
         { label: 'Integrity Check', value: 'Golden Policy Verification' },
         { label: 'Replay Protection', value: 'Anti-Replay Challenge Protocol' },
         { label: 'Attestation Latency', value: '< 120ms Roundtrip' },
@@ -91,11 +157,11 @@ export default function LandingPage() {
       title: 'Zero-Trust Station Enclave',
       summary: 'Dedicated display environment enforcing single-application containment.',
       description:
-        'The candidate workstation boots directly into a dedicated display environment engineered specifically for containment. Virtual terminal switching, host key shortcuts, unauthorized display cloning, clipboard sharing, and unapproved peripheral access are restricted at the operating system foundation.',
+        'Built on SPPIO-Isolation™ Base OS and SPPIO-Kiosk™ Sandbox, candidate workstations run in complete isolation. Virtual terminal switching, host key shortcuts, secondary display mirroring, clipboard sharing, and unapproved peripheral access are blocked at the operating system foundation.',
       specs: [
-        { label: 'Display Engine', value: 'Isolated Kiosk Compositor' },
-        { label: 'Storage Mode', value: 'Immutable Read-Only System' },
-        { label: 'Peripheral Guard', value: 'Hardware Device Whitelisting' },
+        { label: 'Display Engine', value: 'SPPIO-Kiosk™ Compositor' },
+        { label: 'Base OS', value: 'SPPIO-Isolation™ Base OS' },
+        { label: 'Port Lockdown', value: 'SPPIO-PhysicalGuard™ Active' },
         { label: 'Host Access', value: 'Zero Residual Host Footprint' },
       ],
     },
@@ -105,11 +171,11 @@ export default function LandingPage() {
       title: 'Immutable Chained Audit Ledger',
       summary: 'Tamper-evident event chaining with strict separation of duties.',
       description:
-        'Every supervisory action, candidate session lifecycle event, heartbeat, and policy update is permanently recorded in an immutable chained event ledger. Each record is linked cryptographically to prior blocks, ensuring any retrospective alteration or omission is immediately detectable.',
+        'Engineered with SPPIO-Ledger™ and SPPIO-Forensics™, every candidate keystroke, code commit, supervisor interaction, and proctoring flag is cryptographically linked in sequence. Any retrospective alteration or omission is mathematically impossible.',
       specs: [
-        { label: 'Ledger Model', value: 'Cryptographically Chained Records' },
+        { label: 'Ledger Engine', value: 'SPPIO-Ledger™ Cryptographic Chain' },
         { label: 'Approval Model', value: 'Two-Person Dual-Custody Controls' },
-        { label: 'Audit Verification', value: 'Independent Verification Protocol' },
+        { label: 'Code Forensics', value: 'SPPIO-Forensics™ Keystroke Replay' },
         { label: 'Compliance', value: 'FIPS 140-3 & ISO 27001 Aligned' },
       ],
     },
@@ -119,11 +185,11 @@ export default function LandingPage() {
       title: 'Distributed Fleet Orchestration',
       summary: 'Real-time telemetry, synchronized policy convergence, and offline resilience.',
       description:
-        'SPPIO orchestrates thousands of concurrent testing stations across decentralized examination centers. Operating on a resilient local-first model, stations execute examinations seamlessly even during complete wide-area network severance, synchronizing encrypted submission batches upon link restoration.',
+        'Orchestrated through SPPIO-Command™ Console and SPPIO-Core™ Server & Storage, organizations manage thousands of concurrent testing stations across decentralized examination centers and campus recruitment drives. Resilient offline execution safeguards tests during network outages.',
       specs: [
-        { label: 'Network Resilience', value: 'Autonomous Offline Execution' },
-        { label: 'Heartbeat Cadence', value: 'Real-Time Health Monitoring' },
-        { label: 'Policy Rollout', value: 'Staged Canary Deployment' },
+        { label: 'Control Plane', value: 'SPPIO-Command™ Console Web Portal' },
+        { label: 'Backend Scaling', value: 'SPPIO-Core™ Server & Storage' },
+        { label: 'Proctoring Intelligence', value: 'SPPIO-Proctor™ Vision & Sensor' },
         { label: 'Data Recovery', value: 'Zero-Loss Local Cryptographic Cache' },
       ],
     },
@@ -133,30 +199,38 @@ export default function LandingPage() {
     {
       layer: 'LAYER 01',
       title: 'Silicon & Hardware Root',
-      desc: 'Dedicated hardware cryptoprocessor generates non-exportable cryptographic keys and provides non-repudiable attestation quotes directly to the supervisory enclave.',
-      badge: 'Hardware Root / FIPS 140-3',
+      desc: 'SPPIO-TrustEngine™ and SPPIO-PhysicalGuard™ generate non-exportable cryptographic keys and enforce strict hardware peripheral port isolation at cold boot.',
+      badge: 'SPPIO-TrustEngine™ / PhysicalGuard™',
     },
     {
       layer: 'LAYER 02',
       title: 'Kernel & Graphical Containment',
-      desc: 'Immutable read-only system rootfs with display isolation suppressing virtual consoles, screen scraping, and unauthorized peripheral insertion.',
-      badge: 'Station Display Enclave',
+      desc: 'SPPIO-Isolation™ Base OS and SPPIO-Kiosk™ Sandbox boot read-only immutable environments suppressing virtual consoles, screen scraping, and unauthorized background processes.',
+      badge: 'SPPIO-Isolation™ / Kiosk™',
     },
     {
       layer: 'LAYER 03',
-      title: 'Application & Telemetry Enclave',
-      desc: 'High-assurance browser sandbox isolated in RAM memory, enforcing real-time multi-face supervisory tracking, audio thresholds, and strict peripheral containment.',
-      badge: 'Wasm / WebRTC / MediaPipe',
+      title: 'Vision & Forensics Intelligence',
+      desc: 'SPPIO-Proctor™ and SPPIO-Forensics™ capture on-device biometric telemetry, gaze diversion, keystroke velocity patterns, and live code construction replay.',
+      badge: 'SPPIO-Proctor™ / Forensics™',
     },
     {
       layer: 'LAYER 04',
-      title: 'Cryptographic Audit & Ledger',
-      desc: 'Cryptographically chained ledger replicated across authenticated backend nodes with dual-custody approval workflows preventing single-operator privilege abuse.',
-      badge: 'PostgreSQL 16 TLS / Chained Ledger',
+      title: 'Server, Ledger & Web Command',
+      desc: 'SPPIO-Core™ Server & Storage, SPPIO-Ledger™, and SPPIO-Command™ Console provide resilient cluster orchestration, cryptographic audit chaining, and recruiter dashboards.',
+      badge: 'SPPIO-Core™ / Ledger™ / Command™',
     },
   ];
 
   const deployments = [
+    {
+      scope: 'Global Enterprise Tech Hiring',
+      metric: '5,000+ Candidates',
+      metricDesc: 'Evaluated across enterprise engineering and campus recruitment drives',
+      title: 'Enterprise Technical Hiring & Viva Forensics',
+      desc: 'Deployed across major enterprise technical hiring programs to eliminate candidate proxy fraud and AI-assisted ghosting. SPPIO-Forensics™ and SPPIO-Proctor™ provided engineering hiring managers with line-by-line keystroke replay and verifiable viva defense evidence.',
+      tags: ['Corporate Recruitment', 'SPPIO-Forensics™', 'SPPIO-Proctor™', 'Anti-Proxy Verification'],
+    },
     {
       scope: 'National Assessment Infrastructure',
       metric: '150+ Stations',
@@ -186,9 +260,10 @@ export default function LandingPage() {
             </Link>
 
             <nav className="sppio-nav" aria-label="Primary navigation">
+              <a href="#suite" className="sppio-nav-item">Product Suite</a>
               <a href="#capabilities" className="sppio-nav-item">Capabilities</a>
               <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
-              <Link to="/solutions" className="sppio-nav-item">Solutions</Link>
+              <Link to="/solutions" className="sppio-nav-item">Recruitment &amp; Solutions</Link>
               <a href="#deployments" className="sppio-nav-item">Deployments</a>
               <a href="#company" className="sppio-nav-item">Company</a>
               <a href="#contact" className="sppio-nav-item">Briefing</a>
@@ -223,9 +298,10 @@ export default function LandingPage() {
         {mobileMenuOpen && (
           <div className="sppio-mobile-drawer" style={{ background: '#F6F2ED', borderBottom: '1px solid #DCD5D2', padding: '20px 32px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <a href="#suite" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Product Suite</a>
               <a href="#capabilities" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Capabilities</a>
               <Link to="/architecture" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Architecture</Link>
-              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Solutions</Link>
+              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Recruitment &amp; Solutions</Link>
               <a href="#deployments" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Deployments</a>
               <a href="#company" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Company</a>
               <a href="#contact" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Request Briefing</a>
@@ -243,16 +319,16 @@ export default function LandingPage() {
             <div className="sppio-hero-content">
               <div className="sppio-kicker-badge">
                 <span className="sppio-kicker-dot" />
-                <span>Open Aperture · High-Assurance Enclave</span>
+                <span>Open Aperture · Enterprise Recruitment &amp; High-Assurance Enclaves</span>
               </div>
 
               <h1 className="sppio-hero-headline">
                 High-assurance systems.<br />
-                <span className="sppio-highlight">Verifiable mathematical trust.</span>
+                <span className="sppio-highlight">Fraud-proof enterprise recruitment.</span>
               </h1>
 
               <p className="sppio-hero-lead">
-                Engineered for national examinations, academic institutions, and high-security testing. SPPIO combines silicon-rooted hardware attestation, strict station isolation, and immutable cryptographic ledgers in one open aperture.
+                Engineered for enterprise corporate hiring, mass campus recruitment, and high-consequence institutional examinations. SPPIO unifies bare-metal workstation isolation, real-time sensor proctoring, code forensics, and cryptographic audit ledgers in one open aperture.
               </p>
 
               <div className="sppio-hero-actions">
@@ -265,11 +341,11 @@ export default function LandingPage() {
               </div>
 
               <div className="sppio-hero-standards">
-                <span>Hardware Root Active</span>
+                <span>SPPIO-TrustEngine™ Active</span>
                 <span className="sppio-sep">•</span>
-                <span>Enclave Isolation</span>
+                <span>SPPIO-PhysicalGuard™ Active</span>
                 <span className="sppio-sep">•</span>
-                <span>Tamper-Evident Ledger</span>
+                <span>SPPIO-Forensics™ Enabled</span>
                 <span className="sppio-sep">•</span>
                 <span>FIPS 140-3 Aligned</span>
               </div>
@@ -435,6 +511,70 @@ export default function LandingPage() {
                 <h4 className="sppio-tech-title">{tl.title}</h4>
                 <p className="sppio-tech-desc">{tl.desc}</p>
                 <span className="sppio-tech-badge">{tl.badge}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ----------------- Product Suite: Open Aperture Security & Recruitment ----------------- */}
+      <section id="suite" className="sppio-section" style={{ background: '#FFFFFF' }}>
+        <div className="sppio-container">
+          <div className="sppio-section-header">
+            <div>
+              <span className="sppio-section-eyebrow">Product Suite</span>
+              <h2 className="sppio-section-title">The SPPIO Open Aperture Security Suite</h2>
+            </div>
+            <p className="sppio-section-desc">
+              Modular, hardware-rooted technologies engineered to protect corporate technical recruitment pipelines, campus hiring drives, and national institutional examinations.
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
+            {productSuite.map((prod, idx) => (
+              <div
+                key={idx}
+                style={{
+                  background: '#F6F2ED',
+                  border: '1px solid #DCD5D2',
+                  borderRadius: '14px',
+                  padding: '28px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  position: 'relative',
+                  overflow: 'hidden',
+                  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                }}
+              >
+                <div style={{ position: 'absolute', top: 0, left: 0, width: '4px', height: '100%', background: '#B54F34' }} />
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span className="sppio-tag" style={{ background: 'rgba(181, 79, 52, 0.1)', color: '#B54F34', borderColor: 'rgba(181, 79, 52, 0.25)', fontSize: '11px' }}>
+                      {prod.tag}
+                    </span>
+                    <SppioSymbol size={18} accent="#B54F34" />
+                  </div>
+
+                  <h3 style={{ fontSize: '19px', fontWeight: 800, color: '#302337', margin: '0 0 6px', letterSpacing: '-0.01em' }}>
+                    {prod.name}
+                  </h3>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#B54F34', marginBottom: '14px' }}>
+                    {prod.tagline}
+                  </div>
+                  <p style={{ fontSize: '13.5px', color: '#756F79', lineHeight: 1.55, margin: '0 0 20px' }}>
+                    {prod.desc}
+                  </p>
+                </div>
+
+                <div style={{ background: 'rgba(48, 35, 55, 0.05)', borderRadius: '8px', padding: '12px 14px', border: '1px solid rgba(48, 35, 55, 0.08)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#302337', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>🎯</span> Enterprise Recruitment Focus
+                  </div>
+                  <div style={{ fontSize: '12.5px', color: '#302337', lineHeight: 1.45, fontWeight: 550 }}>
+                    {prod.hiringRole}
+                  </div>
+                </div>
               </div>
             ))}
           </div>

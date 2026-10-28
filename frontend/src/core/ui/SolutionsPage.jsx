@@ -12,39 +12,63 @@ export default function SolutionsPage() {
 
   const solutions = [
     {
+      badge: 'Enterprise Technical Recruitment',
+      title: 'Fraud-Proof Engineering Hiring & Campus Placement Drives',
+      subtitle: 'Eliminate candidate proxy fraud, unauthorized AI assistance, and ghosting in tech recruitment.',
+      desc: 'In an era of generative AI and remote hiring fraud, technology enterprises face rampant proxy test-takers, hidden ChatGPT prompt injection, and screen-sharing shortcuts. SPPIO provides an end-to-end recruitment security architecture: SPPIO-Isolation™ Base OS and SPPIO-Kiosk™ Sandbox enforce a sandboxed IDE with zero host escape; SPPIO-Proctor™ monitors gaze and secondary displays; and SPPIO-Forensics™ records millisecond keystroke telemetry for code construction replay and technical viva defense.',
+      highlights: [
+        'SPPIO-Forensics™ line-by-line keystroke replay and time-lapse code construction playback',
+        'SPPIO-Proctor™ real-time vision sensor detecting candidate gaze diversion and whisper coaching',
+        'SPPIO-PhysicalGuard™ port suppression blocking secondary HDMI splitters and keystroke injection USBs',
+        'SPPIO-Command™ Console live recruiter cockpit with real-time proctor flags and scorecard exports',
+      ],
+    },
+    {
+      badge: 'Senior Tech Hiring & Viva Defense',
+      title: 'Technical Viva Defense & Code Authorship Verification',
+      subtitle: 'Defensible proof of genuine code authorship and intellectual problem-solving.',
+      desc: 'High-compensation software engineering roles demand verified proof of independent problem-solving. SPPIO-Forensics™ equips engineering hiring panels with time-stamped code progression, typing cadence anomaly analysis, and interactive viva questioning tools, all chained permanently in the SPPIO-Ledger™ audit stream.',
+      highlights: [
+        'Interactive code playback allowing interviewers to challenge specific algorithmic decisions',
+        'Keystroke velocity telemetry identifying unnatural paste bursts and automated clipboard inputs',
+        'SPPIO-TrustEngine™ hardware binding ensuring tests are taken on authentic physical workstations',
+        'Defensible SPPIO-Ledger™ audit exports protecting corporate talent acquisition against bias claims',
+      ],
+    },
+    {
       badge: 'National Testing Agencies',
       title: 'Decentralized High-Stakes Testing Fleets',
       subtitle: 'Massive concurrent scale across geographically dispersed assessment centers.',
-      desc: 'National competitive and civil service examinations require foolproof containment across heterogeneous hardware. SPPIO bootable drives turn any standard commodity x86_64 workstation into a cryptographically sealed testing enclave within 45 seconds.',
+      desc: 'National competitive and civil service examinations require foolproof containment across heterogeneous hardware. SPPIO bootable drives turn any standard commodity x86_64 workstation into a cryptographically sealed testing enclave within 45 seconds using SPPIO-Isolation™ Base OS and SPPIO-TrustEngine™.',
       highlights: [
-        'Unattended hardware attestation and golden policy verification on boot',
+        'Unattended hardware attestation and golden policy verification on boot via SPPIO-TrustEngine™',
         'Air-gap execution resilience with zero dependency on WAN stability',
-        'Batch cryptographic submission reconciliation with asymmetric signatures',
-        'Suppression of external mass storage, unauthorized networking, and OS escape',
+        'Batch cryptographic submission reconciliation with asymmetric signatures in SPPIO-Core™',
+        'Suppression of external mass storage, unauthorized networking, and OS escape via SPPIO-PhysicalGuard™',
       ],
     },
     {
       badge: 'Higher Education & Universities',
       title: 'Institutional Examination Enclaves',
       subtitle: 'Multi-campus assessment governance with role-based segregation.',
-      desc: 'Universities operate complex academic schedules across diverse faculties and departments. SPPIO provides a unified multi-tenancy control plane with nine-tier RBAC, dual-custody approval for grade/policy changes, and student session attestation.',
+      desc: 'Universities operate complex academic schedules across diverse faculties and departments. SPPIO-Command™ Console provides a unified multi-tenancy control plane with nine-tier RBAC, dual-custody approval for grade/policy changes, and student session attestation.',
       highlights: [
-        'Departmental tenancy isolation with independent supervisor roles',
+        'Departmental tenancy isolation with independent supervisor roles in SPPIO-Command™',
         'Two-person approval rule for policy rollback and score release',
-        'Zero-trust student kiosk mode preventing secondary monitor sharing',
-        'Integrated multi-factor authentication and FIPS-compliant cryptography',
+        'Zero-trust student kiosk mode preventing secondary monitor sharing via SPPIO-Kiosk™',
+        'Integrated multi-factor authentication and FIPS-compliant cryptography in SPPIO-TrustEngine™',
       ],
     },
     {
       badge: 'Professional Licensure Boards',
       title: 'High-Integrity Credentialing & Certification',
       subtitle: 'Non-repudiable audit trails for high-consequence licensure.',
-      desc: 'Medical, legal, and financial certification bodies demand mathematically provable integrity. SPPIO ensures that every candidate interaction, proctoring alert, and score generation is permanently chained in a verifiable tamper-evident ledger.',
+      desc: 'Medical, legal, and financial certification bodies demand mathematically provable integrity. SPPIO ensures that every candidate interaction, proctoring alert, and score generation is permanently chained in a verifiable tamper-evident ledger powered by SPPIO-Ledger™.',
       highlights: [
         'Non-repudiable candidate identity binding via hardware cryptographic quotes',
-        'Continuous real-time supervisory tracking and peripheral monitoring',
-        'Immutable audit export readable by independent third-party auditors',
-        'Zero residual client footprint post-examination reboot',
+        'Continuous real-time supervisory tracking and peripheral monitoring via SPPIO-Proctor™',
+        'Immutable audit export readable by independent third-party auditors via SPPIO-Ledger™',
+        'Zero residual client footprint post-examination reboot with SPPIO-Isolation™ Base OS',
       ],
     },
   ];
@@ -83,21 +107,21 @@ export default function SolutionsPage() {
         <div className="sppio-container">
           <div className="sppio-kicker-badge">
             <span className="sppio-kicker-dot" />
-            <span>Open Aperture · Institutional Solutions</span>
+            <span>Open Aperture · Corporate Recruitment &amp; Institutional Solutions</span>
           </div>
 
           <h1 className="sppio-hero-headline" style={{ maxWidth: '820px' }}>
-            Built for national scale.<br />
-            <span className="sppio-highlight">Engineered for absolute certainty.</span>
+            Securing global recruitment.<br />
+            <span className="sppio-highlight">Engineered for authentic engineering talent.</span>
           </h1>
 
           <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            From nation-wide competitive examinations to university campus enclaves and professional licensure boards. Discover how SPPIO secures high-stakes assessments across the globe.
+            From Fortune 500 technical hiring drives and university campus recruitment to high-consequence national examinations. Discover how SPPIO prevents recruitment fraud, verifies genuine code authorship, and delivers tamper-evident hiring records.
           </p>
 
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
             <a href="#solutions-grid" className="sppio-btn-primary">
-              Explore Solutions ↓
+              Explore Recruitment &amp; Testing Solutions ↓
             </a>
             <a href="#calculator" className="sppio-btn-ghost">
               Fleet Capacity Calculator
@@ -112,10 +136,10 @@ export default function SolutionsPage() {
           <div className="sppio-section-header">
             <div>
               <span className="sppio-section-eyebrow">Enterprise Verticals</span>
-              <h2 className="sppio-section-title">Tailored Institutional Deployments</h2>
+              <h2 className="sppio-section-title">Corporate Hiring &amp; Institutional Deployments</h2>
             </div>
             <p className="sppio-section-desc">
-              Every deployment leverages the same uncompromising hardware-rooted foundation, customized for your organizational governance.
+              Whether hiring top-tier software engineers or running high-stakes licensure exams, SPPIO provides a unified hardware-rooted security foundation.
             </p>
           </div>
 
