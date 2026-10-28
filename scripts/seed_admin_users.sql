@@ -35,4 +35,13 @@ SET password_hash = '310000:d52abc412bf0f6f47a17e8fbaa240292:931722f49f380ffc3f4
     role = 1,
     active = true;
 
+-- 4. Ensure default institution and initial enrolled kiosk device exist
+INSERT INTO examos_institutions (institution_id, name, code, domain_email, retention_days)
+VALUES ('inst-default', 'Default Institution', 'DEFAULT', 'admin@examos.local', 365)
+ON CONFLICT (institution_id) DO NOTHING;
+
+INSERT INTO examos_devices (device_id, hostname, group_name, hardware_platform, attestation_status, compliance_status, enrolled, enrollment_status)
+VALUES ('DEV-KIOSK-01', 'DEV-KIOSK-01.kiosk.internal', 'DEFAULT', 'x86_64 / UEFI TPM 2.0', 'TRUSTED', 'COMPLIANT', true, 'ENROLLED')
+ON CONFLICT (device_id) DO NOTHING;
+
 COMMIT;

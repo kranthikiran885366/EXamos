@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     openssl \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -46,8 +47,9 @@ COPY --from=builder /app/server/examos-server /usr/local/bin/sppio-server
 COPY --from=builder /app/server/examos-db-migrate /usr/local/bin/sppio-db-migrate
 COPY --from=builder /app/server/examos-admin-provision /usr/local/bin/sppio-admin-provision
 
-# Copy database schema migrations
+# Copy database schema migrations and seed scripts
 COPY server/migrations /opt/sppio/migrations
+COPY scripts/seed_admin_users.sql /opt/sppio/seed_admin_users.sql
 
 # Copy server configuration and browser policy catalog
 COPY server/config /opt/sppio/config

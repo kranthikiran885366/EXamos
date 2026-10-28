@@ -89,7 +89,13 @@ if [ -n "$EXAMOS_DATABASE_URL" ]; then
     if [ -x /usr/local/bin/sppio-db-migrate ] && [ -d /opt/sppio/migrations ]; then
         /usr/local/bin/sppio-db-migrate /opt/sppio/migrations || true
     fi
+
+    # 9. Seed administrative platform accounts (root, admin)
+    if command -v psql >/dev/null 2>&1 && [ -f /opt/sppio/seed_admin_users.sql ]; then
+        echo "[SPPIO-Core] Seeding administrative platform accounts..."
+        psql "$EXAMOS_DATABASE_URL" -f /opt/sppio/seed_admin_users.sql || true
+    fi
 fi
 
-# 9. Hand off to native C server binary
+# 10. Hand off to native C server binary
 exec /usr/local/bin/sppio-server
