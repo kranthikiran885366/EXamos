@@ -75,13 +75,13 @@ export default function LandingPage() {
       number: '01',
       tag: 'Hardware Security',
       title: 'Hardware Cryptographic Attestation',
-      summary: 'TPM 2.0 PCR-0/4/7 measurements authenticated against golden release policies.',
+      summary: 'Physical device attestation authenticated against verified golden release policies.',
       description:
-        'Before any assessment payload initializes, the physical device cryptoprocessor calculates Platform Configuration Register (PCR) measurements of the UEFI firmware, boot loader, and kernel. These measurements are validated against tamper-evident golden release policies, guaranteeing zero firmware tampering or bootkit persistence.',
+        'Before any assessment payload initializes, the physical device cryptoprocessor calculates cryptographic integrity measurements of the core system firmware and kernel. These measurements are validated against tamper-evident golden release policies, guaranteeing zero firmware tampering or bootkit persistence.',
       specs: [
-        { label: 'Attestation Root', value: 'TPM 2.0 Endorsement Key (EK)' },
-        { label: 'Integrity Check', value: 'PCR 0 / 4 / 7 SHA-256 Quotes' },
-        { label: 'Replay Protection', value: 'Cryptographic Hardware Nonce' },
+        { label: 'Attestation Root', value: 'Hardware Cryptoprocessor' },
+        { label: 'Integrity Check', value: 'Golden Policy Verification' },
+        { label: 'Replay Protection', value: 'Anti-Replay Challenge Protocol' },
         { label: 'Attestation Latency', value: '< 120ms Roundtrip' },
       ],
     },
@@ -89,27 +89,27 @@ export default function LandingPage() {
       number: '02',
       tag: 'Station Lockdown',
       title: 'Zero-Trust Station Enclave',
-      summary: 'Cage-Wayland display compositor suppressing VT switching and host escapes.',
+      summary: 'Dedicated display environment enforcing single-application containment.',
       description:
-        'The candidate workstation boots directly into a dedicated Wayland compositor designed specifically for containment. Virtual terminal switching (Ctrl+Alt+F1..F6), host key combinations, unauthorized display cloning, clipboard sharing, and peripheral access are suppressed at the Linux kernel level.',
+        'The candidate workstation boots directly into a dedicated display environment engineered specifically for containment. Virtual terminal switching, host key shortcuts, unauthorized display cloning, clipboard sharing, and unapproved peripheral access are restricted at the operating system foundation.',
       specs: [
-        { label: 'Display Engine', value: 'Cage-Wayland Compositor' },
-        { label: 'Storage Mode', value: 'Read-only SquashFS + RAM Overlay' },
-        { label: 'Peripheral Guard', value: 'Kernel USB HID Whitelist' },
-        { label: 'Host Access', value: 'Zero Residual Host OS' },
+        { label: 'Display Engine', value: 'Isolated Kiosk Compositor' },
+        { label: 'Storage Mode', value: 'Immutable Read-Only System' },
+        { label: 'Peripheral Guard', value: 'Hardware Device Whitelisting' },
+        { label: 'Host Access', value: 'Zero Residual Host Footprint' },
       ],
     },
     {
       number: '03',
       tag: 'Audit Integrity',
       title: 'Immutable Chained Audit Ledger',
-      summary: 'HMAC-SHA-256 authenticated event chaining with strict separation of duties.',
+      summary: 'Tamper-evident event chaining with strict separation of duties.',
       description:
-        'Every supervisory action, candidate session lifecycle event, heartbeat, and policy update is permanently chained into an immutable SHA-256 event ledger. Each record references the hash of the preceding block, ensuring any retrospective alteration or omission is immediately mathematically detectable.',
+        'Every supervisory action, candidate session lifecycle event, heartbeat, and policy update is permanently recorded in an immutable chained event ledger. Each record is linked cryptographically to prior blocks, ensuring any retrospective alteration or omission is immediately detectable.',
       specs: [
-        { label: 'Ledger Hash', value: 'Chained SHA-256 with HMAC Anchors' },
-        { label: 'Approval Model', value: 'Two-Person Dual-Custody Rollback' },
-        { label: 'Audit Verification', value: 'Standalone Offline CLI Verifier' },
+        { label: 'Ledger Model', value: 'Cryptographically Chained Records' },
+        { label: 'Approval Model', value: 'Two-Person Dual-Custody Controls' },
+        { label: 'Audit Verification', value: 'Independent Verification Protocol' },
         { label: 'Compliance', value: 'FIPS 140-3 & ISO 27001 Aligned' },
       ],
     },
@@ -122,7 +122,7 @@ export default function LandingPage() {
         'SPPIO orchestrates thousands of concurrent testing stations across decentralized examination centers. Operating on a resilient local-first model, stations execute examinations seamlessly even during complete wide-area network severance, synchronizing encrypted submission batches upon link restoration.',
       specs: [
         { label: 'Network Resilience', value: 'Autonomous Offline Execution' },
-        { label: 'Heartbeat Interval', value: '5-second telemetry cadence' },
+        { label: 'Heartbeat Cadence', value: 'Real-Time Health Monitoring' },
         { label: 'Policy Rollout', value: 'Staged Canary Deployment' },
         { label: 'Data Recovery', value: 'Zero-Loss Local Cryptographic Cache' },
       ],
@@ -133,14 +133,14 @@ export default function LandingPage() {
     {
       layer: 'LAYER 01',
       title: 'Silicon & Hardware Root',
-      desc: 'Hardware TPM 2.0 cryptoprocessor generates non-exportable RSA/ECC keys and provides non-repudiable PCR quotes directly to the supervisory enclave.',
-      badge: 'TPM 2.0 / FIPS 140-3',
+      desc: 'Dedicated hardware cryptoprocessor generates non-exportable cryptographic keys and provides non-repudiable attestation quotes directly to the supervisory enclave.',
+      badge: 'Hardware Root / FIPS 140-3',
     },
     {
       layer: 'LAYER 02',
-      title: 'Kernel & Wayland Containment',
-      desc: 'Immutable read-only squashfs rootfs with Cage-Wayland display isolation suppressing virtual consoles, screen scraping, and USB storage insertion.',
-      badge: 'Cage-Wayland / Linux dm-verity',
+      title: 'Kernel & Graphical Containment',
+      desc: 'Immutable read-only system rootfs with display isolation suppressing virtual consoles, screen scraping, and unauthorized peripheral insertion.',
+      badge: 'Station Display Enclave',
     },
     {
       layer: 'LAYER 03',
@@ -151,8 +151,8 @@ export default function LandingPage() {
     {
       layer: 'LAYER 04',
       title: 'Cryptographic Audit & Ledger',
-      desc: 'Chained SHA-256 ledger replicated across authenticated backend nodes with dual-custody approval workflows preventing single-operator privilege abuse.',
-      badge: 'PostgreSQL 16 TLS / SHA-256',
+      desc: 'Cryptographically chained ledger replicated across authenticated backend nodes with dual-custody approval workflows preventing single-operator privilege abuse.',
+      badge: 'PostgreSQL 16 TLS / Chained Ledger',
     },
   ];
 
@@ -163,12 +163,12 @@ export default function LandingPage() {
       metricDesc: 'Concurrently provisioned across multi-center test facilities',
       title: 'High-Assurance National Examination Enclave',
       desc: 'A mission-critical examination deployment requiring zero host OS exposure and hardware-enforced boot attestation. SPPIO bootable stations sealed workstations against unauthorized media, virtual terminals, and external networks, maintaining 100% attestation integrity throughout examination sessions.',
-      tags: ['TPM 2.0 Attestation', 'Cage-Wayland Lockdown', 'Air-Gap Resilience', 'Zero-Loss Cache'],
+      tags: ['Hardware Attestation', 'Station Lockdown', 'Air-Gap Resilience', 'Zero-Loss Cache'],
     },
     {
       scope: 'State University Board',
       metric: '100% Verifiable',
-      metricDesc: 'Chained SHA-256 audit ledger with two-person custody',
+      metricDesc: 'Chained tamper-evident audit ledger with two-person custody',
       title: 'Tamper-Evident Institutional Audit & Policy Governance',
       desc: 'Implementation of dual-custody authorization for policy changes and candidate grade submissions. All supervisor activities and examination events were permanently recorded in an immutable hash-chained audit log, providing complete non-repudiation for institutional compliance audits.',
       tags: ['Two-Person Rule', 'Audit Hash Chain', 'RBAC Enforcement', 'FIPS 140-3'],
@@ -252,7 +252,7 @@ export default function LandingPage() {
               </h1>
 
               <p className="sppio-hero-lead">
-                Engineered for national examinations, academic institutions, and high-security testing. SPPIO combines silicon-rooted TPM 2.0 attestation, strict Cage-Wayland station isolation, and immutable cryptographic ledgers in one open aperture.
+                Engineered for national examinations, academic institutions, and high-security testing. SPPIO combines silicon-rooted hardware attestation, strict station isolation, and immutable cryptographic ledgers in one open aperture.
               </p>
 
               <div className="sppio-hero-actions">
@@ -265,11 +265,11 @@ export default function LandingPage() {
               </div>
 
               <div className="sppio-hero-standards">
-                <span>TPM 2.0 Active</span>
+                <span>Hardware Root Active</span>
                 <span className="sppio-sep">•</span>
-                <span>Cage-Wayland Enforced</span>
+                <span>Enclave Isolation</span>
                 <span className="sppio-sep">•</span>
-                <span>SHA-256 Chained Ledger</span>
+                <span>Tamper-Evident Ledger</span>
                 <span className="sppio-sep">•</span>
                 <span>FIPS 140-3 Aligned</span>
               </div>
@@ -291,42 +291,42 @@ export default function LandingPage() {
 
                 <div className="sppio-telemetry-list">
                   <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Hardware Cryptoprocessor</span>
+                    <span className="sppio-telemetry-label">System Integrity</span>
                     <span className="sppio-telemetry-val accent">
-                      TPM 2.0 PCR-0/4/7 Quote Authenticated (SHA-256)
+                      Hardware Attestation Active · Secure Boot Verified
                     </span>
                   </div>
 
                   <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Display &amp; Input Compositor</span>
+                    <span className="sppio-telemetry-label">Station Environment</span>
                     <span className="sppio-telemetry-val">
-                      Cage-Wayland (VT-1..6 &amp; Hotkeys Suppressed)
+                      Isolated Examination Enclave · Single-Application Lock
                     </span>
                   </div>
 
                   <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Peripheral Containment</span>
+                    <span className="sppio-telemetry-label">Peripheral Controls</span>
                     <span className="sppio-telemetry-val">
-                      Strict USB HID Whitelist (Mass Storage Suppressed)
+                      Strict Device Policy Active · External Media Blocked
                     </span>
                   </div>
 
                   <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Cryptographic Ledger Head</span>
+                    <span className="sppio-telemetry-label">Audit Stream</span>
                     <span className="sppio-telemetry-val">
-                      Block #{telemetryStatus.tpmMode === 'production' ? '14,892' : '02,104'} · HMAC-SHA-256 Anchored
+                      Tamper-Evident Ledger · Chained Event Validation
                     </span>
                   </div>
                 </div>
 
                 <div className="sppio-frame-footer">
-                  <span>Backend: PostgreSQL 16 (TLS 1.3)</span>
+                  <span>Compliance: FIPS 140-3 &amp; ISO 27001 Aligned</span>
                   <button
                     type="button"
                     onClick={() => setShowSpecModal(true)}
                     style={{ background: 'none', border: 'none', color: '#FFAE99', cursor: 'pointer', fontWeight: 700, padding: 0 }}
                   >
-                    View Attestation Specs →
+                    Explore Enclave Controls →
                   </button>
                 </div>
               </div>
@@ -348,8 +348,8 @@ export default function LandingPage() {
               <span className="sppio-metric-label">Host OS Virtual Terminal Escapes</span>
             </div>
             <div className="sppio-metric-box">
-              <span className="sppio-metric-num">SHA-256</span>
-              <span className="sppio-metric-label">Immutable Cryptographic Event Chaining</span>
+              <span className="sppio-metric-num">Chained</span>
+              <span className="sppio-metric-label">Immutable Cryptographic Event Verification</span>
             </div>
             <div className="sppio-metric-box">
               <span className="sppio-metric-num">&lt; 120ms</span>
@@ -515,7 +515,7 @@ export default function LandingPage() {
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong>Immutable Accountability</strong>
-                    <p>Non-repudiable SHA-256 audit logs with strict separation of duties and dual-custody governance.</p>
+                    <p>Non-repudiable cryptographic audit logs with strict separation of duties and dual-custody governance.</p>
                   </div>
                 </div>
               </div>
@@ -679,9 +679,9 @@ export default function LandingPage() {
                 Open Aperture architecture. High-assurance infrastructure engineered for national, institutional, and corporate assessment integrity.
               </p>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>TPM 2.0</span>
+                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>Hardware Attestation</span>
                 <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>FIPS 140-3</span>
-                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>Cage-Wayland</span>
+                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>Station Enclave</span>
               </div>
             </div>
 
@@ -751,28 +751,28 @@ export default function LandingPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', fontSize: '13.5px', color: '#302337', lineHeight: 1.6 }}>
               <div>
                 <strong style={{ display: 'block', color: '#B54F34', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.08em', marginBottom: '6px' }}>
-                  1. Physical Silicon PCR Quote Verification
+                  1. Hardware Root of Trust Attestation
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  Each workstation possesses a physical Trusted Platform Module 2.0 (TPM 2.0). During UEFI boot, PCR registers 0 (Core System Firmware), 4 (Boot Manager), and 7 (Secure Boot Policy) are measured and signed using the Endorsement Key certificate. The quote is verified against the golden release hash before candidate login is unlocked.
+                  Workstations utilize a dedicated hardware cryptoprocessor. Before assessment payloads are unlocked, the system cryptographically validates physical firmware, operating system components, and launch policies against authorized release manifests. Any unauthorized modification prevents workstation authorization.
                 </p>
               </div>
 
               <div>
                 <strong style={{ display: 'block', color: '#B54F34', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.08em', marginBottom: '6px' }}>
-                  2. Cage-Wayland Display Compositor Containment
+                  2. Isolated Station Environment
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  The workstation operates without a desktop environment, taskbar, or terminal access. The unprivileged Cage compositor isolates client surfaces via the Wayland protocol, intercepting and suppressing virtual terminal hotkeys (Ctrl+Alt+F1..F6), power events, and external display handshakes.
+                  The examination environment operates in strict single-application isolation without an accessible desktop interface, background process access, or host key shortcuts. Display cloning, unauthorized peripheral connections, and external media are suppressed at the operating system layer.
                 </p>
               </div>
 
               <div>
                 <strong style={{ display: 'block', color: '#B54F34', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.08em', marginBottom: '6px' }}>
-                  3. HMAC-SHA-256 Chained Event Ledger
+                  3. Tamper-Evident Chained Audit Logging
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  Every administrative login, candidate question interaction, and peripheral heartbeat appends to an incremental SHA-256 chain: <code>Hash_n = SHA256(Hash_n-1 + EventPayload)</code>. Truncation anchor signatures prevent history modification or selective omission.
+                  All supervisor interactions, candidate milestones, and workstation telemetry are cryptographically linked into an immutable event stream. Each record is verified against preceding milestones, ensuring complete historical non-repudiation and auditability for institutional compliance.
                 </p>
               </div>
 
@@ -782,7 +782,7 @@ export default function LandingPage() {
                   className="sppio-btn-primary"
                   onClick={() => setShowSpecModal(false)}
                 >
-                  Close Specifications
+                  Close Controls Overview
                 </button>
               </div>
             </div>

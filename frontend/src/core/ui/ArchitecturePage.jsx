@@ -7,28 +7,40 @@ export default function ArchitecturePage() {
 
   const quoteSteps = [
     {
-      step: '01 / Power-On & PCR Measurement',
-      title: 'UEFI & Core Root of Trust for Measurement (CRTM)',
-      desc: 'Upon cold boot, the CPU executes the CRTM in microcode. As firmware stages load, SHA-256 digests of the UEFI code, Secure Boot DB/DBX keys, and bootloader binary are extended into TPM registers PCR-0, PCR-4, and PCR-7.',
-      code: 'PCR[0] = SHA256(PCR[0] || CoreFirmwareDigest)\nPCR[4] = SHA256(PCR[4] || BootManagerDigest)\nPCR[7] = SHA256(PCR[7] || SecureBootPolicyDigest)',
+      step: '01 / Cold Boot Hardware Attestation',
+      title: 'Platform Firmware & Core Hardware Validation',
+      desc: 'Upon station power-on, platform measurement routines execute in silicon microcode. Firmware stages and bootloader components are cryptographically measured and isolated before execution begins.',
+      boundary: 'Platform Firmware & Hardware Roots',
+      enforcement: 'Hardware-Enforced State Hashing',
+      status: 'VERIFIED AT COLD BOOT',
+      compliance: 'FIPS 140-3 Hardware Boundary',
     },
     {
       step: '02 / Nonce Injection & Hardware Quote',
-      title: 'Attestation Nonce Challenge',
-      desc: 'The supervisory node injects an unpredictable 32-byte cryptographic nonce. The physical TPM 2.0 cryptoprocessor bundles current PCR values with the nonce and signs the payload using its factory Endorsement Key (EK).',
-      code: 'TPM2_Quote(EK_Handle, QualifyingData=Nonce, PCR_Mask=[0,4,7])\n=> Signature: ECDSA_P256(Hash(PCRs || Nonce), EK_PrivKey)',
+      title: 'Cryptographic Identity & State Challenge',
+      desc: 'The supervisory node injects an unpredictable 32-byte cryptographic challenge. The station cryptoprocessor bundles current measured states with the challenge and signs the payload using its factory hardware key.',
+      boundary: 'Physical Motherboard & Key Store',
+      enforcement: 'Asymmetric Challenge-Response Validation',
+      status: 'SEALED SILICON ATTESTED',
+      compliance: 'Asymmetric Digital Signature',
     },
     {
       step: '03 / Golden Policy Verification',
-      title: 'Cryptographic Policy Validation',
-      desc: 'The server verifies the signature against the verified TPM endorsement certificate and validates PCR hashes against golden release manifests. If a single byte differs (bootkit, rootkit, or tampered kernel), the station is quarantined.',
-      code: 'VerifyCertificate(EK_Cert, TPM_Manufacturer_RootCA)\nAssert(Hash_PCR0 == Golden_PCR0 && Hash_PCR7 == Golden_PCR7)\nStatus: ENCLAVE_SEALED_VALID',
+      title: 'Supervisory Enclave Policy Validation',
+      desc: 'The supervisory authority validates the hardware signature against certified manufacturer baselines and verifies measured states against authorized golden release policies. Any unapproved modification triggers automatic quarantine.',
+      boundary: 'Supervisory Enclave Authority',
+      enforcement: 'Zero-Tolerance Policy Conformance',
+      status: 'INTEGRITY POLICY ENFORCED',
+      compliance: 'Tamper-Evident Golden Baseline',
     },
     {
-      step: '04 / Cage-Wayland Compositor Handshake',
-      title: 'Unprivileged Display Lockdown',
-      desc: 'Once authenticated, the Linux kernel boots read-only SquashFS with Cage-Wayland compositor. Virtual terminals (VT-1..6), hotkeys, and unauthorized USB endpoints are suppressed before candidate login commences.',
-      code: 'Exec: cage -d -- examos-kiosk-runtime\nKernel: usbcore.authorized_default=0\nVT_Switch: IOCTL(VT_LOCKSWITCH) active',
+      step: '04 / Enclave Display Lockdown',
+      title: 'Isolated Single-Application Compositor',
+      desc: 'Once authenticated, the station initializes a dedicated, single-application graphical enclave. Operating system escape commands, background desktop multitasking, and unauthorized peripheral endpoints are suppressed.',
+      boundary: 'Display Compositor & Peripheral Bus',
+      enforcement: 'Deterministic Single-Task Isolation',
+      status: 'EXAMINATION ENCLAVE ACTIVE',
+      compliance: 'Strict Peripheral Lockdown',
     },
   ];
 
@@ -36,25 +48,25 @@ export default function ArchitecturePage() {
     {
       threat: 'Host OS Escape & Multitasking',
       legacy: 'Software lockdown browser runs atop vulnerable Windows/macOS with background task exploits.',
-      sppio: 'Bare-metal boot into dedicated Linux Cage-Wayland compositor; zero underlying host OS exists.',
+      sppio: 'Bare-metal boot into dedicated single-task graphical enclave; zero underlying host OS exists.',
       status: 'PREVENTED',
     },
     {
       threat: 'Virtual Machine / Sandbox Evasion',
       legacy: 'Easily tricked by patched hypervisors, nested virtualization, and GPU pass-through hooks.',
-      sppio: 'Physical TPM 2.0 silicon attestation validates hardware Endorsement Key bound to physical motherboard.',
+      sppio: 'Physical hardware silicon attestation validates cryptographic identity bound to physical motherboard.',
       status: 'VERIFIED SILICON',
     },
     {
       threat: 'Hardware Keyloggers & USB Storage',
       legacy: 'OS drivers automatically mount USB drives; software monitoring detects intrusions after the fact.',
-      sppio: 'Kernel-level USB whitelist permits exclusively known input devices; mass storage endpoints are rejected in kernel.',
+      sppio: 'Kernel-level peripheral whitelist permits exclusively known input devices; external storage endpoints are suppressed.',
       status: 'BLOCKED AT KERNEL',
     },
     {
       threat: 'Post-Exam Retrospective Alteration',
       legacy: 'Standard database updates where rogue operators can alter responses or delete audit logs.',
-      sppio: 'HMAC-SHA-256 chained ledger with dual-custody authorization; any alteration breaks all downstream hashes.',
+      sppio: 'Cryptographically chained ledger with dual-custody authorization; any alteration breaks all downstream anchors.',
       status: 'CRYPTOGRAPHIC CHAIN',
     },
   ];
@@ -157,11 +169,28 @@ export default function ArchitecturePage() {
               <h3 className="sppio-display-headline">{quoteSteps[activeStep].title}</h3>
               <p className="sppio-display-body">{quoteSteps[activeStep].desc}</p>
 
-              <div style={{ background: '#302337', borderRadius: '10px', padding: '20px', color: '#F6F2ED', fontFamily: 'monospace', fontSize: '13px', lineHeight: 1.6, overflowX: 'auto', border: '1px solid #48394F' }}>
-                <div style={{ color: '#FFAE99', marginBottom: '8px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                  Execution Manifest
+              <div style={{ background: '#302337', borderRadius: '12px', padding: '24px', color: '#F6F2ED', border: '1px solid #48394F' }}>
+                <div style={{ color: '#FFAE99', marginBottom: '16px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                  Security Domain &amp; Enforcement Assurance
                 </div>
-                <pre style={{ margin: 0 }}>{quoteSteps[activeStep].code}</pre>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.04)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Security Domain</div>
+                    <div style={{ fontSize: '13.5px', fontWeight: 600, color: '#FFFFFF', marginTop: '6px' }}>{quoteSteps[activeStep].boundary}</div>
+                  </div>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.04)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Enforcement Model</div>
+                    <div style={{ fontSize: '13.5px', fontWeight: 600, color: '#FFFFFF', marginTop: '6px' }}>{quoteSteps[activeStep].enforcement}</div>
+                  </div>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.04)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Verification Status</div>
+                    <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#4ADE80', marginTop: '6px' }}>{quoteSteps[activeStep].status}</div>
+                  </div>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.04)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Compliance Assurance</div>
+                    <div style={{ fontSize: '13.5px', fontWeight: 600, color: '#FFFFFF', marginTop: '6px' }}>{quoteSteps[activeStep].compliance}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -265,14 +294,15 @@ export default function ArchitecturePage() {
             <div className="sppio-geometry-study" style={{ background: '#302337', color: '#F6F2ED', borderColor: '#48394F' }}>
               <SppioSymbol size={64} accent="#B54F34" />
               <h4 style={{ fontSize: '18px', fontWeight: 800, marginTop: '20px', marginBottom: '8px' }}>
-                Open Aperture Ledger Formula
+                Tamper-Evident Ledger Integrity
               </h4>
-              <p style={{ fontFamily: 'monospace', fontSize: '14px', color: '#FFAE99', margin: '12px 0 20px' }}>
-                Block[n] = SHA-256(Block[n-1].Hash + EventPayload + Timestamp + Nonce)
+              <p style={{ fontSize: '13.5px', color: '#F6F2ED', margin: '12px 0 20px', lineHeight: 1.6, maxWidth: '320px', opacity: 0.9 }}>
+                Continuous cryptographic state validation with sequential event chain integrity and hardware-signed checkpoint anchors.
               </p>
-              <div style={{ display: 'inline-flex', gap: '8px' }}>
-                <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>RFC 6238 TOTP</span>
-                <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>ECDSA P-256</span>
+              <div style={{ display: 'inline-flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>Sequential Event Hash-Chain</span>
+                <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>Cryptographic Checkpoints</span>
+                <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>Dual-Operator Sign-Off</span>
               </div>
             </div>
           </div>

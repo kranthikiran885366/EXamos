@@ -17,10 +17,10 @@ export default function SolutionsPage() {
       subtitle: 'Massive concurrent scale across geographically dispersed assessment centers.',
       desc: 'National competitive and civil service examinations require foolproof containment across heterogeneous hardware. SPPIO bootable drives turn any standard commodity x86_64 workstation into a cryptographically sealed testing enclave within 45 seconds.',
       highlights: [
-        'Unattended TPM 2.0 PCR-0/4/7 quote verification on boot',
+        'Unattended hardware attestation and golden policy verification on boot',
         'Air-gap execution resilience with zero dependency on WAN stability',
-        'Batch cryptographic submission reconciliation with HMAC signatures',
-        'Suppression of USB mass storage, wireless sniffing, and VT escape',
+        'Batch cryptographic submission reconciliation with asymmetric signatures',
+        'Suppression of external mass storage, unauthorized networking, and OS escape',
       ],
     },
     {
@@ -32,16 +32,16 @@ export default function SolutionsPage() {
         'Departmental tenancy isolation with independent supervisor roles',
         'Two-person approval rule for policy rollback and score release',
         'Zero-trust student kiosk mode preventing secondary monitor sharing',
-        'Integrated Google Authenticator TOTP and FIPS-compliant cryptography',
+        'Integrated multi-factor authentication and FIPS-compliant cryptography',
       ],
     },
     {
       badge: 'Professional Licensure Boards',
       title: 'High-Integrity Credentialing & Certification',
       subtitle: 'Non-repudiable audit trails for high-consequence licensure.',
-      desc: 'Medical, legal, and financial certification bodies demand mathematically provable integrity. SPPIO ensures that every candidate interaction, proctoring alert, and score generation is permanently chained in a verifiable SHA-256 ledger.',
+      desc: 'Medical, legal, and financial certification bodies demand mathematically provable integrity. SPPIO ensures that every candidate interaction, proctoring alert, and score generation is permanently chained in a verifiable tamper-evident ledger.',
       highlights: [
-        'Non-repudiable candidate identity binding via hardware TPM quotes',
+        'Non-repudiable candidate identity binding via hardware cryptographic quotes',
         'Continuous real-time supervisory tracking and peripheral monitoring',
         'Immutable audit export readable by independent third-party auditors',
         'Zero residual client footprint post-examination reboot',
@@ -244,7 +244,7 @@ export default function SolutionsPage() {
                   <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {auditEntries.toLocaleString()}
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>SHA-256 Blocks per day</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Chained audit blocks per day</span>
                 </div>
 
                 <div>

@@ -418,7 +418,7 @@ export function FeatureGrid() {
         <Feature icon="🔐" title="Signed policies" desc="ECDSA P-256 signed, versioned kiosk policies with anti-downgrade and two-person rollback." tag="Security" />
         <Feature icon="🚀" title="Staged releases" desc="SBOM-scanned releases with staged rollout, revoke and device recovery." tag="Release" />
         <Feature icon="👥" title="Two-person approval" desc="Separation of duties for role changes, releases, policy rollbacks and config changes." tag="Governance" />
-        <Feature icon="📱" title="TPM attestation" desc="Simulated device agent with heartbeats, PCR quotes and isolation incidents." tag="Trust" />
+        <Feature icon="📱" title="TPM attestation" desc="Simulated device agent with heartbeats, hardware quotes and isolation incidents." tag="Trust" />
         <Feature icon="📊" title="Audit chain" desc="Every write is persisted in a SHA-256 hash chain that can be independently verified." tag="Compliance" />
         <Feature icon="💻" title="Frontend-only" desc="No backend. All logic runs in the browser through per-module services and IndexedDB persistence." tag="Architecture" />
       </div>
@@ -464,8 +464,8 @@ export function WhySection() {
       <div className="whygrid">
         <div className="item"><div className="n">ECDSA</div><div className="l">Signed policies &amp; releases</div></div>
         <div className="item"><div className="n">2-Person</div><div className="l">Approval &amp; rollback</div></div>
-        <div className="item"><div className="n">TPM</div><div className="l">Attestation &amp; PCR quotes</div></div>
-        <div className="item"><div className="n">SHA-256</div><div className="l">Hash-chained audit log</div></div>
+        <div className="item"><div className="n">TPM</div><div className="l">Hardware Attestation Quotes</div></div>
+        <div className="item"><div className="n">Audit</div><div className="l">Hash-chained audit log</div></div>
       </div>
     </section>
   );
@@ -474,7 +474,7 @@ export function TrustSection() {
   const items = [
     { icon: 'shield', label: 'Zero-trust by design', desc: 'No implicit trust. Every device attests before a session starts; every write is signed and chained.' },
     { icon: 'lock', label: 'Role-based access control', desc: 'Nine-tier RBAC with MFA, TOTP, failed-login throttling and account lockout.' },
-    { icon: 'cpu', label: 'Hardware-bound identity', desc: 'TPM 2.0 PCR quotes bind each appliance to its firmware and OS measurements.' },
+    { icon: 'cpu', label: 'Hardware-bound identity', desc: 'Hardware cryptographic quotes bind each appliance to its firmware and OS measurements.' },
     { icon: 'alert', label: 'Tamper-evident ledger', desc: 'HMAC-SHA256 authenticated audit chain with truncation anchors prevents silent deletion.' },
   ];
   return (

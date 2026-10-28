@@ -17,14 +17,14 @@ function LoginShowcase() {
         <div className="editorial-hero">
           <div className="editorial-telemetry-badge">
             <span className="editorial-ping" />
-            <span>Hardware Root: TPM 2.0 PCR-0/4/7 Active • Ledger Intact</span>
+            <span>Hardware Attestation Active • Tamper-Evident Ledger Intact</span>
           </div>
 
           <h1 className="editorial-headline">
             High-Assurance Infrastructure for <span>National &amp; Institutional Exams</span>
           </h1>
           <p className="editorial-sub">
-            Engineered with hardware-rooted TPM 2.0 cryptographic attestation, strict peripheral containment, and real-time supervisory telemetry.
+            Engineered with hardware-rooted cryptographic attestation, strict peripheral containment, and real-time supervisory telemetry.
           </p>
 
           <div className="editorial-points">
@@ -32,7 +32,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>Zero-Trust Station Lockdown</strong>
-                <p>Cage-Wayland compositor suppresses all virtual terminals, key combinations, and host OS access.</p>
+                <p>Single-application enclave suppresses all unauthorized shortcuts, key combinations, and host OS access.</p>
               </div>
             </div>
 
@@ -40,7 +40,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>Hardware Cryptographic Attestation</strong>
-                <p>Authenticates TPM PCR-0/4/7 measurements against tamper-evident golden release policies.</p>
+                <p>Authenticates hardware integrity measurements against tamper-evident golden release policies.</p>
               </div>
             </div>
 
@@ -48,7 +48,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>Immutable Audit Ledger</strong>
-                <p>Continuous SHA-256 chained session events with strict role-based separation of duties.</p>
+                <p>Continuous cryptographic chained session events with strict role-based separation of duties.</p>
               </div>
             </div>
           </div>
@@ -56,7 +56,7 @@ function LoginShowcase() {
 
         <div className="editorial-footer">
           <div className="editorial-standards">
-            <span>TPM 2.0 Active</span>
+            <span>Hardware Root Active</span>
             <span className="sep">•</span>
             <span>FIPS 140-3 Cryptography</span>
             <span className="sep">•</span>
