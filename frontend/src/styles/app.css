@@ -1,3 +1,5 @@
+@import './sppio-website.css';
+
 /* ============================================================
    ExamOS Console — Design System
    Tokens, app shell, kit primitives, tables, dialogs, landing
@@ -1774,7 +1776,7 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
 .login-server { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 10.5px; font-family: var(--mono); font-weight: 700; border: 1px solid transparent; }
 .login-server.online { color: #10b981; background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.25); }
 .login-server.offline { color: #ef4444; background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.22); }
-.login-server .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: var(--online) ? '0 0 8px #10b981' : 'none'; flex: none; }
+.login-server .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; flex: none; }
 .login-realm { display: flex; gap: 0; margin-bottom: 20px; background: #f1f5f9; border-radius: 9px; border: 1px solid var(--line); }
 .login-realm button { flex: 1 1 0; padding: 9px 12px; font-size: 12px; font-weight: 650; color: var(--mut); border: 0; background: transparent; border-radius: 8px; transition: var(--transition); }
 .login-realm button.on { background: #fff; color: var(--ink); box-shadow: var(--shadow); }
