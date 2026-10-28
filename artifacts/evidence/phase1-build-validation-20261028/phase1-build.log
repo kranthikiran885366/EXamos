@@ -1,0 +1,42 @@
+=== SPPIO / ExamOS Phase 1 Canonical Build Configuration Log ===
+Build System: mkosi v26 on Debian Trixie (x86_64)
+Configuration File: image/mkosi.conf / image/p0/mkosi.conf
+
+[Canonical Build Invocations]
+1. Appliance Raw Disk Build:
+   mkosi --directory image --output-directory output build
+   Output: image/examos.raw / output/examos.raw (4.29 GiB)
+   Format: disk (GPT, ESP 512MB + Root ext4 3.8GB)
+   Bootloader: systemd-boot
+
+2. Minimal P0 Disk Build:
+   mkosi --directory image/p0 --output-directory build/p0 build
+   Output: artifacts/p0/runs/.../examos-p0.raw (1.02 GiB)
+   Format: disk (GPT)
+
+3. UEFI Hybrid ISO Build:
+   bash scripts/build-examos-iso.sh
+   Output: image/examos.iso / output/examos.iso (8.09 GiB)
+   Format: ISO9660 with El Torito UEFI boot image and hybrid GPT partitions
+
+[Core Image Package Inventory]
+Kernel: linux-image-amd64 (6.12.113+deb13-amd64)
+Init System: systemd (257.13-1~deb13u1)
+Bootloader: systemd-boot, systemd-boot-efi
+Display / Kiosk: cage (Wayland kiosk compositor), chromium
+Hardware Security: tpm2-tools, tpm2-abrmd, libtss2-tcti-device0, cryptsetup-bin
+Peripherals: usbguard, udev
+Network / Security: nftables, apparmor, wpasupplicant, network-manager
+Media / Proctoring: libopencv-core410, libopencv-imgproc410, libopencv-videoio410, pipewire, wireplumber
+Database: postgresql, postgresql-client, libpq5
+
+[Embedded Native Subsystems]
+- /usr/local/bin/examos-kiosk-launcher
+- /usr/local/bin/examos-agent
+- /usr/local/bin/examos-proctor
+- /usr/local/bin/examos-server
+- /usr/local/bin/examos-db-migrate
+- /usr/local/sbin/tpm-seal-secrets.sh
+
+[Artifact Status]
+Built image artifacts exist, are non-empty, and their SHA-256 sums have been independently recalculated and verified against recorded checksum manifests.

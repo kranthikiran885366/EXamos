@@ -710,13 +710,19 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
                 if (st_res) PQclear(st_res);
             }
 
-            /* Resume Session to Active */
+            /* Resume Session to Active with Atomic State Transition */
             const char *res_p[1] = { session_id };
             int res_l[1] = { (int)strlen(session_id) };
             PGresult *res_r = db_simple(conn,
                 "UPDATE exam_sessions SET status = 'active', last_heartbeat_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1", 1, res_p, res_l);
-            if (res_r) PQclear(res_r);
+                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1 AND (status = 'interrupted' OR status = 'resuming')", 1, res_p, res_l);
+            if (!res_r || strcmp(PQcmdTuples(res_r), "1") != 0) {
+                if (res_r) PQclear(res_r);
+                db_release(conn, 0);
+                ses_send_error(client_fd, 400, "Only interrupted sessions may be resumed", origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(res_r);
 
             record_session_event(conn, session_id, s_exam, s_inst, "resumed", "{\"revalidated\":true}");
             record_session_audit(conn, session_id, s_exam, s_inst, sess.user_id[0] ? sess.user_id : s_sid,

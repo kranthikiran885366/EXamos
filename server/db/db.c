@@ -93,8 +93,8 @@ void db_shutdown(void) {
 }
 
 PGconn *db_acquire(void) {
-    pthread_mutex_lock(&g_db_pool.lock);
     for (;;) {
+        pthread_mutex_lock(&g_db_pool.lock);
         for (int i = 0; i < g_db_pool_count; i++) {
             if (!g_db_pool.conns[i].conn) continue;
             if (!g_db_pool.conns[i].in_use) {
@@ -135,6 +135,8 @@ PGconn *db_acquire(void) {
             }
         }
         pthread_mutex_unlock(&g_db_pool.lock);
+        struct timespec ts = {0, 5000000}; /* 5ms backoff */
+        nanosleep(&ts, NULL);
     }
     return NULL; /* No connections available */
 }

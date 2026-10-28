@@ -1,0 +1,102 @@
+=== SPPIO / ExamOS Phase 1 Validation Execution Log ===
+Timestamp: 2026-10-28T10:45:00Z
+Target Workspace: D:\SEB BRO
+Host: Ubuntu 26.04.1 LTS on WSL2 x86_64
+
+[STAGE A: Host Environment Verification]
+Executing: bash tests/p0/host-check.sh
+[HOST-CHECK] Architecture (x86_64): PASS
+[HOST-CHECK] QEMU KVM acceleration: PASS
+[HOST-CHECK] QEMU TCG fallback: AVAILABLE
+[HOST-CHECK] Disk Storage (823GB available): PASS
+[HOST-CHECK] Tool (git): PASS
+[HOST-CHECK] Tool (mkosi): PASS (v26)
+[HOST-CHECK] Tool (gcc): PASS (14.2.0)
+[HOST-CHECK] Tool (g++): PASS (14.2.0)
+[HOST-CHECK] Tool (qemu-system-x86_64): PASS (10.2.1)
+[HOST-CHECK] Tool (qemu-img): PASS (10.2.1)
+[HOST-CHECK] Tool (swtpm): PASS (0.10.1)
+[HOST-CHECK] Tool (tpm2_pcrread): PASS
+[HOST-CHECK] Tool (sbsign): PASS
+[HOST-CHECK] Tool (veritysetup): PASS (2.7.5)
+[HOST-CHECK] Tool (mksquashfs): PASS (4.6.1)
+[HOST-CHECK] OVMF Firmware: PASS (/usr/share/OVMF/OVMF_CODE_4M.fd)
+[HOST-CHECK] OVERALL STATUS: PASS
+
+[STAGE B: Environment Doctor Verification]
+Executing: bash tests/p0/examos-doctor.sh
+Host OS (Ubuntu 26.04.1 LTS) PASS
+Architecture (x86_64)     PASS
+QEMU KVM acceleration     PASS
+QEMU TCG fallback         AVAILABLE
+OVMF / UEFI               PASS
+QEMU (10.2.1)             PASS
+swtpm (0.10.1)            PASS
+TPM tools (tpm2-tools)    PASS
+Secure Boot (sbsign)      PASS
+dm-verity (cryptsetup)    PASS
+SquashFS                  PASS
+mkosi (26)                PASS
+Disk (823GB free)         PASS
+Repository Layout         PASS
+EXAMOS P0 DOCTOR: COMPLETED (PASS)
+
+[STAGE C: Disk Image Structural Inspection]
+Command: fdisk -l image/examos.raw
+Disk image/examos.raw: 4.29 GiB, 4603985920 bytes, 8992160 sectors
+Disklabel type: gpt
+Disk identifier: 04CB1DEA-52CB-4FC9-A4E8-26A5B910411D
+Partition 1: Start 2048, End 1050623, Size 512M, Type: EFI System
+Partition 2: Start 1050624, End 8992119, Size 3.8G, Type: Linux root (x86-64)
+Result: STRUCTURALLY VALID GPT DISK
+
+[STAGE D: EFI System Partition (ESP) Content Inspection]
+Command: mdir -i image/examos.raw@@1048576 ::/
+Files present:
+ - System.map-6.12.113+deb13-amd64
+ - config-6.12.113+deb13-amd64
+ - vmlinuz-6.12.113+deb13-amd64 (12,154,816 bytes)
+ - NvVars
+ - EFI/BOOT/BOOTX64.EFI (124,416 bytes)
+ - EFI/systemd/systemd-bootx64.efi (124,416 bytes)
+ - EFI/Linux/examos-6.12.113+deb13-amd64.efi (139,516,416 bytes)
+Result: ESP IS POPULATED WITH SYSTEMD-BOOT AND UKI
+
+[STAGE E: Unified Kernel Image (UKI) PE Header Inspection]
+Command: objdump -h /tmp/examos-uki.efi
+Sections:
+ - .text     (0x0001080e, CODE)
+ - .rodata   (0x00004ef0, DATA)
+ - .data     (0x000000c0, DATA)
+ - .sbat     (0x0000014b, SBAT targeting metadata)
+ - .sdmagic  (0x00000033, systemd stub magic)
+ - .reloc    (0x00000088, relocations)
+ - .osrel    (0x00000109, embedded /etc/os-release)
+ - .cmdline  (0x000000c1, embedded kernel commandline: lockdown=confidentiality ...)
+ - .uname    (0x00000014, kernel release)
+ - .linux    (0x00b977c0 = 12,154,816 bytes vmlinuz)
+ - .initrd   (0x0795f3a0 = 127,267,744 bytes initramfs)
+Result: AUTHENTIC SYSTEMD-STUB UNIFIED KERNEL IMAGE PRESENT
+
+[STAGE F: Secure Boot Signature Verification]
+Command: sbverify --list /tmp/bootx64.efi
+Result: "No signature table present" -> UNSIGNED
+Command: sbverify --list /tmp/examos-uki.efi
+Result: "No signature table present" -> UNSIGNED
+Status: SECURE BOOT KEYS AVAILABLE IN image/trust/ BUT BINARIES ARE CURRENTLY UNSIGNED
+
+[STAGE G: Hybrid ISO Verification]
+Command: xorriso -indev image/examos.iso -report_el_torito plain
+Volume ID: EXAMOS_P0
+El Torito boot record: Platform UEFI, LBA 34, Boot image /efi-boot.img
+MBR protective-msdos-label: Present
+GPT protective: Present
+Result: AUTHENTIC UEFI HYBRID OPTICAL MEDIA (ISO9660)
+
+[STAGE H: VM Bootability Evidence Analysis]
+Analysis of prior serial log (output/examos-serial.log, 498,970 bytes):
+ - Linux kernel 6.12.113 booted successfully
+ - systemd 257.13-1~deb13u1 entered initrd
+ - Root filesystem mounted read-only successfully
+ - Reached graphical.target
+ - Blocker identified: cage Wayland compositor failed with "Unable to create the wlroots backend" (requires virtual DRM/KMS device or seat configuration in headless test environment).

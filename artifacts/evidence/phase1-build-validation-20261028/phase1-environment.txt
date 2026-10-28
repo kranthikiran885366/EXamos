@@ -1,0 +1,36 @@
+================================================================================
+SPPIO™ / ExamOS Phase 1 Build & Validation Environment
+Generated: 2026-10-28T10:45:00Z
+Git Branch: main
+Git Commit: 3fc95801c4cb6f20387515743c08f4c28f9d0c26
+Git Worktree State: CLEAN (0 modified files)
+================================================================================
+
+[Host Operating System]
+Distro: Ubuntu 26.04.1 LTS
+Kernel: Linux 6.6.36.6-microsoft-standard-WSL2 x86_64
+Platform: Windows 11 + WSL2 Linux subsystem
+
+[Hardware & Virtualization Resources]
+Architecture: x86_64
+CPU Cores: 16 vCPUs assigned
+Total Memory: 15.3 GiB assigned
+Free Storage on Work Volume: ~823 GiB available
+KVM Acceleration: Available (/dev/kvm writable and verified)
+QEMU TCG Fallback: Available
+
+[Toolchain & Virtualization Binaries]
+mkosi: /usr/bin/mkosi (version 26)
+qemu-system-x86_64: /usr/bin/qemu-system-x86_64 (version 10.2.1)
+qemu-img: /usr/bin/qemu-img (version 10.2.1)
+swtpm: /usr/bin/swtpm (version 0.10.1)
+gcc: /usr/bin/gcc (Ubuntu 14.2.0-4ubuntu2~24.04) 14.2.0
+g++: /usr/bin/g++ (Ubuntu 14.2.0-4ubuntu2~24.04) 14.2.0
+make: /usr/bin/make (GNU Make 4.4.1)
+xorriso: /usr/bin/xorriso (version 1.5.6)
+sbsign: /usr/bin/sbsign
+sbverify: /usr/bin/sbverify
+veritysetup: /usr/sbin/veritysetup (cryptsetup 2.7.5)
+mksquashfs: /usr/bin/mksquashfs (version 4.6.1)
+OVMF Code Firmware: /usr/share/OVMF/OVMF_CODE_4M.fd
+OVMF Vars Template: /usr/share/OVMF/OVMF_VARS_4M.fd

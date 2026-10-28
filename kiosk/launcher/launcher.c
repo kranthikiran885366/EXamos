@@ -144,7 +144,64 @@ static void load_accommodations(char *scale_flag, size_t scale_sz,
     }
 }
 
+/* Validate sandbox environment: dedicated unprivileged user and sandbox prerequisites */
+static int validate_sandbox_environment(void) {
+    /* Check runtime user: must NOT run as root in production */
+    if (geteuid() == 0) {
+        const char *allow_dev = getenv("EXAMOS_ALLOW_UNSANDBOXED_DEV");
+        if (!allow_dev || strcmp(allow_dev, "1") != 0) {
+            log_msg("FATAL", "Security Violation: Kiosk supervisor running as root (UID 0). Production must run under dedicated unprivileged 'exam' user.");
+            return -1;
+        }
+        log_msg("WARN", "Running as root under explicit EXAMOS_ALLOW_UNSANDBOXED_DEV=1 override.");
+    }
+
+    /* Check unprivileged user namespace or SUID sandbox helper availability */
+    int userns_enabled = 0;
+    FILE *fp = fopen("/proc/sys/kernel/unprivileged_userns_clone", "r");
+    if (fp) {
+        char val = 0;
+        if (fread(&val, 1, 1, fp) == 1 && val == '1') {
+            userns_enabled = 1;
+        }
+        fclose(fp);
+    } else {
+        /* On standard upstream kernels without sysctl switch, userns is enabled by default */
+        userns_enabled = 1;
+    }
+
+    struct stat st;
+    int suid_helper = (stat("/usr/lib/chromium/chrome-sandbox", &st) == 0 && (st.st_mode & S_ISUID));
+
+    if (!userns_enabled && !suid_helper) {
+        const char *allow_dev = getenv("EXAMOS_ALLOW_UNSANDBOXED_DEV");
+        if (!allow_dev || strcmp(allow_dev, "1") != 0) {
+            log_msg("FATAL", "Security Violation: Chromium sandbox prerequisites missing (user namespaces disabled and no SUID helper). Refusing to launch unsandboxed.");
+            return -1;
+        }
+        log_msg("WARN", "Sandbox prerequisites missing, running under EXAMOS_ALLOW_UNSANDBOXED_DEV=1.");
+    }
+
+    log_msg("INFO", "Chromium sandbox runtime validated successfully.");
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
+    /* Audit arguments for any disallowed security flags */
+    for (int i = 1; i < argc; i++) {
+        if (strstr(argv[i], "--no-sandbox") ||
+            strstr(argv[i], "--disable-gpu-sandbox") ||
+            strstr(argv[i], "--disable-seccomp-filter-sandbox")) {
+            log_msg("FATAL", "Security Violation: Insecure flag detected in arguments; refusing to launch.");
+            return 1;
+        }
+    }
+
+    /* Enforce unprivileged user and functioning sandbox environment */
+    if (validate_sandbox_environment() != 0) {
+        return 1;
+    }
+
     const char *exam_url = NULL;
     exam_config_t exam_config = {0};
 

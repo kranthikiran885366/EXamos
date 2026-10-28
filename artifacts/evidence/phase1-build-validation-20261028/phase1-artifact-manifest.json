@@ -1,0 +1,118 @@
+{
+  "phase": "PHASE_1_OS_BUILD_AND_VALIDATION",
+  "product": "SPPIO™ — Secure Physical Proctoring and Isolation OS",
+  "source_revision": {
+    "git_branch": "main",
+    "git_commit": "3fc95801c4cb6f20387515743c08f4c28f9d0c26",
+    "git_worktree_state": "CLEAN",
+    "timestamp": "2026-10-28T10:45:00Z"
+  },
+  "build_environment": {
+    "host_os": "Ubuntu 26.04.1 LTS (WSL2)",
+    "kernel": "Linux 6.6.36.6-microsoft-standard-WSL2",
+    "architecture": "x86_64",
+    "mkosi_version": "26",
+    "qemu_version": "10.2.1",
+    "swtpm_version": "0.10.1",
+    "ovmf_firmware": "/usr/share/OVMF/OVMF_CODE_4M.fd"
+  },
+  "base_os_configuration": {
+    "distribution": "debian",
+    "release": "trixie",
+    "architecture": "x86-64",
+    "kernel_package": "linux-image-amd64",
+    "kernel_version": "6.12.113+deb13-amd64",
+    "bootloader": "systemd-boot",
+    "boot_mode": "UEFI (GPT)",
+    "kernel_command_line": "console=tty0 console=ttyS0 quiet systemd.log_target=console systemd.log_level=info systemd.firstboot=0 systemd.unit=graphical.target lockdown=confidentiality systemd.unified_cgroup_hierarchy=1"
+  },
+  "artifacts": [
+    {
+      "name": "SPPIO Raw GPT Appliance Disk",
+      "relative_path": "image/examos.raw",
+      "format": "raw",
+      "size_bytes": 4603985920,
+      "size_human": "4.29 GiB",
+      "sha256": "95a6dd6a263e84fa876b469b01807c3fd86c5b1f43c090ec161a28737658142d",
+      "structural_validation": {
+        "status": "VALID",
+        "disklabel": "gpt",
+        "disk_guid": "04CB1DEA-52CB-4FC9-A4E8-26A5B910411D",
+        "partitions": [
+          {
+            "index": 1,
+            "name": "EFI System Partition",
+            "type": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+            "filesystem": "vfat (FAT32)",
+            "start_sector": 2048,
+            "end_sector": 1050623,
+            "size_sectors": 1048576,
+            "size_human": "512 MiB"
+          },
+          {
+            "index": 2,
+            "name": "Linux Root Filesystem",
+            "type": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
+            "filesystem": "ext4",
+            "start_sector": 1050624,
+            "end_sector": 8992119,
+            "size_sectors": 7941496,
+            "size_human": "3.8 GiB"
+          }
+        ]
+      },
+      "boot_components": {
+        "bootloader": "systemd-bootx64.efi (124,416 bytes)",
+        "default_boot_entry": "EFI/BOOT/BOOTX64.EFI (124,416 bytes)",
+        "unified_kernel_image": "EFI/Linux/examos-6.12.113+deb13-amd64.efi (139,516,416 bytes)"
+      }
+    },
+    {
+      "name": "SPPIO UEFI Hybrid Optical Media",
+      "relative_path": "image/examos.iso",
+      "format": "iso9660-hybrid",
+      "size_bytes": 8687290368,
+      "size_human": "8.09 GiB",
+      "sha256": "5ea088ae6631949fef14200d3352a8fe98b7920955fc21cec3897e5166c5522a",
+      "structural_validation": {
+        "status": "VALID",
+        "volume_id": "EXAMOS_P0",
+        "el_torito_platform": "UEFI",
+        "el_torito_boot_image": "/efi-boot.img",
+        "mbr_protective": true,
+        "gpt_protective": true
+      }
+    },
+    {
+      "name": "SPPIO VMware Virtual Disk Descriptor",
+      "relative_path": "image/examos.vmdk",
+      "format": "vmdk-monolithicFlat",
+      "size_bytes": 512,
+      "sha256": "0b707db12c5cffa38593655192169400d8bf92cce777068be0e598369e66e3d0",
+      "structural_validation": {
+        "status": "VALID",
+        "target_extent": "examos-flat.vmdk",
+        "virtual_size_bytes": 4603985920
+      }
+    },
+    {
+      "name": "SPPIO Unified Kernel Image (UKI)",
+      "relative_path": "image/examos.raw:EFI/Linux/examos-6.12.113+deb13-amd64.efi",
+      "format": "pei-x86-64 (systemd-stub UKI)",
+      "size_bytes": 139516416,
+      "size_human": "133.05 MiB",
+      "sha256": "e96bb30546bed682c0d08689bb78abd35f0595eb53093f2ffbf96105c058b377",
+      "structural_validation": {
+        "status": "VALID_PE_SECTIONS",
+        "stub_type": "systemd-stub 257.13-1~deb13u1",
+        "sections": [
+          ".text", ".rodata", ".data", ".sbat", ".sdmagic",
+          ".reloc", ".osrel", ".cmdline", ".uname", ".linux", ".initrd"
+        ],
+        "embedded_kernel_size_bytes": 12154816,
+        "embedded_initrd_size_bytes": 127267744,
+        "secure_boot_signature": "NONE (No signature table present)"
+      }
+    }
+  ]
+}

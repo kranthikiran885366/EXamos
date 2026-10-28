@@ -1,0 +1,11 @@
+# SPPIO Phase 1 Verified SHA-256 Digests
+# Recalculated and verified on 2026-10-28T10:45:00Z
+
+95a6dd6a263e84fa876b469b01807c3fd86c5b1f43c090ec161a28737658142d  image/examos.raw
+5ea088ae6631949fef14200d3352a8fe98b7920955fc21cec3897e5166c5522a  image/examos.iso
+95a6dd6a263e84fa876b469b01807c3fd86c5b1f43c090ec161a28737658142d  image/examos-flat.vmdk
+0b707db12c5cffa38593655192169400d8bf92cce777068be0e598369e66e3d0  image/examos.vmdk
+6d8a7f745280cc06a6d2877c932f4dfa9079b694eb4227b61b27232642340794  image/examos.vmlinuz
+a255c73afc260a3a6fcf58c31fc6c117c3c1747a21707f55719bd98296e9dc33  image/examos.initrd
+e96bb30546bed682c0d08689bb78abd35f0595eb53093f2ffbf96105c058b377  image/examos.raw:EFI/Linux/examos-6.12.113+deb13-amd64.efi
+5adb30d5e8f56313a0c6a333d2b5512c167f8102e011ff028f468564f77f668d  image/examos.raw:EFI/BOOT/BOOTX64.EFI

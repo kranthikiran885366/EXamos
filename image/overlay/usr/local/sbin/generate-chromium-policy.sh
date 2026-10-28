@@ -237,7 +237,10 @@ for raw in sys.argv[2:]:
     origin = canonical_origin(raw)
     if origin not in approved:
         approved.append(origin)
-print(json.dumps([origin + "/*" for origin in approved], separators=(",", ":")))
+allowlist_patterns = [origin + "/*" for origin in approved]
+allowlist_patterns.append("file:///usr/share/examos/*")
+print(json.dumps(allowlist_patterns, separators=(",", ":")))
+
 PYEOF
 ) || fail "ALLOWED_ORIGINS contains an invalid origin; policy was not written."
 

@@ -203,3 +203,9 @@ artifacts/evidence/iso-*
 artifacts/**/runs/
 artifacts/**/extract/
 artifacts/backups/
+
+# Reparse points / systemd mask symlinks incompatible with Windows Git
+image/overlay/etc/systemd/system/autovt@.service
+image/overlay/etc/systemd/system/console-getty.service
+image/overlay/etc/systemd/system/debug-shell.service
+image/overlay/etc/systemd/system/getty@tty*.service
