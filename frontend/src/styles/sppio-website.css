@@ -68,7 +68,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 80px;
+  height: 72px;
 }
 
 .sppio-brand-link {
@@ -85,13 +85,14 @@
 .sppio-nav {
   display: flex;
   align-items: center;
-  gap: 32px;
+  gap: 28px;
 }
 
 .sppio-nav-item {
   color: var(--sppio-aubergine);
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   text-decoration: none;
   position: relative;
   padding: 6px 0;
@@ -120,20 +121,21 @@
 .sppio-header-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .sppio-btn-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 10px 18px;
+  height: 38px;
+  padding: 0 16px;
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--sppio-aubergine);
   background: transparent;
   border: 1px solid var(--sppio-border);
-  border-radius: 6px;
+  border-radius: 8px;
   text-decoration: none;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -150,16 +152,17 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 11px 22px;
+  height: 38px;
+  padding: 0 20px;
   font-size: 13.5px;
-  font-weight: 700;
+  font-weight: 650;
   color: var(--sppio-white);
   background-color: var(--sppio-copper);
   border: 1px solid var(--sppio-copper);
-  border-radius: 6px;
+  border-radius: 8px;
   text-decoration: none;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(181, 79, 52, 0.25);
+  box-shadow: 0 2px 8px rgba(181, 79, 52, 0.22);
   transition: all 0.2s ease;
 }
 
@@ -264,15 +267,15 @@
   opacity: 0.4;
 }
 
-/* Hero Right: Aperture Architectural Frame */
+/* Hero Right: Aperture Architectural Frame & Cockpit Window */
 .sppio-aperture-frame {
   background-color: var(--sppio-aubergine);
   border-radius: 16px;
-  padding: 32px;
   color: var(--sppio-white);
   position: relative;
-  box-shadow: 0 20px 48px rgba(48, 35, 55, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 64px rgba(48, 35, 55, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
 }
 
 /* 45-degree corner accent echoing the aperture mark */
@@ -281,10 +284,79 @@
   position: absolute;
   top: 0;
   right: 0;
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   background: linear-gradient(225deg, var(--sppio-copper) 0%, var(--sppio-copper) 50%, transparent 50%);
   border-top-right-radius: 16px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.sppio-cockpit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background-color: rgba(0, 0, 0, 0.22);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sppio-cockpit-dots {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sppio-cockpit-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.sppio-cockpit-dot.red { background-color: #FF5F56; }
+.sppio-cockpit-dot.yellow { background-color: #FFBD2E; }
+.sppio-cockpit-dot.green { background-color: #27C93F; }
+
+.sppio-cockpit-tabs {
+  display: flex;
+  background-color: rgba(255, 255, 255, 0.03);
+  padding: 8px 16px;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  overflow-x: auto;
+}
+
+.sppio-cockpit-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #A69BA9;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.sppio-cockpit-tab:hover {
+  color: var(--sppio-white);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.sppio-cockpit-tab.active {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--sppio-white);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.sppio-cockpit-body {
+  padding: 22px;
+  min-height: 290px;
 }
 
 .sppio-frame-top {
@@ -361,14 +433,58 @@
 }
 
 .sppio-frame-footer {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 14px 22px;
+  background-color: rgba(0, 0, 0, 0.18);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 11.5px;
   color: var(--sppio-slate-light);
+}
+
+/* Enterprise Trust & Scale Strip */
+.sppio-trust-strip {
+  background-color: #EDE7E0;
+  border-bottom: 1px solid var(--sppio-border);
+  padding: 24px 0;
+}
+
+.sppio-trust-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.sppio-trust-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sppio-slate);
+}
+
+.sppio-trust-badges {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.sppio-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--sppio-white);
+  border: 1px solid var(--sppio-border);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--sppio-aubergine);
+  box-shadow: 0 1px 4px rgba(48, 35, 55, 0.04);
 }
 
 /* ------------------------------------------------------------

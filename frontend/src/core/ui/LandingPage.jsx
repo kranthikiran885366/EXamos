@@ -12,6 +12,8 @@ export default function LandingPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [activeTechLayer, setActiveTechLayer] = useState(0);
   const [showSpecModal, setShowSpecModal] = useState(false);
+  const [cockpitTab, setCockpitTab] = useState('command'); // 'command' | 'kiosk' | 'forensics' | 'physical'
+  const [suiteCategory, setSuiteCategory] = useState('all'); // 'all' | 'endpoint' | 'intelligence' | 'cloud'
 
   // Contact form state
   const [formData, setFormData] = useState({
@@ -73,6 +75,7 @@ export default function LandingPage() {
   const productSuite = [
     {
       name: 'SPPIO-Isolation™ Base OS',
+      category: 'endpoint',
       tag: 'Operating System',
       tagline: 'Bare-Metal Secure Assessment OS',
       desc: 'Immutable, read-only operating system running directly on commodity workstations. Eliminates host OS escapes, background tasks, remote desktop tools (AnyDesk, TeamViewer), and multitasking during corporate hiring and examinations.',
@@ -80,6 +83,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-PhysicalGuard™',
+      category: 'endpoint',
       tag: 'Hardware Lockdown',
       tagline: 'Peripheral Port & Interface Control',
       desc: 'Kernel-level enforcement engine that suppresses unauthorized USB keystroke injectors, external storage, secondary display splitters (HDMI/DP), and Bluetooth eavesdropping devices.',
@@ -87,6 +91,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Proctor™',
+      category: 'intelligence',
       tag: 'Sensors & Vision',
       tagline: 'Vision & Multi-Sensor Intelligence',
       desc: 'Real-time client-side sensor intelligence analyzing continuous face presence, multi-face presence, gaze diversion, and acoustic anomalies without sending raw video streams off-premise.',
@@ -94,6 +99,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Kiosk™ Sandbox',
+      category: 'endpoint',
       tag: 'Application Runtime',
       tagline: 'Deterministic Single-Task Kiosk',
       desc: 'Secure candidate evaluation and IDE sandbox. Enforces strict clipboard isolation, virtual desktop suppression, hotkey locks, and a zero-leak RAM-only runtime environment.',
@@ -101,6 +107,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-TrustEngine™',
+      category: 'endpoint',
       tag: 'Hardware Attestation',
       tagline: 'Silicon Cryptographic Attestation',
       desc: 'Authenticates workstation hardware identity and platform firmware measurements against verified golden baselines before issuing assessment or interview tokens.',
@@ -108,6 +115,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Ledger™',
+      category: 'intelligence',
       tag: 'Audit Stream',
       tagline: 'Tamper-Evident Audit Chain',
       desc: 'Continuous cryptographic ledger chaining candidate answer commits, supervisor actions, proctoring alerts, and scoring decisions into non-repudiable sequential records.',
@@ -115,6 +123,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Forensics™',
+      category: 'intelligence',
       tag: 'Traceability & Viva',
       tagline: 'Code Construction & Viva Defense Engine',
       desc: 'Millisecond keystroke velocity telemetry, time-lapse code replay, and structured technical viva examination tooling for senior engineering evaluations.',
@@ -122,6 +131,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Core™ Server & Storage',
+      category: 'cloud',
       tag: 'Enterprise Backend',
       tagline: 'High-Throughput Assessment Backend',
       desc: 'Enterprise assessment orchestrator with TLS-authenticated storage, automated batch submission reconciliation, and multi-tenant corporate partition models.',
@@ -129,6 +139,7 @@ export default function LandingPage() {
     },
     {
       name: 'SPPIO-Command™ Console',
+      category: 'cloud',
       tag: 'Web Portal',
       tagline: 'Unified Recruiter & Proctoring Portal',
       desc: 'Role-gated centralized web portal for corporate recruiters, proctors, college administrators, and technical interviewers with live fleet telemetry and candidate tracking.',
@@ -351,50 +362,204 @@ export default function LandingPage() {
               </div>
             </div>
 
-            {/* Right: Architectural Open Aperture Framing with Live Telemetry */}
+            {/* Right: Architectural Open Aperture Framing with Live Interactive Cockpit */}
             <div className="sppio-hero-visual">
               <div className="sppio-aperture-frame">
-                <div className="sppio-frame-top">
-                  <div className="sppio-frame-title">
-                    <SppioSymbol size={20} accent="#B54F34" />
-                    <span>Station Enclave Telemetry</span>
+                {/* Cockpit Window Titlebar */}
+                <div className="sppio-cockpit-bar">
+                  <div className="sppio-cockpit-dots">
+                    <span className="sppio-cockpit-dot red" />
+                    <span className="sppio-cockpit-dot yellow" />
+                    <span className="sppio-cockpit-dot green" />
+                    <span style={{ fontSize: '11.5px', color: '#A69BA9', marginLeft: '8px', fontWeight: 650, fontFamily: 'var(--sppio-font-mono)' }}>
+                      SPPIO Cockpit v2.18
+                    </span>
                   </div>
                   <div className="sppio-status-chip">
                     <span className="sppio-status-pulse" />
-                    <span>Enclave Sealed</span>
+                    <span>Enclave Attested</span>
                   </div>
                 </div>
 
-                <div className="sppio-telemetry-list">
-                  <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">System Integrity</span>
-                    <span className="sppio-telemetry-val accent">
-                      Hardware Attestation Active · Secure Boot Verified
-                    </span>
-                  </div>
-
-                  <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Station Environment</span>
-                    <span className="sppio-telemetry-val">
-                      Isolated Examination Enclave · Single-Application Lock
-                    </span>
-                  </div>
-
-                  <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Peripheral Controls</span>
-                    <span className="sppio-telemetry-val">
-                      Strict Device Policy Active · External Media Blocked
-                    </span>
-                  </div>
-
-                  <div className="sppio-telemetry-row">
-                    <span className="sppio-telemetry-label">Audit Stream</span>
-                    <span className="sppio-telemetry-val">
-                      Tamper-Evident Ledger · Chained Event Validation
-                    </span>
-                  </div>
+                {/* Interactive Product Tabs */}
+                <div className="sppio-cockpit-tabs" role="tablist">
+                  <button
+                    type="button"
+                    className={`sppio-cockpit-tab ${cockpitTab === 'command' ? 'active' : ''}`}
+                    onClick={() => setCockpitTab('command')}
+                  >
+                    <span>📊</span> Command Portal
+                  </button>
+                  <button
+                    type="button"
+                    className={`sppio-cockpit-tab ${cockpitTab === 'kiosk' ? 'active' : ''}`}
+                    onClick={() => setCockpitTab('kiosk')}
+                  >
+                    <span>💻</span> Kiosk Sandbox
+                  </button>
+                  <button
+                    type="button"
+                    className={`sppio-cockpit-tab ${cockpitTab === 'forensics' ? 'active' : ''}`}
+                    onClick={() => setCockpitTab('forensics')}
+                  >
+                    <span>🔬</span> Viva Forensics
+                  </button>
+                  <button
+                    type="button"
+                    className={`sppio-cockpit-tab ${cockpitTab === 'physical' ? 'active' : ''}`}
+                    onClick={() => setCockpitTab('physical')}
+                  >
+                    <span>🛡️</span> Port Guard
+                  </button>
                 </div>
 
+                {/* Cockpit Body Content */}
+                <div className="sppio-cockpit-body">
+                  {cockpitTab === 'command' && (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                          SPPIO-Command™ Live Candidate Fleet
+                        </span>
+                        <span style={{ fontSize: '11px', color: '#4ADE80', fontWeight: 650 }}>● 34 Active Stations</span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {[
+                          { station: 'Station #042', cand: 'Sarah Lin', role: 'Staff Frontend Architect', risk: '0.01 LOW', wpm: '74 WPM', face: 'Aligned' },
+                          { station: 'Station #043', cand: 'Devon Miller', role: 'Staff Distributed Systems', risk: '0.02 LOW', wpm: '68 WPM', face: 'Aligned' },
+                          { station: 'Station #044', cand: 'Aisha Patel', role: 'ML Platform Lead', risk: '0.01 LOW', wpm: '82 WPM', face: 'Aligned' },
+                        ].map((row, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              background: 'rgba(255, 255, 255, 0.04)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              borderRadius: '8px',
+                              padding: '10px 14px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '12px',
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 700, color: '#FFFFFF' }}>{row.cand} <span style={{ color: '#A69BA9', fontWeight: 400 }}>({row.station})</span></div>
+                              <div style={{ color: '#FFAE99', fontSize: '11px' }}>{row.role}</div>
+                            </div>
+                            <div style={{ textAlign: 'right', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                              <span style={{ fontFamily: 'var(--sppio-font-mono)', color: '#C3B7C6', fontSize: '11px' }}>{row.wpm}</span>
+                              <span style={{ background: 'rgba(74, 222, 128, 0.15)', color: '#4ADE80', padding: '2px 8px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
+                                {row.risk}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {cockpitTab === 'kiosk' && (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                          SPPIO-Kiosk™ Single-Application IDE
+                        </span>
+                        <span style={{ background: 'rgba(181, 79, 52, 0.25)', color: '#FFAE99', padding: '2px 8px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
+                          🔒 Clipboard Host-Locked
+                        </span>
+                      </div>
+
+                      <div style={{ background: 'rgba(0, 0, 0, 0.35)', borderRadius: '8px', padding: '12px 14px', fontFamily: 'var(--sppio-font-mono)', fontSize: '12px', lineHeight: 1.5, color: '#F6F2ED', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                        <div style={{ color: '#756F79' }}>// Contained in RAM • Zero host OS access • Anti-AI injection</div>
+                        <div><span style={{ color: '#FFAE99' }}>def</span> <span style={{ color: '#4ADE80' }}>verify_transaction_ledger</span>(blocks):</div>
+                        <div style={{ paddingLeft: '16px' }}><span style={{ color: '#FFAE99' }}>for</span> i <span style={{ color: '#FFAE99' }}>in</span> range(1, len(blocks)):</div>
+                        <div style={{ paddingLeft: '32px' }}><span style={{ color: '#FFAE99' }}>if</span> blocks[i].prev != blocks[i-1].hash:</div>
+                        <div style={{ paddingLeft: '48px' }}><span style={{ color: '#FFAE99' }}>return</span> <span style={{ color: '#F87171' }}>False</span></div>
+                        <div style={{ paddingLeft: '16px', color: '#4ADE80' }}><span style={{ color: '#FFAE99' }}>return</span> True</div>
+                      </div>
+
+                      <div style={{ marginTop: '12px', display: 'flex', gap: '8px', fontSize: '11px', color: '#4ADE80', alignItems: 'center' }}>
+                        <span>✓ Test 1: Memory Safety [OK]</span>
+                        <span>•</span>
+                        <span>✓ Test 2: Concurrency [OK]</span>
+                        <span>•</span>
+                        <span style={{ color: '#A69BA9' }}>0 Remote Tasks</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {cockpitTab === 'forensics' && (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                          SPPIO-Forensics™ Code Viva Defense
+                        </span>
+                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Keystrokes Chained</span>
+                      </div>
+
+                      <div style={{ background: 'rgba(255, 255, 255, 0.04)', borderRadius: '8px', padding: '12px', border: '1px solid rgba(255, 255, 255, 0.08)', marginBottom: '10px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', color: '#C3B7C6', marginBottom: '6px' }}>
+                          <span>Time-Lapse Code Construction Replay</span>
+                          <span style={{ fontFamily: 'var(--sppio-font-mono)' }}>00:00 ━━━━●━━━━ 38:40</span>
+                        </div>
+                        <div style={{ height: '4px', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+                          <div style={{ width: '68%', height: '100%', background: '#B54F34' }} />
+                        </div>
+                      </div>
+
+                      <div style={{ background: 'rgba(181, 79, 52, 0.12)', border: '1px solid rgba(181, 79, 52, 0.3)', borderRadius: '8px', padding: '12px', fontSize: '12px' }}>
+                        <div style={{ color: '#FFAE99', fontWeight: 700, marginBottom: '4px', fontSize: '11px', textTransform: 'uppercase' }}>
+                          Targeted Viva Defense Prompt
+                        </div>
+                        <div style={{ color: '#FFFFFF', lineHeight: 1.45 }}>
+                          &ldquo;Candidate typed lines 12-28 with natural cadence (72 WPM). Inquire about state cache eviction logic at timestamp 24:15.&rdquo;
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {cockpitTab === 'physical' && (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                          SPPIO-PhysicalGuard™ Topology Shield
+                        </span>
+                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Kernel Filter Active</span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {[
+                          { dev: 'Standard Input Keyboard', status: 'Whitelisted · VID:PID Bound', ok: true },
+                          { dev: 'Optical Mouse', status: 'Whitelisted · HID Filter OK', ok: true },
+                          { dev: 'External HDMI Display Splitter', status: 'BLOCKED · Port Output Suppressed', ok: false },
+                          { dev: 'Keystroke Injector USB Dongle', status: 'BLOCKED · Kernel Endpoints Dropped', ok: false },
+                        ].map((d, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              background: 'rgba(255, 255, 255, 0.04)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              borderRadius: '8px',
+                              padding: '8px 12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '11.5px',
+                            }}
+                          >
+                            <span style={{ color: '#FFFFFF', fontWeight: 600 }}>{d.dev}</span>
+                            <span style={{ color: d.ok ? '#4ADE80' : '#F87171', fontWeight: 700, fontSize: '10.5px' }}>
+                              {d.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Cockpit Window Footer */}
                 <div className="sppio-frame-footer">
                   <span>Compliance: FIPS 140-3 &amp; ISO 27001 Aligned</span>
                   <button
@@ -402,10 +567,37 @@ export default function LandingPage() {
                     onClick={() => setShowSpecModal(true)}
                     style={{ background: 'none', border: 'none', color: '#FFAE99', cursor: 'pointer', fontWeight: 700, padding: 0 }}
                   >
-                    Explore Enclave Controls →
+                    View Architectural Specifications →
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ----------------- Enterprise Trust & Scale Strip ----------------- */}
+      <section className="sppio-trust-strip">
+        <div className="sppio-container">
+          <div className="sppio-trust-inner">
+            <span className="sppio-trust-label">Proven Across Global Sectors:</span>
+            <div className="sppio-trust-badges">
+              <span className="sppio-trust-badge">
+                <SppioSymbol size={14} accent="#B54F34" />
+                <span>Enterprise Tech Recruitment</span>
+              </span>
+              <span className="sppio-trust-badge">
+                <SppioSymbol size={14} accent="#B54F34" />
+                <span>Campus Engineering Drives</span>
+              </span>
+              <span className="sppio-trust-badge">
+                <SppioSymbol size={14} accent="#B54F34" />
+                <span>National Assessment Authorities</span>
+              </span>
+              <span className="sppio-trust-badge">
+                <SppioSymbol size={14} accent="#B54F34" />
+                <span>State Licensure &amp; Universities</span>
+              </span>
             </div>
           </div>
         </div>
@@ -530,8 +722,41 @@ export default function LandingPage() {
             </p>
           </div>
 
+          {/* Category Filter Pills */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '32px' }}>
+            {[
+              { id: 'all', label: 'All 9 Products' },
+              { id: 'endpoint', label: 'Endpoint & Silicon' },
+              { id: 'intelligence', label: 'AI Proctoring & Forensics' },
+              { id: 'cloud', label: 'Web Portal & Backend' },
+            ].map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setSuiteCategory(cat.id)}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: '999px',
+                  fontSize: '13px',
+                  fontWeight: 650,
+                  cursor: 'pointer',
+                  border: '1px solid',
+                  borderColor: suiteCategory === cat.id ? '#B54F34' : '#DCD5D2',
+                  backgroundColor: suiteCategory === cat.id ? '#B54F34' : '#FFFFFF',
+                  color: suiteCategory === cat.id ? '#FFFFFF' : '#302337',
+                  boxShadow: suiteCategory === cat.id ? '0 2px 8px rgba(181, 79, 52, 0.25)' : 'none',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
-            {productSuite.map((prod, idx) => (
+            {productSuite
+              .filter((p) => suiteCategory === 'all' || p.category === suiteCategory)
+              .map((prod, idx) => (
               <div
                 key={idx}
                 style={{
