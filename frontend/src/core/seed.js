@@ -142,45 +142,78 @@ export async function seed() {
     ['Chennai Campus', 'CHE', 'Chennai', 'Guindy, Chennai 600032', 600],
     ['Delhi Campus', 'DEL', 'Delhi', 'Dwarka, New Delhi 110075', 750],
   ];
+  const existingCampuses = await all('campuses');
   for (const [name, code, city, address, capacity] of campusSpecs) {
-    await createCampus(inst, { tenantId: T1.id, name, code, city, address, capacity });
+    if (!existingCampuses.some((x) => x.tenantId === T1.id && x.code === code)) {
+      try {
+        await createCampus(inst, { tenantId: T1.id, name, code, city, address, capacity });
+      } catch (_) {}
+    }
   }
-  await createCampus(demoInst, { tenantId: T2.id, name: 'Demo Mumbai Campus', code: 'DMC', city: 'Mumbai', address: 'Andheri East, Mumbai 400069', capacity: 180 });
+  if (!existingCampuses.some((x) => x.tenantId === T2.id && x.code === 'DMC')) {
+    try {
+      await createCampus(demoInst, { tenantId: T2.id, name: 'Demo Mumbai Campus', code: 'DMC', city: 'Mumbai', address: 'Andheri East, Mumbai 400069', capacity: 180 });
+    } catch (_) {}
+  }
   const campuses = (await all('campuses')).filter((c) => c.tenantId === T1.id).sort((a, b) => a.code.localeCompare(b.code));
-  const t2Campus = (await all('campuses')).find((c) => c.tenantId === T2.id);
+  const t2Campus = (await all('campuses')).find((c) => c.tenantId === T2.id) || campuses[0];
 
+  const existingDepts = await all('departments');
   for (const [name, code, type] of [
     ['Examination Control', 'EXAM', 'examination'],
     ['Computer Science', 'CSE', 'academic'],
     ['Laboratory Operations', 'LAB', 'laboratory'],
     ['Administration', 'ADMIN', 'administrative'],
-  ]) await createDepartment(inst, { tenantId: T1.id, name, code, campusId: campuses[0].id, type });
-  await createDepartment(demoInst, { tenantId: T2.id, name: 'Examination Unit', code: 'DEXAM', campusId: t2Campus.id, type: 'examination' });
+  ]) {
+    if (!existingDepts.some((x) => x.tenantId === T1.id && x.code === code)) {
+      try {
+        await createDepartment(inst, { tenantId: T1.id, name, code, campusId: campuses[0]?.id, type });
+      } catch (_) {}
+    }
+  }
+  if (!existingDepts.some((x) => x.tenantId === T2.id && x.code === 'DEXAM')) {
+    try {
+      await createDepartment(demoInst, { tenantId: T2.id, name: 'Examination Unit', code: 'DEXAM', campusId: t2Campus?.id, type: 'examination' });
+    } catch (_) {}
+  }
   const depts = (await all('departments')).filter((d) => d.tenantId === T1.id);
-  const dept = (code) => depts.find((d) => d.code === code);
+  const dept = (code) => depts.find((d) => d.code === code) || depts[0];
 
-  await assignStaff(inst, { tenantId: T1.id, userId: 'instadmin', campusId: campuses[0].id, departmentId: dept('ADMIN').id, roleTitle: 'Institution Administrator' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'controller', campusId: campuses[0].id, departmentId: dept('EXAM').id, roleTitle: 'Examination Controller' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'invig', campusId: campuses[0].id, departmentId: dept('EXAM').id, roleTitle: 'Chief Invigilator' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'itadmin', campusId: campuses[2].id, departmentId: dept('LAB').id, roleTitle: 'Device Operations Lead' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'security', campusId: campuses[0].id, departmentId: dept('ADMIN').id, roleTitle: 'Security Engineer' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'support', campusId: campuses[1].id, departmentId: dept('ADMIN').id, roleTitle: 'Support Engineer' });
-  await assignStaff(inst, { tenantId: T1.id, userId: 'finance', campusId: campuses[0].id, departmentId: dept('ADMIN').id, roleTitle: 'Finance Officer' });
-  await assignCampusAdmin(inst, campuses[0], 'instadmin');
-  await assignCampusAdmin(inst, campuses[2], 'itadmin');
+  if (campuses[0] && dept('ADMIN')) {
+    try {
+      await assignStaff(inst, { tenantId: T1.id, userId: 'instadmin', campusId: campuses[0].id, departmentId: dept('ADMIN')?.id, roleTitle: 'Institution Administrator' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'controller', campusId: campuses[0].id, departmentId: dept('EXAM')?.id, roleTitle: 'Examination Controller' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'invig', campusId: campuses[0].id, departmentId: dept('EXAM')?.id, roleTitle: 'Chief Invigilator' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'itadmin', campusId: campuses[2]?.id || campuses[0].id, departmentId: dept('LAB')?.id, roleTitle: 'Device Operations Lead' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'security', campusId: campuses[0].id, departmentId: dept('ADMIN')?.id, roleTitle: 'Security Engineer' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'support', campusId: campuses[1]?.id || campuses[0].id, departmentId: dept('ADMIN')?.id, roleTitle: 'Support Engineer' });
+      await assignStaff(inst, { tenantId: T1.id, userId: 'finance', campusId: campuses[0].id, departmentId: dept('ADMIN')?.id, roleTitle: 'Finance Officer' });
+      await assignCampusAdmin(inst, campuses[0], 'instadmin');
+      if (campuses[2]) await assignCampusAdmin(inst, campuses[2], 'itadmin');
+    } catch (_) {}
+  }
 
   // 7. Exam centres.
+  const existingCenters = await all('centers');
   for (const c of CITIES) {
-    const campus = campuses.find((x) => x.code === c.campus);
-    await createCenter(inst, {
-      tenantId: T1.id, campusId: campus.id, code: c.code,
-      name: `${c.city} Assessment Centre`, city: c.city, labs: 2, seatsPerLab: 16,
-    });
+    const campus = campuses.find((x) => x.code === c.campus) || campuses[0];
+    if (campus && !existingCenters.some((x) => x.tenantId === T1.id && x.code === c.code)) {
+      try {
+        await createCenter(inst, {
+          tenantId: T1.id, campusId: campus.id, code: c.code,
+          name: `${c.city} Assessment Centre`, city: c.city, labs: 2, seatsPerLab: 16,
+        });
+      } catch (_) {}
+    }
   }
-  await createCenter(demoInst, {
-    tenantId: T2.id, campusId: t2Campus.id, code: 'PUN-87',
-    name: 'Demo Pune Assessment Centre', city: 'Pune', labs: 1, seatsPerLab: 16,
-  });
+  if (!existingCenters.some((x) => x.tenantId === T2.id && x.code === 'PUN-87')) {
+    try {
+      await createCenter(demoInst, {
+        tenantId: T2.id, campusId: t2Campus?.id, code: 'PUN-87',
+        name: 'Demo Pune Assessment Centre', city: 'Pune', labs: 1, seatsPerLab: 16,
+      });
+    } catch (_) {}
+  }
   const centersT1 = (await all('centers')).filter((c) => c.tenantId === T1.id).sort((a, b) => a.code.localeCompare(b.code));
   const centerT2 = (await all('centers')).find((c) => c.tenantId === T2.id);
 
