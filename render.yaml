@@ -12,6 +12,8 @@ services:
         value: development
       - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
         value: "1"
+      - key: EXAMOS_DEV_DISABLE_MFA
+        value: "1"
       - key: EXAMOS_BROWSER_POLICY_CATALOG
         value: /opt/sppio/config/browser_policies.json
       - key: DATABASE_URL

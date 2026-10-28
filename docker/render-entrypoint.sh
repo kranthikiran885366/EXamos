@@ -9,6 +9,7 @@ echo "=========================================================="
 # 1. Deployment mode & posture (explicit development mode for cloud containers)
 export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}"
 export EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}"
+export EXAMOS_DEV_DISABLE_MFA="${EXAMOS_DEV_DISABLE_MFA:-1}"
 
 # 2. Port mapping (Render sets $PORT, default to 10000 on Render free tier)
 if [ -n "$PORT" ]; then
