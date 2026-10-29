@@ -16,6 +16,21 @@ const ResetPasswordPage = lazy(() => import('./modules/auth/pages').then((m) => 
 const InvitePage = lazy(() => import('./modules/auth/pages').then((m) => ({ default: m.InvitePage })));
 const UnauthorizedPage = lazy(() => import('./modules/auth/pages').then((m) => ({ default: m.UnauthorizedPage })));
 const ExpiredPage = lazy(() => import('./modules/auth/pages').then((m) => ({ default: m.ExpiredPage })));
+const PublicInstitutionRegisterPage = lazy(() => import('./modules/institutions/PublicInstitutionRegisterPage'));
+
+// Role to dedicated primary workspace dashboard mapping
+const ROLE_HOME = {
+  superadmin: '/platform/institutions',
+  ops_admin: '/platform/institutions',
+  inst_admin: '/institution/dashboard',
+  exam_controller: '/college/exams',
+  invigilator: '/operator/overview',
+  it_admin: '/devices',
+  security_engineer: '/security/overview',
+  auditor: '/admin/audit',
+  finance: '/admin/billing',
+  student: '/student/home',
+};
 
 // Each route definition exposes an async loader. Wrap them once so React treats
 // them as lazy components rather than rendering the returned promise as a child.
@@ -58,9 +73,10 @@ class ErrorBoundary extends Component {
 
 function Home() {
   const { user } = useAuth();
+  if (user?.role && ROLE_HOME[user.role]) {
+    return <Navigate to={ROLE_HOME[user.role]} replace />;
+  }
   const first = GROUPS.flatMap((g) => g.items).find((r) => can(user.role, r.perm));
-  if (user.role === 'student') return <Navigate to="/student/home" replace />;
-  if (user.role === 'inst_admin') return <Navigate to="/institution/dashboard" replace />;
   return <Navigate to={first ? first.path : '/dashboard'} replace />;
 }
 
@@ -70,7 +86,11 @@ function Denied() { return <div className="pad"><div className="card denied"><h2
 
 function PublicOnly({ children }) {
   const { user } = useAuth();
-  return user ? <Navigate to={user.role === 'student' ? '/student/home' : '/dashboard'} replace /> : children;
+  if (!user) return children;
+  if (user.role && ROLE_HOME[user.role]) {
+    return <Navigate to={ROLE_HOME[user.role]} replace />;
+  }
+  return <Navigate to="/dashboard" replace />;
 }
 
 export default function App() {
@@ -84,6 +104,11 @@ export default function App() {
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/architecture" element={<ArchitecturePage />} />
           <Route path="/solutions" element={<SolutionsPage />} />
+
+          {/* Public accreditation & onboarding registration */}
+          <Route path="/register-institution" element={<PublicInstitutionRegisterPage />} />
+          <Route path="/apply" element={<Navigate to="/register-institution" replace />} />
+          <Route path="/institution/register" element={<Navigate to="/register-institution" replace />} />
 
           {/* Public auth routes */}
           <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />

@@ -280,6 +280,9 @@ export default function LandingPage() {
             </nav>
 
             <div className="sppio-header-actions">
+              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>
+                Institution Onboarding
+              </Link>
               <Link to="/login" className="sppio-btn-ghost">
                 Sign In
               </Link>

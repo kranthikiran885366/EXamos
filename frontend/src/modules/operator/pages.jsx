@@ -30,11 +30,12 @@ export function OperatorOverviewPage() {
   const [lookup, setLookup] = useState(null);
   const flash = useFlash();
 
-  const mine = useMemo(() => exams.filter((e) => e.tenantId === user.tenantId), [exams, user.tenantId]);
+  const targetTenantId = tenantId || user?.tenantId;
+  const mine = useMemo(() => exams.filter((e) => !targetTenantId || e.tenantId === targetTenantId), [exams, targetTenantId]);
   const live = mine.filter((e) => e.status === 'live');
-  const openIncidents = incidents.filter((i) => i.tenantId === tenantId && ['open', 'investigating', 'contained'].includes(i.status));
-  const activeSessions = sessions.filter((s) => s.tenantId === tenantId && s.status === 'in_progress');
-  const submitted = sessions.filter((s) => s.tenantId === tenantId && s.status === 'submitted');
+  const openIncidents = incidents.filter((i) => (!targetTenantId || i.tenantId === targetTenantId) && ['open', 'investigating', 'contained'].includes(i.status));
+  const activeSessions = sessions.filter((s) => (!targetTenantId || s.tenantId === targetTenantId) && s.status === 'in_progress');
+  const submitted = sessions.filter((s) => (!targetTenantId || s.tenantId === targetTenantId) && s.status === 'submitted');
 
   const doLookup = (e) => {
     e.preventDefault();

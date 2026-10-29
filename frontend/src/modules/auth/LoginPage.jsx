@@ -475,6 +475,12 @@ export default function LoginPage() {
                     </button>
                     <Link to="/landing" className="secondary-link">Platform Overview →</Link>
                   </div>
+                  <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)', textAlign: 'center' }}>
+                    <span style={{ fontSize: '12.5px', color: '#6b7280' }}>Accredited University / College? </span>
+                    <Link to="/register-institution" style={{ fontSize: '12.5px', fontWeight: 700, color: '#B54F34', textDecoration: 'none' }}>
+                      Apply for Onboarding →
+                    </Link>
+                  </div>
                 </form>
               ) : (
                 <form onSubmit={handleCandidateSubmit} className="login-flow-form">

@@ -40,6 +40,8 @@ export default function DashboardPage() {
   const [serverStatus, setServerStatus] = useState(null);
   const [ledgerData, setLedgerData] = useState(null);
   const [fleetData, setFleetData] = useState(null);
+  const [backendApps, setBackendApps] = useState([]);
+  const [backendInsts, setBackendInsts] = useState([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(Date.now());
@@ -48,13 +50,18 @@ export default function DashboardPage() {
   const fetchLiveTelemetry = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [h, s, t, l, f] = await Promise.allSettled([
+      const [h, s, t, l, f, apps, insts] = await Promise.allSettled([
         Api.health(),
         Api.status(),
         Api.getTelemetry(),
         Api.getLedger(),
         Api.listFleet(),
+        Api.listInstitutionApplications(),
+        Api.listInstitutions(),
       ]);
+
+      if (apps.status === 'fulfilled' && apps.value?.applications) setBackendApps(apps.value.applications);
+      if (insts.status === 'fulfilled' && (insts.value?.institutions || Array.isArray(insts.value))) setBackendInsts(insts.value.institutions || insts.value);
 
       if (h.status === 'fulfilled') setServerHealth(h.value);
       if (s.status === 'fulfilled') setServerStatus(s.value);
@@ -166,6 +173,126 @@ export default function DashboardPage() {
           <Badge value={serverHealth?.ledger_integrity ? `LEDGER: ${serverHealth.ledger_integrity}` : 'LEDGER: UNVERIFIED'} />
           <Badge value={`TPM: ${serverHealth?.tpm_mode || 'DEV'}`} />
           <Badge value={serverStatus?.exam_url_configured ? 'EXAM: ACTIVE' : 'EXAM: STANDBY'} />
+        </div>
+      </div>
+      {/* Role-Tailored Primary Workspace Hub */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, rgba(48, 35, 55, 0.05) 0%, rgba(181, 79, 52, 0.05) 100%)',
+          border: '1px solid var(--line)',
+          borderRadius: '12px',
+          padding: '16px 20px',
+          marginBottom: '20px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--brand, #B54F34)' }}>
+              Primary Role Workspace · {roleLabel(user.role)}
+            </span>
+          </div>
+          <span style={{ fontSize: '12px', color: 'var(--mut)' }}>
+            Authorized Scope: <b>{inst?.name || 'Platform Wide'}</b>
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          {(user.role === 'superadmin' || user.role === 'ops_admin') && (
+            <>
+              <Link to="/platform/institutions" className="btn small primary">
+                <Icon name="grid" size={13} /> Platform Overview
+              </Link>
+              <Link to="/platform/institutions/directory" className="btn small">
+                <Icon name="building" size={13} /> Directory
+              </Link>
+              <Link to="/platform/institutions/applications" className="btn small">
+                <Icon name="checklist" size={13} /> Applications ({backendApps.filter((a) => a.status === 'pending' || a.status === 'submitted').length})
+              </Link>
+              <Link to="/platform/provisioning" className="btn small">
+                <Icon name="server" size={13} /> Provisioning
+              </Link>
+              <Link to="/platform/readiness" className="btn small">
+                <Icon name="checklist" size={13} /> Pilot &amp; Readiness
+              </Link>
+              <Link to="/platform/operations" className="btn small">
+                <Icon name="shield" size={13} /> Operations &amp; Audit
+              </Link>
+            </>
+          )}
+
+          {user.role === 'inst_admin' && (
+            <>
+              <Link to="/institution/dashboard" className="btn small primary">
+                <Icon name="home" size={13} /> Institution Dashboard
+              </Link>
+              <Link to="/institution/organization" className="btn small">
+                <Icon name="layers" size={13} /> Campuses &amp; Depts
+              </Link>
+              <Link to="/institution/settings/access" className="btn small">
+                <Icon name="users" size={13} /> Staff &amp; Admins
+              </Link>
+              <Link to="/institution/settings/security" className="btn small">
+                <Icon name="shield" size={13} /> Security &amp; TPM
+              </Link>
+              <Link to="/institution/deployment" className="btn small">
+                <Icon name="device" size={13} /> Workstations
+              </Link>
+              <Link to="/college/exams/new" className="btn small">
+                <Icon name="plus" size={13} /> New Exam
+              </Link>
+            </>
+          )}
+
+          {user.role === 'exam_controller' && (
+            <>
+              <Link to="/college/exams" className="btn small primary">
+                <Icon name="exam" size={13} /> Examinations
+              </Link>
+              <Link to="/college/exams/new" className="btn small">
+                <Icon name="plus" size={13} /> New Exam
+              </Link>
+              <Link to="/college/candidates" className="btn small">
+                <Icon name="candidate" size={13} /> Candidates
+              </Link>
+              <Link to="/security/policies" className="btn small">
+                <Icon name="policy" size={13} /> Policies
+              </Link>
+            </>
+          )}
+
+          {user.role === 'invigilator' && (
+            <>
+              <Link to="/operator/overview" className="btn small primary">
+                <Icon name="pulse" size={13} /> Proctoring Console
+              </Link>
+              <Link to="/operator/exams" className="btn small">
+                <Icon name="exam" size={13} /> Active Sessions
+              </Link>
+              <Link to="/operator/incidents" className="btn small">
+                <Icon name="alert" size={13} /> Incident Queue
+              </Link>
+            </>
+          )}
+
+          {(user.role === 'it_admin' || user.role === 'security_engineer') && (
+            <>
+              <Link to="/devices" className="btn small primary">
+                <Icon name="device" size={13} /> Fleet Workstations
+              </Link>
+              <Link to="/devices/enrollment" className="btn small">
+                <Icon name="plus" size={13} /> Enroll Device
+              </Link>
+              <Link to="/usb-inventory" className="btn small">
+                <Icon name="usb" size={13} /> USB Flash Drives
+              </Link>
+              <Link to="/security/overview" className="btn small">
+                <Icon name="shield" size={13} /> Security Posture
+              </Link>
+              <Link to="/security/boot-integrity" className="btn small">
+                <Icon name="boot" size={13} /> Boot Integrity
+              </Link>
+            </>
+          )}
         </div>
       </div>
 

@@ -58,7 +58,7 @@ export function StudentHomePage() {
         { title: 'Identity verified at the centre', body: 'A photo ID check is recorded by the invigilator.' },
         { title: 'Seat device checked', body: 'The kiosk verifies Secure Boot, TPM attestation and the approved release.' },
         { title: 'Policy deployed', body: 'Clipboard, screen capture and USB access follow your exam policy.' },
-        { title: 'Answers saved continuously', body: 'Each answer is saved as you select it. Submit before the timer ends.' },
+        { title: 'Assessment Portal Session', body: 'The verified assessment URL launches inside the isolated kiosk. Confirm your submission when finished.' },
       ]} />
     </Card>
     <div className="row end"><button className="btn" onClick={reload}><Icon name="refresh" size={14} /> Refresh</button></div>

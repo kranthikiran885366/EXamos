@@ -160,6 +160,7 @@ export const GROUPS = [...new Set(ROUTE_DEFS.filter((r) => r.nav !== false).map(
 
 export const TITLES = {
   '/dashboard': 'Overview',
+  '/register-institution': 'Institution Accreditation & Onboarding',
   // Platform Admin
   '/platform/institutions': 'Institution Overview',
   '/platform/institutions/directory': 'Institution Directory',
