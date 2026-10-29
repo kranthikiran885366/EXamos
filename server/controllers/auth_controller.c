@@ -746,6 +746,28 @@ void auth_mfa_setup(int client_fd, const char *req_body, const char *auth_header
             }
         }
         if (res) PQclear(res);
+
+        /* Also check candidates and exam roster */
+        PGresult *cres = db_simple(chk_conn,
+            "SELECT id FROM candidates WHERE LOWER(id) = LOWER($1) OR LOWER(roll_no) = LOWER($1)",
+            1, pvals, lens);
+        if (cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0) {
+            PQclear(cres);
+            db_release(chk_conn, 0);
+            send_json_cors(client_fd, 403,
+                "{\"status\":\"FAIL\",\"error\":\"Multi-factor authentication is exclusively for management dashboards. Candidate and student accounts do not require MFA.\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        if (cres) PQclear(cres);
+
+        if (strncasecmp(username, "cand", 4) == 0 || strncasecmp(username, "student", 7) == 0) {
+            db_release(chk_conn, 0);
+            send_json_cors(client_fd, 403,
+                "{\"status\":\"FAIL\",\"error\":\"Multi-factor authentication is exclusively for management dashboards. Candidate and student accounts do not require MFA.\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
         db_release(chk_conn, 0);
     }
 
@@ -853,6 +875,14 @@ void auth_mfa_confirm(int client_fd, const char *req_body, const char *auth_head
         }
     }
     if (chk_r) PQclear(chk_r);
+
+    if (strncasecmp(username, "cand", 4) == 0 || strncasecmp(username, "student", 7) == 0) {
+        db_release(conn, 0);
+        send_json_cors(client_fd, 403,
+            "{\"status\":\"FAIL\",\"error\":\"Multi-factor authentication is exclusively for management dashboards. Candidates and students do not require MFA.\"}",
+            origin, extra_headers, extra_len);
+        return;
+    }
 
     /* 1. Update users table */
     const char *pvals[2] = { secret, username };
