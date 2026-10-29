@@ -261,13 +261,14 @@ export async function seed() {
   // 12. Exams.
   const baseExam = {
     tenantId: T1.id, type: 'final', policyId: pol1.id, durationMin: 90, timeZone: 'Asia/Kolkata',
-    instructions: 'Carry your photo ID. The kiosk will verify the device before the paper starts. Answers save automatically; submit before the timer ends.',
-    description: 'National Qualifier · cognitive ability paper delivered on secure kiosks.',
+    examUrl: 'https://assessment.sppio.io/exam/demo-nqt',
+    instructions: 'Carry your photo ID. The kiosk will verify the device before the paper starts. The assessment portal will launch directly inside the secure kiosk.',
+    description: 'National Qualifier — cognitive ability assessment delivered on secure kiosks.',
     authMode: 'candidate-login', attestationLevel: 'tpm', requiredChecks: ['uefi', 'usb', 'tpm', 'network', 'display', 'keyboard'],
   };
   await createExam(ctrl, {
     ...baseExam, code: 'NQT-COG-01', title: 'NQT · Cognitive Ability',
-    centerIds: centersT1.map((c) => c.id), startAt: Date.now() - 10 * 60000, durationMin: 90, generate: 25,
+    centerIds: centersT1.map((c) => c.id), startAt: Date.now() - 10 * 60000, durationMin: 90,
   });
   const ex1 = (await all('exams')).find((e) => e.code === 'NQT-COG-01');
   await transition(ctrl, ex1, 'review');
@@ -278,7 +279,7 @@ export async function seed() {
   await createExam(ctrl, {
     ...baseExam, code: 'NQT-CODE-01', title: 'NQT · Coding Aptitude', type: 'laboratory',
     centerIds: centersT1.slice(0, 2).map((c) => c.id), startAt: Date.now() + 26 * 3600e3,
-    durationMin: 120, generate: 15,
+    durationMin: 120,
     description: 'Programming aptitude paper with a two-hour window.',
   });
   const ex2 = (await all('exams')).find((e) => e.code === 'NQT-CODE-01');
@@ -289,12 +290,12 @@ export async function seed() {
 
   await createExam(ctrl, {
     ...baseExam, code: 'NQT-DATA-01', title: 'NQT · Data Interpretation', type: 'practice',
-    centerIds: [centersT1[1].id], startAt: Date.now() + 3 * 864e5, durationMin: 60, generate: 20,
+    centerIds: [centersT1[1].id], startAt: Date.now() + 3 * 864e5, durationMin: 60,
     description: 'Practice paper used for centre readiness drills.',
   });
   await createExam(demoInst, {
-    tenantId: T2.id, code: 'DMO-ENTRY-01', title: 'Demo Institute · Entry Assessment', type: 'internal',
-    centerIds: [centerT2.id], startAt: Date.now() + 2 * 864e5, durationMin: 60, generate: 12,
+    tenantId: T2.id, code: 'DMO-ENTRY-01', examUrl: 'https://assessment.sppio.io/exam/demo-entry', title: 'Demo Institute · Entry Assessment', type: 'internal',
+    centerIds: [centerT2.id], startAt: Date.now() + 2 * 864e5, durationMin: 60,
     policyId: (await all('policies')).find((p) => p.tenantId === T2.id && p.status === 'published').id,
     instructions: 'Demo assessment used to explore the candidate journey.',
   });

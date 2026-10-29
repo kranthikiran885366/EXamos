@@ -310,6 +310,16 @@ void exam_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
+        /* Also mirror into exams table with exam_url */
+        const char *m_p[7] = { exam_id, inst_id, code, name, subject, exam_url, now_str };
+        int m_l[7] = { (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(name), (int)strlen(subject), (int)strlen(exam_url), (int)strlen(now_str) };
+        PGresult *m_r = db_simple(conn,
+            "INSERT INTO exams (id, tenant_id, code, title, course, exam_url, start_at, duration_min, created_at, updated_at, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, 60, $7::bigint, $7::bigint, 'draft') "
+            "ON CONFLICT (id) DO UPDATE SET exam_url = EXCLUDED.exam_url, title = EXCLUDED.title",
+            7, m_p, m_l);
+        if (m_r) PQclear(m_r);
+
         record_status_history(conn, exam_id, "none", "draft", sess.user_id, "Exam created in draft state");
         record_exam_audit(conn, exam_id, inst_id, sess.user_id, "EXAM_CREATED", name);
 
@@ -319,8 +329,8 @@ void exam_handle(int client_fd, const char *method, const char *path,
         char resp[512];
         snprintf(resp, sizeof(resp),
             "{\"status\":\"created\",\"exam_id\":\"%s\",\"code\":\"%s\",\"name\":\"%s\","
-            "\"institution_id\":\"%s\",\"lifecycle_status\":\"draft\"}",
-            exam_id, code, name, inst_id);
+            "\"institution_id\":\"%s\",\"exam_url\":\"%s\",\"lifecycle_status\":\"draft\"}",
+            exam_id, code, name, inst_id, exam_url);
         ex_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
         return;
     }
@@ -498,6 +508,14 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 "status = $5, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $6",
                 6, upd_p, upd_l);
             if (upd_res) PQclear(upd_res);
+
+            /* Also mirror update into exams table */
+            const char *me_p[3] = { upd_p[3], upd_p[0], eid };
+            int me_l[3] = { (int)strlen(me_p[0]), (int)strlen(me_p[1]), (int)strlen(eid) };
+            PGresult *me_res = db_simple(conn,
+                "UPDATE exams SET exam_url = $1, title = $2, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $3",
+                3, me_p, me_l);
+            if (me_res) PQclear(me_res);
 
             if (strcmp(target_status, ex_status) != 0) {
                 record_status_history(conn, eid, ex_status, target_status, sess.user_id, "Status updated via PATCH");

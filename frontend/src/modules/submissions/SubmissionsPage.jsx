@@ -10,17 +10,39 @@ import { startSession, saveAnswer, submitSession, verifyReceipt, terminate } fro
 import { attest } from '../tpm/service';
 
 function Runner({ s, ex, onDone }) {
-  const { user } = useAuth(); const [i, setI] = useState(0); const [ans, setAns] = useState(s.answers); const [msg, run, setMsg] = useRun(); useTick(1000);
-  const left = s.deadline - Date.now(); const q = ex.questions[i];
+  const { user } = useAuth(); const [i, setI] = useState(0); const [ans, setAns] = useState(s.answers || {}); const [msg, run, setMsg] = useRun(); useTick(1000);
+  const left = s.deadline - Date.now();
   const finish = (auto) => run(async () => { const o = await submitSession(user, s.id, { auto }); onDone(o); return `Submitted. Receipt ${o.receipt}.`; });
-  useEffect(() => { if (left <= 0) finish(true); }); // auto-submit at the deadline
+  useEffect(() => { if (left <= 0) finish(true); });
+  const hasQuestions = Array.isArray(ex.questions) && ex.questions.length > 0;
+  const q = hasQuestions ? ex.questions[i] : null;
   const pick = (c) => run(async () => { await saveAnswer(s.id, i, c); setAns({ ...ans, [i]: c }); return 'Saved.'; });
   return (
-    <div className="card pad2"><div className="split"><b>{ex.title}</b><span className={'big sm2 ' + (left < 300000 ? 'redt' : '')}>{hms(left)}</span></div>
-      <p className="muted sm">Question {i + 1} of {ex.questions.length} · {Object.keys(ans).length} answered</p><h3>{q.q}</h3>
-      {q.options.map((o, k) => <label key={k} className={'opt' + (ans[i] === k ? ' on' : '')}><input type="radio" name="o" checked={ans[i] === k} onChange={() => pick(k)} /> {o}</label>)}
-      <div className="row"><button className="btn" disabled={i === 0} onClick={() => setI(i - 1)}>Previous</button><button className="btn" disabled={i === ex.questions.length - 1} onClick={() => setI(i + 1)}>Next</button><span className="grow" /><button className="btn primary" onClick={() => finish(false)}>Submit exam</button></div>
-      <Flash msg={msg} onClose={() => setMsg(null)} /></div>
+    <div className="card pad2">
+      <div className="split"><b>{ex.title}</b><span className={'big sm2 ' + (left < 300000 ? 'redt' : '')}>{hms(left)}</span></div>
+      {hasQuestions && q ? (
+        <>
+          <p className="muted sm">Question {i + 1} of {ex.questions.length} · {Object.keys(ans).length} answered</p><h3>{q.q}</h3>
+          {q.options.map((o, k) => <label key={k} className={'opt' + (ans[i] === k ? ' on' : '')}><input type="radio" name="o" checked={ans[i] === k} onChange={() => pick(k)} /> {o}</label>)}
+          <div className="row"><button className="btn" disabled={i === 0} onClick={() => setI(i - 1)}>Previous</button><button className="btn" disabled={i === ex.questions.length - 1} onClick={() => setI(i + 1)}>Next</button><span className="grow" /><button className="btn primary" onClick={() => finish(false)}>Submit exam</button></div>
+        </>
+      ) : (
+        <div style={{ margin: '16px 0' }}>
+          <p className="muted sm">Target Assessment Portal: {ex.examUrl || 'Configured URL'}</p>
+          {ex.examUrl ? (
+            <div style={{ width: '100%', height: '520px', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden', marginTop: '10px' }}>
+              <iframe src={ex.examUrl} title="Assessment Portal" style={{ width: '100%', height: '100%', border: 'none' }} allow="fullscreen; camera; microphone" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
+            </div>
+          ) : (
+            <div className="muted pad">No exam URL configured for this session.</div>
+          )}
+          <div className="row end" style={{ marginTop: '14px' }}>
+            <button className="btn primary" onClick={() => finish(false)}>Submit exam</button>
+          </div>
+        </div>
+      )}
+      <Flash msg={msg} onClose={() => setMsg(null)} />
+    </div>
   );
 }
 function Kiosk() {
@@ -36,7 +58,7 @@ function Kiosk() {
         {cand && !active && <div className="row"><button className="btn" disabled={!dev || !can(user.role, 'tpm.run')} onClick={() => run(() => attest(user, dev.id))}>1 · Run device check</button><button className="btn primary" onClick={() => run(async () => { await startSession(user, cand.id); return 'Session started.'; })}>2 · Start exam</button></div>}
         <Flash msg={msg} onClose={() => setMsg(null)} /></div>
       {active && ex && <Runner key={active.id} s={active} ex={ex} onDone={setDone} />}
-      {done && <div className="okmsg">Submitted at {fmt(done.submittedAt)} · Score {done.score}/{ex?.questions.length} · Receipt <b>{done.receipt}</b></div>}
+      {done && <div className="okmsg">Submitted at {fmt(done.submittedAt)} · Receipt <b>{done.receipt}</b></div>}
     </div>
   );
 }

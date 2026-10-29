@@ -50,7 +50,7 @@ export function genQuestions(n, rnd = Math.random) {
   }
   return out;
 }
-export const score = (exam, answers) => exam.questions.reduce((s, q, i) => s + (answers[i] === q.answer ? 1 : 0), 0);
+export const score = (exam, answers) => (exam?.questions || []).reduce((s, q, i) => s + (answers?.[i] === q.answer ? 1 : 0), 0);
 export const mulberry32 = (a) => () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 
 export const isEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(e)) && String(e).length <= 120;

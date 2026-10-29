@@ -75,7 +75,7 @@ export function ExamNewPage() {
     navigation: 'locked', allowedDestinations: '', compatibilityProfile: 'standard-uefi',
     attestationLevel: 'tpm', sessionTimeoutMin: 15, reconnectPolicy: 'allow-reconnect',
     submissionMode: 'either', requiredChecks: ['uefi', 'usb', 'tpm', 'network', 'display', 'keyboard'],
-    generate: 10, questionsText: '',
+    examUrl: '',
   });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const activeCenters = centers.filter((c) => c.status === 'active');
@@ -87,9 +87,10 @@ export function ExamNewPage() {
     e.preventDefault();
     const ok = await run(() => createExam(user, {
       tenantId, ...v, centerIds: v.centerIds, origins: split(v.origins),
-      allowedDestinations: split(v.allowedDestinations), generate: Number(v.generate) || 0,
+      allowedDestinations: split(v.allowedDestinations),
       durationMin: Number(v.durationMin), lateEntryMin: Number(v.lateEntryMin),
       capacity: Number(v.capacity), sessionTimeoutMin: Number(v.sessionTimeoutMin),
+      examUrl: v.examUrl.trim(),
     }), 'Exam created as a draft.');
     if (ok) navigate('/college/exams');
   };
@@ -161,13 +162,22 @@ export function ExamNewPage() {
           </Field>
         </Card>
 
-        <Card title="Instructions & question paper">
+        <Card title="Assessment Portal & Instructions" desc="ExamOS Kiosk will navigate candidates directly to this secure assessment URL.">
           <div className="formgrid">
-            <Field label="Candidate instructions" className="span2" help="Required before publication."><Textarea rows={4} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} placeholder="Read all instructions before starting. Do not refresh or close the window." /></Field>
+            <Field label="Exam URL" required className="span2" help="The target assessment URL launched inside the secure kiosk environment (e.g. https://assessment.university.edu/exam/cs101)">
+              <Input
+                type="url"
+                value={v.examUrl}
+                onChange={(e) => set('examUrl', e.target.value)}
+                placeholder="https://assessment.university.edu/exam/cs101"
+                required
+              />
+            </Field>
+            <Field label="Candidate instructions" className="span2" help="Required before publication.">
+              <Textarea rows={4} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} placeholder="Read all instructions before starting. Do not attempt to disconnect hardware or exit the kiosk window." />
+            </Field>
             <Field label="Resources" className="span2"><Textarea rows={2} value={v.resources} onChange={(e) => set('resources', e.target.value)} maxLength={1000} /></Field>
             <Field label="Accommodations" className="span2"><Textarea rows={2} value={v.accommodations} onChange={(e) => set('accommodations', e.target.value)} maxLength={1000} /></Field>
-            <Field label="Auto-generate arithmetic questions" help="0–200"><Input type="number" min={0} max={200} value={v.generate} onChange={(e) => set('generate', e.target.value)} /></Field>
-            <Field label="Question paper" className="span2" help='One per line: "Question | A | B | C | D | correct (1-4)".'><Textarea rows={5} value={v.questionsText} onChange={(e) => set('questionsText', e.target.value)} placeholder={'Capital of India? | Mumbai | Delhi | Chennai | Pune | 2'} /></Field>
           </div>
         </Card>
 
@@ -190,6 +200,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
     startAt: local(exam.startAt), durationMin: exam.durationMin, lateEntryMin: exam.lateEntryMin || 0,
     capacity: exam.capacity || 0, timeZone: exam.timeZone || 'Asia/Kolkata', policyId: exam.policyId || '',
     instructions: exam.instructions || '', resources: exam.resources || '', accommodations: exam.accommodations || '',
+    examUrl: exam.examUrl || '',
     centerIds: exam.centerIds || [],
   });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
@@ -198,6 +209,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
     e.preventDefault();
     const ok = await run(() => updateExam(user, exam, {
       ...v, durationMin: Number(v.durationMin), lateEntryMin: Number(v.lateEntryMin), capacity: Number(v.capacity),
+      examUrl: v.examUrl.trim(),
     }), 'Exam configuration saved.');
     if (ok) { onSaved?.(); onClose(); }
   };
@@ -214,6 +226,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
           <Field label="Duration (minutes)"><Input type="number" min={15} max={300} value={v.durationMin} onChange={(e) => set('durationMin', e.target.value)} /></Field>
           <Field label="Late entry (minutes)"><Input type="number" min={0} max={60} value={v.lateEntryMin} onChange={(e) => set('lateEntryMin', e.target.value)} /></Field>
           <Field label="Capacity"><Input type="number" min={0} value={v.capacity} onChange={(e) => set('capacity', e.target.value)} /></Field>
+          <Field label="Exam URL" className="span2" help="Secure assessment portal URL"><Input type="url" value={v.examUrl} onChange={(e) => set('examUrl', e.target.value)} placeholder="https://..." /></Field>
           <Field label="Instructions" className="span2"><Textarea rows={3} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} /></Field>
           <Field label="Centres" className="span2">
             <div className="checkgrid">{centers.filter((c) => c.status === 'active').map((c) => <Checkbox key={c.id} label={`${c.code} · ${c.capacity} seats`} checked={v.centerIds.includes(c.id)} onChange={() => toggleCenter(c.id)} />)}</div>
@@ -284,7 +297,7 @@ export function ExamDetailPage() {
 
       <StatGrid cols={4}>
         <Stat label="Status" value={LIFECYCLE_LABEL[e.status]} icon="badge" />
-        <Stat label="Questions" value={e.questions?.length || 0} icon="chart" />
+        <Stat label="Target Portal" value={e.examUrl ? 'URL Assigned' : 'No URL'} icon="browser" sub={e.examUrl ? e.examUrl.replace(/^https?:\/\//, '').slice(0, 24) : 'Not assigned'} />
         <Stat label="Centres" value={centersList.length} icon="building" sub={centersList.map((c) => c.code).join(', ')} />
         <Stat label="Seated" value={assigned.length} icon="candidate" sub={`${assigned.filter((c) => c.identity === 'verified').length} verified`} />
       </StatGrid>
@@ -306,7 +319,7 @@ export function ExamDetailPage() {
         <Card title="Configuration">
           <KeyValue cols={3} items={[
             ['Code', e.code], ['Title', e.title], ['Type', e.type],
-            ['Course', e.course || '—'], ['Academic year', e.academicYear || '—'], ['Version', `v${e.version || 1}`],
+            ['Exam URL', e.examUrl || '—'], ['Course', e.course || '—'], ['Academic year', e.academicYear || '—'], ['Version', `v${e.version || 1}`],
             ['Window', `${fmt(e.startAt)} · ${e.durationMin} min`], ['Late entry', `${e.lateEntryMin || 0} min`], ['Time zone', e.timeZone || '—'],
             ['Policy', pol ? `${pol.name} v${pol.version}` : '—'], ['Policy status', pol?.status || '—'], ['Attestation', e.attestationLevel],
             ['Authentication', e.authMode], ['Submission', e.submissionMode], ['Navigation', e.navigation],

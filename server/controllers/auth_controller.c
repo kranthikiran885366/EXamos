@@ -674,20 +674,38 @@ void auth_candidate_login(int client_fd, const char *req_body,
     if (ins) PQclear(ins);
 
     /* Get Exam Name & URL if configured */
-    char exam_title[128] = "ExamOS Examination", exam_url[256] = "NOT_CONFIGURED";
+    char exam_title[128] = "ExamOS Examination", exam_url[512] = "";
     if (db_exam_id[0]) {
         const char *epvals[1] = { db_exam_id };
         int elens[1] = { (int)strlen(db_exam_id) };
+        /* 1. Try exams table */
         PGresult *eres = db_simple(conn,
-            "SELECT title FROM exams WHERE id = $1", 1, epvals, elens);
+            "SELECT title, COALESCE(exam_url, '') FROM exams WHERE id = $1", 1, epvals, elens);
         if (eres && PQresultStatus(eres) == PGRES_TUPLES_OK && PQntuples(eres) > 0) {
             strncpy(exam_title, PQgetvalue(eres, 0, 0), sizeof(exam_title) - 1);
+            strncpy(exam_url, PQgetvalue(eres, 0, 1), sizeof(exam_url) - 1);
         }
         if (eres) PQclear(eres);
+
+        /* 2. Fallback to examinations table if URL empty */
+        if (!exam_url[0]) {
+            PGresult *xres = db_simple(conn,
+                "SELECT name, COALESCE(exam_url, '') FROM examinations WHERE id = $1 OR code = $1", 1, epvals, elens);
+            if (xres && PQresultStatus(xres) == PGRES_TUPLES_OK && PQntuples(xres) > 0) {
+                if (exam_title[0] == '\0' || strcmp(exam_title, "ExamOS Examination") == 0) {
+                    strncpy(exam_title, PQgetvalue(xres, 0, 0), sizeof(exam_title) - 1);
+                }
+                strncpy(exam_url, PQgetvalue(xres, 0, 1), sizeof(exam_url) - 1);
+            }
+            if (xres) PQclear(xres);
+        }
+    }
+    if (!exam_url[0]) {
+        strncpy(exam_url, "https://assessment.sppio.io/exam/live", sizeof(exam_url) - 1);
     }
     db_release(conn, 0);
 
-    char resp_body[512];
+    char resp_body[1024];
     snprintf(resp_body, sizeof(resp_body),
         "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"candidate_id\":\"%s\","
         "\"name\":\"%s\",\"exam_id\":\"%s\",\"exam_name\":\"%s\",\"exam_url\":\"%s\"}",

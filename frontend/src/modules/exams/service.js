@@ -63,7 +63,7 @@ export async function createExam(a, input) {
   need(a, 'exam.manage');
   const {
     tenantId, code, title, type = 'internal', centerIds = [], startAt, durationMin = 60, policyId = null,
-    questionsText = '', generate = 0, description = '', course = '', departmentId = '', academicYear = '',
+    examUrl = '', questionsText = '', generate = 0, description = '', course = '', departmentId = '', academicYear = '',
     timeZone = 'Asia/Kolkata', lateEntryMin = 0, capacity = 0, instructions = '', resources = '',
     accommodations = '', authMode = 'candidate-login', identityRequired = true, origins = [],
     navigation = 'locked', allowedDestinations = [], compatibilityProfile = 'standard-uefi',
@@ -83,19 +83,20 @@ export async function createExam(a, input) {
   if (!(dur >= 15 && dur <= 300)) fail('Duration must be 15–300 minutes.');
   if (policyId && !(await get('policies', policyId))) fail('The selected policy does not exist.');
   for (const cid of ids) { const ce = await get('centers', cid); if (!ce || ce.tenantId !== tenantId) fail('A selected center is outside this institution.'); }
-  const qs = [...parseQuestions(questionsText), ...genQuestions(Math.max(0, Math.min(200, Number(generate) || 0)))];
+  const targetUrl = clean(examUrl || input.examUrl, 500) || `https://assessment.sppio.io/exam/${c.toLowerCase()}`;
   const now = Date.now();
   const ex = {
     id: id('exm'), tenantId, code: c, title: t, description: clean(description, 1000), course: clean(course, 80), departmentId, academicYear: clean(academicYear, 20),
     type, centerIds: ids, startAt: st, durationMin: dur, timeZone, lateEntryMin: Math.max(0, Math.min(60, Number(lateEntryMin) || 0)), capacity: Number(capacity) || 0,
     instructions: clean(instructions, 3000), resources: clean(resources, 1000), accommodations: clean(accommodations, 1000),
+    examUrl: targetUrl,
     authMode, identityRequired: !!identityRequired, origins: (origins || []).map((o) => clean(o, 200)).filter(Boolean),
     navigation: navigation === 'allowlist' ? 'allowlist' : 'locked', allowedDestinations: (allowedDestinations || []).map((o) => clean(o, 200)).filter(Boolean),
     compatibilityProfile: clean(compatibilityProfile, 40), attestationLevel, sessionTimeoutMin: Number(sessionTimeoutMin) || 15,
     reconnectPolicy, submissionMode, requiredChecks,
-    policyId: policyId || null, questions: qs, status: 'draft', createdBy: a.id, createdAt: now, updatedAt: now,
+    policyId: policyId || null, questions: [], status: 'draft', createdBy: a.id, createdAt: now, updatedAt: now,
     version: 1, locked: false,
-    history: [{ at: now, by: a.id, to: 'draft', note: 'Exam created' }],
+    history: [{ at: now, by: a.id, to: 'draft', note: 'Exam created with assessment URL' }],
   };
   try {
     const backendRes = await Api.createExamination({
@@ -111,7 +112,7 @@ export async function createExam(a, input) {
       passingMarks: 40,
       instructions: clean(instructions, 3000),
       institutionId: tenantId,
-      examUrl: input.examUrl || 'https://exam.university.edu/cs201',
+      examUrl: targetUrl,
       allowedOrigins: (origins || []).join(','),
       timezone: timeZone || 'Asia/Kolkata',
     });
@@ -122,8 +123,8 @@ export async function createExam(a, input) {
     console.warn('Backend Module 9 exam creation fallback:', err.message);
   }
   await put('exams', ex);
-  await log(a, 'EXAM_CREATED', `${c} questions=${qs.length}`);
-  return `Exam ${c} saved as draft with ${qs.length} question(s).`;
+  await log(a, 'EXAM_CREATED', `${c} url=${targetUrl}`);
+  return `Exam ${c} saved as draft with assessment URL ${targetUrl}.`;
 }
 
 export async function updateExam(a, ex, patch) {
@@ -151,7 +152,7 @@ export async function updateExam(a, ex, patch) {
   if (patch.origins !== undefined) set('origins', (Array.isArray(patch.origins) ? patch.origins : String(patch.origins).split(/[\s,]+/)).filter(Boolean));
   if (patch.allowedDestinations !== undefined) set('allowedDestinations', (Array.isArray(patch.allowedDestinations) ? patch.allowedDestinations : String(patch.allowedDestinations).split(/[\s,]+/)).filter(Boolean));
   if (patch.requiredChecks !== undefined) set('requiredChecks', patch.requiredChecks);
-  if (patch.questionsText !== undefined) set('questions', parseQuestions(patch.questionsText));
+  if (patch.examUrl !== undefined) set('examUrl', clean(patch.examUrl, 500));
   next.updatedAt = Date.now(); next.version = (ex.version || 1) + 1;
   next.history = [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, note: 'Configuration updated' }];
   await put('exams', next);
@@ -211,7 +212,7 @@ export async function readiness(ex, ctx = {}) {
   const checks = [];
   const cands = candidates.filter((c) => c.examId === ex.id);
   const pol = policies.find((p) => p.id === ex.policyId);
-  checks.push({ ...checksFor('questions', 'Question paper'), status: ex.questions.length ? 'PASS' : 'FAIL', detail: `${ex.questions.length} question(s)` });
+  checks.push({ ...checksFor('examUrl', 'Assessment URL'), status: ex.examUrl?.trim() ? 'PASS' : 'FAIL', detail: ex.examUrl ? ex.examUrl.slice(0, 45) : 'No URL assigned' });
   checks.push({ ...checksFor('centers', 'Exam centres'), status: ex.centerIds.length && ex.centerIds.every((id) => centers.find((c) => c.id === id)?.status === 'active') ? 'PASS' : 'FAIL', detail: `${ex.centerIds.length} centre(s)` });
   checks.push({ ...checksFor('candidates', 'Candidate list'), status: cands.length ? 'PASS' : 'FAIL', detail: `${cands.length} assigned` });
   checks.push({ ...checksFor('identity', 'Identity verification'), status: cands.length && cands.every((c) => c.identity === 'verified') ? 'PASS' : cands.some((c) => c.identity === 'verified') ? 'WARN' : 'NOT_RUN', detail: `${cands.filter((c) => c.identity === 'verified').length}/${cands.length} verified` });
@@ -229,7 +230,7 @@ export async function transition(a, ex, to, reason = '') {
   if (!FLOW[ex.status]?.includes(to)) fail(`Cannot move from ${ex.status} to ${to}.`);
   const next = { ...ex }; const t = await get('tenants', ex.tenantId);
   if (to === 'review') {
-    if (!ex.questions.length) fail('Add at least one question.');
+    if (!ex.examUrl?.trim()) fail('Assign a valid Exam URL before submitting for review.');
     if (!ex.centerIds.length) fail('Select at least one center.');
     if (!ex.policyId) fail('Select an exam policy.');
     if (ex.startAt < Date.now() - 24 * 3600e3) fail('Start time is in the past.');

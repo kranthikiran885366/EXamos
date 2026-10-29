@@ -345,6 +345,7 @@ static const char *migration_sql =
 "  submission_mode VARCHAR(10) DEFAULT 'either',"
 "  required_checks JSONB NOT NULL DEFAULT '[]'::jsonb,"
 "  policy_id VARCHAR(64),"
+"  exam_url TEXT,"
 "  questions JSONB NOT NULL DEFAULT '[]'::jsonb,"
 "  status VARCHAR(20) DEFAULT 'draft',"
 "  created_by VARCHAR(64),"
@@ -1119,6 +1120,10 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, mfa_enabled = false, totp_secret = NULL;");
 
     exec_sql_step(conn, "UPDATE examos_admin_users SET mfa_enabled = false, totp_secret = NULL WHERE username IN ('admin', 'root');");
+
+    /* 5b. Ensure exam_url column on exams table */
+    exec_sql_step(conn, "ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_url TEXT;");
+    exec_sql_step(conn, "UPDATE exams SET exam_url = 'https://assessment.sppio.io/exam/live' WHERE exam_url IS NULL OR exam_url = '';");
 
     /* 6. Login throttle table ensure and clear */
     exec_sql_step(conn,

@@ -116,6 +116,7 @@ export default function ExamsPage() {
             { label: 'Exam', render: (e) => <><b>{e.code}</b><br /><small className="muted">{e.title}</small></> },
             { label: 'Type', key: 'type' },
             { label: 'Window', sortable: true, key: 'startAt', render: (e) => <>{fmt(e.startAt)}<br /><small className="muted">{e.durationMin} min</small></> },
+            { label: 'Portal URL', render: (e) => e.examUrl ? <span className="mono sm" title={e.examUrl}>{e.examUrl.replace(/^https?:\/\//, '').slice(0, 22)}{e.examUrl.length > 22 ? '…' : ''}</span> : <span className="muted">—</span> },
             { label: 'Centres', render: (e) => <span title={e.centerIds.map(centerName).join(', ')}>{e.centerIds.length}</span> },
             { label: 'Seated', render: (e) => candidates.filter((c) => c.examId === e.id).length },
             { label: 'Policy', render: (e) => policyName(e.policyId) },
