@@ -183,7 +183,6 @@ export function StudentSessionPage() {
   const navigate = useNavigate();
   const { data, loading, error, reload } = useLoad(() => briefing(user, id), [user?.id, id]);
   const { msg, setMsg, run } = useFlash();
-  const [saving, setSaving] = useState(false);
   const [confirmSubmit, setConfirmSubmit] = useState(false);
   const now = useNow(1000);
   if (loading) return <StudentShell title="Exam session"><Card><div className="loading"><span className="spinner" /> Loading your session…</div></Card></StudentShell>;
@@ -192,12 +191,7 @@ export function StudentSessionPage() {
   if (!s) return <StudentShell title="Exam session"><Empty icon="pulse" title="No session yet">Start the exam from the briefing page.</Empty><div className="row end"><Link className="btn primary" to={`/student/exams/${id}`}>Open briefing</Link></div></StudentShell>;
   if (s.status === 'submitted') return <StudentShell title="Exam session"><Alert tone="success" title="Session submitted">Your receipt is {s.receipt}. Answers can no longer be changed.</Alert><div className="row end"><Link className="btn primary" to={`/student/exams/${id}/submission`}>View receipt</Link></div></StudentShell>;
   const left = remaining(s, now);
-  const answered = Object.keys(s.answers || {}).length;
-  const choose = async (qi, choice) => {
-    if (saving) return; setSaving(true);
-    await run(() => saveMyAnswer(user, s.id, qi, choice), 'Answer saved.');
-    setSaving(false); reload();
-  };
+
   const submit = async () => {
     const r = await run(() => submitMyExam(user, s.id), 'Exam submitted.');
     if (r) navigate(`/student/exams/${id}/submission`);

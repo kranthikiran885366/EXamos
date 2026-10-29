@@ -60,6 +60,7 @@ function Home() {
   const { user } = useAuth();
   const first = GROUPS.flatMap((g) => g.items).find((r) => can(user.role, r.perm));
   if (user.role === 'student') return <Navigate to="/student/home" replace />;
+  if (user.role === 'inst_admin') return <Navigate to="/institution/dashboard" replace />;
   return <Navigate to={first ? first.path : '/dashboard'} replace />;
 }
 

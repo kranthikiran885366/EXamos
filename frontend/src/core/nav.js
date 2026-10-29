@@ -22,6 +22,28 @@ export const ROUTE_DEFS = [
   // Overview
   D('/dashboard', 'Overview', 'dashboard.view', page(() => import('../modules/dashboard/DashboardPage'), 'default'), 'Overview', { icon: 'grid' }),
 
+  // ── Platform Admin (ExamOS team) ──────────────────────────────────────────
+  D('/platform/institutions', 'Overview', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformInstitutionsOverviewPage'), 'Platform Admin', { icon: 'grid' }),
+  D('/platform/institutions/directory', 'Institutions', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformInstitutionsDirectoryPage'), 'Platform Admin', { icon: 'building' }),
+  D('/platform/institutions/applications', 'Applications & Verification', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformApplicationsPage'), 'Platform Admin', { icon: 'checklist' }),
+  D('/platform/provisioning', 'Tenant Provisioning', 'inst.provision', page(() => import('../modules/platform/PlatformPages'), 'PlatformProvisioningPage'), 'Platform Admin', { icon: 'server' }),
+  D('/platform/readiness', 'Pilot & Readiness', 'inst.review', page(() => import('../modules/platform/PlatformPages'), 'PlatformReadinessPage'), 'Platform Admin', { icon: 'checklist' }),
+  D('/platform/operations', 'Operations & Audit', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformOperationsPage'), 'Platform Admin', { icon: 'shield' }),
+  D('/platform/institutions/:id/verification', 'Verification', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformVerificationPage'), 'Platform Admin', { nav: false }),
+  D('/platform/institutions/:id/provisioning', 'Provisioning', 'inst.provision', page(() => import('../modules/platform/PlatformPages'), 'PlatformProvisioningPage'), 'Platform Admin', { nav: false }),
+  D('/platform/institutions/:id/readiness', 'Readiness', 'inst.review', page(() => import('../modules/platform/PlatformPages'), 'PlatformReadinessPage'), 'Platform Admin', { nav: false }),
+  D('/platform/institutions/:id/operations', 'Operations', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformOperationsPage'), 'Platform Admin', { nav: false }),
+  D('/platform/institutions/:id', 'Institution Detail', 'tenant.manage', page(() => import('../modules/platform/PlatformPages'), 'PlatformInstitutionDetailPage'), 'Platform Admin', { nav: false }),
+
+  // ── Institution Admin (college/university team) ───────────────────────────
+  D('/institution/dashboard', 'Dashboard', 'inst.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionDashboardPage'), 'Institution Admin', { icon: 'home' }),
+  D('/institution/settings/profile', 'Institution Profile', 'inst.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionProfilePage'), 'Institution Admin', { icon: 'building' }),
+  D('/institution/organization', 'Organization Structure', 'inst.manage', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionOrganizationPage'), 'Institution Admin', { icon: 'layers' }),
+  D('/institution/settings/access', 'Administrators & Access', 'user.manage', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAccessPage'), 'Institution Admin', { icon: 'users' }),
+  D('/institution/settings/security', 'Security & Deployment', 'settings.inst', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionSecurityPage'), 'Institution Admin', { icon: 'shield' }),
+  D('/institution/deployment', 'Deployment Readiness', 'deployment.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionDeploymentReadinessPage'), 'Institution Admin', { icon: 'device' }),
+  D('/institution/audit', 'Audit & Activity', 'audit.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAuditPage'), 'Institution Admin', { icon: 'shield' }),
+
   // Administration
   D('/admin/institutions', 'Institutions', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionsPage'), 'Administration', { icon: 'building', end: true }),
   D('/admin/institutions/:id', 'Institution', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionDetailPage'), 'Administration', { nav: false }),
@@ -138,6 +160,26 @@ export const GROUPS = [...new Set(ROUTE_DEFS.filter((r) => r.nav !== false).map(
 
 export const TITLES = {
   '/dashboard': 'Overview',
+  // Platform Admin
+  '/platform/institutions': 'Institution Overview',
+  '/platform/institutions/directory': 'Institution Directory',
+  '/platform/institutions/applications': 'Onboarding Applications',
+  '/platform/provisioning': 'Tenant Provisioning',
+  '/platform/readiness': 'Pilot & Readiness',
+  '/platform/operations': 'Operations & Audit',
+  '/platform/institutions/:id': 'Institution Details',
+  '/platform/institutions/:id/verification': 'Identity Verification',
+  '/platform/institutions/:id/provisioning': 'Tenant Provisioning',
+  '/platform/institutions/:id/readiness': 'Pilot & Readiness',
+  '/platform/institutions/:id/operations': 'Operations & Audit',
+  // Institution Admin
+  '/institution/dashboard': 'Institution Dashboard',
+  '/institution/settings/profile': 'Institution Profile',
+  '/institution/organization': 'Organization Structure',
+  '/institution/settings/access': 'Administrators & Access',
+  '/institution/settings/security': 'Security & Deployment',
+  '/institution/deployment': 'Deployment Readiness',
+  '/institution/audit': 'Audit & Activity',
   '/admin/institutions': 'Institutions',
   '/admin/institution-applications': 'Applications queue',
   '/admin/institution-applications/:id': 'Application details',

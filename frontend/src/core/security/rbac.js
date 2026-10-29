@@ -90,7 +90,7 @@ export const ROLES = {
   ops_admin: {
     label: 'Operations Admin (legacy)', short: 'Operations', scope: 'global', rank: 75,
     desc: 'Legacy broad operations role. Prefer the scoped blueprint roles.',
-    perms: ['dashboard.view', 'inst.view', 'inst.manage', 'inst.review', 'inst.provision', 'campus.manage', 'dept.manage', 'staff.manage',
+    perms: ['dashboard.view', 'tenant.manage', 'inst.view', 'inst.manage', 'inst.review', 'inst.provision', 'campus.manage', 'dept.manage', 'staff.manage',
       'agreement.view', 'agreement.sign', 'license.view', 'license.manage', 'deployment.view', 'deployment.manage', 'onboarding.view', 'onboarding.manage',
       'exam.view', 'exam.manage', 'exam.approve', 'exam.operate', 'exam.policy', 'candidate.view', 'candidate.manage',
       'candidate.verify', 'center.manage', 'device.view', 'device.manage', 'usb.view', 'usb.manage', 'usb.assign',
