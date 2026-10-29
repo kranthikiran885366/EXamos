@@ -220,6 +220,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
         if (!name[0]) ctrl_json_string(body, "title", name, sizeof(name));
         ctrl_json_string(body, "subject", subject, sizeof(subject));
         if (!subject[0]) ctrl_json_string(body, "course", subject, sizeof(subject));
+        if (!subject[0] && name[0]) snprintf(subject, sizeof(subject), "%s", name);
         ctrl_json_string(body, "code", code, sizeof(code));
         ctrl_json_string(body, "academic_year", academic_year, sizeof(academic_year));
         ctrl_json_string(body, "exam_type", exam_type, sizeof(exam_type));
@@ -233,8 +234,9 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         /* Scoping */
         if (!is_owner || !inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "T1");
         }
+        if (!inst_id[0]) strcpy(inst_id, "T1");
 
         if (!name[0] || !subject[0]) {
             ex_send_error(client_fd, 400, "name and subject are required", origin, extra_headers, extra_len);
