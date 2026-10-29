@@ -210,40 +210,28 @@ export function StudentSessionPage() {
       <Stat label="Deadline" value={fmt(s.deadline)} icon="clock" />
       <Stat label="Seat" value={b.candidate.seat || '—'} icon="pin" />
     </StatGrid>
-    {Array.isArray(exam.questions) && exam.questions.length > 0 ? (
-      <>
-        <Progress value={answered} max={exam.questions.length} label="Progress" />
-        <Card title="Questions" desc="Select one option per question.">
-          <ol className="qlist">
-            {exam.questions.map((q, qi) => <li key={qi} className={s.answers?.[qi] !== undefined ? 'answered' : ''}>
-              <div className="qhead"><b>{qi + 1}.</b><span>{q.q}</span></div>
-              <div className="qopts">
-                {q.options.map((opt, oi) => <label key={oi} className={'qopt' + (s.answers?.[qi] === oi ? ' on' : '')}>
-                  <input type="radio" name={`q-${qi}`} checked={s.answers?.[qi] === oi} onChange={() => choose(qi, oi)} disabled={left === 0} />
-                  <span>{String.fromCharCode(65 + oi)}. {opt}</span>
-                </label>)}
-              </div>
-            </li>)}
-          </ol>
-        </Card>
-      </>
-    ) : (
-      <Card title="Assessment Portal" desc={exam.examUrl ? `Target URL: ${exam.examUrl}` : 'Secure Assessment'}>
-        {exam.examUrl ? (
-          <div style={{ width: '100%', height: '650px', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
-            <iframe
-              src={exam.examUrl}
-              title="Assessment Portal"
-              style={{ width: '100%', height: '100%', border: 'none' }}
-              allow="fullscreen; camera; microphone"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            />
-          </div>
-        ) : (
-          <Alert tone="warn" title="No Assessment URL Configured">Contact the exam controller to assign a target assessment portal URL for this examination.</Alert>
-        )}
+    {exam.instructions && (
+      <Card title="Candidate Instructions" pad>
+        <div className="prose" style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
+          {exam.instructions}
+        </div>
       </Card>
     )}
+    <Card title="Assessment Portal" desc={exam.examUrl ? `Target URL: ${exam.examUrl}` : 'Secure Assessment'}>
+      {exam.examUrl ? (
+        <div style={{ width: '100%', height: '650px', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
+          <iframe
+            src={exam.examUrl}
+            title="Assessment Portal"
+            style={{ width: '100%', height: '100%', border: 'none' }}
+            allow="fullscreen; camera; microphone"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          />
+        </div>
+      ) : (
+        <Alert tone="warn" title="No Assessment URL Configured">Contact the exam controller to assign a target assessment portal URL for this examination.</Alert>
+      )}
+    </Card>
     <div className="row end sticky-actions">
       <span className="muted sm">{saving ? 'Saving…' : 'Kiosk Session Active'}</span>
       <button className="btn primary" onClick={() => setConfirmSubmit(true)} disabled={left === 0}>Submit exam</button>

@@ -3,13 +3,32 @@ import { all, onChange } from './db';
 import { useAuth } from '../auth/AuthContext';
 import { isGlobal } from '../security/rbac';
 
+const TENANT_STORAGE_KEY = 'examos_selected_tenant_id';
+
 const T = createContext({ tenantId: null, tenant: null, tenants: [], setTenantId() {} });
 export const useTenant = () => useContext(T);
 
 export function TenantProvider({ children }) {
   const { user } = useAuth();
   const [tenants, setTenants] = useState([]);
-  const [tenantId, setTenantId] = useState(null);
+  const [tenantId, setTenantIdState] = useState(() => {
+    try {
+      return localStorage.getItem(TENANT_STORAGE_KEY) || null;
+    } catch {
+      return null;
+    }
+  });
+
+  const setTenantId = (newId) => {
+    setTenantIdState(newId);
+    try {
+      if (newId) {
+        localStorage.setItem(TENANT_STORAGE_KEY, newId);
+      } else {
+        localStorage.removeItem(TENANT_STORAGE_KEY);
+      }
+    } catch {}
+  };
 
   const allowed = useMemo(() => {
     if (!user) return [];
@@ -24,12 +43,43 @@ export function TenantProvider({ children }) {
     load(); return onChange((c) => c === 'tenants' && load());
   }, []);
 
+  // Synchronize across browser tabs when user changes institution in another tab
   useEffect(() => {
-    if (!user) return;
-    setTenantId((cur) => {
-      if (cur && allowed.some((x) => x.id === cur)) return cur;
-      if (user.tenantId && allowed.some((x) => x.id === user.tenantId)) return user.tenantId;
-      return (allowed.find((x) => x.status === 'active') || allowed[0])?.id || null;
+    const onStorage = (e) => {
+      if (e.key === TENANT_STORAGE_KEY && e.newValue) {
+        setTenantIdState(e.newValue);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!user || allowed.length === 0) return;
+    setTenantIdState((cur) => {
+      // 1. If currently selected institution is valid in allowed list, keep it!
+      if (cur && allowed.some((x) => x.id === cur)) {
+        try { localStorage.setItem(TENANT_STORAGE_KEY, cur); } catch {}
+        return cur;
+      }
+      // 2. Check if localStorage has a valid stored institution
+      try {
+        const saved = localStorage.getItem(TENANT_STORAGE_KEY);
+        if (saved && allowed.some((x) => x.id === saved)) {
+          return saved;
+        }
+      } catch {}
+      // 3. Fallback to user's assigned tenant if applicable
+      if (user.tenantId && allowed.some((x) => x.id === user.tenantId)) {
+        try { localStorage.setItem(TENANT_STORAGE_KEY, user.tenantId); } catch {}
+        return user.tenantId;
+      }
+      // 4. Fallback to first active or available tenant
+      const fallback = (allowed.find((x) => x.status === 'active') || allowed[0])?.id || null;
+      if (fallback) {
+        try { localStorage.setItem(TENANT_STORAGE_KEY, fallback); } catch {}
+      }
+      return fallback;
     });
   }, [allowed, user]);
 

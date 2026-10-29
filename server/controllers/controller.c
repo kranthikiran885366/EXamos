@@ -194,21 +194,57 @@ void ctrl_set_cors(char *extra_headers, size_t extra_len,
 
 int ctrl_cors_origin_allowed(const char *origin) {
     if (!origin || !origin[0]) return 0;
-    const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
-    if (!env || !env[0]) {
-        return strcmp(origin, "http://localhost:5173") == 0 ||
-               strcmp(origin, "http://127.0.0.1:5173") == 0;
+    if (strcmp(origin, "null") == 0) return 1; /* Allow local kiosk file:/// session */
+
+    /* Normalize origin: remove trailing slash if present */
+    char clean_origin[512];
+    size_t olen = strlen(origin);
+    if (olen >= sizeof(clean_origin)) olen = sizeof(clean_origin) - 1;
+    memcpy(clean_origin, origin, olen);
+    clean_origin[olen] = '\0';
+    while (olen > 0 && clean_origin[olen - 1] == '/') {
+        clean_origin[--olen] = '\0';
     }
-    char buf[1024];
-    size_t n = strlen(env);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, env, n); buf[n] = '\0';
-    char *save = NULL;
-    char *tok = strtok_r(buf, ",", &save);
-    while (tok) {
-        while (*tok == ' ' || *tok == '\t') tok++;
-        if (strcmp(tok, origin) == 0) return 1;
-        tok = strtok_r(NULL, ",", &save);
+
+    /* Standard allowed origins */
+    if (strcmp(clean_origin, "https://sppio-os.vercel.app") == 0 ||
+        strcmp(clean_origin, "http://localhost:5173") == 0 ||
+        strcmp(clean_origin, "http://127.0.0.1:5173") == 0 ||
+        strcmp(clean_origin, "http://localhost:3000") == 0 ||
+        strcmp(clean_origin, "http://127.0.0.1:3000") == 0 ||
+        strcmp(clean_origin, "http://localhost:8895") == 0 ||
+        strcmp(clean_origin, "http://127.0.0.1:8895") == 0) {
+        return 1;
+    }
+
+    /* Allow any *.vercel.app deployment domain */
+    if (olen > 11 && strcmp(clean_origin + olen - 11, ".vercel.app") == 0) {
+        return 1;
+    }
+
+    /* Check EXAMOS_CORS_ALLOWED_ORIGINS environment variable */
+    const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
+    if (env && env[0]) {
+        if (strcmp(env, "*") == 0) return 1;
+        char buf[1024];
+        size_t n = strlen(env);
+        if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+        memcpy(buf, env, n); buf[n] = '\0';
+        char *save = NULL;
+        char *tok = strtok_r(buf, ",", &save);
+        while (tok) {
+            while (*tok == ' ' || *tok == '\t' || *tok == '\r' || *tok == '\n') tok++;
+            size_t tlen = strlen(tok);
+            while (tlen > 0 && (tok[tlen - 1] == ' ' || tok[tlen - 1] == '\t' ||
+                                tok[tlen - 1] == '\r' || tok[tlen - 1] == '\n' ||
+                                tok[tlen - 1] == '/')) {
+                tok[--tlen] = '\0';
+            }
+            if (tlen > 0) {
+                if (strcmp(tok, "*") == 0 || strcmp(tok, clean_origin) == 0) return 1;
+            }
+            tok = strtok_r(NULL, ",", &save);
+        }
     }
     return 0;
 }

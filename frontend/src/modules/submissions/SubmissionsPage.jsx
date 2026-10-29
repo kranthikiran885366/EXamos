@@ -14,33 +14,29 @@ function Runner({ s, ex, onDone }) {
   const left = s.deadline - Date.now();
   const finish = (auto) => run(async () => { const o = await submitSession(user, s.id, { auto }); onDone(o); return `Submitted. Receipt ${o.receipt}.`; });
   useEffect(() => { if (left <= 0) finish(true); });
-  const hasQuestions = Array.isArray(ex.questions) && ex.questions.length > 0;
-  const q = hasQuestions ? ex.questions[i] : null;
-  const pick = (c) => run(async () => { await saveAnswer(s.id, i, c); setAns({ ...ans, [i]: c }); return 'Saved.'; });
+
   return (
     <div className="card pad2">
       <div className="split"><b>{ex.title}</b><span className={'big sm2 ' + (left < 300000 ? 'redt' : '')}>{hms(left)}</span></div>
-      {hasQuestions && q ? (
-        <>
-          <p className="muted sm">Question {i + 1} of {ex.questions.length} · {Object.keys(ans).length} answered</p><h3>{q.q}</h3>
-          {q.options.map((o, k) => <label key={k} className={'opt' + (ans[i] === k ? ' on' : '')}><input type="radio" name="o" checked={ans[i] === k} onChange={() => pick(k)} /> {o}</label>)}
-          <div className="row"><button className="btn" disabled={i === 0} onClick={() => setI(i - 1)}>Previous</button><button className="btn" disabled={i === ex.questions.length - 1} onClick={() => setI(i + 1)}>Next</button><span className="grow" /><button className="btn primary" onClick={() => finish(false)}>Submit exam</button></div>
-        </>
-      ) : (
-        <div style={{ margin: '16px 0' }}>
-          <p className="muted sm">Target Assessment Portal: {ex.examUrl || 'Configured URL'}</p>
-          {ex.examUrl ? (
-            <div style={{ width: '100%', height: '520px', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden', marginTop: '10px' }}>
-              <iframe src={ex.examUrl} title="Assessment Portal" style={{ width: '100%', height: '100%', border: 'none' }} allow="fullscreen; camera; microphone" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
-            </div>
-          ) : (
-            <div className="muted pad">No exam URL configured for this session.</div>
-          )}
-          <div className="row end" style={{ marginTop: '14px' }}>
-            <button className="btn primary" onClick={() => finish(false)}>Submit exam</button>
-          </div>
+      {ex.instructions && (
+        <div className="pad bg-muted rounded mb" style={{ margin: '12px 0', padding: '12px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
+          <b>Instructions:</b>
+          <p style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>{ex.instructions}</p>
         </div>
       )}
+      <div style={{ margin: '16px 0' }}>
+        <p className="muted sm">Target Assessment Portal: {ex.examUrl || 'Configured URL'}</p>
+        {ex.examUrl ? (
+          <div style={{ width: '100%', height: '520px', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden', marginTop: '10px' }}>
+            <iframe src={ex.examUrl} title="Assessment Portal" style={{ width: '100%', height: '100%', border: 'none' }} allow="fullscreen; camera; microphone" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
+          </div>
+        ) : (
+          <div className="muted pad">No exam URL configured for this session.</div>
+        )}
+        <div className="row end" style={{ marginTop: '14px' }}>
+          <button className="btn primary" onClick={() => finish(false)}>Submit exam</button>
+        </div>
+      </div>
       <Flash msg={msg} onClose={() => setMsg(null)} />
     </div>
   );

@@ -75,30 +75,9 @@ extern char **environ;
 #define MAX_HTTP_CLIENTS 1024
 
 /* CORS configuration for the ExamOS Console frontend.
- * Allowed origins are read from EXAMOS_CORS_ALLOWED_ORIGINS (comma-separated).
- * In development the console runs on http://localhost:5173. */
+ * Delegated to ctrl_cors_origin_allowed() in controller.c for uniform enforcement across all routes. */
 static int cors_origin_allowed(const char *origin) {
-    if (!origin || !origin[0]) return 0;
-    if (strcmp(origin, "null") == 0) return 1; /* Allow local kiosk file:/// session */
-    const char *env = getenv("EXAMOS_CORS_ALLOWED_ORIGINS");
-    if (!env || !env[0]) {
-        /* Default dev allowance for the local console and Vercel cloud frontend. */
-        return strcmp(origin, "http://localhost:5173") == 0
-            || strcmp(origin, "http://127.0.0.1:5173") == 0
-            || strcmp(origin, "https://sppio-os.vercel.app") == 0;
-    }
-    char buf[1024];
-    size_t n = strlen(env);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, env, n); buf[n] = '\0';
-    char *save = NULL;
-    char *tok = strtok_r(buf, ",", &save);
-    while (tok) {
-        while (*tok == ' ' || *tok == '\t') tok++;
-        if (strcmp(tok, origin) == 0) return 1;
-        tok = strtok_r(NULL, ",", &save);
-    }
-    return 0;
+    return ctrl_cors_origin_allowed(origin);
 }
 
 static int is_cors_preflight(const char *method, const char *buffer) {
