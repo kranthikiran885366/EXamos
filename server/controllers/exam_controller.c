@@ -300,15 +300,21 @@ void exam_handle(int client_fd, const char *method, const char *path,
             "  id, institution_id, code, name, subject, academic_year, exam_type, "
             "  duration_minutes, total_marks, passing_marks, instructions, exam_url, "
             "  allowed_origins, status, created_by, created_at, updated_at"
-            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14, $15, $15)",
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::integer, $9::integer, $10::integer, $11, $12, $13, 'draft', $14, $15::bigint, $15::bigint)",
             15, p, l);
 
         int ok = (r && PQresultStatus(r) == PGRES_COMMAND_OK);
+        char err_detail[256] = {0};
+        if (!ok) {
+            snprintf(err_detail, sizeof(err_detail), "%s", PQerrorMessage(conn));
+        }
         if (r) PQclear(r);
 
         if (!ok) {
+            char err_buf[512];
+            snprintf(err_buf, sizeof(err_buf), "Failed to create examination: %s", err_detail[0] ? err_detail : "database error");
             db_release(conn, 0);
-            ex_send_error(client_fd, 500, "Failed to create examination", origin, extra_headers, extra_len);
+            ex_send_error(client_fd, 500, err_buf, origin, extra_headers, extra_len);
             return;
         }
 
