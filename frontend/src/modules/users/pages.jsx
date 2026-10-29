@@ -176,7 +176,11 @@ export function UsersPage() {
             { key: 'email', label: 'Email', render: (u) => u.email || '—' },
             { key: 'role', label: 'Role', sortable: true, render: (u) => <Badge value={roleLabel(u.role)} /> },
             ...(global ? [{ key: 'tenantId', label: 'Institution', render: (u) => tenantName(u.tenantId) }] : []),
-            { key: 'mfaEnabled', label: 'MFA', render: (u) => <Badge value={u.mfaEnabled === false ? 'off' : 'on'} /> },
+            { key: 'mfaEnabled', label: 'MFA', render: (u) => {
+              const isStudent = u.role === 'student' || u.role === 'candidate' || !!u.candidateId;
+              if (isStudent) return <Badge tone="muted" value="exempt" />;
+              return <Badge tone={u.mfaEnabled === false ? 'amber' : 'emerald'} value={u.mfaEnabled === false ? 'pending setup' : 'enrolled'} />;
+            } },
             { key: 'status', label: 'Status', sortable: true, render: (u) => <Badge value={u.status} /> },
             { key: 'lastLogin', label: 'Last login', sortable: true, render: (u) => (u.lastLogin ? <span title={fmt(u.lastLogin)}>{ago(u.lastLogin)}</span> : 'Never') },
           ]}

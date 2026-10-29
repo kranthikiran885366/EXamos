@@ -43,8 +43,11 @@ export class AuthService {
     }, { actor: 'admin', sign: true });
 
     const data = res.data;
+    if (data.status === 'MFA_SETUP_REQUIRED' || data.mfa_setup_required) {
+      return { mfaSetupRequired: true, username: data.username || username, message: data.message };
+    }
     if (data.status === 'MFA_REQUIRED') {
-      return { mfaRequired: true };
+      return { mfaRequired: true, username: data.username || username };
     }
     if (data.status !== 'AUTHENTICATED') {
       throw new ApiError(res.status, data.error || 'Login failed', data);

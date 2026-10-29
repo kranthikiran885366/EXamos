@@ -138,7 +138,10 @@ export default function LoginPage() {
     setInfo('');
     try {
       const res = await backendLogin({ username: u, password: p });
-      if (res?.error) {
+      if (res?.mfaSetupRequired) {
+        setInfo('First-time login: Please set up Google Authenticator to secure your management account.');
+        openQrSetup(res.username || u);
+      } else if (res?.error) {
         setErr(res.error);
       }
     } catch (x) {
@@ -245,8 +248,15 @@ export default function LoginPage() {
         recoveryCodes: qrData.recovery_codes,
       });
       if (res?.status === 'SUCCESS' || res?.ok) {
-        setInfo(`Google Authenticator configured for ${qrData.username}! You can now use your authenticator app to log in.`);
+        setInfo(`Google Authenticator configured for ${qrData.username}! Completing authentication…`);
         setShowQrModal(false);
+        if (p) {
+          const authRes = await backendLogin({ username: qrData.username || u, password: p, mfaCode: confirmCode });
+          if (authRes?.ok) {
+            navigate(safeRedirect(loc.state?.from));
+            return;
+          }
+        }
         if (pending) {
           setCode(confirmCode);
         }

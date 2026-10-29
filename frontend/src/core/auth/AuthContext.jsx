@@ -44,6 +44,7 @@ function normalizeRole(r) {
 
 function publicUser(u) {
   const role = normalizeRole(u.role);
+  const isStudent = role === 'student' || role === 'candidate' || !!u.candidateId;
   return {
     id: u.id,
     name: u.name || u.username || 'User',
@@ -53,7 +54,7 @@ function publicUser(u) {
     title: u.title || roleLabel(role),
     tenantId: u.tenantId || u.institution_id || null,
     candidateId: u.candidateId || null,
-    mfaEnabled: u.mfaEnabled !== false,
+    mfaEnabled: isStudent ? false : (u.mfaEnabled !== false),
     email: u.email || '',
     lastLogin: u.lastLogin || null,
   };
@@ -161,9 +162,16 @@ export function AuthProvider({ children }) {
     setPending(key);
     setPendingCredentials(null);
     const u = await get('users', key);
-    if (u.mfaEnabled === false) {
+    const isStudent = u.role === 'student' || u.role === 'candidate' || !!u.candidateId;
+    if (isStudent || u.mfaEnabled === false) {
       await beginSession(u);
       return { ok: true };
+    }
+    // New management users must set up their authenticator first
+    if (!u.totpEnrolled && (!u.recoveryCodes || u.recoveryCodes.length === 0)) {
+      setPendingCredentials({ username: key, password });
+      setPending(key);
+      return { mfaSetupRequired: true, username: key };
     }
     record(key, 'LOGIN_PASSWORD_OK');
     return { mfa: true };
@@ -266,6 +274,11 @@ export function AuthProvider({ children }) {
     }
     try {
       const result = await authService.adminLogin({ username, password, mfaCode });
+      if (result.mfaSetupRequired) {
+        setPendingCredentials({ username, password });
+        setPending(username);
+        return { mfaSetupRequired: true, username: result.username || username };
+      }
       if (result.mfaRequired) {
         setPendingCredentials({ username, password });
         setPending(username);

@@ -255,62 +255,88 @@ void auth_admin_login(int client_fd, const char *req_body,
         goto done;
     }
 
-    /* MFA Verification: Only challenge if MFA is enabled AND a secret is actually enrolled */
-    if (mfa_enabled && db_totp[0]) {
-        if (!mfa_code[0]) {
-            send_json_cors(client_fd, 200,
-                "{\"status\":\"MFA_REQUIRED\",\"mfa_required\":true,\"error\":\"MFA code required\"}",
-                origin, extra_headers, extra_len);
-            audit_log(db_userid, "ADMIN_LOGIN_MFA_REQUIRED", username);
-            db_release(conn, 0);
-            goto done;
-        }
+    /* Reject candidate/student accounts from management dashboard console */
+    if (strcasecmp(db_role, "student") == 0 || strcasecmp(db_role, "candidate") == 0) {
+        send_json_cors(client_fd, 403,
+            "{\"status\":\"FAIL\",\"error\":\"Access denied: Candidate and student accounts cannot access management consoles. Please use the Candidate Station.\"}",
+            origin, extra_headers, extra_len);
+        audit_log(username, "ADMIN_LOGIN_DENIED_STUDENT_ROLE", "student attempted admin login");
+        db_release(conn, 0);
+        goto done;
+    }
 
-        /* Sanitize 6-digit TOTP code (strip spaces/dashes) */
-        char clean_code[16] = {0};
-        size_t c_idx = 0;
-        for (size_t i = 0; mfa_code[i] && c_idx < 6; i++) {
-            if (isdigit((unsigned char)mfa_code[i])) clean_code[c_idx++] = mfa_code[i];
-        }
-        clean_code[c_idx] = '\0';
+    /* Management Dashboard MFA Enforcement:
+     * First-time / new management users who do not have an authenticator registered
+     * must set up Google Authenticator first (MFA_SETUP_REQUIRED).
+     * Users who already enrolled their authenticator must provide a valid TOTP/recovery code (MFA_REQUIRED).
+     */
+    if (!mfa_enabled || !db_totp[0]) {
+        char setup_msg[512];
+        snprintf(setup_msg, sizeof(setup_msg),
+            "{\"status\":\"MFA_SETUP_REQUIRED\",\"mfa_setup_required\":true,"
+            "\"username\":\"%s\",\"message\":\"Authenticator setup required for first-time management user\"}",
+            db_username[0] ? db_username : username);
+        send_json_cors(client_fd, 200, setup_msg, origin, extra_headers, extra_len);
+        audit_log(db_userid[0] ? db_userid : username, "ADMIN_MFA_SETUP_REQUIRED", username);
+        db_release(conn, 0);
+        goto done;
+    }
 
-        int mfa_ok = 0;
-        /* Strict RFC 6238 TOTP verification against registered secret (window +-2 = +-60s clock drift) */
-        if (db_totp[0] && clean_code[0] && totp_verify_code(db_totp, clean_code, time(NULL), 3)) {
-            mfa_ok = 1;
-        }
+    if (!mfa_code[0]) {
+        char mfa_req_msg[512];
+        snprintf(mfa_req_msg, sizeof(mfa_req_msg),
+            "{\"status\":\"MFA_REQUIRED\",\"mfa_required\":true,\"username\":\"%s\",\"error\":\"MFA code required\"}",
+            db_username[0] ? db_username : username);
+        send_json_cors(client_fd, 200, mfa_req_msg, origin, extra_headers, extra_len);
+        audit_log(db_userid[0] ? db_userid : username, "ADMIN_LOGIN_MFA_REQUIRED", username);
+        db_release(conn, 0);
+        goto done;
+    }
 
-        /* If TOTP didn't match, check emergency recovery codes */
-        if (!mfa_ok) {
-            char norm_code[32] = {0};
-            normalize_code(mfa_code, norm_code, sizeof(norm_code));
+    /* Sanitize 6-digit TOTP code (strip spaces/dashes) */
+    char clean_code[16] = {0};
+    size_t c_idx = 0;
+    for (size_t i = 0; mfa_code[i] && c_idx < 6; i++) {
+        if (isdigit((unsigned char)mfa_code[i])) clean_code[c_idx++] = mfa_code[i];
+    }
+    clean_code[c_idx] = '\0';
 
-            /* Check recovery table */
-            char rec_hash[65] = {0};
-            if (totp_hash_recovery_code(norm_code, rec_hash) == 0) {
-                const char *r_params[] = { db_userid, rec_hash };
-                int r_lens[] = { (int)strlen(db_userid), (int)strlen(rec_hash) };
-                PGresult *r_res = db_simple(conn,
-                    "UPDATE examos_admin_recovery_codes SET used = true, used_at = clock_timestamp() "
-                    "WHERE user_id = $1 AND code_hash = $2 AND NOT used RETURNING code_hash",
-                    2, r_params, r_lens);
-                if (r_res && PQresultStatus(r_res) == PGRES_TUPLES_OK && PQntuples(r_res) == 1) {
-                    mfa_ok = 1;
-                    audit_log(db_userid, "ADMIN_RECOVERY_USED", "recovery code consumed");
-                }
-                if (r_res) PQclear(r_res);
+    int mfa_ok = 0;
+    /* Strict RFC 6238 TOTP verification against registered secret (window +-3 = +-90s clock drift) */
+    if (db_totp[0] && clean_code[0] && totp_verify_code(db_totp, clean_code, time(NULL), 3)) {
+        mfa_ok = 1;
+    }
+
+    /* If TOTP didn't match, check emergency recovery codes */
+    if (!mfa_ok) {
+        char norm_code[32] = {0};
+        normalize_code(mfa_code, norm_code, sizeof(norm_code));
+
+        /* Check recovery table */
+        char rec_hash[65] = {0};
+        if (totp_hash_recovery_code(norm_code, rec_hash) == 0) {
+            const char *r_params[] = { db_userid, rec_hash };
+            int r_lens[] = { (int)strlen(db_userid), (int)strlen(rec_hash) };
+            PGresult *r_res = db_simple(conn,
+                "UPDATE examos_admin_recovery_codes SET used = true, used_at = clock_timestamp() "
+                "WHERE user_id = $1 AND code_hash = $2 AND NOT used RETURNING code_hash",
+                2, r_params, r_lens);
+            if (r_res && PQresultStatus(r_res) == PGRES_TUPLES_OK && PQntuples(r_res) == 1) {
+                mfa_ok = 1;
+                audit_log(db_userid, "ADMIN_RECOVERY_USED", "recovery code consumed");
             }
+            if (r_res) PQclear(r_res);
         }
+    }
 
-        if (!mfa_ok) {
-            record_failure(username, now);
-            send_json_cors(client_fd, 401,
-                "{\"status\":\"FAIL\",\"error\":\"Invalid authentication code or recovery code\"}",
-                origin, extra_headers, extra_len);
-            audit_log(db_userid, "ADMIN_LOGIN_MFA_FAILED", "invalid code");
-            db_release(conn, 0);
-            goto done;
-        }
+    if (!mfa_ok) {
+        record_failure(username, now);
+        send_json_cors(client_fd, 401,
+            "{\"status\":\"FAIL\",\"error\":\"Invalid authentication code or recovery code\"}",
+            origin, extra_headers, extra_len);
+        audit_log(db_userid, "ADMIN_LOGIN_MFA_FAILED", "invalid code");
+        db_release(conn, 0);
+        goto done;
     }
 
     /* Generate 256-bit cryptographically secure session token */
@@ -700,6 +726,29 @@ void auth_mfa_setup(int client_fd, const char *req_body, const char *auth_header
         return;
     }
 
+    /* Multi-factor authentication is exclusively for management dashboards. Candidates and students do not use MFA. */
+    PGconn *chk_conn = db_acquire();
+    if (chk_conn) {
+        const char *pvals[1] = { username };
+        int lens[1] = { (int)strlen(username) };
+        PGresult *res = db_simple(chk_conn,
+            "SELECT role FROM users WHERE LOWER(username) = LOWER($1) OR id = $1",
+            1, pvals, lens);
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+            const char *r = PQgetvalue(res, 0, 0);
+            if (strcasecmp(r, "student") == 0 || strcasecmp(r, "candidate") == 0) {
+                PQclear(res);
+                db_release(chk_conn, 0);
+                send_json_cors(client_fd, 403,
+                    "{\"status\":\"FAIL\",\"error\":\"Multi-factor authentication is exclusively for management dashboards. Candidate and student accounts do not require MFA.\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+        }
+        if (res) PQclear(res);
+        db_release(chk_conn, 0);
+    }
+
     /* 1. Generate 20-byte random secret -> Base32 (32 chars) */
     char base32_secret[TOTP_BASE32_LEN + 1] = {0};
     if (totp_generate_secret(base32_secret) != 0) {
@@ -785,6 +834,25 @@ void auth_mfa_confirm(int client_fd, const char *req_body, const char *auth_head
             origin, extra_headers, extra_len);
         return;
     }
+
+    /* Prevent MFA enrollment for candidates and students */
+    const char *chk_p[1] = { username };
+    int chk_l[1] = { (int)strlen(username) };
+    PGresult *chk_r = db_simple(conn,
+        "SELECT role FROM users WHERE LOWER(username) = LOWER($1) OR id = $1",
+        1, chk_p, chk_l);
+    if (chk_r && PQresultStatus(chk_r) == PGRES_TUPLES_OK && PQntuples(chk_r) > 0) {
+        const char *r = PQgetvalue(chk_r, 0, 0);
+        if (strcasecmp(r, "student") == 0 || strcasecmp(r, "candidate") == 0) {
+            PQclear(chk_r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 403,
+                "{\"status\":\"FAIL\",\"error\":\"Multi-factor authentication is exclusively for management dashboards. Candidates and students do not require MFA.\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+    }
+    if (chk_r) PQclear(chk_r);
 
     /* 1. Update users table */
     const char *pvals[2] = { secret, username };

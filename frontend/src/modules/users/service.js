@@ -22,9 +22,12 @@ export const initialsOf = (name) => clean(name, 60).split(/\s+/).filter(Boolean)
 export async function makeUser({ username, name, role, password, tenantId = null, email = '', candidateId = null, mfaEnabled = true }) {
   const salt = randomId(12), totp = newSecret();
   const nm = clean(name, 60);
+  const isStudent = role === 'student' || role === 'candidate' || !!candidateId;
+  const effectiveMfa = isStudent ? false : (mfaEnabled !== false);
   return {
     id: username, name: nm, initials: initialsOf(nm), role, title: roleLabel(role), status: 'active',
-    tenantId, email: clean(email, 120).toLowerCase(), candidateId, mfaEnabled,
+    tenantId, email: clean(email, 120).toLowerCase(), candidateId, mfaEnabled: effectiveMfa,
+    totpEnrolled: false, // New management accounts must complete first-time setup
     salt, pwHash: await pbkdf2(password, salt), totp, recoveryCodes: [],
     createdAt: Date.now(), lastLogin: null, passwordChangedAt: Date.now(),
   };
