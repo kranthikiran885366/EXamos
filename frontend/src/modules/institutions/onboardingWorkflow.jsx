@@ -61,37 +61,37 @@ export function StatusMatrix({ inst = {} }) {
 
   return (
     <div className="status-matrix-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', margin: '14px 0' }}>
-      <div className="matrix-pill-card" style={{ padding: '10px 14px', background: 'var(--bg-subtle, #f8fafc)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-        <small className="muted" style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>1. Operational Status</small>
-        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="matrix-pill-card" style={{ padding: '12px 14px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', boxShadow: 'var(--shadow)' }}>
+        <small style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--mut, #756F79)', fontWeight: 600 }}>1. Operational Status</small>
+        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Badge value={opStatus} tone={opStatus === 'active' ? 'green' : opStatus === 'suspended' ? 'red' : 'blue'} />
         </div>
       </div>
 
-      <div className="matrix-pill-card" style={{ padding: '10px 14px', background: 'var(--bg-subtle, #f8fafc)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-        <small className="muted" style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>2. Verification State</small>
-        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="matrix-pill-card" style={{ padding: '12px 14px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', boxShadow: 'var(--shadow)' }}>
+        <small style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--mut, #756F79)', fontWeight: 600 }}>2. Verification State</small>
+        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Badge value={verStatus} tone={verStatus === 'verified' ? 'green' : verStatus === 'corrections_requested' ? 'amber' : verStatus === 'rejected' ? 'red' : 'blue'} />
         </div>
       </div>
 
-      <div className="matrix-pill-card" style={{ padding: '10px 14px', background: 'var(--bg-subtle, #f8fafc)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-        <small className="muted" style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>3. Provisioning State</small>
-        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="matrix-pill-card" style={{ padding: '12px 14px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', boxShadow: 'var(--shadow)' }}>
+        <small style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--mut, #756F79)', fontWeight: 600 }}>3. Provisioning State</small>
+        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Badge value={provStatus} tone={provStatus === 'provisioned' ? 'green' : provStatus === 'failed' ? 'red' : 'amber'} />
         </div>
       </div>
 
-      <div className="matrix-pill-card" style={{ padding: '10px 14px', background: 'var(--bg-subtle, #f8fafc)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-        <small className="muted" style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>4. Readiness State</small>
-        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="matrix-pill-card" style={{ padding: '12px 14px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', boxShadow: 'var(--shadow)' }}>
+        <small style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--mut, #756F79)', fontWeight: 600 }}>4. Readiness State</small>
+        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Badge value={readStatus} tone={readStatus === 'passed' ? 'green' : readStatus === 'issues_detected' ? 'red' : 'amber'} />
         </div>
       </div>
 
-      <div className="matrix-pill-card" style={{ padding: '10px 14px', background: 'var(--bg-subtle, #f8fafc)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-        <small className="muted" style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>5. Operational Approval</small>
-        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="matrix-pill-card" style={{ padding: '12px 14px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', boxShadow: 'var(--shadow)' }}>
+        <small style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--mut, #756F79)', fontWeight: 600 }}>5. Operational Approval</small>
+        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Badge value={opApproval} tone={opApproval === 'fully_authorized' ? 'green' : opApproval === 'pilot_authorized' ? 'blue' : 'amber'} />
         </div>
       </div>

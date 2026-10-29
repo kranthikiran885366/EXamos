@@ -23,14 +23,16 @@ import {
 function InstitutionSwitcher({ inst, institutions, onSelect }) {
   if (!institutions || institutions.length <= 1) return null;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', background: 'var(--panel, rgba(255,255,255,0.03))', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border, rgba(255,255,255,0.08))' }}>
-      <Icon name="building" size={16} />
-      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--muted, #aaa)' }}>Active Institution:</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', background: '#FFFFFF', padding: '10px 16px', borderRadius: '10px', border: '1px solid var(--line, #DCD5D2)', boxShadow: 'var(--shadow)' }}>
+      <span style={{ color: 'var(--copper, #B54F34)', display: 'flex', alignItems: 'center' }}>
+        <Icon name="building" size={16} />
+      </span>
+      <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--aubergine, #302337)' }}>Active Institution Enclave:</span>
       <select
         value={inst?.id || ''}
         onChange={(e) => onSelect(e.target.value)}
         className="select sm"
-        style={{ minWidth: '220px', padding: '4px 8px', borderRadius: '6px' }}
+        style={{ minWidth: '240px', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--line, #DCD5D2)', background: 'var(--bg, #F6F2ED)', color: 'var(--ink, #302337)', fontWeight: 600 }}
       >
         {institutions.map((i) => (
           <option key={i.id} value={i.id}>{i.name} ({i.code || i.id})</option>
