@@ -16,7 +16,8 @@ import {
 } from '../institutions/onboardingWorkflow';
 import {
   createCampus, createDepartment, assignStaff, removeStaff,
-  saveSecuritySettings, saveExamDefaults
+  saveSecuritySettings, saveExamDefaults,
+  listInstitutionAdmins, inviteInstitutionAdmin, removeInstitutionAdmin,
 } from '../institutions/service';
 
 /* =====================================================================
@@ -309,70 +310,283 @@ export function InstitutionOrganizationPage() {
 ===================================================================== */
 export function InstitutionAccessPage() {
   const { user } = useAuth();
-  const { tenant } = useTenant();
-  const users = useCol('users');
+  const { tenant, tenantId } = useTenant();
   const campuses = useCol('campuses');
   const { msg, setMsg, run, busy } = useFlash();
 
+  const [admins, setAdmins] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [inviteModal, setInviteModal] = useState(false);
-  const [inviteData, setInviteData] = useState({ email: '', name: '', role: 'invigilator', campusId: '' });
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const [inviteResult, setInviteResult] = useState(null); // shows credentials popup
+  const [inviteData, setInviteData] = useState({
+    email: '', name: '', role: 'inst_admin', campusId: '',
+  });
+
+  const loadAdmins = async () => {
+    if (!tenantId) return;
+    setLoading(true);
+    try {
+      const list = await listInstitutionAdmins(tenantId);
+      setAdmins(Array.isArray(list) ? list : []);
+    } catch {
+      setAdmins([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAdmins(); }, [tenantId]);
 
   const handleInvite = async () => {
+    if (!inviteData.email || !inviteData.name) return;
     await run(async () => {
+      const result = await inviteInstitutionAdmin(user, tenantId, inviteData);
       setInviteModal(false);
-      return `Administrator invitation sent to ${inviteData.email}. Token valid for 48 hours.`;
-    }, 'Invitation sent.');
+      setInviteResult(result);
+      await loadAdmins();
+      return `Administrator ${inviteData.name} (${inviteData.email}) created and linked to ${tenant?.name || 'this institution'}.`;
+    }, 'Administrator created.');
   };
+
+  const handleRemove = async (reason) => {
+    if (!removeTarget) return;
+    await run(async () => {
+      await removeInstitutionAdmin(user, tenantId, removeTarget.id, reason);
+      setRemoveTarget(null);
+      await loadAdmins();
+      return `${removeTarget.name} removed from institution administrators.`;
+    }, 'Administrator removed.');
+  };
+
+  const ADMIN_ROLE_OPTIONS = [
+    { v: 'inst_admin', l: 'Institution Admin (Full Management)' },
+    { v: 'exam_controller', l: 'Examination Controller (Exams & Policies)' },
+    { v: 'invigilator', l: 'Invigilator (Session Supervision)' },
+    { v: 'it_admin', l: 'IT Admin (Workstations & Devices)' },
+    { v: 'security_engineer', l: 'Security Engineer (Attestation & Audit)' },
+    { v: 'auditor', l: 'Auditor (Read-only Audit Access)' },
+  ];
 
   return (
     <Page
       title="Administrators and Access"
-      desc="Invite institutional administrators, invigilators, exam controllers, and monitor MFA security enrollment."
+      desc="Manage institutional administrators, invigilators, exam controllers, and monitor MFA security enrollment."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Administrators</span></div>}
       actions={
-        <button className="btn primary" onClick={() => setInviteModal(true)}>
-          <Icon name="plus" size={14} /> Invite Administrator
-        </button>
+        can(user.role, 'user.manage') && (
+          <button className="btn primary" onClick={() => { setInviteData({ email: '', name: '', role: 'inst_admin', campusId: '' }); setInviteModal(true); }}>
+            <Icon name="plus" size={14} /> Invite Administrator
+          </button>
+        )
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
-      <Card title="Institutional Administrative Accounts" desc="Scoped roles and MFA security posture">
-        <DataTable
-          rows={users}
-          columns={[
-            { key: 'name', label: 'User', render: (u) => <><b>{u.name || u.username}</b><br /><small className="muted">{u.email || u.username}</small></> },
-            { key: 'role', label: 'Role', render: (u) => <Badge value={roleLabel(u.role)} /> },
-            { key: 'mfa', label: '2FA / TOTP', render: (u) => <span className="badge g">RFC 6238 Active</span> },
-            { key: 'status', label: 'Status', badge: true },
-            { key: 'lastLogin', label: 'Last Login', render: (u) => u.lastLogin ? fmt(u.lastLogin) : 'Never' },
-          ]}
-          empty={<Empty icon="users" title="No administrators listed" />}
-        />
+
+      <StatGrid cols={4}>
+        <Stat label="Total Administrators" value={admins.length} icon="users" />
+        <Stat label="Active Accounts" value={admins.filter((u) => u.status === 'active').length} tone="green" icon="check" />
+        <Stat label="MFA Enrolled" value={admins.filter((u) => u.mfaEnabled).length} tone="blue" icon="shield" />
+        <Stat label="Pending / Inactive" value={admins.filter((u) => u.status !== 'active').length} tone="amber" icon="warn" />
+      </StatGrid>
+
+      <Card title="Institutional Administrative Accounts" desc="Scoped roles, MFA security posture, and campus assignments">
+        {loading ? (
+          <Loading label="Loading administrators from server..." />
+        ) : (
+          <DataTable
+            rows={admins}
+            search={['name', 'email', 'username', 'role']}
+            filters={[
+              { key: 'role', label: 'All Roles', options: ADMIN_ROLE_OPTIONS.map((r) => r.v) },
+              { key: 'status', label: 'All Statuses', options: ['active', 'suspended', 'locked'] },
+            ]}
+            columns={[
+              {
+                key: 'name',
+                label: 'Administrator',
+                sortable: true,
+                render: (u) => (
+                  <>
+                    <b>{u.name || u.username}</b>
+                    <br />
+                    <small className="muted">{u.email || u.username}</small>
+                  </>
+                ),
+              },
+              {
+                key: 'role',
+                label: 'Role',
+                render: (u) => <Badge value={roleLabel(u.role) || u.role} />,
+              },
+              {
+                key: 'campusId',
+                label: 'Campus',
+                render: (u) => {
+                  if (!u.campusId) return <span className="muted">All Campuses</span>;
+                  const c = campuses.find((x) => x.id === u.campusId);
+                  return c ? c.name : <code className="sm">{u.campusId}</code>;
+                },
+              },
+              {
+                key: 'mfa',
+                label: '2FA / TOTP',
+                render: (u) => u.mfaEnabled
+                  ? <span className="badge g">RFC 6238 Active</span>
+                  : <span className="badge amber">Not Enrolled</span>,
+              },
+              { key: 'status', label: 'Status', badge: true },
+              {
+                key: 'lastLogin',
+                label: 'Last Login',
+                render: (u) => u.lastLogin ? ago(u.lastLogin) : <span className="muted">Never</span>,
+              },
+            ]}
+            actions={(u) => [
+              ...(can(user.role, 'user.manage') && u.id !== user.id ? [{
+                label: 'Remove Access',
+                danger: true,
+                onClick: () => setRemoveTarget(u),
+              }] : []),
+            ]}
+            empty={
+              <Empty
+                icon="users"
+                title="No administrators yet"
+                desc="Invite your first institutional administrator using the button above."
+                action={
+                  can(user.role, 'user.manage') && (
+                    <button className="btn primary" onClick={() => setInviteModal(true)}>
+                      Invite Administrator
+                    </button>
+                  )
+                }
+              />
+            }
+          />
+        )}
       </Card>
 
+      {/* Invite Modal */}
       {inviteModal && (
-        <Modal title="Invite Institutional Administrator" onClose={() => setInviteModal(false)}>
+        <Modal title="Invite Institutional Administrator" desc={`Add a new administrator to ${tenant?.name || 'this institution'}. Their account will be scoped to this institution only.`} onClose={() => setInviteModal(false)}>
           <div className="formgrid">
-            <Field label="Email Address"><Input type="email" value={inviteData.email} onChange={(e) => setInviteData({ ...inviteData, email: e.target.value })} placeholder="admin@univ.edu" required /></Field>
-            <Field label="Full Name"><Input value={inviteData.name} onChange={(e) => setInviteData({ ...inviteData, name: e.target.value })} placeholder="Dr. S. Sharma" required /></Field>
-            <Field label="Role">
+            <Field label="Full Name" required className="span2">
+              <Input
+                value={inviteData.name}
+                onChange={(e) => setInviteData({ ...inviteData, name: e.target.value })}
+                placeholder="e.g. Dr. Priya Sharma"
+                required
+              />
+            </Field>
+            <Field label="Institutional Email Address" required className="span2">
+              <Input
+                type="email"
+                value={inviteData.email}
+                onChange={(e) => setInviteData({ ...inviteData, email: e.target.value })}
+                placeholder={`e.g. admin@${tenant?.domains?.[0] || 'institution.edu'}`}
+                required
+              />
+            </Field>
+            <Field label="Role / Access Level" required>
               <Select
                 value={inviteData.role}
                 onChange={(e) => setInviteData({ ...inviteData, role: e.target.value })}
-                options={[
-                  { v: 'inst_admin', l: 'Institution Admin (Full Management)' },
-                  { v: 'exam_controller', l: 'Examination Controller (Exams & Policies)' },
-                  { v: 'invigilator', l: 'Invigilator (Session Supervision)' },
-                  { v: 'it_admin', l: 'IT Admin (Workstations & USBs)' },
-                ]}
+                options={ADMIN_ROLE_OPTIONS}
+                placeholder={false}
               />
             </Field>
+            <Field label="Campus Scope (optional)" help="Leave blank to grant access to all campuses">
+              <Select
+                value={inviteData.campusId}
+                onChange={(e) => setInviteData({ ...inviteData, campusId: e.target.value })}
+                options={[{ v: '', l: 'All Campuses (Global)' }, ...campuses.map((c) => ({ v: c.id, l: c.name }))]}
+                placeholder={false}
+              />
+            </Field>
+            <div className="span2" style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', padding: '12px 14px', fontSize: '13px' }}>
+              <b>How this works:</b> An administrator account is created on the server scoped to <b>{tenant?.name || 'this institution'}</b>. A temporary password is generated — share it securely with the new admin. They must set up MFA (TOTP) on first login.
+            </div>
           </div>
           <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
             <button className="btn" onClick={() => setInviteModal(false)}>Cancel</button>
-            <button className="btn primary" onClick={handleInvite} disabled={busy || !inviteData.email}>Send Invitation</button>
+            <button
+              className="btn primary"
+              onClick={handleInvite}
+              disabled={busy || !inviteData.email || !inviteData.name}
+            >
+              <Icon name="plus" size={14} /> Create Administrator Account
+            </button>
           </div>
         </Modal>
+      )}
+
+      {/* Credentials Result Popup */}
+      {inviteResult && (
+        <Modal
+          title="✅ Administrator Account Created"
+          desc="Share these credentials securely with the new administrator."
+          onClose={() => setInviteResult(null)}
+        >
+          <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13.5px' }}>
+              <div>
+                <small style={{ color: 'var(--mut, #756F79)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>Full Name</small>
+                <div style={{ fontWeight: 700 }}>{inviteResult.name}</div>
+              </div>
+              <div>
+                <small style={{ color: 'var(--mut, #756F79)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>Email</small>
+                <div style={{ fontWeight: 700 }}>{inviteResult.email}</div>
+              </div>
+              <div>
+                <small style={{ color: 'var(--mut, #756F79)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>Username</small>
+                <code style={{ fontSize: '13px' }}>{inviteResult.username}</code>
+              </div>
+              <div>
+                <small style={{ color: 'var(--mut, #756F79)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>Role</small>
+                <div><Badge value={roleLabel(inviteResult.role) || inviteResult.role} /></div>
+              </div>
+              {inviteResult.tempPassword && (
+                <div style={{ gridColumn: 'span 2' }}>
+                  <small style={{ color: 'var(--mut, #756F79)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>Temporary Password</small>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                    <code style={{ fontSize: '14px', fontWeight: 800, background: '#FFFFFF', padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--gline, #b9e3cc)' }}>
+                      {inviteResult.tempPassword}
+                    </code>
+                    <button className="btn small" onClick={() => navigator.clipboard?.writeText(inviteResult.tempPassword)}>Copy</button>
+                  </div>
+                  <small style={{ color: 'var(--r, #c0392b)', fontSize: '12px', display: 'block', marginTop: '4px' }}>
+                    ⚠️ Share this password securely. The administrator must change it and set up MFA on first login.
+                  </small>
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', padding: '12px 14px', fontSize: '13px', marginBottom: '16px' }}>
+            <b>Next steps for the administrator:</b>
+            <ol style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
+              <li>Go to <a href="/login" style={{ color: '#2563EB' }}>/login</a> and sign in with the above username and temporary password</li>
+              <li>Set a new strong password when prompted</li>
+              <li>Enroll MFA using Google Authenticator or any TOTP app</li>
+              <li>Begin configuring the institution's exam schedule and campus hierarchy</li>
+            </ol>
+          </div>
+          <div className="row end" style={{ gap: '8px' }}>
+            <button className="btn primary" onClick={() => setInviteResult(null)}>Done</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Remove Confirmation */}
+      {removeTarget && (
+        <ActionDialog
+          title={`Remove ${removeTarget.name}`}
+          desc={`This will suspend ${removeTarget.name}'s access to ${tenant?.name || 'this institution'}. They will not be able to log in. This action is recorded in the audit trail.`}
+          danger
+          confirmLabel="Remove Access"
+          onClose={() => setRemoveTarget(null)}
+          onConfirm={handleRemove}
+        />
       )}
     </Page>
   );

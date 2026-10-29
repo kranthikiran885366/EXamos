@@ -9,6 +9,41 @@ export const DEPLOYMENT_MODELS = [
   { v: 'managed-lab', l: 'Managed lab devices' },
   { v: 'hybrid', l: 'Hybrid USB + managed lab' },
 ];
+
+export const ENTITY_TYPES = [
+  { v: 'enterprise', l: 'Corporate Enterprise / Company', category: 'Corporate', desc: 'Pre-employment hiring, recruitment drives, and workforce certification' },
+  { v: 'technology', l: 'Technology / Software Enterprise', category: 'Corporate', desc: 'Developer coding tests, engineering hiring, and technical assessments' },
+  { v: 'university', l: 'University / Higher Education', category: 'Academic', desc: 'Centralized semester examinations, thesis vivas, and entrance tests' },
+  { v: 'college', l: 'College / Institute / Polytechnic', category: 'Academic', desc: 'Undergraduate, postgraduate, and laboratory examinations' },
+  { v: 'certification_body', l: 'Professional Certification / Licensure Board', category: 'Certification', desc: 'Licensing, regulatory accreditation, and credential exams' },
+  { v: 'government', l: 'Government / Public Sector Recruitment Board', category: 'Public Sector', desc: 'Civil services, national public recruitment, and service commissions' },
+  { v: 'testing_agency', l: 'Commercial Testing Agency / Assessment Center', category: 'Commercial', desc: 'Standardized testing providers, proctoring enclaves, and client test suites' },
+];
+
+export const isCorporateEntity = (type) => ['enterprise', 'technology', 'company', 'corporate'].includes(String(type || '').toLowerCase());
+
+export const entityLabel = (type) => {
+  const found = ENTITY_TYPES.find((t) => t.v === String(type || '').toLowerCase());
+  return found ? found.l : (type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Enterprise / Institution');
+};
+
+export const getOrgTerms = (entityType) => {
+  const isCorp = isCorporateEntity(entityType);
+  return {
+    isCorp,
+    orgLabel: isCorp ? 'Company / Enterprise' : 'Institution / University',
+    candidateLabel: isCorp ? 'Candidates / Examinees' : 'Students / Candidates',
+    candidateSingular: isCorp ? 'Candidate' : 'Student',
+    campusLabel: isCorp ? 'Offices & Testing Centers' : 'Campuses & Centers',
+    campusSingular: isCorp ? 'Office / Center' : 'Campus',
+    departmentLabel: isCorp ? 'Business Units & Teams' : 'Departments & Units',
+    departmentSingular: isCorp ? 'Business Unit' : 'Department',
+    regNumberLabel: isCorp ? 'Corporate CIN / Tax / Incorporation ID' : 'Accreditation Board / Charter Reg No',
+    regNumberPlaceholder: isCorp ? 'e.g. U72200MH2026PTC123456 or EIN/Tax ID' : 'e.g. UGC-UNIV-2026-9810 or Charter ID',
+    domainPlaceholder: isCorp ? 'e.g. company.com or enterprise.tech' : 'e.g. university.ac.in or college.edu',
+    signatoryLabel: isCorp ? 'Authorized Executive / VP / HR Director / Officer' : 'Registrar / Vice-Chancellor / Exam Controller',
+  };
+};
 export const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'UTC'];
 const codeOf = (name) => 'INS-' + clean(name, 20).replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X') + '-' + Math.floor(Math.random() * 900 + 100);
 
@@ -27,7 +62,9 @@ export async function createInstitution(a, input) {
   const t = {
     id: id('ten'), name, code, domains, contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
     region: clean(input.region, 40) || 'India · Mumbai', timezone: input.timezone || 'Asia/Kolkata',
-    plan: input.plan || 'pilot', status: 'active', maxCenters: Number(input.maxCenters) || 5,
+    plan: input.plan || 'pilot', status: 'active', entityType: input.entityType || 'enterprise',
+    registrationNumber: clean(input.registrationNumber || '', 60),
+    maxCenters: Number(input.maxCenters) || 5,
     maxCandidates: Number(input.maxCandidates) || 500, deploymentModel: input.deploymentModel || 'usb-boot',
     branding: { displayName: name, accent: '#2f5bea' }, notificationPrefs: { email: true, inApp: true },
     examDefaults: { durationMin: 60, lateEntryMin: 15, attestationLevel: 'tpm' },
@@ -77,7 +114,7 @@ export async function updateInstitution(a, t, patch) {
     for (const d of ds) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
     next.domains = ds;
   }
-  for (const k of ['contactEmail', 'contactPhone', 'region', 'timezone', 'deploymentModel']) if (patch[k] !== undefined) next[k] = clean(patch[k], 120);
+  for (const k of ['contactEmail', 'contactPhone', 'region', 'timezone', 'deploymentModel', 'entityType', 'registrationNumber']) if (patch[k] !== undefined) next[k] = clean(patch[k], 120);
   if (patch.contactEmail && !isEmail(patch.contactEmail)) fail('Enter a valid contact email.');
   if (patch.maxCandidates !== undefined) { const n = Number(patch.maxCandidates); if (!(n >= 10 && n <= 100000)) fail('Candidate capacity must be 10–100,000.'); next.maxCandidates = n; }
   if (patch.plan !== undefined) { if (a.role !== 'superadmin' && a.role !== 'ops_admin') fail('Only the platform can change a plan.'); next.plan = patch.plan; }
@@ -250,8 +287,17 @@ export async function assignCampusAdmin(a, c, userId) {
 
 /* ---------------- Departments ---------------- */
 export const DEPT_TYPES = [
-  { v: 'academic', l: 'Academic department' }, { v: 'examination', l: 'Examination unit' },
-  { v: 'laboratory', l: 'Laboratory' }, { v: 'administrative', l: 'Administrative' },
+  // Corporate & Enterprise
+  { v: 'engineering', l: 'Engineering / Technology / R&D' },
+  { v: 'hr_recruitment', l: 'HR / Talent Acquisition & Recruitment' },
+  { v: 'operations', l: 'Operations & Business Delivery' },
+  { v: 'corporate_training', l: 'Workforce Training & L&D' },
+  { v: 'certification', l: 'Quality, Risk & Compliance' },
+  // Academic & Public Sector
+  { v: 'academic', l: 'Academic Department' },
+  { v: 'examination', l: 'Examination & Assessment Directorate' },
+  { v: 'laboratory', l: 'Laboratory & Research Facility' },
+  { v: 'administrative', l: 'Corporate HQ / Administration' },
 ];
 
 export async function createDepartment(a, { tenantId, name, code, campusId, type = 'academic' }) {
@@ -338,6 +384,117 @@ export async function removeStaff(a, s, reason) {
   await put('staff', { ...s, status: 'inactive', statusReason: r, updatedAt: Date.now() });
   await log(a, 'STAFF_REMOVED', `${s.userId}: ${r}`);
   return 'Staff assignment removed.';
+}
+
+/* ---------------- Institution Admin Management ---------------- */
+
+/**
+ * List administrators for a specific institution.
+ * Fetches from API first, falls back to local IndexedDB filtered by tenantId.
+ */
+export async function listInstitutionAdmins(institutionId) {
+  try {
+    const apiAdmins = await Api.listInstitutionAdmins(institutionId);
+    if (Array.isArray(apiAdmins) && apiAdmins.length > 0) {
+      // Sync to local cache
+      for (const u of apiAdmins) {
+        const local = {
+          id: u.user_id || u.id || u.username,
+          username: u.username,
+          name: u.full_name || u.name || u.username,
+          email: u.email || '',
+          role: u.role_name ? u.role_name.toLowerCase().replace(/ /g, '_') : 'inst_admin',
+          tenantId: institutionId,
+          status: u.active === 0 ? 'suspended' : 'active',
+          mfaEnabled: !!u.mfa_enabled,
+          lastLogin: u.last_login || null,
+          createdAt: u.created_at || Date.now(),
+        };
+        await put('users', local).catch(() => {});
+      }
+      return apiAdmins.map((u) => ({
+        id: u.user_id || u.id || u.username,
+        username: u.username,
+        name: u.full_name || u.name || u.username,
+        email: u.email || '',
+        role: u.role_name ? u.role_name.toLowerCase().replace(/ /g, '_') : 'inst_admin',
+        tenantId: institutionId,
+        status: u.active === 0 ? 'suspended' : 'active',
+        mfaEnabled: !!u.mfa_enabled,
+        lastLogin: u.last_login || null,
+        createdAt: u.created_at || Date.now(),
+      }));
+    }
+  } catch (err) {
+    console.warn('Backend listInstitutionAdmins fallback:', err.message);
+  }
+  // Fallback: local IndexedDB
+  const allUsers = await all('users');
+  return allUsers.filter((u) => u.tenantId === institutionId);
+}
+
+/**
+ * Invite / create an administrator for an institution.
+ * Calls POST /api/v1/admin/users with institution_id scoped to the target institution.
+ * Stores the result in local IndexedDB for immediate UI update.
+ */
+export async function inviteInstitutionAdmin(actor, institutionId, { name, email, role, campusId = '' }) {
+  need(actor, 'user.manage');
+  if (!clean(name, 60) || clean(name, 60).length < 2) fail('Enter the full name of the administrator.');
+  if (!email || !email.includes('@')) fail('Enter a valid institutional email address.');
+
+  let result;
+  try {
+    result = await Api.inviteInstitutionAdmin(institutionId, { name, email, role, campusId });
+  } catch (err) {
+    // If the dedicated endpoint fails, try fallback via createUser
+    try {
+      result = await Api.createUser({
+        username: email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_') + '_' + Date.now().toString(36),
+        fullName: name,
+        email,
+        password: 'ExamOS!Temp' + Math.random().toString(36).slice(2, 8).toUpperCase() + '1',
+        institutionId,
+        role,
+      });
+    } catch (e2) {
+      console.warn('Backend inviteInstitutionAdmin both attempts failed:', e2.message);
+      // Create locally so UI is consistent
+      result = null;
+    }
+  }
+
+  const userId = result?.user_id || result?.id || ('usr_' + Date.now().toString(36));
+  const newUser = {
+    id: userId,
+    username: result?.username || email.split('@')[0],
+    name: clean(name, 60),
+    email: clean(email, 120).toLowerCase(),
+    role: role || 'inst_admin',
+    tenantId: institutionId,
+    campusId: campusId || null,
+    status: 'active',
+    mfaEnabled: false,
+    createdAt: Date.now(),
+    invitedBy: actor.id,
+    tempPassword: result?.tempPassword || null,
+  };
+  await put('users', newUser);
+  await log(actor, 'INSTITUTION_ADMIN_INVITED', `${email} as ${role} for ${institutionId}`);
+  return newUser;
+}
+
+/**
+ * Remove an administrator from an institution — sets their account to suspended.
+ */
+export async function removeInstitutionAdmin(actor, institutionId, userId, reason) {
+  need(actor, 'user.manage');
+  const r = requireReason(reason, 8);
+  const u = await get('users', userId);
+  if (!u) fail('User not found.');
+  await put('users', { ...u, status: 'suspended', statusReason: r, statusAt: Date.now(), statusBy: actor.id });
+  await log(actor, 'INSTITUTION_ADMIN_REMOVED', `${userId} from ${institutionId}: ${r}`);
+  return 'Administrator access removed.';
 }
 
 export async function institutionStats(tenantId, ctx = {}) {

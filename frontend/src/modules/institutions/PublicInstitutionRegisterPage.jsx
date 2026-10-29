@@ -400,47 +400,161 @@ export default function PublicInstitutionRegisterPage() {
               </div>
             )}
 
-            {trackResult && (
-              <div style={{ background: '#FBF9F7', borderRadius: '12px', border: '1px solid var(--line, #DCD5D2)', padding: '24px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', borderBottom: '1px solid var(--line, #DCD5D2)', paddingBottom: '16px' }}>
-                  <div>
-                    <div style={{ fontSize: '11px', color: 'var(--mut, #756F79)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 700 }}>Application Record</div>
-                    <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--aubergine, #302337)' }}>{trackResult.id || trackRef}</div>
-                  </div>
-                  <span
-                    style={{
-                      background: (trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--gbg, #edf7f1)' : (trackResult.status === 'REJECTED' ? 'var(--rbg, #fdf2f2)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#eef4ff' : 'var(--abg, #fdf5f2)')),
-                      color: (trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--g, #1b7a4b)' : (trackResult.status === 'REJECTED' ? 'var(--r, #c0392b)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#2563eb' : 'var(--copper, #B54F34)')),
-                      border: `1px solid ${(trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--gline, #b9e3cc)' : (trackResult.status === 'REJECTED' ? 'var(--rline, #f8c9c6)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#bfdbfe' : 'var(--aline, #f4cfc5)'))}`,
-                      borderRadius: '6px',
-                      padding: '6px 14px',
-                      fontSize: '12px',
-                      fontWeight: 800,
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {trackResult.status?.replace(/_/g, ' ') || 'UNDER REVIEW'}
-                  </span>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '13.5px' }}>
-                  <div>
-                    <div style={{ color: 'var(--mut, #756F79)', fontSize: '12px', fontWeight: 600 }}>Institution Legal Name</div>
-                    <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '2px' }}>{trackResult.legalName || trackResult.institution_name || 'Academic Institution'}</div>
-                  </div>
-                  <div>
-                    <div style={{ color: 'var(--mut, #756F79)', fontSize: '12px', fontWeight: 600 }}>Current Stage</div>
-                    <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '2px' }}>{trackResult.step || 'Academic Charter & DNS TXT Challenge'}</div>
-                  </div>
-                  <div style={{ gridColumn: 'span 2' }}>
-                    <div style={{ color: 'var(--mut, #756F79)', fontSize: '12px', fontWeight: 600 }}>Reviewer &amp; Compliance Notes</div>
-                    <div style={{ color: 'var(--ink2, #48394F)', marginTop: '4px', lineHeight: 1.5, background: '#FFFFFF', padding: '14px', borderRadius: '8px', border: '1px solid var(--line, #DCD5D2)' }}>
-                      {trackResult.notes || 'Charter records registered. Platform reviewers verify domain ownership and authorized signatory credentials before provisioning isolated tenant database schema.'}
+            {trackResult && (() => {
+              const statusMeta = {
+                SUBMITTED: {
+                  icon: '📥', color: '#B54F34', bg: 'var(--abg, #fdf5f2)', border: 'var(--aline, #f4cfc5)',
+                  title: 'Application Submitted — Awaiting Review',
+                  nextAction: 'What to do next:',
+                  nextItems: [
+                    'Your application is in the compliance queue and will be reviewed by the ExamOS platform team.',
+                    'Ensure your domain\'s DNS TXT records are accessible for verification.',
+                    'Keep the authorized representative available for any clarification calls.',
+                    'Expected review time: 2–5 business days.',
+                  ],
+                },
+                UNDER_REVIEW: {
+                  icon: '🔍', color: '#2563EB', bg: '#EEF4FF', border: '#BFDBFE',
+                  title: 'Under Active Review',
+                  nextAction: 'What to do next:',
+                  nextItems: [
+                    'A platform reviewer is actively verifying your charter, domain, and signatory credentials.',
+                    'Publish the DNS TXT verification record on your domain if not already done.',
+                    'Have accreditation certificates (NAAC/NBA/UGC/AICTE) ready if requested.',
+                    'You will be notified of the decision via the email provided.',
+                  ],
+                },
+                VERIFICATION_PENDING: {
+                  icon: '⏳', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A',
+                  title: 'Verification in Progress',
+                  nextAction: 'Action required from your institution:',
+                  nextItems: [
+                    'Add the DNS TXT record: _examosverify.[yourdomain] with the value provided by the reviewer.',
+                    'Confirm the DNS change has propagated (use dig or nslookup to verify).',
+                    'Ensure the authorized signatory has signed the provided authorization form.',
+                    'Contact support@examos.in if you have not received specific instructions.',
+                  ],
+                },
+                MORE_INFORMATION_REQUIRED: {
+                  icon: '📋', color: '#2563EB', bg: '#EEF4FF', border: '#BFDBFE',
+                  title: 'Additional Information Required',
+                  nextAction: 'Action required — respond to reviewer:',
+                  nextItems: [
+                    'The reviewer has requested additional documents or corrections.',
+                    'Review the notes below and prepare the requested information.',
+                    'Resubmit your updated information via email to the reviewer or via the contact provided.',
+                    'Your application will be re-evaluated once the information is received.',
+                  ],
+                },
+                APPROVED: {
+                  icon: '✅', color: 'var(--g, #1b7a4b)', bg: 'var(--gbg, #edf7f1)', border: 'var(--gline, #b9e3cc)',
+                  title: 'Application Approved — Provisioning In Progress',
+                  nextAction: 'What happens next:',
+                  nextItems: [
+                    'Your institution has been approved! The platform team is setting up your isolated tenant environment.',
+                    'A dedicated database schema, cryptographic keys, and license entitlements are being created.',
+                    'You will receive an invitation email to the representative address to set up the admin account.',
+                    'Once you receive the invitation, create your account and set up MFA (Google Authenticator).',
+                  ],
+                },
+                PROVISIONED: {
+                  icon: '🚀', color: 'var(--g, #1b7a4b)', bg: 'var(--gbg, #edf7f1)', border: 'var(--gline, #b9e3cc)',
+                  title: 'Fully Provisioned — Environment Ready',
+                  nextAction: 'Your institution is live! Next steps:',
+                  nextItems: [
+                    'Your institution\'s secure testing environment is fully provisioned and active.',
+                    'Check your representative email for the admin account invitation link.',
+                    'Set up your ExamOS administrator account and configure MFA.',
+                    'Once logged in, configure campuses, departments, and exam schedules.',
+                  ],
+                },
+                REJECTED: {
+                  icon: '✗', color: 'var(--r, #c0392b)', bg: 'var(--rbg, #fdf2f2)', border: 'var(--rline, #f8c9c6)',
+                  title: 'Application Rejected',
+                  nextAction: 'What you can do:',
+                  nextItems: [
+                    'Review the rejection reason in the compliance notes below.',
+                    'You may reapply after addressing the issues indicated.',
+                    'Common reasons: unverifiable registration number, invalid domain, or missing signatory authorization.',
+                    'Contact support@examos.in if you believe this decision was made in error.',
+                  ],
+                },
+              };
+              const meta = statusMeta[trackResult.status] || statusMeta.SUBMITTED;
+              return (
+                <div>
+                  {/* Status Header Card */}
+                  <div style={{ background: meta.bg, border: `1px solid ${meta.border}`, borderRadius: '12px', padding: '20px 24px', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontSize: '24px', marginBottom: '4px' }}>{meta.icon}</div>
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: meta.color, marginBottom: '4px' }}>{meta.title}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)', fontWeight: 600 }}>
+                          Ref: <code style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 6px', borderRadius: '4px' }}>{trackResult.id || trackRef}</code>
+                          {trackResult.domain && <> · {trackResult.domain}</>}
+                        </div>
+                      </div>
+                      <span style={{ background: meta.color, color: '#FFFFFF', borderRadius: '6px', padding: '5px 14px', fontSize: '11.5px', fontWeight: 800, letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                        {trackResult.status?.replace(/_/g, ' ') || 'UNDER REVIEW'}
+                      </span>
                     </div>
                   </div>
+
+                  {/* Application Details */}
+                  <div style={{ background: '#FBF9F7', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '18px', marginBottom: '14px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13.5px' }}>
+                      <div>
+                        <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Institution Legal Name</div>
+                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.legalName || 'Academic Institution'}</div>
+                      </div>
+                      <div>
+                        <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Current Compliance Stage</div>
+                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.step || 'Charter & DNS Verification'}</div>
+                      </div>
+                      {trackResult.plan && (
+                        <div>
+                          <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Subscription Plan</div>
+                          <div style={{ fontWeight: 700, marginTop: '3px' }}>{trackResult.plan}</div>
+                        </div>
+                      )}
+                      {trackResult.updatedAt && (
+                        <div>
+                          <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Last Updated</div>
+                          <div style={{ fontWeight: 700, marginTop: '3px' }}>{trackResult.updatedAt}</div>
+                        </div>
+                      )}
+                      {trackResult.notes && (
+                        <div style={{ gridColumn: 'span 2' }}>
+                          <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>Reviewer &amp; Compliance Notes</div>
+                          <div style={{ color: 'var(--ink2, #48394F)', lineHeight: 1.55, background: '#FFFFFF', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--line, #DCD5D2)', fontSize: '13px' }}>
+                            {trackResult.notes}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* What's Next Guidance */}
+                  <div style={{ background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '18px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--aubergine, #302337)', marginBottom: '10px' }}>
+                      {meta.nextAction}
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {meta.nextItems.map((item, i) => (
+                        <li key={i} style={{ fontSize: '13px', color: 'var(--ink2, #48394F)', lineHeight: 1.55 }}>{item}</li>
+                      ))}
+                    </ul>
+                    {trackResult.status === 'PROVISIONED' && (
+                      <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--line, #DCD5D2)' }}>
+                        <a href="/login" style={{ background: 'var(--copper, #B54F34)', color: '#FFFFFF', borderRadius: '8px', padding: '10px 24px', fontWeight: 700, fontSize: '14px', textDecoration: 'none', display: 'inline-block', boxShadow: '0 2px 8px rgba(181,79,52,0.25)' }}>
+                          Sign In to ExamOS Console →
+                        </a>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         ) : receipt ? (
           /* Submission Receipt Card */
@@ -527,9 +641,46 @@ export default function PublicInstitutionRegisterPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: 'var(--mut, #756F79)', fontSize: '13px', fontWeight: 600 }}>Current Status:</span>
                 <span style={{ color: 'var(--copper, #B54F34)', fontSize: '11.5px', fontWeight: 800, background: 'var(--abg, #fdf5f2)', padding: '3px 10px', borderRadius: '4px' }}>
-                  UNDER REVIEW (Stage 1)
+                  SUBMITTED — AWAITING REVIEW
                 </span>
               </div>
+            </div>
+
+            {/* What's Next Timeline */}
+            <div
+              style={{
+                background: '#F8F6FF',
+                borderRadius: '12px',
+                border: '1px solid #C4B5FD',
+                padding: '20px 24px',
+                maxWidth: '540px',
+                margin: '0 auto 28px',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--aubergine, #302337)', marginBottom: '14px' }}>
+                📋 What happens next:
+              </div>
+              {[
+                { step: '1', status: 'Now', label: 'Application Submitted', desc: 'Your application is in the compliance queue.', done: true },
+                { step: '2', status: '2–5 days', label: 'Identity & Domain Verification', desc: 'Platform team verifies charter, DNS TXT record, and signatory.', done: false },
+                { step: '3', status: 'After verify', label: 'Platform Approval', desc: 'Admin approves the application and provisions your tenant.', done: false },
+                { step: '4', status: 'Upon approval', label: 'Admin Invitation Email', desc: `Invitation link sent to ${receipt?.repEmail || 'your representative email'}.`, done: false },
+                { step: '5', status: 'After invite', label: 'Go Live!', desc: 'Configure campuses, schedule exams, and start secure examinations.', done: false },
+              ].map((item) => (
+                <div key={item.step} style={{ display: 'flex', gap: '12px', marginBottom: '10px', alignItems: 'flex-start' }}>
+                  <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: item.done ? 'var(--copper, #B54F34)' : '#E5E0F0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 800, color: item.done ? '#FFF' : '#8B7FA0', flexShrink: 0 }}>
+                    {item.done ? '✓' : item.step}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: item.done ? 'var(--copper, #B54F34)' : 'var(--aubergine, #302337)' }}>{item.label}</span>
+                      <span style={{ fontSize: '11px', color: 'var(--mut, #756F79)', fontWeight: 600 }}>{item.status}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)', marginTop: '2px', lineHeight: 1.4 }}>{item.desc}</div>
+                  </div>
+                </div>
+              ))}
             </div>
 
             <div style={{ display: 'flex', gap: '14px', justifyContent: 'center' }}>

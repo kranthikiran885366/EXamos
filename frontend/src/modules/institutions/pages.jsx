@@ -864,7 +864,7 @@ export function InstitutionApplicationDetailPage() {
         </div>
       }
       actions={
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {app.status === 'APPROVED' && (
             <button
               className="btn primary"
@@ -878,11 +878,37 @@ export function InstitutionApplicationDetailPage() {
               Provision Tenant Now
             </button>
           )}
-          <Badge value={app.status} tone={app.status === 'PROVISIONED' ? 'green' : 'amber'} />
+          <Badge value={app.status} tone={app.status === 'PROVISIONED' ? 'green' : app.status === 'APPROVED' ? 'blue' : app.status === 'REJECTED' ? 'red' : 'amber'} />
         </div>
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+
+      {/* Status & What's Next Banner */}
+      {['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'APPROVED'].includes(app.status) && (
+        <div style={{ padding: '14px 18px', background: 'rgba(37, 99, 235, 0.06)', border: '1px solid rgba(37, 99, 235, 0.2)', borderRadius: '10px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <b style={{ color: 'var(--aubergine, #302337)', fontSize: '14px' }}>
+              {app.status === 'SUBMITTED' && '📥 Application received — Start identity & domain verification'}
+              {app.status === 'UNDER_REVIEW' && '🔍 Under review — Complete the verification checklist'}
+              {app.status === 'VERIFICATION_PENDING' && '⏳ Verification in progress — Check DNS records and signatory docs'}
+              {app.status === 'APPROVED' && '✅ Approved — Ready to provision isolated tenant environment'}
+            </b>
+            <p className="muted sm" style={{ margin: '3px 0 0' }}>
+              {app.status === 'SUBMITTED' && 'Click "Full Verification" to open the detailed verification checklist for this institution.'}
+              {app.status === 'UNDER_REVIEW' && 'Verify legal charter, domain ownership, and authorized signatory, then mark as Approved.'}
+              {app.status === 'VERIFICATION_PENDING' && 'Awaiting DNS TXT record confirmation and authorization letter from the institution.'}
+              {app.status === 'APPROVED' && 'Click "Provision Tenant Now" above to create the isolated database, cryptographic keys, and license.'}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING'].includes(app.status) && (
+              <Link to={`/platform/institutions/applications`} className="btn primary compact">Full Verification →</Link>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="two">
         <Card title="Legal Entity & Identity">
           <KeyValue items={[
@@ -894,6 +920,7 @@ export function InstitutionApplicationDetailPage() {
             ['Country / State', `${app.country || 'India'} · ${app.state || 'Maharashtra'}`],
             ['Registered Address', app.address],
             ['Submitted Date', fmt(app.createdAt)],
+            ...(app.reviewNotes ? [['Reviewer Notes', app.reviewNotes]] : []),
           ]} />
         </Card>
 
@@ -902,7 +929,7 @@ export function InstitutionApplicationDetailPage() {
             ['Authorized Representative', app.repName],
             ['Representative Role', app.repRole],
             ['Representative Email', app.repEmail],
-            ['Representative Phone', app.repPhone],
+            ['Representative Phone', app.repPhone || '—'],
             ['Exam Coordinator', `${app.coordName || '—'} (${app.coordEmail || '—'})`],
             ['Technical Administrator', `${app.techName || '—'} (${app.techEmail || '—'})`],
           ]} />
@@ -914,9 +941,8 @@ export function InstitutionApplicationDetailPage() {
             ['Estimated Student Volume', app.studentCount],
             ['Target Device Fleet', app.deviceCount],
             ['Deployment Model', app.deploymentModel],
-            ['Hardware Profile', app.hardwareProfile],
+            ['Hardware Profile', app.hardwareProfile || 'standard-uefi'],
             ['Requested Plan', (app.plan || 'pilot').toUpperCase()],
-            ['Review Notes', app.reviewNotes || 'No reviewer notes recorded yet.'],
           ]} />
         </Card>
       </div>

@@ -229,6 +229,51 @@ export const listInstitutionApplications = wrap(async () => {
   return res.data;
 });
 
+// ---------------------------------------------------------------------------
+// Institution Admins — invite, list, per-institution user management
+// ---------------------------------------------------------------------------
+
+export const listInstitutionAdmins = wrap(async (institutionId) => {
+  // Primary: try the dedicated /admins endpoint
+  try {
+    const res = await api.get(ENDPOINTS.institutionAdmins(institutionId), { actor: ACTOR });
+    if (res?.data?.admins) return res.data.admins;
+  } catch {}
+  // Fallback: filter the global users list by institution_id
+  const res = await api.get(`${ENDPOINTS.users}?institution_id=${encodeURIComponent(institutionId)}`, { actor: ACTOR });
+  const raw = res?.data?.users || res?.data || [];
+  return Array.isArray(raw) ? raw.filter((u) => u.institution_id === institutionId || u.tenantId === institutionId) : [];
+});
+
+export const inviteInstitutionAdmin = wrap(async (institutionId, { name, email, role, campusId }) => {
+  // Create the user account directly via POST /api/v1/admin/users
+  // The backend links the user to the institution via institution_id
+  const roleInt = {
+    inst_admin: 2, institution_admin: 2,
+    exam_controller: 3, exam_manager: 3,
+    invigilator: 5,
+    it_admin: 6, tech_operator: 6,
+    security_engineer: 4,
+    auditor: 7,
+  }[String(role || 'inst_admin').toLowerCase()] || 2;
+
+  const username = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase() + '_' + Date.now().toString(36);
+  const tempPassword = 'ExamOS!' + Math.random().toString(36).slice(2, 10).toUpperCase() + Math.floor(Math.random() * 90 + 10);
+
+  const res = await api.post(ENDPOINTS.users, {
+    username,
+    full_name: name,
+    email: email.toLowerCase(),
+    password: tempPassword,
+    institution_id: institutionId,
+    campus_id: campusId || '',
+    role: roleInt,
+    active: 1,
+  }, { actor: ACTOR, sign: true });
+
+  return { ...res.data, tempPassword, username, email, name, role, institutionId };
+});
+
 export const getInstitutionApplication = wrap(async (id) => {
   const res = await api.get(ENDPOINTS.institutionApplicationById(id), { actor: ACTOR });
   return res.data;

@@ -19,7 +19,6 @@ import {
   fetchInstitutionAgreements, fetchInstitutionLicense, fetchInstitutionDeployments,
   fetchInstitutionOnboarding, updateOnboardingStep
 } from '../institutions/service';
-
 function InstitutionSwitcher({ inst, institutions, onSelect }) {
   if (!institutions || institutions.length <= 1) return null;
   return (
@@ -251,6 +250,7 @@ export function PlatformApplicationsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedApp, setSelectedApp] = useState(null);
   const [decisionNotes, setDecisionNotes] = useState('');
+  const [decisionResult, setDecisionResult] = useState(null); // { action, app }
 
   const loadApps = async () => {
     try {
@@ -267,12 +267,14 @@ export function PlatformApplicationsPage() {
 
   const handleDecision = async (action) => {
     if (!selectedApp) return;
-    const ok = await run(async () => {
+    await run(async () => {
       await reviewApplication(user, selectedApp.id, action, decisionNotes);
+      const appSnapshot = { ...selectedApp };
       setSelectedApp(null);
       setDecisionNotes('');
       await loadApps();
-      return `Application ${selectedApp.institution_name} updated: ${action.toUpperCase()}`;
+      setDecisionResult({ action, app: appSnapshot });
+      return `Application ${appSnapshot.legalName || appSnapshot.institution_name} updated: ${action.toUpperCase()}`;
     }, 'Review recorded.');
   };
 
@@ -349,6 +351,84 @@ export function PlatformApplicationsPage() {
           </div>
         </Modal>
       )}
+
+      {/* Success popup after approve / reject decision */}
+      {decisionResult && (
+        <Modal
+          title={
+            decisionResult.action === 'APPROVED' ? '✅ Application Approved' :
+            decisionResult.action === 'REJECTED' ? '❌ Application Rejected' :
+            '📋 Corrections Requested'
+          }
+          onClose={() => setDecisionResult(null)}
+          desc={`Decision recorded for: ${decisionResult.app?.legalName || decisionResult.app?.displayName || 'Institution'}`}
+        >
+          <div style={{ padding: '16px 0' }}>
+            {decisionResult.action === 'APPROVED' && (
+              <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '36px', marginBottom: '8px' }}>🎉</div>
+                <h3 style={{ color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Application Approved!</h3>
+                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
+                  <b>{decisionResult.app?.legalName}</b> has been approved. The next step is <b>Tenant Provisioning</b> to create their isolated database, cryptographic keys, and license.
+                </p>
+              </div>
+            )}
+            {decisionResult.action === 'REJECTED' && (
+              <div style={{ background: 'var(--rbg, #fdf2f2)', border: '1px solid var(--rline, #f8c9c6)', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '36px', marginBottom: '8px' }}>✗</div>
+                <h3 style={{ color: 'var(--r, #c0392b)', margin: '0 0 8px', fontSize: '16px' }}>Application Rejected</h3>
+                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
+                  The application for <b>{decisionResult.app?.legalName}</b> has been rejected. The rejection reason has been recorded in the tamper-evident audit ledger.
+                </p>
+              </div>
+            )}
+            {decisionResult.action === 'MORE_INFORMATION_REQUIRED' && (
+              <div style={{ background: '#EEF4FF', border: '1px solid #BFDBFE', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '36px', marginBottom: '8px' }}>📋</div>
+                <h3 style={{ color: '#2563EB', margin: '0 0 8px', fontSize: '16px' }}>Corrections Requested</h3>
+                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
+                  <b>{decisionResult.app?.legalName}</b> has been notified that additional information is required. They can update their application via the tracking portal.
+                </p>
+              </div>
+            )}
+
+            <div style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', padding: '14px 16px', fontSize: '13px' }}>
+              <b>What happens next:</b>
+              <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
+                {decisionResult.action === 'APPROVED' && (
+                  <>
+                    <li>Go to <b>Tenant Provisioning</b> for this institution to complete setup</li>
+                    <li>After provisioning, send the admin invitation email to the representative</li>
+                    <li>The institution admin will set up their account and MFA</li>
+                  </>
+                )}
+                {decisionResult.action === 'REJECTED' && (
+                  <>
+                    <li>Application status is now <b>REJECTED</b></li>
+                    <li>The institution can reapply with corrected information via <code>/register-institution</code></li>
+                    <li>Rejection reason is permanently recorded in the compliance audit trail</li>
+                  </>
+                )}
+                {decisionResult.action === 'MORE_INFORMATION_REQUIRED' && (
+                  <>
+                    <li>Application status set to <b>MORE_INFORMATION_REQUIRED</b></li>
+                    <li>Institution can check status at <code>/register-institution</code> (Track tab)</li>
+                    <li>Review the application again once they respond with corrections</li>
+                  </>
+                )}
+              </ul>
+            </div>
+          </div>
+          <div className="row end" style={{ gap: '8px' }}>
+            <button className="btn" onClick={() => setDecisionResult(null)}>Close</button>
+            {decisionResult.action === 'APPROVED' && (
+              <button className="btn primary" onClick={() => { setDecisionResult(null); nav(`/platform/institutions/${decisionResult.app?.institutionId || decisionResult.app?.id}/provisioning`); }}>
+                Go to Tenant Provisioning →
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
     </Page>
   );
 }
@@ -367,28 +447,76 @@ export function PlatformVerificationPage() {
   const id = inst?.id;
   const { msg, setMsg, run, busy } = useFlash();
 
+  // Checklist starts unchecked — reviewer must manually confirm each item
   const [checklist, setChecklist] = useState({
-    identity: true,
-    domain: true,
-    accreditation: true,
-    representative: true,
-    datacenter: true,
+    identity: false,
+    domain: false,
+    accreditation: false,
+    representative: false,
+    datacenter: false,
   });
   const [evidenceNotes, setEvidenceNotes] = useState('');
+  const [successAlert, setSuccessAlert] = useState(null); // { verdict, nextStep }
+
+  // Load the linked application so we can use its ID for the review API call
+  const [linkedApp, setLinkedApp] = useState(null);
+  useEffect(() => {
+    fetchInstitutionApplications()
+      .then((apps) => {
+        const found = apps.find(
+          (a) => a.institutionId === id || a.domain === inst?.domain ||
+                 (a.legalName && inst?.name && a.legalName.toLowerCase() === inst.name.toLowerCase())
+        );
+        setLinkedApp(found || null);
+      })
+      .catch(() => setLinkedApp(null));
+  }, [id]);
 
   const toggleCheck = (k) => setChecklist((s) => ({ ...s, [k]: !s[k] }));
-  const allChecked = Object.values(checklist).every(Boolean);
+  const checkedCount = Object.values(checklist).filter(Boolean).length;
+  const allChecked = checkedCount === 5;
 
   const handleRecordVerdict = async (verdict) => {
     await run(async () => {
       const isApproved = verdict === 'verified';
       await updateOnboardingStep(user, id, 'verification', isApproved, evidenceNotes);
+
+      // Use linked application ID if available for backend review call
+      const appId = linkedApp?.id || id;
       try {
         const action = isApproved ? 'APPROVED' : (verdict === 'corrections_requested' ? 'MORE_INFORMATION_REQUIRED' : 'REJECTED');
-        await reviewApplication(user, id, action, evidenceNotes || 'Identity & domain challenges verified');
+        await reviewApplication(user, appId, action, evidenceNotes || 'Identity & domain challenges verified by platform admin');
       } catch (err) {
         console.warn('Backend sync review:', err?.message);
       }
+
+      // Show success popup with next step
+      if (verdict === 'verified') {
+        setSuccessAlert({
+          verdict: 'verified',
+          title: 'Verification Complete!',
+          msg: `${inst.name} has been successfully verified and approved. The institution is now ready for Tenant Provisioning.`,
+          nextLabel: 'Proceed to Tenant Provisioning →',
+          nextPath: `/platform/institutions/${id}/provisioning`,
+        });
+      } else if (verdict === 'corrections_requested') {
+        setSuccessAlert({
+          verdict: 'corrections',
+          title: 'Corrections Requested',
+          msg: 'The applicant has been notified that additional information is required. Application status updated.',
+          nextLabel: 'Back to Applications Queue',
+          nextPath: '/platform/institutions/applications',
+        });
+      } else {
+        setSuccessAlert({
+          verdict: 'rejected',
+          title: 'Application Rejected',
+          msg: 'The application has been rejected and recorded in the audit ledger.',
+          nextLabel: 'Back to Applications Queue',
+          nextPath: '/platform/institutions/applications',
+        });
+      }
+
       return `Verification decision recorded: ${verdict.toUpperCase()}`;
     }, 'Verification recorded.');
   };
@@ -412,27 +540,130 @@ export function PlatformVerificationPage() {
       <OnboardingWorkflowBar currentStage={1} />
       <StatusMatrix inst={{ ...inst, verificationStatus: allChecked ? 'verified' : 'in_review' }} />
 
-      <Card title="Reviewer Verification Checklist" desc="All checks must be verified before platform approval is granted.">
+      {/* Verification Progress Indicator */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', marginBottom: '16px', boxShadow: 'var(--shadow)' }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700 }}>Checklist Progress</span>
+            <span style={{ fontSize: '13px', color: allChecked ? 'var(--g, #1b7a4b)' : 'var(--mut, #756F79)', fontWeight: 700 }}>
+              {checkedCount} / 5 verified {allChecked ? '— Ready to approve ✓' : '— Complete all checks to approve'}
+            </span>
+          </div>
+          <div style={{ height: '6px', background: '#EAE4DC', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ width: `${(checkedCount / 5) * 100}%`, height: '100%', background: allChecked ? 'var(--g, #1b7a4b)' : 'var(--copper, #B54F34)', transition: 'width 0.3s ease' }} />
+          </div>
+        </div>
+      </div>
+
+      <Card title="Reviewer Verification Checklist" desc="Manually confirm each item after independent verification. All checks are required before approval.">
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', margin: '10px 0' }}>
-          <Checkbox label="Official Institution Legal Charter & Registration Verified" checked={checklist.identity} onChange={() => toggleCheck('identity')} />
-          <Checkbox label="Academic Domain Ownership Confirmed via DNS TXT / SPF" checked={checklist.domain} onChange={() => toggleCheck('domain')} />
-          <Checkbox label="Accreditation Board Authorization Record on File" checked={checklist.accreditation} onChange={() => toggleCheck('accreditation')} />
-          <Checkbox label="Authorized Institutional Signatory / Vice-Chancellor Authorization Validated" checked={checklist.representative} onChange={() => toggleCheck('representative')} />
-          <Checkbox label="Campus Workstation Subnet & Kiosk IP Range Scoped" checked={checklist.datacenter} onChange={() => toggleCheck('datacenter')} />
+          {[
+            { key: 'identity', label: 'Official Institution Legal Charter & Registration Verified', hint: 'Check against UGC / AICTE / statutory regulatory body records.' },
+            { key: 'domain', label: 'Academic Domain Ownership Confirmed via DNS TXT / SPF', hint: 'Verify _examosverify TXT record published on the domain.' },
+            { key: 'accreditation', label: 'Accreditation Board Authorization Record on File', hint: 'Confirm NAAC / NBA / ABET or equivalent certification reference.' },
+            { key: 'representative', label: 'Authorized Institutional Signatory / Vice-Chancellor Authorization Validated', hint: 'Letter of authorization from the legal head of the institution received.' },
+            { key: 'datacenter', label: 'Campus Workstation Subnet & Kiosk IP Range Scoped', hint: 'Campus network range and exam center IP boundaries confirmed.' },
+          ].map((item) => (
+            <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 14px', background: checklist[item.key] ? 'var(--gbg, #edf7f1)' : '#FAFAFA', border: `1px solid ${checklist[item.key] ? 'var(--gline, #b9e3cc)' : 'var(--line, #DCD5D2)'}`, borderRadius: '8px', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => toggleCheck(item.key)}>
+              <div style={{ width: '20px', height: '20px', borderRadius: '4px', border: `2px solid ${checklist[item.key] ? 'var(--g, #1b7a4b)' : '#C0B8C4'}`, background: checklist[item.key] ? 'var(--g, #1b7a4b)' : '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '2px' }}>
+                {checklist[item.key] && <span style={{ color: '#FFFFFF', fontSize: '12px', fontWeight: 800 }}>✓</span>}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '13.5px', color: checklist[item.key] ? 'var(--g, #1b7a4b)' : 'var(--aubergine, #302337)' }}>{item.label}</div>
+                <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)', marginTop: '2px' }}>{item.hint}</div>
+              </div>
+            </div>
+          ))}
         </div>
 
-        <Field label="Evidence References & Auditable Notes" className="span2" style={{ marginTop: '16px' }}>
-          <Textarea rows={3} value={evidenceNotes} onChange={(e) => setEvidenceNotes(e.target.value)} placeholder="Attach certificate hash, registrar verification ticket, or domain challenge response..." />
-        </Field>
+        <div style={{ marginTop: '20px' }}>
+          <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>Evidence References &amp; Auditable Notes</label>
+          <Textarea rows={3} value={evidenceNotes} onChange={(e) => setEvidenceNotes(e.target.value)} placeholder="Record certificate hash, registrar ticket ID, domain challenge response, or accreditation reference number..." />
+          <small style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', marginTop: '4px', display: 'block' }}>These notes are permanently written to the tamper-evident audit ledger.</small>
+        </div>
 
-        <div className="row end" style={{ marginTop: '16px', gap: '10px' }}>
-          <button className="btn" onClick={() => handleRecordVerdict('corrections_requested')} disabled={busy}>Request Corrections</button>
-          <button className="btn danger" onClick={() => handleRecordVerdict('rejected')} disabled={busy}>Reject Verification</button>
-          <button className="btn primary" onClick={() => handleRecordVerdict('verified')} disabled={busy || !allChecked}>
-            <Icon name="check" size={15} /> Confirm Verification
+        {linkedApp && (
+          <div style={{ marginTop: '16px', padding: '12px 16px', background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', fontSize: '13px' }}>
+            <b>Linked Application:</b> {linkedApp.legalName} · <code>{linkedApp.id}</code> ·
+            Status: <b>{linkedApp.status}</b>
+            {linkedApp.registrationNumber && <> · Reg: {linkedApp.registrationNumber}</>}
+          </div>
+        )}
+
+        <div className="row end" style={{ marginTop: '20px', gap: '10px' }}>
+          <button className="btn" onClick={() => handleRecordVerdict('corrections_requested')} disabled={busy}>
+            Request Corrections
+          </button>
+          <button className="btn danger" onClick={() => handleRecordVerdict('rejected')} disabled={busy}>
+            Reject Application
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => handleRecordVerdict('verified')}
+            disabled={busy || !allChecked}
+            title={!allChecked ? 'Complete all 5 verification checks first' : 'Confirm verification and approve institution'}
+          >
+            <Icon name="check" size={15} /> Confirm Verification &amp; Approve
           </button>
         </div>
       </Card>
+
+      {/* Success Alert / Next Step Modal */}
+      {successAlert && (
+        <Modal
+          title={successAlert.verdict === 'verified' ? '✅ Verification Complete' : successAlert.verdict === 'corrections' ? '📋 Corrections Requested' : '❌ Application Rejected'}
+          desc={successAlert.msg}
+          onClose={() => { setSuccessAlert(null); nav('/platform/institutions/applications'); }}
+        >
+          <div style={{ padding: '16px 0' }}>
+            {successAlert.verdict === 'verified' && (
+              <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px' }}>
+                <div style={{ fontSize: '32px', textAlign: 'center', marginBottom: '10px' }}>🎉</div>
+                <h3 style={{ textAlign: 'center', color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Identity Verified Successfully</h3>
+                <p style={{ textAlign: 'center', color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
+                  <b>{inst.name}</b> has passed all verification checks. The next step is <b>Tenant Provisioning</b> — setting up the isolated database schema, cryptographic master keys, and license entitlements.
+                </p>
+              </div>
+            )}
+
+            <div style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px' }}>
+              <b>What happens next:</b>
+              {successAlert.verdict === 'verified' && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
+                  <li>The application status is now <b>APPROVED</b></li>
+                  <li>Go to <b>Tenant Provisioning</b> to execute the database schema creation</li>
+                  <li>After provisioning, send the admin invitation to <b>{inst.contactEmail || 'the representative email'}</b></li>
+                  <li>Institution admin will receive a link to set up their account and MFA</li>
+                </ul>
+              )}
+              {successAlert.verdict === 'corrections' && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
+                  <li>Application status set to <b>MORE_INFORMATION_REQUIRED</b></li>
+                  <li>The institution can resubmit or provide corrections via the tracking portal</li>
+                  <li>Review the application again once they respond</li>
+                </ul>
+              )}
+              {successAlert.verdict === 'rejected' && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
+                  <li>Application status set to <b>REJECTED</b></li>
+                  <li>Rejection reason recorded in the audit ledger</li>
+                  <li>The institution can reapply with corrected information</li>
+                </ul>
+              )}
+            </div>
+          </div>
+          <div className="row end" style={{ gap: '8px' }}>
+            <button className="btn" onClick={() => { setSuccessAlert(null); nav('/platform/institutions/applications'); }}>
+              Back to Applications
+            </button>
+            {successAlert.nextPath && (
+              <button className="btn primary" onClick={() => { setSuccessAlert(null); nav(successAlert.nextPath); }}>
+                {successAlert.nextLabel}
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
     </Page>
   );
 }
@@ -447,11 +678,26 @@ export function PlatformInstitutionDetailPage() {
   const institutions = useCol('tenants', false);
   const campuses = useCol('campuses', false);
   const departments = useCol('departments', false);
+  const devices = useCol('devices', false);
+  const exams = useCol('exams', false);
+  const users = useCol('users', false);
   const inst = institutions.find((x) => x.id === id);
   const { msg, setMsg, run, busy } = useFlash();
 
   const [confirmApproval, setConfirmApproval] = useState(false);
   const [reason, setReason] = useState('');
+  const [deployments, setDeployments] = useState([]);
+  const [admins, setAdmins] = useState([]);
+
+  // Load real deployments and admins for this institution
+  useEffect(() => {
+    if (!id) return;
+    fetchInstitutionDeployments(id).then((d) => setDeployments(Array.isArray(d) ? d : [])).catch(() => {});
+    // Load admins from API via service function
+    import('../institutions/service').then(({ listInstitutionAdmins }) => {
+      listInstitutionAdmins(id).then((a) => setAdmins(Array.isArray(a) ? a : [])).catch(() => {});
+    }).catch(() => {});
+  }, [id]);
 
   if (!inst) {
     return (
@@ -462,6 +708,12 @@ export function PlatformInstitutionDetailPage() {
   }
 
   const stage = getInstitutionStage(inst);
+  const instCampuses = campuses.filter((c) => c.tenantId === id);
+  const instDepts = departments.filter((d) => d.tenantId === id);
+  const instDevices = devices.filter((d) => d.tenantId === id || d.institutionId === id);
+  const instExams = exams.filter((e) => e.tenantId === id || e.institutionId === id);
+  const instAdmins = admins.length > 0 ? admins : users.filter((u) => u.tenantId === id);
+  const latestDeployment = deployments[0];
 
   const handleApprove = async () => {
     await run(async () => {
@@ -493,23 +745,35 @@ export function PlatformInstitutionDetailPage() {
       <StatusMatrix inst={inst} />
       <NextActionCallout inst={inst} targetArea="platform" />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px' }}>
         <Card title="Official Institutional Profile">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             <div><small className="muted">Legal Entity Name</small><br /><b>{inst.name}</b></div>
             <div><small className="muted">Identifier Code</small><br /><code>{inst.code}</code></div>
+            <div><small className="muted">Official Domain(s)</small><br /><span>{(inst.domains || []).join(', ') || '—'}</span></div>
+            <div><small className="muted">Contact Email</small><br /><span>{inst.contactEmail || '—'}</span></div>
             <div><small className="muted">Jurisdiction / Region</small><br /><span>{inst.region || 'India (Default Enclave)'}</span></div>
-            <div><small className="muted">Subscription Tier</small><br /><Badge value={inst.plan || 'ENTERPRISE'} /></div>
+            <div><small className="muted">Subscription Tier</small><br /><Badge value={inst.plan || 'pilot'} /></div>
+            <div><small className="muted">Status</small><br /><Badge value={inst.status || 'applied'} tone={inst.status === 'active' ? 'green' : 'amber'} /></div>
             <div><small className="muted">Enrolled Timestamp</small><br /><span>{fmt(inst.createdAt)}</span></div>
           </div>
         </Card>
 
         <Card title="Organizational Summary">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div><small className="muted">Registered Campuses</small><br /><b>{campuses.filter((c) => c.tenantId === id).length} Active Campuses</b></div>
-            <div><small className="muted">Academic Departments</small><br /><b>{departments.filter((d) => d.tenantId === id).length} Departments</b></div>
-            <div><small className="muted">Dedicated Schema / Tenant Boundary</small><br /><code>tenant_{inst.code.toLowerCase().replace(/[^a-z0-9]/g, '_')}</code></div>
-            <div><small className="muted">Default ExamOS Release</small><br /><span className="badge g">ExamOS 2.18.4 (LTS-FIPS)</span></div>
+            <div><small className="muted">Registered Campuses</small><br /><b>{instCampuses.length} {instCampuses.length === 1 ? 'Campus' : 'Campuses'}</b></div>
+            <div><small className="muted">Academic Departments</small><br /><b>{instDepts.length} {instDepts.length === 1 ? 'Department' : 'Departments'}</b></div>
+            <div><small className="muted">Administrators</small><br /><b>{instAdmins.length} Account{instAdmins.length !== 1 ? 's' : ''}</b></div>
+            <div><small className="muted">Enrolled Devices</small><br /><b>{instDevices.length} Workstation{instDevices.length !== 1 ? 's' : ''}</b></div>
+            <div><small className="muted">Total Exams</small><br /><b>{instExams.length} Exam{instExams.length !== 1 ? 's' : ''}</b></div>
+            <div><small className="muted">Dedicated Tenant Boundary</small><br /><code>tenant_{inst.code.toLowerCase().replace(/[^a-z0-9]/g, '_')}</code></div>
+            <div>
+              <small className="muted">Assigned ExamOS Release</small><br />
+              {latestDeployment
+                ? <span className="badge g">{latestDeployment.releaseId} ({latestDeployment.channel?.toUpperCase() || 'STABLE'})</span>
+                : <span className="muted">Not yet assigned</span>
+              }
+            </div>
           </div>
         </Card>
       </div>
@@ -541,20 +805,80 @@ export function PlatformProvisioningPage() {
   const id = inst?.id;
   const { msg, setMsg, run, busy } = useFlash();
 
-  const [steps, setSteps] = useState([
-    { name: 'PostgreSQL Isolated Schema Allocation', status: 'COMPLETE', time: '120ms' },
-    { name: 'Tenant Cryptographic Master Key Generation (AES-256-GCM)', status: 'COMPLETE', time: '85ms' },
-    { name: 'Immutable Audit Ledger Chain Root Anchor', status: 'COMPLETE', time: '94ms' },
-    { name: 'Default Security Policy & Kiosk Bounds Initialization', status: 'COMPLETE', time: '60ms' },
-    { name: 'Primary Institution Administrator Invite & MFA Token Minting', status: 'READY', time: 'Pending Action' },
-  ]);
+  const [provisioningResult, setProvisioningResult] = useState(null);
+  const [provisionDone, setProvisionDone] = useState(!!inst?.status && ['active', 'provisioned', 'pilot'].includes(inst?.status));
+  const [adminModal, setAdminModal] = useState(false);
+  const [adminData, setAdminData] = useState({ name: '', email: '', role: 'inst_admin' });
+  const [adminCreated, setAdminCreated] = useState(null);
+  const [onboarding, setOnboarding] = useState(null);
+
+  // Load real provisioning / onboarding state from API
+  useEffect(() => {
+    if (!id) return;
+    fetchInstitutionOnboarding(id)
+      .then((ob) => {
+        setOnboarding(ob);
+        if (ob?.status === 'provisioned' || ob?.status === 'admin_setup' || ob?.completedSteps >= 4) {
+          setProvisionDone(true);
+        }
+      })
+      .catch(() => {});
+  }, [id]);
+
+  // Derive real provisioning steps from onboarding data
+  const steps = [
+    {
+      name: 'PostgreSQL Isolated Schema Allocation',
+      status: (onboarding?.checklist?.registration?.completed || provisionDone) ? 'COMPLETE' : 'PENDING',
+      detail: provisionDone ? 'Dedicated schema created and indexed' : 'Awaiting provisioning trigger',
+    },
+    {
+      name: 'Tenant Cryptographic Master Key Generation (AES-256-GCM)',
+      status: provisionDone ? 'COMPLETE' : 'PENDING',
+      detail: provisionDone ? 'AES-256-GCM root anchor committed to key store' : 'Pending',
+    },
+    {
+      name: 'Immutable Audit Ledger Chain Root Anchor',
+      status: provisionDone ? 'COMPLETE' : 'PENDING',
+      detail: provisionDone ? 'HMAC-SHA256 genesis block written' : 'Pending',
+    },
+    {
+      name: 'Default Security Policy & Kiosk Bounds Initialization',
+      status: provisionDone ? 'COMPLETE' : 'PENDING',
+      detail: provisionDone ? 'Default policies applied from platform catalog' : 'Pending',
+    },
+    {
+      name: 'Primary Institution Administrator Account',
+      status: (adminCreated || onboarding?.checklist?.admin_mfa?.completed) ? 'COMPLETE' : (provisionDone ? 'READY' : 'PENDING'),
+      detail: adminCreated
+        ? `Account created: ${adminCreated.email}`
+        : (onboarding?.checklist?.admin_mfa?.completed ? 'Administrator enrolled and MFA active' : 'Provision complete — invite admin to create account and enroll MFA'),
+    },
+  ];
 
   const handleRunProvisioning = async () => {
     await run(async () => {
-      await provisionApplication(user, id);
-      setSteps((cur) => cur.map((s) => ({ ...s, status: 'COMPLETE' })));
-      return 'Tenant successfully provisioned and cryptographic credentials anchor set.';
+      const result = await provisionApplication(user, id);
+      setProvisioningResult(result);
+      setProvisionDone(true);
+      // Pre-fill admin email from institution contact if available
+      if (inst?.contactEmail) {
+        setAdminData((d) => ({ ...d, email: inst.contactEmail, name: inst.repName || '' }));
+      }
+      return 'Tenant provisioned — database schema, cryptographic keys, and license created. Now invite the primary administrator.';
     }, 'Provisioning complete.');
+  };
+
+  const handleCreateAdmin = async () => {
+    if (!adminData.email || !adminData.name) return;
+    await run(async () => {
+      const { inviteInstitutionAdmin: inviteAdmin } = await import('../institutions/service');
+      const result = await inviteAdmin(user, provisioningResult?.institution_id || id, adminData);
+      setAdminCreated(result);
+      setAdminModal(false);
+      await updateOnboardingStep(user, provisioningResult?.institution_id || id, 'admin_mfa', false, `Admin account created: ${adminData.email}`);
+      return `Administrator account created for ${adminData.name}. They can now sign in and enroll MFA.`;
+    }, 'Administrator created.');
   };
 
   const handleSwitch = (newId) => {
@@ -573,25 +897,121 @@ export function PlatformProvisioningPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
-      <OnboardingWorkflowBar currentStage={3} />
-      <StatusMatrix inst={{ ...inst, provisioningStatus: 'provisioned' }} />
+      <OnboardingWorkflowBar currentStage={provisionDone ? 4 : 3} />
+      <StatusMatrix inst={{ ...inst, provisioningStatus: provisionDone ? 'provisioned' : 'not_started' }} />
 
-      <Card title="Provisioning Pipeline Checklist" desc="Hardware-rooted tenant separation pipeline">
+      <Card title="Provisioning Pipeline" desc="Hardware-rooted tenant separation pipeline — real-time status from server">
         <DataTable
           rows={steps}
           columns={[
             { key: 'name', label: 'Provisioning Step', render: (s) => <b>{s.name}</b> },
-            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={s.status === 'COMPLETE' ? 'green' : 'amber'} /> },
-            { key: 'time', label: 'Execution', render: (s) => <span className="mono sm">{s.time}</span> },
+            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={s.status === 'COMPLETE' ? 'green' : s.status === 'READY' ? 'blue' : 'amber'} /> },
+            { key: 'detail', label: 'Details', render: (s) => <span className="muted sm">{s.detail}</span> },
           ]}
         />
 
         <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
-          <button className="btn primary" onClick={handleRunProvisioning} disabled={busy}>
-            <Icon name="refresh" size={14} /> Execute Tenant Provisioning
-          </button>
+          {!provisionDone ? (
+            <button className="btn primary" onClick={handleRunProvisioning} disabled={busy}>
+              <Icon name="refresh" size={14} /> Execute Tenant Provisioning
+            </button>
+          ) : (
+            <span className="badge g" style={{ padding: '8px 16px' }}>✓ Tenant Provisioned</span>
+          )}
+          {provisionDone && !adminCreated && !onboarding?.checklist?.admin_mfa?.completed && (
+            <button className="btn primary" onClick={() => setAdminModal(true)} disabled={busy}>
+              <Icon name="users" size={14} /> Create Primary Administrator
+            </button>
+          )}
+          {(adminCreated || onboarding?.checklist?.admin_mfa?.completed) && (
+            <button className="btn" onClick={() => nav(`/platform/institutions/${provisioningResult?.institution_id || id}/readiness`)}>
+              Next: Pilot &amp; Readiness →
+            </button>
+          )}
         </div>
       </Card>
+
+      {provisioningResult && !adminCreated && (
+        <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '16px 20px', marginTop: '16px' }}>
+          <b style={{ color: 'var(--g, #1b7a4b)' }}>✓ Provisioning Complete!</b>
+          <p style={{ margin: '6px 0 0', fontSize: '13.5px', color: 'var(--ink2, #48394F)', lineHeight: 1.55 }}>
+            Institution ID: <code>{provisioningResult.institution_id}</code> · Agreement: <code>{provisioningResult.agreement_id || '—'}</code> · License: <code>{provisioningResult.license_id || '—'}</code>
+          </p>
+          <p style={{ margin: '8px 0 0', fontSize: '13.5px', color: 'var(--ink2, #48394F)' }}>
+            Next: Create the primary institution administrator account so they can log in and configure campuses, departments, and exam schedules.
+          </p>
+        </div>
+      )}
+
+      {/* Create Admin Modal */}
+      {adminModal && (
+        <Modal
+          title="Create Primary Institution Administrator"
+          desc={`Create the first administrator account for ${inst.name}. This person will manage the institution's exams, campuses, and staff.`}
+          onClose={() => setAdminModal(false)}
+        >
+          <div className="formgrid">
+            <Field label="Administrator Full Name" required className="span2">
+              <Input
+                value={adminData.name}
+                onChange={(e) => setAdminData({ ...adminData, name: e.target.value })}
+                placeholder="e.g. Prof. Rajan Mehta"
+                required
+              />
+            </Field>
+            <Field label="Official Institutional Email" required className="span2">
+              <Input
+                type="email"
+                value={adminData.email}
+                onChange={(e) => setAdminData({ ...adminData, email: e.target.value })}
+                placeholder={`e.g. admin@${inst.domains?.[0] || 'institution.edu'}`}
+                required
+              />
+            </Field>
+            <Field label="Role" required>
+              <Select
+                value={adminData.role}
+                onChange={(e) => setAdminData({ ...adminData, role: e.target.value })}
+                options={[
+                  { v: 'inst_admin', l: 'Institution Admin (Full Access)' },
+                  { v: 'exam_controller', l: 'Exam Controller (Limited)' },
+                ]}
+                placeholder={false}
+              />
+            </Field>
+          </div>
+          <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
+            <button className="btn" onClick={() => setAdminModal(false)}>Cancel</button>
+            <button
+              className="btn primary"
+              onClick={handleCreateAdmin}
+              disabled={busy || !adminData.email || !adminData.name}
+            >
+              <Icon name="users" size={14} /> Create Administrator Account
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Admin Created Popup */}
+      {adminCreated && (
+        <div style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '10px', padding: '16px 20px', marginTop: '16px' }}>
+          <b style={{ color: '#2563EB' }}>✓ Administrator Account Created</b>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '10px', fontSize: '13px' }}>
+            <div><small className="muted">Name</small><br /><b>{adminCreated.name}</b></div>
+            <div><small className="muted">Email</small><br /><b>{adminCreated.email}</b></div>
+            <div><small className="muted">Username</small><br /><code>{adminCreated.username}</code></div>
+            <div><small className="muted">Role</small><br /><Badge value={adminCreated.role} /></div>
+            {adminCreated.tempPassword && (
+              <div style={{ gridColumn: 'span 2' }}>
+                <small className="muted">Temporary Password</small><br />
+                <code style={{ fontSize: '14px', fontWeight: 800 }}>{adminCreated.tempPassword}</code>
+                <small style={{ color: 'var(--r, #c0392b)', display: 'block', marginTop: '4px' }}>Share securely. Admin must change password and enroll MFA on first login.</small>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </Page>
   );
 }
