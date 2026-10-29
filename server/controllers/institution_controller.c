@@ -403,22 +403,30 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *pvals[1] = { app_id };
             int plens[1] = { (int)strlen(app_id) };
             PGresult *res = db_simple(conn,
-                "SELECT id, legal_name, display_name, entity_type, status, created_at, reviewed_at "
-                "FROM institution_applications WHERE id = $1", 1, pvals, plens);
+                "SELECT id, legal_name, display_name, entity_type, status, created_at, reviewed_at, "
+                "       COALESCE(review_notes, ''), domain, plan, deployment_model "
+                "FROM institution_applications WHERE id = $1 OR domain = $1 OR registration_number = $1", 1, pvals, plens);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-                char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0};
+                char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0}, notes_esc[512] = {0};
+                char dom_esc[128] = {0}, plan_esc[64] = {0}, mod_esc[64] = {0};
                 escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
                 escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
                 escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
                 escape_json_str(PQgetvalue(res, 0, 4), st, sizeof(st));
+                escape_json_str(PQgetvalue(res, 0, 7), notes_esc, sizeof(notes_esc));
+                escape_json_str(PQgetvalue(res, 0, 8), dom_esc, sizeof(dom_esc));
+                escape_json_str(PQgetvalue(res, 0, 9), plan_esc, sizeof(plan_esc));
+                escape_json_str(PQgetvalue(res, 0, 10), mod_esc, sizeof(mod_esc));
 
-                char resp[512];
+                char resp[1024];
                 snprintf(resp, sizeof(resp),
-                    "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"status\":\"%s\","
-                    "\"createdAt\":%s,\"reviewedAt\":%s}",
-                    id_esc, l_name, d_name, st,
+                    "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
+                    "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,\"reviewNotes\":\"%s\","
+                    "\"domain\":\"%s\",\"plan\":\"%s\",\"deploymentModel\":\"%s\"}",
+                    id_esc, l_name, d_name, PQgetvalue(res, 0, 3), st,
                     PQgetvalue(res, 0, 5)[0] ? PQgetvalue(res, 0, 5) : "0",
-                    PQgetvalue(res, 0, 6)[0] ? PQgetvalue(res, 0, 6) : "null");
+                    PQgetvalue(res, 0, 6)[0] ? PQgetvalue(res, 0, 6) : "null",
+                    notes_esc, dom_esc, plan_esc, mod_esc);
                 PQclear(res);
                 db_release(conn, 0);
                 inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
@@ -492,6 +500,59 @@ void institution_handle(int client_fd, const char *method, const char *path,
         char app_id[64] = {0}, act[32] = {0};
         extract_sub_id_and_action(path, "/api/v1/admin/institution-applications/", app_id, sizeof(app_id), act, sizeof(act));
 
+        /* 0d-1. GET Single Application: GET /api/v1/admin/institution-applications/:id */
+        if (strcmp(method, "GET") == 0 && act[0] == '\0') {
+            if (!is_owner) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 403, "Platform owner permission required to view application", origin, extra_headers, extra_len);
+                return;
+            }
+            const char *pvals[1] = { app_id };
+            int plens[1] = { (int)strlen(app_id) };
+            PGresult *res = db_simple(conn,
+                "SELECT id, legal_name, display_name, entity_type, registration_number, "
+                "       country, state, address, domain, rep_name, "
+                "       rep_role, rep_email, rep_phone, campus_count, student_count, "
+                "       device_count, deployment_model, hardware_profile, plan, status, "
+                "       COALESCE(review_notes, ''), reviewed_by, reviewed_at, institution_id, created_at, updated_at "
+                "FROM institution_applications WHERE id = $1", 1, pvals, plens);
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+                char id_esc[64] = {0}, l_name[256] = {0}, d_name[256] = {0}, reg[64] = {0};
+                char dom[128] = {0}, r_email[128] = {0}, st[64] = {0}, ins_id[64] = {0}, notes[512] = {0};
+                escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
+                escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
+                escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
+                escape_json_str(PQgetvalue(res, 0, 4), reg, sizeof(reg));
+                escape_json_str(PQgetvalue(res, 0, 8), dom, sizeof(dom));
+                escape_json_str(PQgetvalue(res, 0, 11), r_email, sizeof(r_email));
+                escape_json_str(PQgetvalue(res, 0, 19), st, sizeof(st));
+                escape_json_str(PQgetvalue(res, 0, 20), notes, sizeof(notes));
+                escape_json_str(PQgetvalue(res, 0, 23), ins_id, sizeof(ins_id));
+
+                char json[2048];
+                snprintf(json, sizeof(json),
+                    "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
+                    "\"registrationNumber\":\"%s\",\"country\":\"%s\",\"state\":\"%s\",\"domain\":\"%s\","
+                    "\"repEmail\":\"%s\",\"campusCount\":%s,\"studentCount\":%s,\"deviceCount\":%s,"
+                    "\"deploymentModel\":\"%s\",\"plan\":\"%s\",\"status\":\"%s\",\"reviewNotes\":\"%s\","
+                    "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s}",
+                    id_esc, l_name, d_name, PQgetvalue(res, 0, 3),
+                    reg, PQgetvalue(res, 0, 5), PQgetvalue(res, 0, 6), dom,
+                    r_email, PQgetvalue(res, 0, 13), PQgetvalue(res, 0, 14), PQgetvalue(res, 0, 15),
+                    PQgetvalue(res, 0, 16), PQgetvalue(res, 0, 18), st, notes,
+                    ins_id, PQgetvalue(res, 0, 24),
+                    PQgetvalue(res, 0, 22)[0] ? PQgetvalue(res, 0, 22) : "null");
+                PQclear(res);
+                db_release(conn, 0);
+                inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+                return;
+            }
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 404, "Application not found", origin, extra_headers, extra_len);
+            return;
+        }
+
         /* Review Action: POST /api/v1/admin/institution-applications/:id/review */
         if (strcmp(method, "POST") == 0 && strcmp(act, "review") == 0) {
             if (!is_owner) {
@@ -504,6 +565,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "action", action_val, sizeof(action_val));
             ctrl_json_string(body, "reviewNotes", review_notes, sizeof(review_notes));
             if (!review_notes[0]) ctrl_json_string(body, "notes", review_notes, sizeof(review_notes));
+
+            for (size_t ai = 0; action_val[ai]; ai++) {
+                if (action_val[ai] >= 'a' && action_val[ai] <= 'z') action_val[ai] -= 32;
+            }
+            if (strcmp(action_val, "APPROVE") == 0) snprintf(action_val, sizeof(action_val), "APPROVED");
+            if (strcmp(action_val, "REJECT") == 0) snprintf(action_val, sizeof(action_val), "REJECTED");
+            if (strcmp(action_val, "REQUEST_CORRECTIONS") == 0 || strcmp(action_val, "CORRECTIONS_REQUESTED") == 0)
+                snprintf(action_val, sizeof(action_val), "MORE_INFORMATION_REQUIRED");
+            if (strcmp(action_val, "VERIFIED") == 0) snprintf(action_val, sizeof(action_val), "VERIFICATION_PENDING");
 
             if (strcmp(action_val, "APPROVED") != 0 && strcmp(action_val, "REJECTED") != 0 &&
                 strcmp(action_val, "UNDER_REVIEW") != 0 && strcmp(action_val, "VERIFICATION_PENDING") != 0 &&

@@ -120,17 +120,29 @@ export default function PublicInstitutionRegisterPage() {
       }
 
       if (found) {
-        setTrackResult(found);
-      } else {
-        // Return simulated active review state for demonstration reference
+        const rawStatus = (found.status || 'SUBMITTED').toUpperCase();
+        const stageDescriptions = {
+          SUBMITTED: 'Enclave Enrollment Submitted â€” Awaiting Compliance Review',
+          UNDER_REVIEW: 'Charter & Academic Domain DNS TXT Verification',
+          VERIFICATION_PENDING: 'Signatory Authorization & Subnet Boundary Validation',
+          MORE_INFORMATION_REQUIRED: 'Applicant Action Required â€” Additional Evidence Requested',
+          APPROVED: 'Identity Certified â€” Ready for Dedicated Schema Provisioning',
+          PROVISIONED: 'Tenant Provisioned â€” Isolated Enclave & Cryptographic Roots Active',
+          REJECTED: 'Application Closed by Compliance Desk',
+        };
         setTrackResult({
-          id: q.toUpperCase(),
-          legalName: 'Educational Partner Application',
-          status: 'under_review',
-          step: 'Charter & Academic Domain DNS TXT Verification',
-          notes: 'Your legal charter and academic DNS TXT challenges are currently being validated by the ExamOS compliance desk.',
-          updatedAt: new Date().toLocaleDateString(),
+          id: found.id || found.application_id || q,
+          legalName: found.legalName || found.displayName || found.institution_name || 'Academic Institution',
+          status: rawStatus,
+          step: stageDescriptions[rawStatus] || 'Compliance Validation in Progress',
+          notes: found.reviewNotes || found.notes || 'Your application has been received and committed to the durable compliance registry. The platform review team will evaluate your charter credentials and domain ownership.',
+          domain: found.domain || found.official_domain || '',
+          plan: (found.plan || 'pilot').toUpperCase(),
+          updatedAt: found.reviewedAt ? new Date(Number(found.reviewedAt)).toLocaleDateString() : (found.createdAt ? new Date(Number(found.createdAt)).toLocaleDateString() : new Date().toLocaleDateString()),
         });
+      } else {
+        setTrackResult(null);
+        setTrackErr(`No active institution application was found for "${q}". Please verify your Reference ID (e.g. app_179... or APP-2026-...) or registered academic domain.`);
       }
     } catch (error) {
       setTrackErr(error?.message || 'Unable to retrieve status. Please contact platform support.');
@@ -397,9 +409,9 @@ export default function PublicInstitutionRegisterPage() {
                   </div>
                   <span
                     style={{
-                      background: trackResult.status === 'approved' ? 'var(--gbg, #edf7f1)' : 'var(--abg, #fdf5f2)',
-                      color: trackResult.status === 'approved' ? 'var(--g, #1b7a4b)' : 'var(--copper, #B54F34)',
-                      border: `1px solid ${trackResult.status === 'approved' ? 'var(--gline, #b9e3cc)' : 'var(--aline, #f4cfc5)'}`,
+                      background: (trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--gbg, #edf7f1)' : (trackResult.status === 'REJECTED' ? 'var(--rbg, #fdf2f2)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#eef4ff' : 'var(--abg, #fdf5f2)')),
+                      color: (trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--g, #1b7a4b)' : (trackResult.status === 'REJECTED' ? 'var(--r, #c0392b)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#2563eb' : 'var(--copper, #B54F34)')),
+                      border: `1px solid ${(trackResult.status === 'APPROVED' || trackResult.status === 'PROVISIONED') ? 'var(--gline, #b9e3cc)' : (trackResult.status === 'REJECTED' ? 'var(--rline, #f8c9c6)' : (trackResult.status === 'MORE_INFORMATION_REQUIRED' ? '#bfdbfe' : 'var(--aline, #f4cfc5)'))}`,
                       borderRadius: '6px',
                       padding: '6px 14px',
                       fontSize: '12px',
@@ -407,7 +419,7 @@ export default function PublicInstitutionRegisterPage() {
                       textTransform: 'uppercase',
                     }}
                   >
-                    {trackResult.status?.toUpperCase() || 'UNDER REVIEW'}
+                    {trackResult.status?.replace(/_/g, ' ') || 'UNDER REVIEW'}
                   </span>
                 </div>
 
