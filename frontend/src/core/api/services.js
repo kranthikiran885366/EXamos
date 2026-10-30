@@ -345,6 +345,11 @@ export const getInstitutionOnboarding = wrap(async (institutionId) => {
   return res.data;
 });
 
+export const getInstitutionPilotReadiness = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionPilotReadiness(institutionId), { actor: ACTOR });
+  return res.data;
+});
+
 export const updateInstitutionOnboardingStep = wrap(async (institutionId, stepKey, completed, notes) => {
   const res = await api.post(ENDPOINTS.institutionOnboardingStep(institutionId), { stepKey, completed, notes }, { actor: ACTOR, sign: true });
   return res.data;

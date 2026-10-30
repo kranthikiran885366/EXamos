@@ -17,7 +17,7 @@ import {
   createInstitution, setInstitutionStatus,
   fetchInstitutionApplications, reviewApplication, provisionApplication,
   fetchInstitutionAgreements, fetchInstitutionLicense, fetchInstitutionDeployments,
-  fetchInstitutionOnboarding, updateOnboardingStep
+  fetchInstitutionOnboarding, updateOnboardingStep, fetchInstitutionPilotReadiness
 } from '../institutions/service';
 function InstitutionSwitcher({ inst, institutions, onSelect }) {
   if (!institutions || institutions.length <= 1) return null;
@@ -1103,130 +1103,65 @@ export function PlatformReadinessPage() {
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
 
-  // Exact target institution without silent institutions[0] bleed
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
   const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
   const [instLive, setInstLive] = useState(null);
   const inst = instLive || instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'pilot' } : null);
   const id = targetId;
 
-  const devices = useCol('devices', false);
-  const exams = useCol('exams', false);
   const { msg, setMsg, run, busy } = useFlash();
 
-  // Real-time backend data states
-  const [liveDevices, setLiveDevices] = useState([]);
-  const [onboarding, setOnboarding] = useState(null);
-  const [linkedApp, setLinkedApp] = useState(null);
-  const [chainAudit, setChainAudit] = useState({ ok: false, checking: true, count: 0 });
+  // All readiness data comes exclusively from the backend
+  const [readiness, setReadiness] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState(null);
+
+  const fetchReadiness = async () => {
+    if (!id) return;
+    setLoading(true);
+    try {
+      const data = await fetchInstitutionPilotReadiness(id);
+      if (data) {
+        setReadiness(data);
+        if (data.institutionName) {
+          setInstLive((prev) => prev || { id, name: data.institutionName, status: data.institutionStatus, plan: data.institutionPlan });
+        }
+        setLastRefresh(new Date());
+      }
+    } catch (err) {
+      console.warn('Readiness fetch failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!id) return;
+    fetchReadiness();
+    // Auto-refresh every 30 seconds for real-time updates
+    const interval = setInterval(fetchReadiness, 30000);
+    return () => clearInterval(interval);
+  }, [id]);
 
-    // 1. Fetch live registered devices from API
-    import('../../core/api/services').then(({ listRegisteredDevices }) => {
-      listRegisteredDevices().then((res) => {
-        const list = Array.isArray(res) ? res : (res?.devices || []);
-        setLiveDevices(list);
-      }).catch(() => {});
-    });
+  // Build gates from backend response
+  const pilotChecks = useMemo(() => {
+    if (!readiness?.gates) return [];
+    return readiness.gates.map((g) => ({
+      check: g.check,
+      pass: g.pass,
+      detail: g.detail,
+    }));
+  }, [readiness]);
 
-    // 2. Fetch live onboarding and application state
-    fetchInstitutionOnboarding(id).then((ob) => {
-      setOnboarding(ob);
-      if (ob?.institution) setInstLive(ob.institution);
-    }).catch(() => {});
-
-    fetchInstitutionApplications().then((apps) => {
-      const found = apps.find((a) => a.id === id || a.institutionId === id || a.domain === inst?.domain);
-      if (found) setLinkedApp(found);
-    }).catch(() => {});
-
-    // 3. Cryptographic audit chain verification
-    import('../../core/security/auditChain').then(({ verifyChain }) => {
-      verifyChain().then((res) => {
-        setChainAudit({ ok: !!res?.ok, checking: false, count: res?.count || 0 });
-      }).catch(() => {
-        setChainAudit({ ok: false, checking: false, count: 0 });
-      });
-    });
-  }, [id, inst?.domain]);
-
-  // Real device telemetry matching this institution
-  const matchingDevices = useMemo(() => {
-    const pool = liveDevices.length > 0 ? liveDevices : devices;
-    return pool.filter((d) => d.tenantId === id || d.institutionId === id || d.tenant_id === id);
-  }, [liveDevices, devices, id]);
-
-  const attestedDevices = useMemo(() => {
-    return matchingDevices.filter((d) => d.trust === 'attested' || d.attestationStatus === 'VALID' || d.tpm === true || d.tpm_status === 'VERIFIED');
-  }, [matchingDevices]);
-
-  const lockedDevices = useMemo(() => {
-    return matchingDevices.filter((d) => d.peripheral_lock !== false && !d.usbStorageAllowed && d.peripheralLock !== false);
-  }, [matchingDevices]);
-
-  const instExams = useMemo(() => exams.filter((e) => (e.tenantId === id || e.institutionId === id) && e.examUrl), [exams, id]);
-
-  // Dynamic assessment portal URL resolution
-  const verifiedUrls = useMemo(() => {
-    const list = [
-      linkedApp?.targetExamUrl,
-      inst?.targetExamUrl,
-      inst?.exam_url,
-      ...instExams.map((e) => e.examUrl),
-      linkedApp?.domain ? `https://${linkedApp.domain}` : null,
-      ...(inst?.domains || []).map((d) => `https://${d}`),
-    ].filter(Boolean);
-    return [...new Set(list)];
-  }, [linkedApp, inst, instExams]);
-
-  // 100% Dynamic pre-production validation gates
-  const pilotChecks = useMemo(() => [
-    {
-      check: 'Workstation Fleet Hardware Boot in Kiosk Sandbox',
-      pass: matchingDevices.length > 0,
-      detail: matchingDevices.length > 0
-        ? `${matchingDevices.length} workstation(s) enrolled and reporting real-time telemetry`
-        : '0 device(s) enrolled and reporting real-time telemetry — boot workstation via ExamOS USB or managed lab',
-    },
-    {
-      check: 'Hardware TPM 2.0 Silicon Attestation Validated',
-      pass: matchingDevices.length > 0 && attestedDevices.length === matchingDevices.length,
-      detail: matchingDevices.length > 0
-        ? `${attestedDevices.length} of ${matchingDevices.length} device(s) verified with signed PCR[0,2,4,7] cryptographic root`
-        : '0 device(s) verified with signed PCR[0,2,4,7] cryptographic root — requires hardware TPM 2.0 attestation',
-    },
-    {
-      check: 'Port Containment & External Peripheral Lock Engaged',
-      pass: matchingDevices.length > 0 && lockedDevices.length === matchingDevices.length,
-      detail: matchingDevices.length > 0
-        ? `${lockedDevices.length} of ${matchingDevices.length} workstation(s) enforced with active USB storage & peripheral containment`
-        : '0 workstation(s) enforced — port containment engages upon live kiosk workstation launch',
-    },
-    {
-      check: 'Target Assessment Portal URL Origin Clearance',
-      pass: verifiedUrls.length > 0,
-      detail: verifiedUrls.length > 0
-        ? `${verifiedUrls.length} assessment portal(s) verified for kiosk navigation (${verifiedUrls[0]})`
-        : '0 assessment portal(s) verified for kiosk navigation — configure target exam URL or domain',
-    },
-    {
-      check: 'Cryptographic Ledger & Audit Chain Intact',
-      pass: chainAudit.ok,
-      detail: chainAudit.checking
-        ? 'Verifying cryptographic audit chain...'
-        : (chainAudit.ok
-            ? `Dual-persistence HMAC-SHA256 hash chain verified with ${chainAudit.count} intact block(s)`
-            : 'Audit ledger discrepancy detected — verification failed'),
-    },
-  ], [matchingDevices, attestedDevices, lockedDevices, verifiedUrls, chainAudit]);
-
-  const allPassed = pilotChecks.every((c) => c.pass);
+  const allPassed = readiness?.allPassed === true;
+  const devices = readiness?.devices || {};
+  const examUrls = readiness?.examUrls || [];
+  const auditChain = readiness?.auditChain || {};
+  const onboarding = readiness?.onboarding || {};
 
   const handleGrantOperational = async () => {
     await run(async () => {
       await setInstitutionStatus(user, inst, 'active', 'Operational approval certified after pilot validation.');
+      await fetchReadiness();
       return 'Operational approval certified! The institution is active for production examinations.';
     }, 'Operational approval certified.');
   };
@@ -1241,30 +1176,102 @@ export function PlatformReadinessPage() {
 
   return (
     <Page
-      title={`Pilot & Readiness Approval · ${inst.name}`}
+      title={`Pilot & Readiness Approval · ${inst?.name || 'Loading...'}`}
       desc="Evaluate pilot execution, TPM hardware attestation results, and grant final operational authorization."
-      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst.name}</Link><Icon name="arrow" size={12} /><span>Readiness</span></div>}
+      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst?.name}</Link><Icon name="arrow" size={12} /><span>Readiness</span></div>}
+      actions={
+        <button className="btn" onClick={fetchReadiness} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Icon name="pulse" size={14} /> {loading ? 'Refreshing...' : 'Refresh Live Data'}
+        </button>
+      }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
       <OnboardingWorkflowBar currentStage={7} />
-      <StatusMatrix inst={{ ...inst, readinessStatus: 'passed', operationalApproval: inst.status === 'active' ? 'fully_authorized' : 'pilot_authorized' }} />
+      <StatusMatrix inst={{ ...inst, readinessStatus: allPassed ? 'passed' : 'pending', operationalApproval: inst?.status === 'active' ? 'fully_authorized' : 'pilot_authorized' }} />
 
-      <Card title="Pilot Verification Checklist" desc="Pre-production validation gates">
-        <DataTable
-          rows={pilotChecks}
-          columns={[
-            { key: 'check', label: 'Readiness Gate', render: (c) => <b>{c.check}</b> },
-            { key: 'pass', label: 'Result', render: (c) => <Badge value={c.pass ? 'PASS' : 'FAIL'} tone={c.pass ? 'green' : 'red'} /> },
-            { key: 'detail', label: 'Diagnostic Details', render: (c) => <span className="mono sm">{c.detail}</span> },
-          ]}
-        />
+      {/* Live stats from backend */}
+      {readiness && (
+        <StatGrid cols={4} style={{ marginBottom: '16px' }}>
+          <Stat
+            label="Enrolled Workstations"
+            value={devices.total || 0}
+            tone={devices.total > 0 ? 'green' : 'red'}
+            icon="device"
+            sub={`${devices.enrolled || 0} enrolled · ${devices.attested || 0} attested`}
+          />
+          <Stat
+            label="TPM Attested"
+            value={`${devices.attested || 0}/${devices.total || 0}`}
+            tone={devices.total > 0 && devices.attested === devices.total ? 'green' : 'amber'}
+            icon="shield"
+            sub="PCR[0,2,4,7] cryptographic root"
+          />
+          <Stat
+            label="Assessment Portals"
+            value={examUrls.length}
+            tone={examUrls.length > 0 ? 'green' : 'red'}
+            icon="link"
+            sub={examUrls.length > 0 ? examUrls[0] : 'No exam URLs configured'}
+          />
+          <Stat
+            label="Audit Chain Blocks"
+            value={auditChain.total || 0}
+            tone={auditChain.ok ? 'green' : 'amber'}
+            icon="lock"
+            sub={auditChain.ok ? 'HMAC-SHA256 chain verified' : (auditChain.total === 0 ? 'No audit events yet' : 'Chain verification pending')}
+          />
+        </StatGrid>
+      )}
 
-        <div className="row end" style={{ marginTop: '16px' }}>
-          <button className="btn primary" onClick={handleGrantOperational} disabled={busy || !allPassed || inst.status === 'active'}>
-            <Icon name="check" size={15} /> {inst.status === 'active' ? 'Operational Certified' : 'Certify & Authorize Live Operation'}
-          </button>
-        </div>
+      <Card
+        title="Pilot Verification Checklist"
+        desc={
+          <span>
+            Pre-production validation gates — live from backend
+            {lastRefresh && <span className="muted" style={{ marginLeft: '10px', fontSize: '11px' }}>Last updated: {lastRefresh.toLocaleTimeString()}</span>}
+          </span>
+        }
+      >
+        {loading && !readiness ? (
+          <Loading label="Fetching live readiness data from backend..." />
+        ) : (
+          <>
+            <DataTable
+              rows={pilotChecks}
+              columns={[
+                { key: 'check', label: 'Readiness Gate', render: (c) => <b>{c.check}</b> },
+                { key: 'pass', label: 'Result', render: (c) => <Badge value={c.pass ? 'PASS' : 'FAIL'} tone={c.pass ? 'green' : 'red'} /> },
+                { key: 'detail', label: 'Diagnostic Details', render: (c) => <span className="mono sm">{c.detail}</span> },
+              ]}
+              empty={<Empty title="No readiness data" desc="Could not load readiness data from backend." />}
+            />
+
+            {readiness?.examUrls?.length > 0 && (
+              <div style={{ marginTop: '12px', padding: '10px 14px', background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', fontSize: '12px' }}>
+                <b>Configured Assessment Portal URLs:</b>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '6px' }}>
+                  {readiness.examUrls.map((u, i) => (
+                    <code key={i} style={{ background: '#EDE9FE', padding: '2px 8px', borderRadius: '4px' }}>{u}</code>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)' }}>
+                Onboarding: <b>{onboarding.status || '—'}</b> · {onboarding.completedSteps || 0}/{onboarding.totalSteps || 8} steps complete
+              </div>
+              <button
+                className="btn primary"
+                onClick={handleGrantOperational}
+                disabled={busy || !allPassed || inst?.status === 'active'}
+              >
+                <Icon name="check" size={15} /> {inst?.status === 'active' ? 'Operational Certified' : 'Certify & Authorize Live Operation'}
+              </button>
+            </div>
+          </>
+        )}
       </Card>
     </Page>
   );

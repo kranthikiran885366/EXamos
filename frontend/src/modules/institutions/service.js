@@ -657,3 +657,8 @@ export async function updateOnboardingStep(user, institutionId, stepKey, complet
   await log(user, 'ONBOARDING_STEP_UPDATED', `${institutionId}: ${stepKey}`);
   return res;
 }
+
+export async function fetchInstitutionPilotReadiness(institutionId) {
+  const res = await Api.getInstitutionPilotReadiness(institutionId);
+  return res;
+}

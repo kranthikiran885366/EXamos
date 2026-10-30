@@ -60,6 +60,7 @@ export const ENDPOINTS = {
   pushDeploymentToKiosks: (id) => `/api/v1/admin/deployments/${id}/push-kiosk`,
   institutionOnboarding: (id) => `/api/v1/admin/institutions/${id}/onboarding`,
   institutionOnboardingStep: (id) => `/api/v1/admin/institutions/${id}/onboarding/step`,
+  institutionPilotReadiness: (id) => `/api/v1/admin/institutions/${id}/readiness`,
   exams: '/api/v1/admin/exams',
   roles: '/api/v1/admin/roles',
   users: '/api/v1/admin/users',
