@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
-import { submitInstitutionApplication, fetchInstitutionApplications } from './service';
+import { submitInstitutionApplication, fetchInstitutionApplications, ENTITY_TYPES, getOrgTerms, isCorporateEntity } from './service';
 import { getInstitutionApplyStatus } from '../../core/api/services';
 import { Icon } from '../../core/ui/kit';
 
@@ -13,7 +13,7 @@ export default function PublicInstitutionRegisterPage() {
   const [f, setF] = useState({
     legalName: '',
     displayName: '',
-    entityType: 'university',
+    entityType: 'enterprise',
     registrationNumber: '',
     country: 'India',
     state: '',
@@ -28,7 +28,7 @@ export default function PublicInstitutionRegisterPage() {
     coordName: '',
     coordEmail: '',
     campusCount: '2',
-    studentCount: '1500',
+    studentCount: '500',
     deviceCount: '200',
     targetExamUrl: '',
     deploymentModel: 'usb-boot',
@@ -907,15 +907,15 @@ export default function PublicInstitutionRegisterPage() {
             <div style={{ marginBottom: '32px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px', borderBottom: '1px solid var(--line, #DCD5D2)', paddingBottom: '10px' }}>
                 <span style={{ background: 'var(--copper, #B54F34)', color: '#FFF', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800 }}>3</span>
-                <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--aubergine, #302337)', margin: 0 }}>Testing Infrastructure &amp; Exam URL Target</h3>
+                <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--aubergine, #302337)', margin: 0 }}>{isCorporateEntity(f.entityType) ? 'Testing Infrastructure & Assessment Delivery' : 'Testing Infrastructure & Exam URL Target'}</h3>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                 <div style={{ gridColumn: 'span 2' }}>
-                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>Target Examination Portal URL (Assessment LMS)</label>
+                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>{isCorporateEntity(f.entityType) ? 'Assessment Platform URL (ATS / LMS)' : 'Target Examination Portal URL (Assessment LMS)'}</label>
                   <input
                     type="url"
-                    placeholder="https://assessment.university.edu.in/portal"
+                    placeholder={isCorporateEntity(f.entityType) ? "https://assessment.yourcompany.com/exams" : "https://assessment.university.edu.in/portal"}
                     value={f.targetExamUrl}
                     onChange={update('targetExamUrl')}
                     style={{ width: '100%', boxSizing: 'border-box', background: '#FBF9F7', border: '1px solid var(--line, #DCD5D2)', borderRadius: '8px', padding: '10px 14px', color: 'var(--ink, #302337)', fontSize: '13.5px' }}
@@ -924,16 +924,16 @@ export default function PublicInstitutionRegisterPage() {
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>Annual Candidate Volume</label>
+                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>{`Annual ${getOrgTerms(f.entityType).candidateLabel} Volume`}</label>
                   <select
                     value={f.studentCount}
                     onChange={update('studentCount')}
                     style={{ width: '100%', boxSizing: 'border-box', background: '#FBF9F7', border: '1px solid var(--line, #DCD5D2)', borderRadius: '8px', padding: '10px 14px', color: 'var(--ink, #302337)', fontSize: '13.5px', fontWeight: 500 }}
                   >
-                    <option value="500">Up to 500 Candidates</option>
-                    <option value="2500">2,500 Candidates</option>
-                    <option value="10000">10,000 Candidates</option>
-                    <option value="50000">50,000+ Candidates (Enterprise Tier)</option>
+                    <option value="500">Up to 500 {getOrgTerms(f.entityType).candidateLabel}</option>
+                    <option value="2500">2,500 {getOrgTerms(f.entityType).candidateLabel}</option>
+                    <option value="10000">10,000 {getOrgTerms(f.entityType).candidateLabel}</option>
+                    <option value="50000">50,000+ {getOrgTerms(f.entityType).candidateLabel} (Enterprise Tier)</option>
                   </select>
                 </div>
 
@@ -951,7 +951,7 @@ export default function PublicInstitutionRegisterPage() {
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>Number of Campuses / Testing Centers</label>
+                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>{`Number of ${getOrgTerms(f.entityType).campusLabel}`}</label>
                   <input
                     type="number"
                     min="1"

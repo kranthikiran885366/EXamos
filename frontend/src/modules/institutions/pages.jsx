@@ -1,3 +1,4 @@
+import { getOrgTerms, isCorporateEntity } from './service';
 import { useMemo, useState, useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
@@ -112,7 +113,7 @@ export function InstitutionsPage() {
         rows={tenants}
         search={['name', 'code', 'region']}
         title="Institutional Tenants"
-        desc="Select an institution to inspect campuses, legal agreements, enforceable licenses, and assigned OS releases."
+        desc="Select an institution to inspect sites, legal agreements, enforceable licenses, and assigned OS releases."
         filters={[
           { key: 'status', label: 'Status', options: ['active', 'suspended', 'archived'] },
           { key: 'plan', label: 'Plan', options: PLAN_OPTIONS }
@@ -165,7 +166,7 @@ export function InstitutionsPage() {
       {action && (
         <ActionDialog
           title={`${action.status === 'suspended' ? 'Suspend' : 'Activate'} ${action.t.name}`}
-          desc="Suspension blocks publishing and starting exams across all campuses. Recorded in tamper-evident ledger."
+          desc="Suspension blocks publishing and starting exams across all sites. Recorded in tamper-evident ledger."
           danger={action.status === 'suspended'}
           confirmLabel={action.status === 'suspended' ? 'Suspend institution' : 'Activate institution'}
           onClose={() => setAction(null)}
@@ -314,9 +315,9 @@ export function InstitutionDetailPage() {
                 { k: 'registration', title: '1. Legal Entity Registration', desc: 'Capture name, official registration number, and operating addresses.' },
                 { k: 'identity_verification', title: '2. Identity & Domain Verification', desc: 'Verification of authorized legal representative and official domain DNS.' },
                 { k: 'agreement', title: '3. Master Services Agreement & E-Signature', desc: 'MSA & SLA covenants digitally signed with cryptographic SHA256 audit digest.' },
-                { k: 'license', title: '4. License Entitlements Activation', desc: 'Enforceable limits assigned for campuses, devices, candidates, and exam volume.' },
+                { k: 'license', title: '4. License Entitlements Activation', desc: 'Enforceable limits assigned for sites, devices, candidates/examinees, and exam volume.' },
                 { k: 'admin_mfa', title: '5. Primary Administrator MFA Setup', desc: 'First institutional administrator invited and multi-factor authentication enforced.' },
-                { k: 'campus_hierarchy', title: '6. Campus & Lab Hierarchy', desc: 'Establish campuses, academic departments, examination centres, and seat allocation.' },
+                { k: 'campus_hierarchy', title: '6. Sites & Org Structure', desc: 'Establish sites, departments / business units, examination centres, and seat allocation.' },
                 { k: 'os_deployment', title: '7. ExamOS Release & Hardware Assignment', desc: 'Approved bootable OS releases, channels (stable/pilot), and security policies assigned.' },
                 { k: 'production_readiness', title: '8. Operational Readiness & Go-Live', desc: 'Hardware health check, TPM attestation verification, and exam scheduling authorized.' },
               ].map((step, idx) => {
@@ -458,7 +459,7 @@ export function InstitutionDetailPage() {
         <div className="two">
           <Card
             title="Enforceable License Agreement"
-            desc="Runtime limits enforced across campuses, managed devices, candidates, and exam schedules."
+            desc="Runtime limits enforced across sites, managed devices, candidates/examinees, and exam schedules."
             actions={
               <button
                 className="btn small"
@@ -697,7 +698,7 @@ export function InstitutionApplicationsPage() {
   return (
     <Page
       title="Institution Onboarding Queue"
-      desc="Applications submitted by colleges and universities awaiting identity verification, contracting, and provisioning."
+      desc="Applications submitted by enterprises, companies, universities, and institutions awaiting identity verification, contracting, and provisioning."
       breadcrumb={
         <div className="crumbs-inline">
           <Link to="/admin/institutions">Institutions</Link>
@@ -742,7 +743,7 @@ export function InstitutionApplicationsPage() {
           {
             key: 'scale',
             label: 'Requested Scale',
-            render: (a) => `${a.campusCount || 1} campuses · ${a.deviceCount || 100} devices`
+            render: (a) => `${a.campusCount || 1} sites · ${a.deviceCount || 100} devices`
           },
           { key: 'plan', label: 'Plan', render: (a) => <Badge value={a.plan || 'pilot'} /> },
           {
@@ -1111,7 +1112,7 @@ export function DepartmentsPage() {
   return (
     <Page
       title="Departments"
-      desc="Academic, examination and laboratory units used to scope staff and exams."
+      desc="Business units, departments, and examination centres used to scope staff and exams."
       actions={
         can(user.role, 'dept.manage') ? (
           <button className="btn primary" onClick={() => { setF({ name: '', code: '', campusId: '', type: 'academic' }); setModal(true); }}>

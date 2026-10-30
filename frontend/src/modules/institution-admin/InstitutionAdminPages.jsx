@@ -18,6 +18,7 @@ import {
   createCampus, createDepartment, assignStaff, removeStaff,
   saveSecuritySettings, saveExamDefaults,
   listInstitutionAdmins, inviteInstitutionAdmin, removeInstitutionAdmin,
+  getOrgTerms, isCorporateEntity,
 } from '../institutions/service';
 
 /* =====================================================================
@@ -41,7 +42,7 @@ export function InstitutionDashboardPage() {
   return (
     <Page
       title={tenant?.name ? `${tenant.name} · Console` : 'Institution Dashboard'}
-      desc="Accredited testing enclave management: Campuses, staff, candidate rosters, workstation attestation, and live examinations."
+      desc="Certified testing enclave management: Sites, staff, candidate/examinee rosters, workstation attestation, and live examinations."
       breadcrumb={<div className="crumbs-inline"><span>Institution Admin</span><Icon name="arrow" size={12} /><span>Dashboard</span></div>}
       actions={
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -59,9 +60,9 @@ export function InstitutionDashboardPage() {
       <NextActionCallout inst={tenant || {}} targetArea="institution" />
 
       <StatGrid cols={4}>
-        <Stat label="Campuses & Centres" value={`${campuses.length} / ${centers.length}`} icon="building" sub="Active Exam Locations" />
+        <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} & Centres`} value={`${campuses.length} / ${centers.length}`} icon="building" sub="Active Exam Locations" />
         <Stat label="Registered Devices" value={devices.length} tone={attestedDevices === devices.length && devices.length > 0 ? 'green' : 'amber'} icon="device" sub={`${attestedDevices} Hardware Attested`} to="/institution/deployment" />
-        <Stat label="Candidate Roster" value={candidates.length} icon="candidate" sub={`${verifiedCandidates} Verified`} />
+        <Stat label={`${getOrgTerms(tenant?.entityType).candidateLabel} Roster`} value={candidates.length} icon="candidate" sub={`${verifiedCandidates} Verified`} />
         <Stat label="Exams Live / Scheduled" value={`${exams.filter((e) => e.status === 'live').length} / ${exams.length}`} icon="exam" sub="Target Portals Active" to="/college/exams" />
       </StatGrid>
 
@@ -73,7 +74,7 @@ export function InstitutionDashboardPage() {
               <span className="badge g">Completed</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>2. Organization &amp; Campuses</span>
+              <span>{`2. Organization & ${getOrgTerms(tenant?.entityType).campusLabel}`}</span>
               <span className={`badge ${campuses.length ? 'g' : 'a'}`}>{campuses.length ? 'Configured' : 'Setup Required'}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
@@ -93,7 +94,7 @@ export function InstitutionDashboardPage() {
               <Icon name="home" size={16} /> Official Institution Profile &amp; Domains
             </Link>
             <Link to="/institution/organization" className="btn" style={{ justifyContent: 'flex-start' }}>
-              <Icon name="pin" size={16} /> Campuses, Departments &amp; Courses
+              <Icon name="pin" size={16} /> {`${getOrgTerms(tenant?.entityType).campusLabel}, ${getOrgTerms(tenant?.entityType).departmentLabel} & Programs`}
             </Link>
             <Link to="/institution/settings/access" className="btn" style={{ justifyContent: 'flex-start' }}>
               <Icon name="users" size={16} /> Administrators &amp; Access Controls
@@ -133,7 +134,7 @@ export function InstitutionProfilePage() {
   return (
     <Page
       title="Institution Profile"
-      desc="Official legal identity, accredited identifier, primary physical campus address, and verified academic domains."
+      desc="Official legal identity, registration identifier, primary physical address, and verified organizational domains."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Profile</span></div>}
       actions={
         <button className="btn" onClick={() => setEditRequestModal(true)}>
@@ -153,7 +154,7 @@ export function InstitutionProfilePage() {
           </div>
         </Card>
 
-        <Card title="Verified Academic Domains" desc="Domains permitted for SSO and email attribution">
+        <Card title="Verified Organizational Domains" desc="Domains permitted for SSO and email attribution">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
               <div>
@@ -225,7 +226,7 @@ export function InstitutionOrganizationPage() {
   return (
     <Page
       title="Organization Structure"
-      desc="Campuses, academic departments, degree programs, semesters, and local campus administrators."
+      desc={`${getOrgTerms(tenant?.entityType).campusLabel}, ${getOrgTerms(tenant?.entityType).departmentLabel}, programs, and local site administrators.`}
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Organization</span></div>}
       actions={
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -240,13 +241,13 @@ export function InstitutionOrganizationPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <StatGrid cols={3}>
-        <Stat label="Campuses" value={campuses.length} icon="pin" sub="Physical Testing Sites" />
-        <Stat label="Departments" value={departments.length} icon="layers" sub="Academic Divisions" />
+        <Stat label={getOrgTerms(tenant?.entityType).campusLabel} value={campuses.length} icon="pin" sub="Physical Testing Sites" />
+        <Stat label={getOrgTerms(tenant?.entityType).departmentLabel} value={departments.length} icon="layers" sub="Organizational Divisions" />
         <Stat label="Total Testing Seats" value={campuses.reduce((acc, c) => acc + (Number(c.capacity) || 0), 0)} icon="users" sub="Capacity" />
       </StatGrid>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginTop: '16px' }}>
-        <Card title="Campuses" desc="Approved testing physical sites">
+        <Card title={getOrgTerms(tenant?.entityType).campusLabel} desc="Approved physical testing sites">
           <DataTable
             rows={campuses}
             columns={[
@@ -254,11 +255,11 @@ export function InstitutionOrganizationPage() {
               { key: 'capacity', label: 'Capacity', render: (c) => `${c.capacity || 0} seats` },
               { key: 'status', label: 'Status', badge: true },
             ]}
-            empty={<Empty icon="pin" title="No campuses added yet" />}
+            empty={<Empty icon="pin" title={`No ${getOrgTerms(tenant?.entityType).campusLabel} added yet`} />}
           />
         </Card>
 
-        <Card title="Departments & Faculties" desc="Academic governance units">
+        <Card title={`${getOrgTerms(tenant?.entityType).departmentLabel} & Teams`} desc="Organizational governance units">
           <DataTable
             rows={departments}
             columns={[
@@ -272,22 +273,22 @@ export function InstitutionOrganizationPage() {
       </div>
 
       {newCampusModal && (
-        <Modal title="Add New Campus" onClose={() => setNewCampusModal(false)}>
+        <Modal title={`Add New ${isCorporateEntity(tenant?.entityType) ? "Office / Testing Center" : "Campus"}`} onClose={() => setNewCampusModal(false)}>
           <div className="formgrid">
-            <Field label="Campus Name"><Input value={newCampus.name} onChange={(e) => setNewCampus({ ...newCampus, name: e.target.value })} placeholder="e.g. North Campus" required /></Field>
-            <Field label="Campus Code"><Input value={newCampus.code} onChange={(e) => setNewCampus({ ...newCampus, code: e.target.value.toUpperCase() })} placeholder="e.g. NC-01" required /></Field>
+            <Field label={isCorporateEntity(tenant?.entityType) ? "Site / Office Name" : "Campus Name"}><Input value={newCampus.name} onChange={(e) => setNewCampus({ ...newCampus, name: e.target.value })} placeholder={isCorporateEntity(tenant?.entityType) ? "e.g. HQ Office" : "e.g. North Campus"} required /></Field>
+            <Field label={isCorporateEntity(tenant?.entityType) ? "Site Code" : "Campus Code"}><Input value={newCampus.code} onChange={(e) => setNewCampus({ ...newCampus, code: e.target.value.toUpperCase() })} placeholder="e.g. NC-01" required /></Field>
             <Field label="City"><Input value={newCampus.city} onChange={(e) => setNewCampus({ ...newCampus, city: e.target.value })} placeholder="e.g. Hyderabad" /></Field>
             <Field label="Seating Capacity"><Input type="number" value={newCampus.capacity} onChange={(e) => setNewCampus({ ...newCampus, capacity: Number(e.target.value) })} /></Field>
           </div>
           <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
             <button className="btn" onClick={() => setNewCampusModal(false)}>Cancel</button>
-            <button className="btn primary" onClick={handleAddCampus} disabled={busy || !newCampus.name || !newCampus.code}>Save Campus</button>
+            <button className="btn primary" onClick={handleAddCampus} disabled={busy || !newCampus.name || !newCampus.code}>{isCorporateEntity(tenant?.entityType) ? "Save Site" : "Save Campus"}</button>
           </div>
         </Modal>
       )}
 
       {newDeptModal && (
-        <Modal title="Add Academic Department" onClose={() => setNewDeptModal(false)}>
+        <Modal title={`Add ${isCorporateEntity(tenant?.entityType) ? "Business Unit / Team" : "Academic Department"}`} onClose={() => setNewDeptModal(false)}>
           <div className="formgrid">
             <Field label="Department Name"><Input value={newDept.name} onChange={(e) => setNewDept({ ...newDept, name: e.target.value })} placeholder="e.g. Computer Science & Engineering" required /></Field>
             <Field label="Department Code"><Input value={newDept.code} onChange={(e) => setNewDept({ ...newDept, code: e.target.value.toUpperCase() })} placeholder="e.g. CSE" required /></Field>
@@ -362,7 +363,7 @@ export function InstitutionAccessPage() {
   const ADMIN_ROLE_OPTIONS = [
     { v: 'inst_admin', l: 'Institution Admin (Full Management)' },
     { v: 'exam_controller', l: 'Examination Controller (Exams & Policies)' },
-    { v: 'invigilator', l: 'Invigilator (Session Supervision)' },
+    { v: 'invigilator', l: isCorporateEntity(tenant?.entityType) ? 'Exam Supervisor (Session Supervision)' : 'Invigilator (Session Supervision)' },
     { v: 'it_admin', l: 'IT Admin (Workstations & Devices)' },
     { v: 'security_engineer', l: 'Security Engineer (Attestation & Audit)' },
     { v: 'auditor', l: 'Auditor (Read-only Audit Access)' },
@@ -371,7 +372,7 @@ export function InstitutionAccessPage() {
   return (
     <Page
       title="Administrators and Access"
-      desc="Manage institutional administrators, invigilators, exam controllers, and monitor MFA security enrollment."
+      desc="Manage organizational administrators, exam supervisors, exam controllers, and monitor MFA security enrollment."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Administrators</span></div>}
       actions={
         can(user.role, 'user.manage') && (
@@ -667,7 +668,7 @@ export function InstitutionDeploymentReadinessPage() {
       <StatGrid cols={4}>
         <Stat label="Total Workstations" value={devices.length} icon="device" />
         <Stat label="Hardware Attested" value={attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="TPM Validated" />
-        <Stat label="Campuses Scoped" value={campuses.length} icon="pin" />
+        <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} Scoped`} value={campuses.length} icon="pin" />
         <Stat label="Readiness State" value={devices.length ? 'READY' : 'ENROLLING'} tone={devices.length ? 'green' : 'amber'} icon="checklist" />
       </StatGrid>
 

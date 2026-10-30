@@ -269,7 +269,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "displayName", display_name, sizeof(display_name));
         if (!display_name[0]) snprintf(display_name, sizeof(display_name), "%s", legal_name);
         ctrl_json_string(body, "entityType", entity_type, sizeof(entity_type));
-        if (!entity_type[0]) snprintf(entity_type, sizeof(entity_type), "university");
+        if (!entity_type[0]) snprintf(entity_type, sizeof(entity_type), "enterprise");
         ctrl_json_string(body, "registrationNumber", reg_num, sizeof(reg_num));
         ctrl_json_string(body, "country", country, sizeof(country));
         if (!country[0]) snprintf(country, sizeof(country), "India");
@@ -302,6 +302,35 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
         if (!ctrl_json_raw(body, "declarations", decl_raw, sizeof(decl_raw))) {
             snprintf(decl_raw, sizeof(decl_raw), "{\"termsAgreed\":true,\"privacyAgreed\":true}");
+        }
+
+        /* Corporate / Recruitment-specific fields (migration 025) */
+        char company_size[30] = {0}, industry_sector[80] = {0}, tech_stack[512] = {0};
+        char hr_contact_name[120] = {0}, hr_contact_email[120] = {0};
+        char job_roles_targeted[255] = {0}, linkedin_url[255] = {0}, website_url[255] = {0};
+        int hiring_volume = 0, annual_exam_count = 0;
+
+        ctrl_json_string(body, "companySize", company_size, sizeof(company_size));
+        ctrl_json_string(body, "industrySector", industry_sector, sizeof(industry_sector));
+        ctrl_json_string(body, "techStack", tech_stack, sizeof(tech_stack));
+        ctrl_json_string(body, "hrContactName", hr_contact_name, sizeof(hr_contact_name));
+        ctrl_json_string(body, "hrContactEmail", hr_contact_email, sizeof(hr_contact_email));
+        ctrl_json_string(body, "jobRolesTargeted", job_roles_targeted, sizeof(job_roles_targeted));
+        ctrl_json_string(body, "linkedinUrl", linkedin_url, sizeof(linkedin_url));
+        ctrl_json_string(body, "websiteUrl", website_url, sizeof(website_url));
+        ctrl_json_int(body, "hiringVolume", &hiring_volume);
+        ctrl_json_int(body, "annualExamCount", &annual_exam_count);
+
+        /* For corporate entities, also accept hrContactEmail as coordinator email fallback */
+        int is_corporate = (strncmp(entity_type, "enterprise", 10) == 0 ||
+                            strncmp(entity_type, "technology", 10) == 0 ||
+                            strncmp(entity_type, "government", 10) == 0 ||
+                            strncmp(entity_type, "testing_agency", 14) == 0);
+        if (is_corporate && !coord_email[0] && hr_contact_email[0]) {
+            snprintf(coord_email, sizeof(coord_email), "%s", hr_contact_email);
+        }
+        if (is_corporate && !coord_name[0] && hr_contact_name[0]) {
+            snprintf(coord_name, sizeof(coord_name), "%s", hr_contact_name);
         }
 
         sanitize_utf8(legal_name);
@@ -348,15 +377,30 @@ void institution_handle(int client_fd, const char *method, const char *path,
         snprintf(s_cnt, sizeof(s_cnt), "%d", student_count);
         snprintf(d_cnt, sizeof(d_cnt), "%d", device_count);
 
-        const char *ins_vals[25] = {
+        char h_vol[16], a_exam[16];
+        snprintf(h_vol, sizeof(h_vol), "%d", hiring_volume);
+        snprintf(a_exam, sizeof(a_exam), "%d", annual_exam_count);
+
+        const char *ins_vals[35] = {
             app_id, legal_name, display_name, entity_type, reg_num,
             country, state, address, domain, rep_name,
             rep_role, rep_email, rep_phone, coord_name, coord_email,
             tech_name, tech_email, c_cnt, s_cnt, d_cnt,
-            deployment_model, hardware_profile, plan, now, now
+            deployment_model, hardware_profile, plan, now, now,
+            /* corporate fields */
+            company_size[0] ? company_size : "",
+            industry_sector[0] ? industry_sector : "",
+            h_vol,
+            hr_contact_name[0] ? hr_contact_name : "",
+            hr_contact_email[0] ? hr_contact_email : "",
+            tech_stack[0] ? tech_stack : "",
+            linkedin_url[0] ? linkedin_url : "",
+            website_url[0] ? website_url : "",
+            a_exam,
+            job_roles_targeted[0] ? job_roles_targeted : ""
         };
-        int ins_lens[25];
-        for (int i = 0; i < 25; i++) ins_lens[i] = (int)strlen(ins_vals[i]);
+        int ins_lens[35];
+        for (int i = 0; i < 35; i++) ins_lens[i] = (int)strlen(ins_vals[i]);
 
         PGresult *ins = db_simple(conn,
             "INSERT INTO institution_applications ("
@@ -365,13 +409,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
             "  rep_role, rep_email, rep_phone, coord_name, coord_email,"
             "  tech_name, tech_email, campus_count, student_count, device_count,"
             "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
-            "  documents, declarations"
+            "  documents, declarations,"
+            "  company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email,"
+            "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted"
             ") VALUES ("
             "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
             "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
             "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
-            "  '[]'::jsonb, '{}'::jsonb"
-            ")", 25, ins_vals, ins_lens);
+            "  '[]'::jsonb, '{}'::jsonb,"
+            "  NULLIF($26,''), NULLIF($27,''), $28::integer, NULLIF($29,''), NULLIF($30,''),"
+            "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,'')"
+            ")", 35, ins_vals, ins_lens);
 
         int ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
         if (ins) PQclear(ins);
@@ -614,10 +662,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             const char *pvals[1] = { app_id };
             int plens[1] = { (int)strlen(app_id) };
+
+            /* Read application data — now including entity_type and corporate fields */
             PGresult *a_res = db_simple(conn,
                 "SELECT display_name, registration_number, country, state, address, domain, "
                 "       rep_name, rep_email, rep_phone, campus_count, student_count, device_count, "
-                "       deployment_model, plan, institution_id, status "
+                "       deployment_model, plan, institution_id, status, entity_type, "
+                "       COALESCE(company_size,''), COALESCE(industry_sector,''), "
+                "       COALESCE(hiring_volume::text,'0'), COALESCE(hr_contact_name,''), "
+                "       COALESCE(hr_contact_email,''), COALESCE(tech_stack,''), "
+                "       COALESCE(website_url,'') "
                 "FROM institution_applications WHERE id = $1", 1, pvals, plens);
 
             if (!a_res || PQresultStatus(a_res) != PGRES_TUPLES_OK || PQntuples(a_res) == 0) {
@@ -652,6 +706,19 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(r_phone, sizeof(r_phone), "%s", PQgetvalue(a_res, 0, 8));
             snprintf(d_model, sizeof(d_model), "%s", PQgetvalue(a_res, 0, 12));
             snprintf(d_plan, sizeof(d_plan), "%s", PQgetvalue(a_res, 0, 13));
+
+            /* Corporate / entity-type fields from application (col 16+) */
+            char ent_type[40] = {0}, co_size[30] = {0}, industry[80] = {0};
+            char h_vol_s[16] = {0}, hr_name[120] = {0}, hr_email[120] = {0};
+            char t_stack[512] = {0}, web_url[255] = {0};
+            snprintf(ent_type, sizeof(ent_type), "%s", PQgetvalue(a_res, 0, 16)[0] ? PQgetvalue(a_res, 0, 16) : "university");
+            snprintf(co_size,  sizeof(co_size),  "%s", PQgetvalue(a_res, 0, 17));
+            snprintf(industry, sizeof(industry), "%s", PQgetvalue(a_res, 0, 18));
+            snprintf(h_vol_s,  sizeof(h_vol_s),  "%s", PQgetvalue(a_res, 0, 19)[0] ? PQgetvalue(a_res, 0, 19) : "0");
+            snprintf(hr_name,  sizeof(hr_name),  "%s", PQgetvalue(a_res, 0, 20));
+            snprintf(hr_email, sizeof(hr_email), "%s", PQgetvalue(a_res, 0, 21));
+            snprintf(t_stack,  sizeof(t_stack),  "%s", PQgetvalue(a_res, 0, 22));
+            snprintf(web_url,  sizeof(web_url),  "%s", PQgetvalue(a_res, 0, 23));
             PQclear(a_res);
 
             /* Generate unique institution, agreement, license, and campus identifiers */
@@ -688,23 +755,34 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(c_str, sizeof(c_str), "%d", c_cnt > 0 ? c_cnt : 5);
             snprintf(s_str, sizeof(s_str), "%d", s_cnt > 0 ? s_cnt : 500);
 
-            const char *t_vals[13] = {
+            const char *t_vals[21] = {
                 new_inst_id, d_name, code, r_email, r_phone,
                 "India · Mumbai", "Asia/Kolkata", d_plan[0] ? d_plan : "pilot",
-                c_str, s_str, d_model[0] ? d_model : "usb-boot", now_ms, dom_json
+                c_str, s_str, d_model[0] ? d_model : "usb-boot", now_ms, dom_json,
+                /* corporate fields */
+                ent_type,
+                co_size[0]  ? co_size  : "",
+                industry[0] ? industry : "",
+                h_vol_s,
+                hr_name[0]  ? hr_name  : "",
+                hr_email[0] ? hr_email : "",
+                t_stack[0]  ? t_stack  : "",
+                web_url[0]  ? web_url  : ""
             };
-            int t_lens[13]; for (int i = 0; i < 13; i++) t_lens[i] = (int)strlen(t_vals[i]);
+            int t_lens[21]; for (int i = 0; i < 21; i++) t_lens[i] = (int)strlen(t_vals[i]);
 
             PGresult *t_ins = db_simple(conn,
                 "INSERT INTO tenants (id, name, code, contact_email, contact_phone, "
                 "region, timezone, plan, status, max_centers, max_candidates, "
-                "deployment_model, created_at, created_by, domains, exam_defaults, security, notification_prefs, history) "
+                "deployment_model, created_at, created_by, domains, exam_defaults, security, notification_prefs, history,"
+                "entity_type, company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email, tech_stack, website_url) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9::integer,$10::integer,$11,$12::bigint,'admin',$13::jsonb,"
                 "'{\"durationMin\":60,\"lateEntryMin\":15,\"attestationLevel\":\"tpm\"}'::jsonb,"
                 "'{\"requireTpm\":true,\"requireSecureBoot\":true,\"allowUsbStorage\":false}'::jsonb,"
                 "'{\"email\":true,\"inApp\":true}'::jsonb,"
-                "jsonb_build_array(jsonb_build_object('at',$12::bigint,'by','admin','action','Provisioned from Application')))",
-                13, t_vals, t_lens);
+                "jsonb_build_array(jsonb_build_object('at',$12::bigint,'by','admin','action','Provisioned from Application')),"
+                "$14, NULLIF($15,''), NULLIF($16,''), $17::integer, NULLIF($18,''), NULLIF($19,''), NULLIF($20,''), NULLIF($21,''))",
+                21, t_vals, t_lens);
 
             /* 2. Dual-sync examos_institutions */
             const char *s_vals[4] = { new_inst_id, d_name, code, r_email };

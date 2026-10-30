@@ -338,7 +338,7 @@ export function PlatformApplicationsPage() {
             <Field label="Institution Legal Name"><Input value={selectedApp.legalName || selectedApp.displayName || selectedApp.institution_name} readOnly /></Field>
             <Field label="Official Domain"><Input value={selectedApp.domain || selectedApp.official_domain || ''} readOnly /></Field>
             <Field label="Representative"><Input value={`${selectedApp.repName || selectedApp.representative_name || ''} (${selectedApp.repEmail || selectedApp.representative_email || ''})`} readOnly /></Field>
-            <Field label="Registration / Accreditation ID"><Input value={selectedApp.registrationNumber || 'Unspecified'} readOnly /></Field>
+            <Field label="Registration / Accreditation / CIN ID"><Input value={selectedApp.registrationNumber || 'Unspecified'} readOnly /></Field>
             <Field label="Reviewer Notes" className="span2">
               <Textarea rows={3} value={decisionNotes} onChange={(e) => setDecisionNotes(e.target.value)} placeholder="Provide compliance rationale, registrar ticket, or explain corrections required..." />
             </Field>
@@ -560,9 +560,9 @@ export function PlatformVerificationPage() {
           {[
             { key: 'identity', label: 'Official Institution Legal Charter & Registration Verified', hint: 'Check against UGC / AICTE / statutory regulatory body records.' },
             { key: 'domain', label: 'Academic Domain Ownership Confirmed via DNS TXT / SPF', hint: 'Verify _examosverify TXT record published on the domain.' },
-            { key: 'accreditation', label: 'Accreditation Board Authorization Record on File', hint: 'Confirm NAAC / NBA / ABET or equivalent certification reference.' },
+            { key: 'accreditation', label: 'Authorization Record / Corporate Incorporation Certificate on File', hint: 'Confirm NAAC / NBA / ABET, CIN, or equivalent certification reference.' },
             { key: 'representative', label: 'Authorized Institutional Signatory / Vice-Chancellor Authorization Validated', hint: 'Letter of authorization from the legal head of the institution received.' },
-            { key: 'datacenter', label: 'Campus Workstation Subnet & Kiosk IP Range Scoped', hint: 'Campus network range and exam center IP boundaries confirmed.' },
+            { key: 'datacenter', label: 'Site / Campus Workstation Subnet & Kiosk IP Range Scoped', hint: 'Site network range and exam center IP boundaries confirmed.' },
           ].map((item) => (
             <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 14px', background: checklist[item.key] ? 'var(--gbg, #edf7f1)' : '#FAFAFA', border: `1px solid ${checklist[item.key] ? 'var(--gline, #b9e3cc)' : 'var(--line, #DCD5D2)'}`, borderRadius: '8px', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => toggleCheck(item.key)}>
               <div style={{ width: '20px', height: '20px', borderRadius: '4px', border: `2px solid ${checklist[item.key] ? 'var(--g, #1b7a4b)' : '#C0B8C4'}`, background: checklist[item.key] ? 'var(--g, #1b7a4b)' : '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '2px' }}>
@@ -761,7 +761,7 @@ export function PlatformInstitutionDetailPage() {
 
         <Card title="Organizational Summary">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div><small className="muted">Registered Campuses</small><br /><b>{instCampuses.length} {instCampuses.length === 1 ? 'Campus' : 'Campuses'}</b></div>
+            <div><small className="muted">Registered Sites</small><br /><b>{instCampuses.length} {instCampuses.length === 1 ? 'Campus' : 'Campuses'}</b></div>
             <div><small className="muted">Academic Departments</small><br /><b>{instDepts.length} {instDepts.length === 1 ? 'Department' : 'Departments'}</b></div>
             <div><small className="muted">Administrators</small><br /><b>{instAdmins.length} Account{instAdmins.length !== 1 ? 's' : ''}</b></div>
             <div><small className="muted">Enrolled Devices</small><br /><b>{instDevices.length} Workstation{instDevices.length !== 1 ? 's' : ''}</b></div>
@@ -938,7 +938,7 @@ export function PlatformProvisioningPage() {
             Institution ID: <code>{provisioningResult.institution_id}</code> · Agreement: <code>{provisioningResult.agreement_id || '—'}</code> · License: <code>{provisioningResult.license_id || '—'}</code>
           </p>
           <p style={{ margin: '8px 0 0', fontSize: '13.5px', color: 'var(--ink2, #48394F)' }}>
-            Next: Create the primary institution administrator account so they can log in and configure campuses, departments, and exam schedules.
+            Next: Create the primary institution administrator account so they can log in and configure sites, departments, and exam schedules.
           </p>
         </div>
       )}
@@ -947,7 +947,7 @@ export function PlatformProvisioningPage() {
       {adminModal && (
         <Modal
           title="Create Primary Institution Administrator"
-          desc={`Create the first administrator account for ${inst.name}. This person will manage the institution's exams, campuses, and staff.`}
+          desc={`Create the first administrator account for ${inst.name}. This person will manage the institution's exams, sites, and staff.`}
           onClose={() => setAdminModal(false)}
         >
           <div className="formgrid">
@@ -1163,7 +1163,7 @@ export function PlatformOperationsPage() {
         <Card title="Operational Controls" desc="Administrative suspension, reactivation, and offboarding">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <p className="muted sm">
-              Suspension immediately halts all active exam sessions and blocks new candidate logins across all institutional campuses.
+              Suspension immediately halts all active exam sessions and blocks new candidate logins across all institutional sites.
             </p>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               {inst.status === 'active' ? (
