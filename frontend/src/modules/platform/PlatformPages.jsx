@@ -442,9 +442,10 @@ export function PlatformVerificationPage() {
   const { user } = useAuth();
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
-  const targetId = (paramId && paramId !== ':id') ? paramId : (tenantId || institutions[0]?.id);
-  const inst = institutions.find((x) => x.id === targetId) || institutions[0] || { id: targetId, name: `Institution ${targetId}`, status: 'under_review' };
-  const id = inst?.id;
+  const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
+  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
+  const inst = instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'under_review' } : null);
+  const id = targetId;
   const { msg, setMsg, run, busy } = useFlash();
 
   // Checklist starts unchecked — reviewer must manually confirm each item
@@ -1101,45 +1102,125 @@ export function PlatformReadinessPage() {
   const { user } = useAuth();
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
-  const targetId = (paramId && paramId !== ':id') ? paramId : (tenantId || institutions[0]?.id);
-  const inst = institutions.find((x) => x.id === targetId) || institutions[0] || { id: targetId, name: `Institution ${targetId}`, status: 'pilot' };
-  const id = inst?.id;
+
+  // Exact target institution without silent institutions[0] bleed
+  const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
+  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
+  const [instLive, setInstLive] = useState(null);
+  const inst = instLive || instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'pilot' } : null);
+  const id = targetId;
+
   const devices = useCol('devices', false);
+  const exams = useCol('exams', false);
   const { msg, setMsg, run, busy } = useFlash();
 
-  const exams = useCol('exams', false);
-  const instDevices = useMemo(() => devices.filter((d) => d.tenantId === id || d.institutionId === id), [devices, id]);
-  const attestedCount = useMemo(() => instDevices.filter((d) => d.trust === 'attested' || d.attestationStatus === 'VALID' || d.tpm === true).length, [instDevices]);
-  const lockedCount = useMemo(() => instDevices.filter((d) => d.peripheral_lock !== false && !d.usbStorageAllowed).length, [instDevices]);
+  // Real-time backend data states
+  const [liveDevices, setLiveDevices] = useState([]);
+  const [onboarding, setOnboarding] = useState(null);
+  const [linkedApp, setLinkedApp] = useState(null);
+  const [chainAudit, setChainAudit] = useState({ ok: false, checking: true, count: 0 });
+
+  useEffect(() => {
+    if (!id) return;
+
+    // 1. Fetch live registered devices from API
+    import('../../core/api/services').then(({ listRegisteredDevices }) => {
+      listRegisteredDevices().then((res) => {
+        const list = Array.isArray(res) ? res : (res?.devices || []);
+        setLiveDevices(list);
+      }).catch(() => {});
+    });
+
+    // 2. Fetch live onboarding and application state
+    fetchInstitutionOnboarding(id).then((ob) => {
+      setOnboarding(ob);
+      if (ob?.institution) setInstLive(ob.institution);
+    }).catch(() => {});
+
+    fetchInstitutionApplications().then((apps) => {
+      const found = apps.find((a) => a.id === id || a.institutionId === id || a.domain === inst?.domain);
+      if (found) setLinkedApp(found);
+    }).catch(() => {});
+
+    // 3. Cryptographic audit chain verification
+    import('../../core/security/auditChain').then(({ verifyChain }) => {
+      verifyChain().then((res) => {
+        setChainAudit({ ok: !!res?.ok, checking: false, count: res?.count || 0 });
+      }).catch(() => {
+        setChainAudit({ ok: false, checking: false, count: 0 });
+      });
+    });
+  }, [id, inst?.domain]);
+
+  // Real device telemetry matching this institution
+  const matchingDevices = useMemo(() => {
+    const pool = liveDevices.length > 0 ? liveDevices : devices;
+    return pool.filter((d) => d.tenantId === id || d.institutionId === id || d.tenant_id === id);
+  }, [liveDevices, devices, id]);
+
+  const attestedDevices = useMemo(() => {
+    return matchingDevices.filter((d) => d.trust === 'attested' || d.attestationStatus === 'VALID' || d.tpm === true || d.tpm_status === 'VERIFIED');
+  }, [matchingDevices]);
+
+  const lockedDevices = useMemo(() => {
+    return matchingDevices.filter((d) => d.peripheral_lock !== false && !d.usbStorageAllowed && d.peripheralLock !== false);
+  }, [matchingDevices]);
+
   const instExams = useMemo(() => exams.filter((e) => (e.tenantId === id || e.institutionId === id) && e.examUrl), [exams, id]);
 
+  // Dynamic assessment portal URL resolution
+  const verifiedUrls = useMemo(() => {
+    const list = [
+      linkedApp?.targetExamUrl,
+      inst?.targetExamUrl,
+      inst?.exam_url,
+      ...instExams.map((e) => e.examUrl),
+      linkedApp?.domain ? `https://${linkedApp.domain}` : null,
+      ...(inst?.domains || []).map((d) => `https://${d}`),
+    ].filter(Boolean);
+    return [...new Set(list)];
+  }, [linkedApp, inst, instExams]);
+
+  // 100% Dynamic pre-production validation gates
   const pilotChecks = useMemo(() => [
     {
       check: 'Workstation Fleet Hardware Boot in Kiosk Sandbox',
-      pass: instDevices.length > 0 || devices.length > 0,
-      detail: `${instDevices.length > 0 ? instDevices.length : devices.length} device(s) enrolled and reporting real-time telemetry`,
+      pass: matchingDevices.length > 0,
+      detail: matchingDevices.length > 0
+        ? `${matchingDevices.length} workstation(s) enrolled and reporting real-time telemetry`
+        : '0 device(s) enrolled and reporting real-time telemetry — boot workstation via ExamOS USB or managed lab',
     },
     {
       check: 'Hardware TPM 2.0 Silicon Attestation Validated',
-      pass: attestedCount > 0 || instDevices.length === 0,
-      detail: `${attestedCount} device(s) verified with signed PCR[0,2,4,7] cryptographic root`,
+      pass: matchingDevices.length > 0 && attestedDevices.length === matchingDevices.length,
+      detail: matchingDevices.length > 0
+        ? `${attestedDevices.length} of ${matchingDevices.length} device(s) verified with signed PCR[0,2,4,7] cryptographic root`
+        : '0 device(s) verified with signed PCR[0,2,4,7] cryptographic root — requires hardware TPM 2.0 attestation',
     },
     {
       check: 'Port Containment & External Peripheral Lock Engaged',
-      pass: true,
-      detail: `${lockedCount || instDevices.length || 1} workstation(s) enforced with active USB storage & peripheral containment`,
+      pass: matchingDevices.length > 0 && lockedDevices.length === matchingDevices.length,
+      detail: matchingDevices.length > 0
+        ? `${lockedDevices.length} of ${matchingDevices.length} workstation(s) enforced with active USB storage & peripheral containment`
+        : '0 workstation(s) enforced — port containment engages upon live kiosk workstation launch',
     },
     {
       check: 'Target Assessment Portal URL Origin Clearance',
-      pass: instExams.length > 0 || exams.length > 0,
-      detail: `${instExams.length > 0 ? instExams.length : (exams.length > 0 ? exams.length : 1)} assessment portal(s) verified for kiosk navigation`,
+      pass: verifiedUrls.length > 0,
+      detail: verifiedUrls.length > 0
+        ? `${verifiedUrls.length} assessment portal(s) verified for kiosk navigation (${verifiedUrls[0]})`
+        : '0 assessment portal(s) verified for kiosk navigation — configure target exam URL or domain',
     },
     {
       check: 'Cryptographic Ledger & Audit Chain Intact',
-      pass: true,
-      detail: 'Dual-persistence HMAC-SHA256 hash chain verified with zero broken blocks',
+      pass: chainAudit.ok,
+      detail: chainAudit.checking
+        ? 'Verifying cryptographic audit chain...'
+        : (chainAudit.ok
+            ? `Dual-persistence HMAC-SHA256 hash chain verified with ${chainAudit.count} intact block(s)`
+            : 'Audit ledger discrepancy detected — verification failed'),
     },
-  ], [instDevices, attestedCount, lockedCount, instExams, devices, exams]);
+  ], [matchingDevices, attestedDevices, lockedDevices, verifiedUrls, chainAudit]);
 
   const allPassed = pilotChecks.every((c) => c.pass);
 
@@ -1198,9 +1279,10 @@ export function PlatformOperationsPage() {
   const { user } = useAuth();
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
-  const targetId = (paramId && paramId !== ':id') ? paramId : (tenantId || institutions[0]?.id);
-  const inst = institutions.find((x) => x.id === targetId) || institutions[0] || { id: targetId, name: `Institution ${targetId}`, status: 'active' };
-  const id = inst?.id;
+  const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
+  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
+  const inst = instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'active' } : null);
+  const id = targetId;
   const incidents = useCol('incidents', false);
   const { msg, setMsg, run, busy } = useFlash();
 
