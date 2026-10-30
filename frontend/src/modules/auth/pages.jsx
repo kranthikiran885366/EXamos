@@ -6,31 +6,148 @@ import { acceptInvitation } from '../users/service';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
 
 export function MfaPage() {
-  const { verifyMfa } = useAuth();
+  const { verifyMfa, pending, cancelPending, backendReady } = useAuth();
   const navigate = useNavigate();
   const [code, setCode] = useState('');
+  const [isRecoveryCode, setIsRecoveryCode] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    // If no pending login, redirect to login
+    if (!pending) {
+      navigate('/login', { replace: true });
+    }
+  }, [pending, navigate]);
+
   const run = async (e) => {
-    e.preventDefault(); if (busy) return; setErr(''); setBusy(true);
+    if (e && e.preventDefault) e.preventDefault();
+    if (busy) return;
+    setErr('');
+    setBusy(true);
     try {
-      const r = await verifyMfa(code);
-      if (r?.error) { setErr(r.error); setBusy(false); return; }
-      navigate('/');
-    } catch (x) { setErr(x.message || String(x)); setBusy(false); }
+      const r = await verifyMfa(code.trim());
+      if (r?.error) {
+        setErr(r.error);
+        setBusy(false);
+        return;
+      }
+      navigate('/', { replace: true });
+    } catch (x) {
+      setErr(x.message || String(x));
+      setBusy(false);
+    }
   };
-  return <Page title="Two-step verification" desc="Enter the 6-digit code from your authenticator app, or a recovery code.">
-    <Card title="Verify" pad>
-      <form onSubmit={run} className="stack">
-        <Field label="Authentication code">
-          <Input inputMode="numeric" autoComplete="one-time-code" maxLength={12} value={code} onChange={(e) => setCode(e.target.value.replace(/[^0-9a-zA-Z-]/g, '').slice(0, 12))} autoFocus placeholder="123456" />
-        </Field>
-        {err && <Alert tone="danger">{err}</Alert>}
-        <button className="btn primary" disabled={busy || code.length < 6}>{busy ? 'Verifying…' : 'Verify and sign in'}</button>
-      </form>
-    </Card>
-    <p className="muted sm">Lost your authenticator? Use a recovery code, or ask support to start an account recovery.</p>
-  </Page>;
+
+  return (
+    <div className="loginwrap">
+      <div className="login" style={{ maxWidth: '440px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <div className="brand" style={{ margin: 0, fontSize: '1.75rem' }}>
+            <span className="logo">E</span>ExamOS
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '20px',
+              backgroundColor: backendReady ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+              border: `1px solid ${backendReady ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              color: backendReady ? '#10b981' : '#ef4444',
+            }}
+          >
+            <span
+              style={{
+                width: '7px',
+                height: '7px',
+                borderRadius: '50%',
+                backgroundColor: backendReady ? '#10b981' : '#ef4444',
+                boxShadow: backendReady ? '0 0 8px #10b981' : 'none',
+              }}
+            />
+            {backendReady ? 'Server Online' : 'Offline'}
+          </div>
+        </div>
+
+        <div className="login-tag" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+          <span>Two-Factor Authentication</span>
+          <span style={{ fontSize: '10px', fontFamily: 'monospace', opacity: 0.75 }}>
+            {isRecoveryCode ? 'Emergency Recovery' : 'RFC 6238 TOTP'}
+          </span>
+        </div>
+
+        <div style={{ marginBottom: '1.25rem' }}>
+          <h2 style={{ fontSize: '1.25rem', margin: '0 0 6px 0' }}>Security Verification</h2>
+          <p className="muted" style={{ fontSize: '12px', margin: 0, lineHeight: 1.5 }}>
+            {isRecoveryCode
+              ? 'Enter one of your 8-character single-use emergency recovery codes.'
+              : `Enter the 6-digit code for ${pending || 'your account'} from Google Authenticator.`}
+          </p>
+        </div>
+
+        <form onSubmit={run} className="stack">
+          <label>
+            {isRecoveryCode ? 'Emergency Recovery Code' : 'Authentication Code'}
+            <input
+              type="text"
+              inputMode={isRecoveryCode ? 'text' : 'numeric'}
+              autoComplete="one-time-code"
+              maxLength={isRecoveryCode ? 16 : 6}
+              value={code}
+              onChange={(e) => {
+                const val = isRecoveryCode
+                  ? e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 16)
+                  : e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                setCode(val);
+              }}
+              autoFocus
+              placeholder={isRecoveryCode ? 'ABCD-1234' : '123456'}
+              style={{ fontFamily: 'monospace', letterSpacing: '2px', textAlign: 'center', fontSize: '18px' }}
+            />
+          </label>
+
+          {err && <div className="err" role="alert" style={{ marginTop: '12px', marginBottom: '12px' }}>{err}</div>}
+
+          <button
+            className="btn primary wide"
+            disabled={busy || code.length < (isRecoveryCode ? 8 : 6)}
+            style={{ height: '44px', fontSize: '14px', fontWeight: 600, marginTop: '12px' }}
+          >
+            {busy ? 'Verifying Code…' : 'Verify & Continue'}
+          </button>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="text-action-link"
+              onClick={() => {
+                setIsRecoveryCode(!isRecoveryCode);
+                setCode('');
+                setErr('');
+              }}
+              style={{ background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: '12px' }}
+            >
+              {isRecoveryCode ? 'Use 6-digit Authenticator Code' : 'Use emergency recovery code'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (cancelPending) cancelPending();
+                navigate('/login');
+              }}
+              style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '12px' }}
+            >
+              ← Sign in as different user
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 export function RecoveryPage() {
@@ -62,7 +179,6 @@ export function RecoveryPage() {
       }
       setOk('Password reset successfully. You can now sign in with your new password.');
       setBusy(false);
-      // Auto-redirect to login after 3s
       setTimeout(() => navigate('/login'), 3000);
     } catch (x) {
       setErr(x.message || String(x));
@@ -73,7 +189,6 @@ export function RecoveryPage() {
   return (
     <div className="loginwrap">
       <div className="login" style={{ maxWidth: '480px' }}>
-        {/* Brand & Server Status Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
           <div className="brand" style={{ margin: 0, fontSize: '1.75rem' }}>
             <span className="logo">E</span>ExamOS
@@ -266,19 +381,36 @@ export function InvitePage() {
 }
 
 export function UnauthorizedPage() {
-  return <Page title="Access denied" desc="Your role does not include this module. The attempt was recorded in the audit trail.">
-    <Card title="Denied" pad>
-      <p className="muted">Contact your institution administrator if you believe you should have access.</p>
-      <Link to="/" className="btn">Return home</Link>
-    </Card>
-  </Page>;
+  return (
+    <div className="loginwrap" style={{ minHeight: '80vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="login" style={{ maxWidth: '480px', textAlign: 'center', padding: '32px 24px' }}>
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>🛡️</div>
+        <h2 style={{ fontSize: '1.4rem', color: '#ef4444', margin: '0 0 10px 0' }}>Access Denied</h2>
+        <p className="muted" style={{ fontSize: '13px', lineHeight: 1.6, marginBottom: '24px' }}>
+          Your current account role does not possess the cryptographic permissions required to access this enclaved resource. This security boundary event has been signed and written to the immutable ledger.
+        </p>
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+          <Link to="/" className="btn primary" style={{ minWidth: '140px' }}>Return to Home</Link>
+          <Link to="/login" className="btn" style={{ minWidth: '140px' }}>Sign in with different Role</Link>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function ExpiredPage() {
-  return <Page title="Session expired" desc="Your session has expired. Please sign in again.">
-    <Card title="Expired" pad>
-      <p className="muted">Your session has expired due to inactivity or the maximum session duration.</p>
-      <Link to="/login" className="btn primary">Sign in again</Link>
-    </Card>
-  </Page>;
+  return (
+    <div className="loginwrap" style={{ minHeight: '80vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="login" style={{ maxWidth: '480px', textAlign: 'center', padding: '32px 24px' }}>
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>⏱️</div>
+        <h2 style={{ fontSize: '1.4rem', color: '#f59e0b', margin: '0 0 10px 0' }}>Session Expired</h2>
+        <p className="muted" style={{ fontSize: '13px', lineHeight: 1.6, marginBottom: '24px' }}>
+          Your authenticated session has expired to preserve hardware boundary integrity. Please sign in again with your credentials and 2FA token.
+        </p>
+        <Link to="/login" className="btn primary wide" style={{ display: 'inline-block', lineHeight: '40px' }}>
+          Sign In Again
+        </Link>
+      </div>
+    </div>
+  );
 }
