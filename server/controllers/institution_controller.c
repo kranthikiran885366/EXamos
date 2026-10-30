@@ -424,6 +424,72 @@ void institution_handle(int client_fd, const char *method, const char *path,
         int ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
         if (ins) PQclear(ins);
 
+        /* Schema Self-Heal: if corporate columns are missing, apply schema update and retry */
+        if (!ok) {
+            fprintf(stderr, "[INST APPLICATION] Primary 35-col insert failed (%s). Attempting schema self-heal...\n", PQerrorMessage(conn));
+            PGresult *alt = db_simple(conn,
+                "ALTER TABLE institution_applications "
+                "ADD COLUMN IF NOT EXISTS company_size VARCHAR(30), "
+                "ADD COLUMN IF NOT EXISTS industry_sector VARCHAR(80), "
+                "ADD COLUMN IF NOT EXISTS hiring_volume INTEGER DEFAULT 0, "
+                "ADD COLUMN IF NOT EXISTS hr_contact_name VARCHAR(120), "
+                "ADD COLUMN IF NOT EXISTS hr_contact_email VARCHAR(120), "
+                "ADD COLUMN IF NOT EXISTS tech_stack TEXT, "
+                "ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255), "
+                "ADD COLUMN IF NOT EXISTS website_url VARCHAR(255), "
+                "ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0, "
+                "ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;", 0, NULL, NULL);
+            if (alt) PQclear(alt);
+
+            ins = db_simple(conn,
+                "INSERT INTO institution_applications ("
+                "  id, legal_name, display_name, entity_type, registration_number,"
+                "  country, state, address, domain, rep_name,"
+                "  rep_role, rep_email, rep_phone, coord_name, coord_email,"
+                "  tech_name, tech_email, campus_count, student_count, device_count,"
+                "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
+                "  documents, declarations,"
+                "  company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email,"
+                "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted"
+                ") VALUES ("
+                "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
+                "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
+                "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
+                "  '[]'::jsonb, '{}'::jsonb,"
+                "  NULLIF($26,''), NULLIF($27,''), $28::integer, NULLIF($29,''), NULLIF($30,''),"
+                "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,'')"
+                ")", 35, ins_vals, ins_lens);
+            ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
+            if (ins) PQclear(ins);
+        }
+
+        /* Fallback: insert using 25 standard base columns if extended columns are not available */
+        if (!ok) {
+            fprintf(stderr, "[INST APPLICATION] Retrying with 25 base columns... (%s)\n", PQerrorMessage(conn));
+            const char *base_vals[25];
+            int base_lens[25];
+            for (int k = 0; k < 25; k++) {
+                base_vals[k] = ins_vals[k];
+                base_lens[k] = ins_lens[k];
+            }
+            ins = db_simple(conn,
+                "INSERT INTO institution_applications ("
+                "  id, legal_name, display_name, entity_type, registration_number,"
+                "  country, state, address, domain, rep_name,"
+                "  rep_role, rep_email, rep_phone, coord_name, coord_email,"
+                "  tech_name, tech_email, campus_count, student_count, device_count,"
+                "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
+                "  documents, declarations"
+                ") VALUES ("
+                "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
+                "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
+                "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
+                "  '[]'::jsonb, '{}'::jsonb"
+                ")", 25, base_vals, base_lens);
+            ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
+            if (ins) PQclear(ins);
+        }
+
         if (!ok) {
             fprintf(stderr, "[INST APPLICATION ERROR] %s\n", PQerrorMessage(conn));
             db_release(conn, 0);

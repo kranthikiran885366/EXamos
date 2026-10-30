@@ -1218,6 +1218,28 @@ static void db_ensure_admin_accounts(PGconn *conn) {
                         ");");
     exec_sql_step(conn, "UPDATE exams SET exam_url = 'https://assessment.sppio.io/exam/live' WHERE exam_url IS NULL OR exam_url = '';");
 
+    /* 5c. Ensure corporate / entity support columns on institution_applications & tenants */
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS entity_type VARCHAR(40) NOT NULL DEFAULT 'enterprise';");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS company_size VARCHAR(30);");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS industry_sector VARCHAR(80);");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hiring_volume INTEGER DEFAULT 0;");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hr_contact_name VARCHAR(120);");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hr_contact_email VARCHAR(120);");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS tech_stack TEXT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255);");
+    exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);");
+
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS company_size VARCHAR(30);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS industry_sector VARCHAR(80);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hiring_volume INTEGER DEFAULT 0;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hr_contact_name VARCHAR(120);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hr_contact_email VARCHAR(120);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS tech_stack TEXT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;");
+
     /* 6. Login throttle table ensure and clear */
     exec_sql_step(conn,
         "CREATE TABLE IF NOT EXISTS examos_admin_login_throttle ("
