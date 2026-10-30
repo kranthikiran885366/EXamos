@@ -190,10 +190,12 @@ void auth_admin_login(int client_fd, const char *req_body,
         strncpy(db_salt, PQgetvalue(res, 0, 3), sizeof(db_salt) - 1);
         strncpy(db_role, PQgetvalue(res, 0, 4), sizeof(db_role) - 1);
         strncpy(db_inst, PQgetvalue(res, 0, 5), sizeof(db_inst) - 1);
-        mfa_enabled = atoi(PQgetvalue(res, 0, 6));
+        const char *mval = PQgetvalue(res, 0, 6);
+        mfa_enabled = (mval && (mval[0] == 't' || mval[0] == 'T' || mval[0] == '1' || atoi(mval) > 0)) ? 1 : 0;
         strncpy(db_status, PQgetvalue(res, 0, 7), sizeof(db_status) - 1);
         strncpy(db_totp, PQgetvalue(res, 0, 8), sizeof(db_totp) - 1);
         strncpy(db_name, PQgetvalue(res, 0, 9), sizeof(db_name) - 1);
+        if (db_totp[0]) mfa_enabled = 1;
     }
     if (res) PQclear(res);
 
@@ -213,10 +215,12 @@ void auth_admin_login(int client_fd, const char *req_body,
             int role_id = atoi(PQgetvalue(res, 0, 4));
             strncpy(db_role, security_role_to_string((user_role_t)role_id), sizeof(db_role) - 1);
             strncpy(db_inst, PQgetvalue(res, 0, 5), sizeof(db_inst) - 1);
-            mfa_enabled = atoi(PQgetvalue(res, 0, 6));
+            const char *mval2 = PQgetvalue(res, 0, 6);
+            mfa_enabled = (mval2 && (mval2[0] == 't' || mval2[0] == 'T' || mval2[0] == '1' || atoi(mval2) > 0)) ? 1 : 0;
             strncpy(db_status, PQgetvalue(res, 0, 7), sizeof(db_status) - 1);
             strncpy(db_totp, PQgetvalue(res, 0, 8), sizeof(db_totp) - 1);
             strncpy(db_name, PQgetvalue(res, 0, 9), sizeof(db_name) - 1);
+            if (db_totp[0]) mfa_enabled = 1;
         }
         if (res) PQclear(res);
     }
@@ -267,10 +271,11 @@ void auth_admin_login(int client_fd, const char *req_body,
 
     /* Management Dashboard MFA Enforcement:
      * First-time / new management users who do not have an authenticator registered
-     * must set up Google Authenticator first (MFA_SETUP_REQUIRED).
-     * Users who already enrolled their authenticator must provide a valid TOTP/recovery code (MFA_REQUIRED).
+     * (db_totp is empty) must set up Google Authenticator first (MFA_SETUP_REQUIRED).
+     * Users who already enrolled their authenticator (db_totp exists) must provide
+     * their valid 6-digit TOTP code or recovery code (MFA_REQUIRED).
      */
-    if (!mfa_enabled || !db_totp[0]) {
+    if (!db_totp[0]) {
         char setup_msg[512];
         snprintf(setup_msg, sizeof(setup_msg),
             "{\"status\":\"MFA_SETUP_REQUIRED\",\"mfa_setup_required\":true,"
@@ -902,18 +907,18 @@ void auth_mfa_confirm(int client_fd, const char *req_body, const char *auth_head
         return;
     }
 
-    /* 1. Update users table */
+    /* 1. Update users table (match by username, email, or id) */
     const char *pvals[2] = { secret, username };
     int lens[2] = { (int)strlen(secret), (int)strlen(username) };
     PGresult *u_res = db_simple(conn,
-        "UPDATE users SET totp_secret = $1, mfa_enabled = 1 WHERE LOWER(username) = LOWER($2) OR id = $2",
+        "UPDATE users SET totp_secret = $1, mfa_enabled = 1 WHERE LOWER(username) = LOWER($2) OR LOWER(email) = LOWER($2) OR id = $2",
         2, pvals, lens);
     if (u_res) PQclear(u_res);
 
-    /* 2. Update examos_admin_users */
+    /* 2. Update examos_admin_users (match by username, email, or user_id) */
     PGresult *a_res = db_simple(conn,
         "UPDATE examos_admin_users SET totp_secret = $1, mfa_enabled = true, totp_enrolled_at = clock_timestamp() "
-        "WHERE LOWER(username) = LOWER($2) OR user_id = $2 RETURNING user_id",
+        "WHERE LOWER(username) = LOWER($2) OR LOWER(email) = LOWER($2) OR user_id = $2 RETURNING user_id",
         2, pvals, lens);
     char user_id[64] = {0};
     if (a_res && PQresultStatus(a_res) == PGRES_TUPLES_OK && PQntuples(a_res) > 0) {

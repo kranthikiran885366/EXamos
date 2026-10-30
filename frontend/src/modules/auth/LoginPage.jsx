@@ -141,6 +141,8 @@ export default function LoginPage() {
       if (res?.mfaSetupRequired) {
         setInfo('First-time login: Please set up Google Authenticator to secure your management account.');
         openQrSetup(res.username || u);
+      } else if (res?.mfa) {
+        setInfo('Enter the 6-digit code from your Google Authenticator app.');
       } else if (res?.error) {
         setErr(res.error);
       }
@@ -236,46 +238,86 @@ export default function LoginPage() {
     setQrLoading(false);
   };
 
-  const handleConfirmMfa = async () => {
-    if (!qrData || confirmCode.length < 6) return;
-    setBusy(true);
-    setErr('');
-    try {
-      const res = await mfaConfirm({
-        username: qrData.username,
-        secret: qrData.secret,
-        code: confirmCode,
-        recoveryCodes: qrData.recovery_codes,
-      });
-      if (res?.status === 'SUCCESS' || res?.ok) {
-        setInfo(`Google Authenticator configured for ${qrData.username}! Logging in…`);
-        setShowQrModal(false);
-        const loginUser = qrData.username || u;
-        if (p) {
-          try {
-            const authRes = await backendLogin({ username: loginUser, password: p, mfaCode: confirmCode });
-            if (authRes?.ok) {
-              navigate(safeRedirect(loc.state?.from));
-              return;
-            } else if (authRes?.error) {
-              setErr(authRes.error);
-            }
-          } catch (loginErr) {
-            setErr(loginErr.message || 'Failed to complete login. Please sign in with your authenticator code.');
-          }
-        }
-        if (pending) {
-          setCode(confirmCode);
-        }
-      } else {
-        setErr(res?.error || 'Invalid authenticator code. Check your device clock.');
-      }
-    } catch (e) {
-      setErr(e.message || 'Failed to activate Google Authenticator');
-    } finally {
-      setBusy(false);
-    }
-  };
+  const handleConfirmMfa = async () => {
+
+    if (!qrData || confirmCode.length < 6) return;
+
+    setBusy(true);
+
+    setErr('');
+
+    try {
+
+      const res = await mfaConfirm({
+
+        username: qrData.username,
+
+        secret: qrData.secret,
+
+        code: confirmCode,
+
+        recoveryCodes: qrData.recovery_codes,
+
+      });
+
+      if (res?.status === 'SUCCESS' || res?.ok) {
+
+        setInfo(`Google Authenticator configured for ${qrData.username}! Logging in…`);
+
+        setShowQrModal(false);
+
+        const loginUser = qrData.username || u;
+
+        if (p) {
+
+          try {
+
+            const authRes = await backendLogin({ username: loginUser, password: p, mfaCode: confirmCode });
+
+            if (authRes?.ok) {
+
+              navigate(safeRedirect(loc.state?.from));
+
+              return;
+
+            } else if (authRes?.error) {
+
+              setErr(authRes.error);
+
+            }
+
+          } catch (loginErr) {
+
+            setErr(loginErr.message || 'Failed to complete login. Please sign in with your authenticator code.');
+
+          }
+
+        }
+
+        if (pending) {
+
+          setCode(confirmCode);
+
+        }
+
+      } else {
+
+        setErr(res?.error || 'Invalid authenticator code. Check your device clock.');
+
+      }
+
+    } catch (e) {
+
+      setErr(e.message || 'Failed to activate Google Authenticator');
+
+    } finally {
+
+      setBusy(false);
+
+    }
+
+  };
+
 
   const copyToClipboard = (text, setCopied) => {
     if (navigator?.clipboard?.writeText) {

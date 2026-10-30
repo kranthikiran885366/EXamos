@@ -167,8 +167,9 @@ export function AuthProvider({ children }) {
       await beginSession(u);
       return { ok: true };
     }
-    // New management users must set up their authenticator first
-    if (!u.totpEnrolled && (!u.recoveryCodes || u.recoveryCodes.length === 0)) {
+    // New management users who have neither TOTP secret nor recovery codes must set up MFA
+    const hasEnrolledTotp = !!(u.totp || u.totpSecret || u.totpEnrolled);
+    if (!hasEnrolledTotp && (!u.recoveryCodes || u.recoveryCodes.length === 0)) {
       setPendingCredentials({ username: key, password });
       setPending(key);
       return { mfaSetupRequired: true, username: key };
@@ -571,6 +572,7 @@ export function AuthProvider({ children }) {
         await put('users', {
           ...u,
           totp: secret,
+          totpEnrolled: true,
           mfaEnabled: true,
           recoveryCodes: hashes.length > 0 ? hashes : u.recoveryCodes,
         });
