@@ -2013,7 +2013,149 @@ void institution_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-                /* 3l. Guided Onboarding Checklist: GET /api/v1/admin/institutions/:id/onboarding */
+                /* 3j. List Institution Admins: GET /api/v1/admin/institutions/:id/admins */
+        if (strcmp(method, "GET") == 0 && strcmp(sub, "admins") == 0) {
+            const char *pvals[1] = { inst_id };
+            int lens[1] = { (int)strlen(inst_id) };
+            PGresult *res = db_simple(conn,
+                "SELECT id, username, name, role, email, status, mfa_enabled, "
+                "       created_at, last_login, COALESCE(title, '') "
+                "FROM users WHERE tenant_id = $1 ORDER BY created_at DESC", 1, pvals, lens);
+
+            char json[16384];
+            size_t pos = 0;
+            pos += snprintf(json + pos, sizeof(json) - pos, "{\"admins\":[");
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+                int count = PQntuples(res);
+                for (int i = 0; i < count; i++) {
+                    char id_esc[128], u_esc[128], n_esc[128], r_esc[64], e_esc[128], s_esc[32], t_esc[128];
+                    escape_json_str(PQgetvalue(res, i, 0), id_esc, sizeof(id_esc));
+                    escape_json_str(PQgetvalue(res, i, 1), u_esc, sizeof(u_esc));
+                    escape_json_str(PQgetvalue(res, i, 2), n_esc, sizeof(n_esc));
+                    escape_json_str(PQgetvalue(res, i, 3), r_esc, sizeof(r_esc));
+                    escape_json_str(PQgetvalue(res, i, 4), e_esc, sizeof(e_esc));
+                    escape_json_str(PQgetvalue(res, i, 5), s_esc, sizeof(s_esc));
+                    escape_json_str(PQgetvalue(res, i, 9), t_esc, sizeof(t_esc));
+
+                    pos += snprintf(json + pos, sizeof(json) - pos,
+                        "%s{\"id\":\"%s\",\"username\":\"%s\",\"full_name\":\"%s\","
+                        "\"name\":\"%s\",\"role\":\"%s\",\"email\":\"%s\","
+                        "\"status\":\"%s\",\"active\":%d,\"mfa_enabled\":%s,"
+                        "\"created_at\":%s,\"last_login\":%s,\"title\":\"%s\"}",
+                        i > 0 ? "," : "",
+                        id_esc, u_esc, n_esc, n_esc, r_esc, e_esc,
+                        s_esc, strcmp(s_esc, "active") == 0 ? 1 : 0,
+                        (PQgetvalue(res, i, 6)[0] == '1' || PQgetvalue(res, i, 6)[0] == 't') ? "true" : "false",
+                        PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "0",
+                        PQgetvalue(res, i, 8)[0] ? PQgetvalue(res, i, 8) : "0",
+                        t_esc);
+                }
+            }
+            if (res) PQclear(res);
+            db_release(conn, 0);
+
+            pos += snprintf(json + pos, sizeof(json) - pos, "]}");
+            inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* 3k. Invite / Create Institution Admin: POST /api/v1/admin/institutions/:id/admins */
+        if (strcmp(method, "POST") == 0 && (strcmp(sub, "admins") == 0 || strcmp(sub, "admins/invite") == 0)) {
+            char email[128] = {0}, name[128] = {0}, role[64] = "inst_admin", campus_id[64] = {0}, username[64] = {0};
+            ctrl_json_string(body, "email", email, sizeof(email));
+            ctrl_json_string(body, "name", name, sizeof(name));
+            ctrl_json_string(body, "role", role, sizeof(role));
+            ctrl_json_string(body, "campusId", campus_id, sizeof(campus_id));
+            ctrl_json_string(body, "username", username, sizeof(username));
+
+            if (!email[0] || !name[0]) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "Name and institutional email are required", origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (!username[0]) {
+                const char *at = strchr(email, '@');
+                size_t prefix_len = at ? (size_t)(at - email) : strlen(email);
+                if (prefix_len > 40) prefix_len = 40;
+                char clean_pfx[64] = {0};
+                size_t c_idx = 0;
+                for (size_t i = 0; i < prefix_len; i++) {
+                    char ch = email[i];
+                    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
+                        clean_pfx[c_idx++] = ch;
+                    }
+                }
+                clean_pfx[c_idx] = '\0';
+                snprintf(username, sizeof(username), "%s_%ld", clean_pfx[0] ? clean_pfx : "admin", ((long)time(NULL)) % 100000);
+            }
+
+            char user_id[64];
+            snprintf(user_id, sizeof(user_id), "usr_%ld_%04d", (long)time(NULL), rand() % 10000);
+
+            char salt[64];
+            snprintf(salt, sizeof(salt), "s_%ld_%04d", (long)time(NULL), rand() % 10000);
+            char temp_pwd[32];
+            snprintf(temp_pwd, sizeof(temp_pwd), "Exam0S!%ld%02d", (long)time(NULL) % 1000000, rand() % 100);
+
+            char hash[256] = {0};
+            security_pbkdf2_hash(temp_pwd, salt, hash, sizeof(hash));
+
+            char now_str[32];
+            snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL));
+
+            const char *pvals[9] = {
+                user_id, username, name, role[0] ? role : "inst_admin",
+                inst_id, email, hash, salt, now_str
+            };
+            int lens[9];
+            for (int k = 0; k < 9; k++) lens[k] = (int)strlen(pvals[k]);
+
+            PGresult *ins = db_simple(conn,
+                "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, 'active', $9::bigint, 0) "
+                "ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name, role = EXCLUDED.role, tenant_id = EXCLUDED.tenant_id "
+                "RETURNING id, username", 9, pvals, lens);
+
+            if (!ins || PQresultStatus(ins) != PGRES_TUPLES_OK) {
+                if (ins) PQclear(ins);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to create administrator account in database", origin, extra_headers, extra_len);
+                return;
+            }
+
+            char ret_id[64] = {0}, ret_user[64] = {0};
+            strncpy(ret_id, PQgetvalue(ins, 0, 0), sizeof(ret_id) - 1);
+            strncpy(ret_user, PQgetvalue(ins, 0, 1), sizeof(ret_user) - 1);
+            PQclear(ins);
+
+            if (campus_id[0]) {
+                char staff_id[64];
+                snprintf(staff_id, sizeof(staff_id), "stf_%ld_%04d", (long)time(NULL), rand() % 10000);
+                const char *s_vals[6] = { staff_id, inst_id, ret_id, name, role, campus_id };
+                int s_lens[6];
+                for (int s = 0; s < 6; s++) s_lens[s] = (int)strlen(s_vals[s]);
+                PGresult *stf = db_simple(conn,
+                    "INSERT INTO staff (id, tenant_id, user_id, name, role_title, campus_id, status, created_at, updated_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, 'active', EXTRACT(EPOCH FROM NOW())::bigint, EXTRACT(EPOCH FROM NOW())::bigint) "
+                    "ON CONFLICT (id) DO NOTHING", 6, s_vals, s_lens);
+                if (stf) PQclear(stf);
+            }
+
+            audit_and_ledger(sess.user_id, "INSTITUTION_ADMIN_INVITED", inst_id, email);
+            db_release(conn, 0);
+
+            char resp[1024];
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"created\",\"user_id\":\"%s\",\"id\":\"%s\","
+                "\"username\":\"%s\",\"name\":\"%s\",\"email\":\"%s\","
+                "\"role\":\"%s\",\"tenant_id\":\"%s\",\"tempPassword\":\"%s\",\"mfa_enabled\":false}",
+                ret_id, ret_id, ret_user, name, email, role, inst_id, temp_pwd);
+            inst_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* 3l. Guided Onboarding Checklist: GET /api/v1/admin/institutions/:id/onboarding */
         if (strcmp(method, "GET") == 0 && strcmp(sub, "onboarding") == 0) {
             const char *pvals[1] = { inst_id };
             int lens[1] = { (int)strlen(inst_id) };
