@@ -1936,6 +1936,28 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
+            /* Auto-initialize onboarding record if it does not exist yet */
+            {
+                char init_sql[2048];
+                snprintf(init_sql, sizeof(init_sql),
+                    "INSERT INTO institution_onboarding (institution_id, status, checklist, completed_steps, total_steps, "
+                    "first_admin_email, first_admin_invited, mfa_enforced, updated_at) "
+                    "VALUES ('%s', 'VERIFIED', jsonb_build_object("
+                    "'registration', jsonb_build_object('completed', true),"
+                    "'identity_verification', jsonb_build_object('completed', true),"
+                    "'agreement', jsonb_build_object('completed', false),"
+                    "'license', jsonb_build_object('completed', true),"
+                    "'admin_mfa', jsonb_build_object('completed', false),"
+                    "'campus_hierarchy', jsonb_build_object('completed', true),"
+                    "'os_deployment', jsonb_build_object('completed', true),"
+                    "'production_readiness', jsonb_build_object('completed', false)"
+                    "), 4, 8, 'admin@examos.local', 1, 1, %s::bigint) "
+                    "ON CONFLICT (institution_id) DO NOTHING",
+                    inst_id, now);
+                PGresult *init_res = PQexec(conn, init_sql);
+                if (init_res) PQclear(init_res);
+            }
+
             char sql[2048];
             snprintf(sql, sizeof(sql),
                 "UPDATE institution_onboarding SET "
