@@ -800,17 +800,46 @@ export function PlatformProvisioningPage() {
   const { user } = useAuth();
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
-  const targetId = (paramId && paramId !== ':id') ? paramId : (tenantId || institutions[0]?.id);
-  const inst = institutions.find((x) => x.id === targetId) || institutions[0] || { id: targetId, name: `Institution ${targetId}`, status: 'approved' };
-  const id = inst?.id;
+
+  // CRITICAL: always use the URL param ID; never fall back to institutions[0]
+  // which could be a different already-provisioned institution
+  const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
+
+  // Only match by targetId
+  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
+  const [instLive, setInstLive] = useState(null);
+  const inst = instLive || instFromCache
+    || (targetId ? { id: targetId, name: 'Loading...', status: 'approved', entityType: 'enterprise' } : null);
+  const id = targetId;
+
   const { msg, setMsg, run, busy } = useFlash();
 
   const [provisioningResult, setProvisioningResult] = useState(null);
-  const [provisionDone, setProvisionDone] = useState(!!inst?.status && ['active', 'provisioned', 'pilot'].includes(inst?.status));
+  const [provisionDone, setProvisionDone] = useState(false);
   const [adminModal, setAdminModal] = useState(false);
   const [adminData, setAdminData] = useState({ name: '', email: '', role: 'inst_admin' });
   const [adminCreated, setAdminCreated] = useState(null);
   const [onboarding, setOnboarding] = useState(null);
+  const [existingAdmins, setExistingAdmins] = useState([]);
+  const [loadingAdmins, setLoadingAdmins] = useState(true);
+
+  // Load existing admins to detect conflicts / prevent duplicate creation
+  useEffect(() => {
+    if (!id) return;
+    setLoadingAdmins(true);
+    import('../institutions/service').then(({ listInstitutionAdmins: listAdmins }) =>
+      listAdmins(id)
+        .then((a) => { setExistingAdmins(Array.isArray(a) ? a : []); setLoadingAdmins(false); })
+        .catch(() => { setExistingAdmins([]); setLoadingAdmins(false); })
+    );
+  }, [id]);
+
+  // Sync provisionDone from cache as early signal
+  useEffect(() => {
+    if (instFromCache?.status && ['active', 'provisioned', 'pilot'].includes(instFromCache.status)) {
+      setProvisionDone(true);
+    }
+  }, [instFromCache?.status]);
 
   // Load real provisioning / onboarding state from API
   useEffect(() => {
@@ -818,9 +847,17 @@ export function PlatformProvisioningPage() {
     fetchInstitutionOnboarding(id)
       .then((ob) => {
         setOnboarding(ob);
-        if (ob?.status === 'provisioned' || ob?.status === 'admin_setup' || ob?.completedSteps >= 4) {
-          setProvisionDone(true);
+        const done = ob?.status === 'provisioned' || ob?.status === 'admin_setup'
+          || ob?.status === 'active' || (ob?.completedSteps ?? 0) >= 4;
+        if (done) setProvisionDone(true);
+        if (ob?.contactEmail || ob?.repEmail) {
+          setAdminData((d) => ({
+            ...d,
+            email: d.email || ob.contactEmail || ob.repEmail || '',
+            name: d.name || ob.repName || '',
+          }));
         }
+        if (ob?.institution) setInstLive(ob.institution);
       })
       .catch(() => {});
   }, [id]);
@@ -861,10 +898,16 @@ export function PlatformProvisioningPage() {
       const result = await provisionApplication(user, id);
       setProvisioningResult(result);
       setProvisionDone(true);
-      // Pre-fill admin email from institution contact if available
-      if (inst?.contactEmail) {
-        setAdminData((d) => ({ ...d, email: inst.contactEmail, name: inst.repName || '' }));
-      }
+      // Pre-fill admin data from institution contact info
+      setAdminData((d) => ({
+        ...d,
+        email: d.email || inst?.contactEmail || inst?.repEmail || '',
+        name: d.name || inst?.repName || '',
+      }));
+      // Refresh existing admins list after provisioning
+      import('../institutions/service').then(({ listInstitutionAdmins: la }) =>
+        la(id).then((a) => setExistingAdmins(Array.isArray(a) ? a : [])).catch(() => {})
+      );
       return 'Tenant provisioned — database schema, cryptographic keys, and license created. Now invite the primary administrator.';
     }, 'Provisioning complete.');
   };
@@ -919,9 +962,17 @@ export function PlatformProvisioningPage() {
             <span className="badge g" style={{ padding: '8px 16px' }}>✓ Tenant Provisioned</span>
           )}
           {provisionDone && !adminCreated && !onboarding?.checklist?.admin_mfa?.completed && (
-            <button className="btn primary" onClick={() => setAdminModal(true)} disabled={busy}>
-              <Icon name="users" size={14} /> Create Primary Administrator
-            </button>
+            loadingAdmins ? (
+              <span className="muted sm">Checking for existing administrators...</span>
+            ) : existingAdmins.length > 0 ? (
+              <span className="badge g" style={{ padding: '8px 16px' }}>
+                ✓ {existingAdmins.length} Admin{existingAdmins.length > 1 ? 's' : ''} Already Configured
+              </span>
+            ) : (
+              <button className="btn primary" onClick={() => setAdminModal(true)} disabled={busy}>
+                <Icon name="users" size={14} /> Create Primary Administrator
+              </button>
+            )
           )}
           {(adminCreated || onboarding?.checklist?.admin_mfa?.completed) && (
             <button className="btn" onClick={() => nav(`/platform/institutions/${provisioningResult?.institution_id || id}/readiness`)}>
@@ -943,6 +994,31 @@ export function PlatformProvisioningPage() {
         </div>
       )}
 
+      {/* Existing Admins Panel */}
+      {existingAdmins.length > 0 && (
+        <Card
+          title={`Existing Administrators (${existingAdmins.length})`}
+          desc="These administrator accounts are already configured for this institution. Creating another is optional."
+        >
+          <DataTable
+            rows={existingAdmins}
+            columns={[
+              { key: 'name', label: 'Name', render: (a) => <b>{a.name || a.username}</b> },
+              { key: 'email', label: 'Email', render: (a) => <span className="muted sm">{a.email}</span> },
+              { key: 'role', label: 'Role', render: (a) => <Badge value={a.role} /> },
+              { key: 'mfaEnabled', label: 'MFA', render: (a) => <Badge value={a.mfaEnabled ? 'Enrolled' : 'Pending'} tone={a.mfaEnabled ? 'green' : 'amber'} /> },
+              { key: 'status', label: 'Status', render: (a) => <Badge value={a.status} tone={a.status === 'active' ? 'green' : 'red'} /> },
+            ]}
+            empty={<Empty icon="users" title="No admins found" />}
+          />
+          <div className="row end" style={{ marginTop: '12px' }}>
+            <button className="btn" onClick={() => setAdminModal(true)} disabled={busy}>
+              <Icon name="users" size={14} /> Add Another Administrator
+            </button>
+          </div>
+        </Card>
+      )}
+
       {/* Create Admin Modal */}
       {adminModal && (
         <Modal
@@ -955,7 +1031,7 @@ export function PlatformProvisioningPage() {
               <Input
                 value={adminData.name}
                 onChange={(e) => setAdminData({ ...adminData, name: e.target.value })}
-                placeholder="e.g. Prof. Rajan Mehta"
+                placeholder={inst?.entityType && ['enterprise','technology','company'].includes(inst.entityType) ? 'e.g. John Smith (IT Director)' : 'e.g. Prof. Rajan Mehta'}
                 required
               />
             </Field>
@@ -964,7 +1040,7 @@ export function PlatformProvisioningPage() {
                 type="email"
                 value={adminData.email}
                 onChange={(e) => setAdminData({ ...adminData, email: e.target.value })}
-                placeholder={`e.g. admin@${inst.domains?.[0] || 'institution.edu'}`}
+                placeholder={`e.g. admin@${inst?.domains?.[0] || inst?.domain || (inst?.entityType === 'enterprise' ? 'company.com' : 'institution.edu')}`}
                 required
               />
             </Field>
