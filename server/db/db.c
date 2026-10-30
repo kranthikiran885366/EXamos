@@ -1127,7 +1127,7 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000) "
         "ON CONFLICT (id) DO NOTHING;");
 
-    /* 2. Upsert admin in users */
+    /* 2. Upsert admin in users - preserve enrolled MFA on restart */
     exec_sql_step(conn,
         "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
         "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local', "
@@ -1135,11 +1135,9 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "ON CONFLICT (username) DO UPDATE SET "
         "password_hash = '0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', "
         "salt = 's0_salt_admin_001', "
-        "mfa_enabled = 0, "
-        "totp_secret = NULL, "
         "status = 'active';");
 
-    /* 3. Upsert root in users */
+    /* 3. Upsert root in users - preserve enrolled MFA on restart */
     exec_sql_step(conn,
         "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
         "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local', "
@@ -1147,8 +1145,6 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "ON CONFLICT (username) DO UPDATE SET "
         "password_hash = 'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', "
         "salt = 's1_salt_root_001', "
-        "mfa_enabled = 0, "
-        "totp_secret = NULL, "
         "status = 'active';");
 
     /* 4. Ensure seed users have valid defaults without wiping existing enrolled MFA */
