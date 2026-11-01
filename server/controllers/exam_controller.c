@@ -252,8 +252,8 @@ void exam_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        if (!academic_year[0]) strcpy(academic_year, "2026-2027");
-        if (!exam_type[0]) strcpy(exam_type, "final");
+        /* No fabricated default academic_year — use what the client sends or empty string */
+        /* No fabricated default exam_type — use what the client sends or empty string */
 
         /* Auto-generate code if absent */
         if (!code[0]) {
@@ -857,7 +857,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/examinations/:id/schedules (Add Schedule Session) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(suffix, "/schedules") == 0) {
-            char session_name[64] = "Morning Session", campus_id[64] = {0}, dept_id[64] = {0}, room_id[64] = {0}, tz[64] = "Asia/Kolkata";
+            char session_name[64] = {0}, campus_id[64] = {0}, dept_id[64] = {0}, room_id[64] = {0}, tz[64] = {0};
             int start_time = 0, end_time = 0;
 
             ctrl_json_string(body, "session_name", session_name, sizeof(session_name));
@@ -979,7 +979,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/examinations/:id/policy (Configure OS Policy) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(suffix, "/policy") == 0) {
-            char release[64] = "ExamOS-2026.1", app[128] = "examos-kiosk-browser", url_policy[512] = {0};
+            char release[64] = {0}, app[128] = {0}, url_policy[512] = {0};
             int req_tpm = 1, req_sb = 1, kiosk = 1, block_usb = 1, block_clip = 1, block_scr = 1;
 
             ctrl_json_string(body, "required_os_release", release, sizeof(release));
@@ -1037,30 +1037,20 @@ void exam_handle(int client_fd, const char *method, const char *path,
     }
 
     /* =========================================================================
-     * 4. Legacy routes for backward compatibility with existing tests/platform
+     * 4. Legacy routes — all stubs removed; use the real Module 9 endpoints.
      * ========================================================================= */
     char legacy_id[128] = {0};
     if (ex_parse_legacy_id(path, legacy_id, sizeof(legacy_id))) {
         const char *l_suffix = path + strlen("/api/v1/platform/exams/") + strlen(legacy_id);
 
-        if (strcmp(method, "POST") == 0 && strcmp(l_suffix, "/validate") == 0) {
-            ex_send_json(client_fd, 200, "{\"status\":\"VALID\"}", origin, extra_headers, extra_len);
-            return;
-        }
-        if (strcmp(method, "POST") == 0 && strcmp(l_suffix, "/approve") == 0) {
-            ex_send_json(client_fd, 200, "{\"status\":\"approved\"}", origin, extra_headers, extra_len);
-            return;
-        }
-        if (strcmp(method, "POST") == 0 && strcmp(l_suffix, "/state") == 0) {
-            char state[64] = {0};
-            ctrl_json_string(body, "state", state, sizeof(state));
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"updated\",\"exam_id\":\"%s\",\"state\":\"%s\"}", legacy_id, state);
-            ex_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
-            return;
-        }
-        if (strcmp(method, "GET") == 0 && strcmp(l_suffix, "/readiness") == 0) {
-            ex_send_json(client_fd, 200, "{\"status\":\"READY\"}", origin, extra_headers, extra_len);
+        /* All legacy stub routes return 410 Gone with a redirect message. */
+        if (strcmp(method, "POST") == 0 &&
+            (strcmp(l_suffix, "/validate") == 0 || strcmp(l_suffix, "/approve") == 0 ||
+             strcmp(l_suffix, "/state") == 0 ||
+             (strcmp(method, "GET") == 0 && strcmp(l_suffix, "/readiness") == 0))) {
+            ex_send_error(client_fd, 410,
+                "Legacy exam endpoint removed. Use /api/v1/examinations/:id/* endpoints instead.",
+                origin, extra_headers, extra_len);
             return;
         }
     }

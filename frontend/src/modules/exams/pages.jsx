@@ -515,7 +515,23 @@ export function ExamCandidatesPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const may = usePerm();
-  const { rows: exams, loaded } = useColLoaded('exams');
+  // Backend-first: fetch exam detail from API, fall back to local cache.
+  const { rows: localExams, loaded } = useColLoaded('exams');
+  const [backendExam, setBackendExam] = useState(null);
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    Api.getExamination(id).then((res) => {
+      const exam = res?.examination || res;
+      if (exam && !cancelled) {
+        const mapped = { id: exam.id, tenantId: exam.institution_id, code: exam.code, title: exam.name || exam.title, status: exam.status, startAt: exam.scheduled_start || 0, durationMin: exam.duration_minutes || 60, examUrl: exam.exam_url || '' };
+        setBackendExam(mapped);
+        put('exams', mapped).catch(() => {});
+      }
+    }).catch(() => {}).finally(() => { if (!cancelled) {} });
+    return () => { cancelled = true; };
+  }, [id]);
+  const exams = backendExam ? [backendExam, ...localExams.filter(x => x.id !== backendExam.id)] : localExams;
   const candidates = useCol('candidates');
   const centers = useCol('centers');
   const devices = useCol('devices');
@@ -527,7 +543,7 @@ export function ExamCandidatesPage() {
   const [count, setCount] = useState('');
   const [pending, setPending] = useState(null);
 
-  // Module 10: Eligibility state
+  // Module 10: Eligibility state from backend API
   const { data: rules, reload: reloadRules } = useLoad(async () => (id ? listEligibilityRules(id) : []), [id]);
   const { data: liveSessions, reload: reloadSessions } = useLoad(async () => (id ? listExaminationSessions(id) : []), [id]);
   const [newRule, setNewRule] = useState({ rule_type: 'min_attendance', rule_value: '75', is_strict: true });
@@ -716,11 +732,39 @@ export function ExamPoliciesPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const may = usePerm();
-  const { rows: exams, loaded } = useColLoaded('exams');
+  // Backend-first: fetch exam detail from API, fall back to local cache.
+  const { rows: localExams, loaded } = useColLoaded('exams');
+  const [backendExam, setBackendExam] = useState(null);
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    Api.getExamination(id).then((res) => {
+      const exam = res?.examination || res;
+      if (exam && !cancelled) {
+        const mapped = { id: exam.id, tenantId: exam.institution_id, code: exam.code, title: exam.name || exam.title, status: exam.status, policyId: exam.policy_id || null, examUrl: exam.exam_url || '' };
+        setBackendExam(mapped);
+        put('exams', mapped).catch(() => {});
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
+  const exams = backendExam ? [backendExam, ...localExams.filter(x => x.id !== backendExam.id)] : localExams;
   const policies = useCol('policies');
   const { msg, setMsg, run, busy } = useFlash();
   const e = exams.find((x) => x.id === id);
   const pol = policies.find((p) => p.id === e?.policyId);
+  // Backend-first: fetch OS policy from the examination detail endpoint.
+  const [backendPolicy, setBackendPolicy] = useState(null);
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    Api.getExamination(id).then((res) => {
+      const examDetail = res?.examination || res;
+      if (examDetail?.os_policy && !cancelled) setBackendPolicy(examDetail.os_policy);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
+  const effectivePolicy = backendPolicy || pol;
   const [v, setV] = useState({ requireTpm: true, kioskLockdown: true, allowUsb: false, onViolation: 'Warn candidate & log', origins: 'https://exam.examos.example' });
   const [publish, setPublish] = useState(false);
   const [reason, setReason] = useState('');
