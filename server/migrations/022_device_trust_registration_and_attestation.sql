@@ -196,5 +196,5 @@ VALUES ('dtpol_default_vignan', 'inst_vignan', 'Vignan Standard Examination Devi
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO examos_schema_migrations (component, version)
-VALUES ('device_fleet', 7)
+VALUES ('device_fleet', 10)
 ON CONFLICT (component, version) DO NOTHING;

@@ -98,6 +98,7 @@ export async function createExam(a, input) {
     version: 1, locked: false,
     history: [{ at: now, by: a.id, to: 'draft', note: 'Exam created with assessment URL' }],
   };
+  let backendId = null;
   try {
     const backendRes = await Api.createExamination({
       title: t,
@@ -105,7 +106,7 @@ export async function createExam(a, input) {
       course: clean(course, 80) || 'General',
       subject: clean(course, 80) || 'General',
       code: c,
-      academicYear: clean(academicYear, 20) || '2026-2027',
+      academicYear: clean(academicYear, 20) || '',
       examType: type,
       durationMinutes: dur,
       totalMarks: 100,
@@ -114,14 +115,14 @@ export async function createExam(a, input) {
       institutionId: tenantId,
       examUrl: targetUrl,
       allowedOrigins: (origins || []).join(','),
-      timezone: timeZone || 'Asia/Kolkata',
+      timezone: timeZone || '',
     });
-    if (backendRes?.exam_id) {
-      ex.id = backendRes.exam_id;
-    }
+    if (!backendRes?.exam_id) fail('Backend did not return an exam ID. Cannot create exam without server confirmation.');
+    backendId = backendRes.exam_id;
   } catch (err) {
-    console.warn('Backend Module 9 exam creation fallback:', err.message);
+    fail(err.message || 'Backend exam creation failed. Exam not saved.');
   }
+  ex.id = backendId;
   await put('exams', ex);
   await log(a, 'EXAM_CREATED', `${c} url=${targetUrl}`);
   return `Exam ${c} saved as draft with assessment URL ${targetUrl}.`;
@@ -155,6 +156,20 @@ export async function updateExam(a, ex, patch) {
   if (patch.examUrl !== undefined) set('examUrl', clean(patch.examUrl, 500));
   next.updatedAt = Date.now(); next.version = (ex.version || 1) + 1;
   next.history = [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, note: 'Configuration updated' }];
+  // Backend-first: update on server before writing locally.
+  try {
+    await Api.updateExamination(ex.id, {
+      name: next.title,
+      subject: next.course || '',
+      instructions: next.instructions || '',
+      exam_url: next.examUrl || '',
+      duration_minutes: next.durationMin,
+      total_marks: next.totalMarks,
+      passing_marks: next.passingMarks,
+    });
+  } catch (err) {
+    fail(err.message || 'Backend exam update failed. Changes not saved.');
+  }
   await put('exams', next);
   await log(a, 'EXAM_UPDATED', `${next.code} v${next.version}`);
   return 'Exam configuration saved.';
@@ -164,8 +179,33 @@ export async function duplicateExam(a, ex) {
   need(a, 'exam.manage'); assertScope(a, ex.tenantId);
   const code = `${ex.code}-C${Math.floor(Math.random() * 90 + 10)}`.slice(0, 20).toUpperCase();
   const now = Date.now();
-  const copy = { ...ex, id: id('exm'), code, title: `${ex.title} (copy)`.slice(0, 100), status: 'draft', questions: ex.questions.map((q) => ({ ...q })), createdBy: a.id, createdAt: now, updatedAt: now, version: 1, publishedAt: null, publishedBy: null, approvedBy: null, liveAt: null, closedAt: null, summary: null, locked: false, history: [{ at: now, by: a.id, to: 'draft', note: `Duplicated from ${ex.code}` }] };
-  await put('exams', copy); await log(a, 'EXAM_DUPLICATED', `${ex.code} -> ${code}`);
+  const copy = {
+    ...ex, code, title: `${ex.title} (copy)`.slice(0, 100), status: 'draft',
+    questions: (ex.questions || []).map((q) => ({ ...q })), createdBy: a.id,
+    createdAt: now, updatedAt: now, version: 1, publishedAt: null, publishedBy: null,
+    approvedBy: null, liveAt: null, closedAt: null, summary: null, locked: false,
+    history: [{ at: now, by: a.id, to: 'draft', note: `Duplicated from ${ex.code}` }],
+  };
+  // Backend-first: create duplicate on server.
+  try {
+    const res = await Api.createExamination({
+      title: copy.title, name: copy.title, code,
+      subject: copy.course || 'General', course: copy.course || 'General',
+      academicYear: copy.academicYear || '',
+      examType: copy.type, durationMinutes: copy.durationMin,
+      totalMarks: 100, passingMarks: 40,
+      instructions: copy.instructions || '',
+      institutionId: ex.tenantId,
+      examUrl: copy.examUrl || '',
+      allowedOrigins: (copy.origins || []).join(','),
+    });
+    if (!res?.exam_id) fail('Backend did not return an exam ID for the duplicate.');
+    copy.id = res.exam_id;
+  } catch (err) {
+    fail(err.message || 'Backend duplicate exam creation failed.');
+  }
+  await put('exams', copy);
+  await log(a, 'EXAM_DUPLICATED', `${ex.code} -> ${code}`);
   return copy;
 }
 
@@ -207,19 +247,32 @@ export function conflicts(exams, ex) {
 }
 
 export async function readiness(ex, ctx = {}) {
-  const { policies = await all('policies'), centers = await all('centers'), exams = await all('exams'), candidates = await all('candidates'), devices = await all('devices') } = ctx;
+  // Try to get live data from backend for accuracy; fall back to local collections.
+  let backendStatus = null;
+  try {
+    backendStatus = await Api.getExaminationStatus(ex.id);
+  } catch { /* offline fallback */ }
+
+  const { policies = await all('policies'), centers = await all('centers'),
+          exams = await all('exams'), candidates = await all('candidates'),
+          devices = await all('devices') } = ctx;
   const checksFor = (key, label) => ({ key, label });
   const checks = [];
   const cands = candidates.filter((c) => c.examId === ex.id);
   const pol = policies.find((p) => p.id === ex.policyId);
   checks.push({ ...checksFor('examUrl', 'Assessment URL'), status: ex.examUrl?.trim() ? 'PASS' : 'FAIL', detail: ex.examUrl ? ex.examUrl.slice(0, 45) : 'No URL assigned' });
-  checks.push({ ...checksFor('centers', 'Exam centres'), status: ex.centerIds.length && ex.centerIds.every((id) => centers.find((c) => c.id === id)?.status === 'active') ? 'PASS' : 'FAIL', detail: `${ex.centerIds.length} centre(s)` });
+  checks.push({ ...checksFor('centers', 'Exam centres'), status: ex.centerIds.length && ex.centerIds.every((cid) => centers.find((c) => c.id === cid)?.status === 'active') ? 'PASS' : 'FAIL', detail: `${ex.centerIds.length} centre(s)` });
   checks.push({ ...checksFor('candidates', 'Candidate list'), status: cands.length ? 'PASS' : 'FAIL', detail: `${cands.length} assigned` });
   checks.push({ ...checksFor('identity', 'Identity verification'), status: cands.length && cands.every((c) => c.identity === 'verified') ? 'PASS' : cands.some((c) => c.identity === 'verified') ? 'WARN' : 'NOT_RUN', detail: `${cands.filter((c) => c.identity === 'verified').length}/${cands.length} verified` });
   checks.push({ ...checksFor('policy', 'Published policy'), status: pol && pol.status === 'published' && (await verifyPolicy(pol)) ? 'PASS' : 'FAIL', detail: pol ? `${pol.name} v${pol.version}` : 'No policy selected' });
   checks.push({ ...checksFor('instructions', 'Candidate instructions'), status: ex.instructions?.trim() ? 'PASS' : 'WARN', detail: ex.instructions?.trim() ? 'Provided' : 'Not written' });
   checks.push({ ...checksFor('schedule', 'Schedule conflict'), status: conflicts(exams, ex) ? 'FAIL' : 'PASS', detail: conflicts(exams, ex) ? `Conflicts with ${conflicts(exams, ex).code}` : 'No conflict' });
   checks.push({ ...checksFor('devices', 'Device readiness'), status: devices.length ? 'PASS' : 'NOT_RUN', detail: `${devices.filter((d) => ex.centerIds.includes(d.centerId)).length} devices in scope` });
+  // Live session monitoring from backend if available
+  if (backendStatus?.attempts) {
+    const a = backendStatus.attempts;
+    checks.push({ ...checksFor('sessions', 'Live sessions'), status: 'INFO', detail: `in_progress: ${a.in_progress || 0}, submitted: ${a.submitted || 0}, interrupted: ${a.interrupted || 0}` });
+  }
   return checks;
 }
 
@@ -274,6 +327,7 @@ export async function transition(a, ex, to, reason = '') {
   next.status = to; next.updatedAt = Date.now();
   next.history = [...(ex.history || []), { at: Date.now(), by: a.id, to, reason: clean(reason, 300) }];
 
+  // Backend-first: lifecycle transition must succeed on the server before local state advances.
   try {
     if (to === 'configured') {
       await Api.updateExamination(ex.id, { status: 'configured' });
@@ -293,9 +347,11 @@ export async function transition(a, ex, to, reason = '') {
       await Api.finalizeExamination(ex.id);
     } else if (to === 'cancelled') {
       await Api.cancelExamination(ex.id, reason);
+    } else if (to === 'draft') {
+      await Api.updateExamination(ex.id, { status: 'draft' });
     }
   } catch (err) {
-    console.warn('Backend Module 9 lifecycle sync notice:', err.message);
+    fail(err.message || `Backend rejected lifecycle transition to '${to}'.`);
   }
 
   await put('exams', next);
@@ -322,8 +378,15 @@ export async function postponeExam(a, ex, startAt, reason) {
   const st = startOf(startAt); if (!Number.isFinite(st)) fail('Choose a new start time.');
   if (st < Date.now()) fail('The new start time must be in the future.');
   const r = requireReason(reason, 8);
+  // Backend-first: update schedule on server.
+  try {
+    await Api.updateExamination(ex.id, { scheduled_start: st, start_time: st });
+  } catch (err) {
+    fail(err.message || 'Backend postpone failed. Schedule not updated.');
+  }
   const next = { ...ex, startAt: st, updatedAt: Date.now(), history: [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, reason: `Postponed: ${r}` }] };
-  await put('exams', next); await log(a, 'EXAM_POSTPONED', `${ex.code} -> ${new Date(st).toISOString()}: ${r}`);
+  await put('exams', next);
+  await log(a, 'EXAM_POSTPONED', `${ex.code} -> ${new Date(st).toISOString()}: ${r}`);
   await notifyExam(a, next, 'postponed', r);
   return `Exam moved to ${new Date(st).toLocaleString('en-IN')}. Candidates should be notified.`;
 }

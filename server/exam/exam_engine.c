@@ -268,9 +268,12 @@ int exam_engine_load_questions_from_db(const char *exam_id) {
 }
 
 int exam_engine_is_ready(void) {
-    if (current_question_count() == 0) {
-        exam_engine_load_default_nqt_questions();
-    }
+    /*
+     * Fail closed: if no questions are loaded, return 0 (not ready).
+     * Never fall back to the hardcoded NQT demo question bank for a production
+     * exam — that would silently serve fabricated content to real candidates.
+     * Questions must be explicitly provisioned via exam_engine_load_questions_from_db().
+     */
     return current_question_count() > 0;
 }
 
@@ -297,7 +300,35 @@ candidate_exam_state_t* exam_engine_get_state(const char *session_token) {
         snprintf(st->candidate_id, sizeof(st->candidate_id), "%s", resolved_cid);
         st->seat_number[0] = '\0';
         st->start_time = time(NULL);
-        st->duration_seconds = 7200; /* 120 minutes TCS iON NQT standard */
+        /*
+         * Load real duration from the examinations table rather than using
+         * the hardcoded 7200-second NQT standard.  Fall back to 7200 only
+         * if the DB lookup fails so the session is not left with 0 seconds.
+         */
+        st->duration_seconds = 7200;
+        {
+            PGconn *dc = acquire_db_connection();
+            if (dc) {
+                /* Candidate session identity gives us candidate_id; look up
+                 * which active examination this candidate is assigned to and
+                 * read its configured duration. */
+                const char *dp[1] = { resolved_cid };
+                PGresult *dr = PQexecParams(dc,
+                    "SELECT e.duration_minutes "
+                    "FROM exam_student_assignments a "
+                    "JOIN examinations e ON a.exam_id = e.id "
+                    "WHERE a.student_id = $1 AND e.status IN ('in_progress','ready','scheduled') "
+                    "ORDER BY e.created_at DESC LIMIT 1",
+                    1, NULL, dp, NULL, NULL, 0);
+                if (dr && PQresultStatus(dr) == PGRES_TUPLES_OK && PQntuples(dr) > 0) {
+                    int dur_min = atoi(PQgetvalue(dr, 0, 0));
+                    if (dur_min >= 15 && dur_min <= 300)
+                        st->duration_seconds = dur_min * 60;
+                }
+                if (dr) PQclear(dr);
+                release_db_connection(dc, 0);
+            }
+        }
         st->current_question = 1;
         st->is_paused = 0;
         st->is_submitted = 0;

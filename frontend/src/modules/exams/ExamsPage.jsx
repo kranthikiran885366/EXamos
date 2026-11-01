@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
+import { put } from '../../core/db/db';
 import { useCol } from '../../core/db/tenant';
 import { usePerm } from '../../core/ui/hooks';
 import {
@@ -11,6 +12,7 @@ import { fmt } from '../../core/ui/format';
 import {
   transition, nextSteps, duplicateExam, TYPES, LIFECYCLE, LIFECYCLE_LABEL, examCounts, conflicts,
 } from './service';
+import * as Api from '../../core/api/services';
 
 const STEP_LABEL = {
   configured: 'Configure',
@@ -41,7 +43,57 @@ export default function ExamsPage() {
   const { user } = useAuth();
   const may = usePerm();
   const navigate = useNavigate();
-  const exams = useCol('exams');
+  // Backend-first: fetch exams from the real API on mount.
+  // Fall back to local IndexedDB only if the backend is unreachable.
+  const localExams = useCol('exams');
+  const [backendExams, setBackendExams] = useState(null); // null = not yet fetched
+  const [fetchError, setFetchError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchExams = async () => {
+      try {
+        const res = await Api.listExaminations();
+        const list = res?.examinations || res?.exams || (Array.isArray(res) ? res : []);
+        if (!cancelled) {
+          // Map backend field names to frontend shape, sync to local cache
+          const mapped = list.map((e) => ({
+            id: e.id,
+            tenantId: e.institution_id,
+            code: e.code,
+            title: e.name || e.title,
+            type: e.exam_type || e.type || 'final',
+            course: e.subject || e.course || '',
+            academicYear: e.academic_year || e.academicYear || '',
+            status: e.status || 'draft',
+            startAt: e.scheduled_start || e.start_time || e.startAt || 0,
+            durationMin: e.duration_minutes || e.durationMin || 60,
+            examUrl: e.exam_url || e.examUrl || '',
+            instructions: e.instructions || '',
+            policyId: e.policy_id || e.policyId || null,
+            centerIds: e.center_ids || e.centerIds || [],
+            createdBy: e.created_by || e.createdBy || '',
+            createdAt: e.created_at || e.createdAt || 0,
+            updatedAt: e.updated_at || e.updatedAt || 0,
+            version: e.version || 1,
+            history: e.history || [],
+          }));
+          setBackendExams(mapped);
+          // Sync to local cache so detail page reads are consistent
+          for (const ex of mapped) {
+            await put('exams', ex).catch(() => {});
+          }
+        }
+      } catch {
+        if (!cancelled) setFetchError(true);
+      }
+    };
+    fetchExams();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Use backend data when available, fall back to local IndexedDB
+  const exams = backendExams ?? localExams;
   const centers = useCol('centers');
   const policies = useCol('policies');
   const candidates = useCol('candidates');

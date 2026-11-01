@@ -234,9 +234,13 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         /* Scoping */
         if (!is_owner || !inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "T1");
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "");
         }
-        if (!inst_id[0]) strcpy(inst_id, "T1");
+        /* Reject if no institution scope can be determined */
+        if (!inst_id[0]) {
+            ex_send_error(client_fd, 400, "institution_id is required for non-owner users", origin, extra_headers, extra_len);
+            return;
+        }
 
         if (!name[0] || !subject[0]) {
             ex_send_error(client_fd, 400, "name and subject are required", origin, extra_headers, extra_len);
@@ -452,10 +456,8 @@ void exam_handle(int client_fd, const char *method, const char *path,
                     strcmp(PQgetvalue(pol_res, 0, 6), "t") == 0 ? "true" : "false",
                     strcmp(PQgetvalue(pol_res, 0, 7), "t") == 0 ? "true" : "false");
             } else {
-                pos += snprintf(json + pos, 65536 - pos,
-                    "{\"required_os_release\":\"ExamOS-2026.1\",\"permitted_application\":\"examos-kiosk-browser\","
-                    "\"require_tpm\":true,\"require_secure_boot\":true,\"kiosk_lockdown\":true,"
-                    "\"block_usb\":true,\"block_clipboard\":true,\"block_screen_capture\":true}");
+                /* No policy configured — return null, not a fabricated default. */
+                pos += snprintf(json + pos, 65536 - pos, "null");
             }
             pos += snprintf(json + pos, 65536 - pos, "}");
 
@@ -1063,11 +1065,10 @@ void exam_handle(int client_fd, const char *method, const char *path,
         }
     }
 
-    /* Sessions (platform) */
+    /* Sessions (platform) — legacy stub removed */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/platform/exams/sessions") == 0) {
-        ex_send_json(client_fd, 201,
-            "{\"status\":\"SESSION_CREATED\",\"session_id\":\"ses_active\",\"candidate_id\":\"cand_1\","
-            "\"exam_code\":\"CS101\",\"state\":0,\"start_time\":0,\"max_duration_seconds\":3600}",
+        ex_send_error(client_fd, 410,
+            "This legacy endpoint has been removed. Use POST /api/v1/exam-sessions instead.",
             origin, extra_headers, extra_len);
         return;
     }

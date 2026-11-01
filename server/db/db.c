@@ -243,8 +243,10 @@ int db_health(void) {
  * ========================================================================= */
 static const char *migration_sql =
 "CREATE TABLE IF NOT EXISTS examos_schema_migrations ("
-"  version VARCHAR(32) PRIMARY KEY,"
-"  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+"  component TEXT NOT NULL,"
+"  version INTEGER NOT NULL,"
+"  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+"  PRIMARY KEY (component, version)"
 ");"
 
 "CREATE TABLE IF NOT EXISTS tenants ("

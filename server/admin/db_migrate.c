@@ -20,32 +20,32 @@ typedef struct {
 } migration_t;
 
 static const migration_t migrations[] = {
-    {"001_admin_auth.sql",                                  "admin_auth",        1},
-    {"002_admin_mfa_and_rbac.sql",                          "admin_auth",        2},
-    {"003_exam_lifecycle.sql",                              "exam_lifecycle",     1},
-    {"004_device_fleet.sql",                                "device_fleet",       1},
-    {"005_remove_fabricated_fleet_defaults.sql",            "device_fleet",       2},
-    {"006_agent_heartbeat_records.sql",                     "device_fleet",       3},
-    {"007_admin_login_throttle.sql",                        "admin_auth",         3},
-    {"008_require_explicit_exam_policy.sql",                "exam_lifecycle",     2},
-    {"009_require_explicit_device_group.sql",               "device_fleet",       4},
-    {"010_attestation_challenge_state.sql",                 "device_fleet",       5},
-    {"011_attestation_revocations.sql",                     "device_fleet",       6},
-    {"012_incidents_and_releases.sql",                      "operations",         1},
-    {"013_session_journal_and_audit_completions.sql",       "admin_auth",         4},
-    {"014_exam_key_releases.sql",                           "exam_key_releases",  1},
-    {"015_audit_event_catalogue.sql",                       "admin_auth",         5},
-    {"016_exam_questions.sql",                              "exam_lifecycle",     3},
-    {"017_session_risk_table.sql",                          "operations",         2},
-    {"018_campus_department_management.sql",                "campus_dept",        1},
-    {"019_examination_management.sql",                      "exam_lifecycle",     4},
-    {"020_examination_registration_and_eligibility.sql",    "exam_lifecycle",     5},
-    {"021_exam_session_management.sql",                     "exam_lifecycle",     6},
-    {"022_device_trust_registration_and_attestation.sql",   "device_fleet",       7},
-    {"023_secure_os_release_updates_and_deployment.sql",    "os_releases",        1},
-    {"024_student_management_system.sql",                   "students",           1},
-    {"025_corporate_entity_support.sql",                    "institutions",       1},
-    {"026_mfa_enrollment_table.sql",                        "admin_auth",         6},
+    {"001_admin_auth.sql",                                  "admin_auth",                 1},
+    {"002_admin_mfa_and_rbac.sql",                          "admin_auth",                 2},
+    {"003_exam_lifecycle.sql",                              "exam_lifecycle",            3},
+    {"004_device_fleet.sql",                                "device_fleet",              4},
+    {"005_remove_fabricated_fleet_defaults.sql",            "device_fleet",              5},
+    {"006_agent_heartbeat_records.sql",                     "device_fleet",              6},
+    {"007_admin_login_throttle.sql",                        "admin_auth",                7},
+    {"008_require_explicit_exam_policy.sql",                "exam_lifecycle",            4},
+    {"009_require_explicit_device_group.sql",               "device_fleet",              7},
+    {"010_attestation_challenge_state.sql",                 "device_fleet",              8},
+    {"011_attestation_revocations.sql",                     "device_fleet",              9},
+    {"012_incidents_and_releases.sql",                      "operations",                1},
+    {"013_session_journal_and_audit_completions.sql",       "admin_auth",                8},
+    {"014_exam_key_releases.sql",                           "exam_key_releases",         1},
+    {"015_audit_event_catalogue.sql",                       "admin_auth",                9},
+    {"016_exam_questions.sql",                              "exam_lifecycle",            5},
+    {"017_session_risk_table.sql",                          "operations",                2},
+    {"018_campus_department_management.sql",                "campus_dept",               1},
+    {"019_examination_management.sql",                      "examination_management",   19},
+    {"020_examination_registration_and_eligibility.sql",    "examination_registration", 20},
+    {"021_exam_session_management.sql",                     "exam_lifecycle",            6},
+    {"022_device_trust_registration_and_attestation.sql",   "device_fleet",             10},
+    {"023_secure_os_release_updates_and_deployment.sql",    "os_releases",               1},
+    {"024_student_management_system.sql",                   "students",                  1},
+    {"025_corporate_entity_support.sql",                    "institutions",              1},
+    {"026_mfa_enrollment_table.sql",                        "admin_auth",               10},
 };
 
 /*
@@ -226,7 +226,12 @@ static int exec_command(PGconn *conn, const char *sql) {
 }
 
 static int has_migration_table(PGconn *conn) {
-    PGresult *r = PQexec(conn, "SELECT to_regclass('public.examos_schema_migrations') IS NOT NULL");
+    PGresult *r = PQexec(conn,
+        "SELECT EXISTS ("
+        "  SELECT 1 FROM information_schema.columns "
+        "  WHERE table_schema='public' AND table_name='examos_schema_migrations' "
+        "    AND column_name='component'"
+        ")");
     int exists = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1 &&
                  strcmp(PQgetvalue(r, 0, 0), "t") == 0;
     if (r) PQclear(r);
@@ -250,16 +255,19 @@ static int migration_role_is_ready(PGconn *conn) {
 }
 
 static int is_applied(PGconn *conn, const migration_t *migration) {
-    const char *params[] = {migration->component};
     char version[16];
     snprintf(version, sizeof(version), "%d", migration->version);
     const char *all_params[] = {migration->component, version};
-    (void)params;
     PGresult *r = PQexecParams(conn,
-        "SELECT 1 FROM examos_schema_migrations WHERE component=$1 AND version=$2::integer",
+        "SELECT 1 FROM public.examos_schema_migrations WHERE component=$1 AND version=$2::integer",
         2, NULL, all_params, NULL, NULL, 0);
     int applied = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1;
     int failed = !r || PQresultStatus(r) != PGRES_TUPLES_OK;
+    if (failed) {
+        fprintf(stderr, "[migrate] is_applied query failed for %s (%s v%d): %s\n",
+                migration->file, migration->component, migration->version,
+                r ? PQresultErrorMessage(r) : PQerrorMessage(conn));
+    }
     if (r) PQclear(r);
     return failed ? -1 : applied;
 }
@@ -269,7 +277,7 @@ static int checksum_lookup(PGconn *conn, const migration_t *migration, char hash
     snprintf(version, sizeof(version), "%d", migration->version);
     const char *params[] = {migration->component, version};
     PGresult *r = PQexecParams(conn,
-        "SELECT sha256 FROM examos_schema_migration_checksums WHERE component=$1 AND version=$2::integer",
+        "SELECT sha256 FROM public.examos_schema_migration_checksums WHERE component=$1 AND version=$2::integer",
         2, NULL, params, NULL, NULL, 0);
     int status = -1;
     if (r && PQresultStatus(r) == PGRES_TUPLES_OK) {
@@ -285,7 +293,7 @@ static int checksum_insert(PGconn *conn, const migration_t *migration, const cha
     snprintf(version, sizeof(version), "%d", migration->version);
     const char *params[] = {migration->component, version, hash};
     PGresult *r = PQexecParams(conn,
-        "INSERT INTO examos_schema_migration_checksums(component,version,sha256) "
+        "INSERT INTO public.examos_schema_migration_checksums(component,version,sha256) "
         "VALUES($1,$2::integer,$3) ON CONFLICT(component,version) DO NOTHING",
         3, NULL, params, NULL, NULL, 0);
     int ok = r && PQresultStatus(r) == PGRES_COMMAND_OK;
@@ -347,37 +355,48 @@ int main(int argc, char **argv) {
      * connection and corrupt subsequent queries.  Each DELETE is wrapped in its
      * own BEGIN/COMMIT with a ROLLBACK fallback.
      */
-    if (has_migration_table(conn)) {
-        /* Use a savepoint so a repair failure never leaves the connection in
-         * an aborted-transaction state that blocks all subsequent queries. */
-        exec_command(conn, "SAVEPOINT repair_start");
-        {
-            static const char repair_migrations[] =
-                "DELETE FROM examos_schema_migrations WHERE "
-                " (component='admin_auth'     AND version IN (7,8,9)) OR"
-                " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
-                " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
-            PGresult *rr = PQexec(conn, repair_migrations);
-            int repair_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK;
-            if (rr) PQclear(rr);
-            if (repair_ok) {
-                exec_command(conn, "RELEASE SAVEPOINT repair_start");
-            } else {
-                /* Roll back only to the savepoint — connection stays clean. */
-                exec_command(conn, "ROLLBACK TO SAVEPOINT repair_start");
-                exec_command(conn, "RELEASE SAVEPOINT repair_start");
-            }
+    /* Detect and drop legacy examos_schema_migrations table (missing 'component' column) */
+    {
+        PGresult *check_comp = PQexec(conn,
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.columns "
+            "  WHERE table_schema='public' AND table_name='examos_schema_migrations' "
+            "    AND column_name='component'"
+            ")");
+        int has_comp = check_comp && PQresultStatus(check_comp) == PGRES_TUPLES_OK && PQntuples(check_comp) == 1 &&
+                       strcmp(PQgetvalue(check_comp, 0, 0), "t") == 0;
+        if (check_comp) PQclear(check_comp);
+
+        PGresult *check_tbl = PQexec(conn, "SELECT to_regclass('public.examos_schema_migrations') IS NOT NULL");
+        int tbl_exists = check_tbl && PQresultStatus(check_tbl) == PGRES_TUPLES_OK && PQntuples(check_tbl) == 1 &&
+                         strcmp(PQgetvalue(check_tbl, 0, 0), "t") == 0;
+        if (check_tbl) PQclear(check_tbl);
+
+        if (tbl_exists && !has_comp) {
+            fprintf(stderr, "[migrate] Detected legacy examos_schema_migrations table without 'component' column. Dropping legacy table...\n");
+            (void)exec_command(conn, "DROP TABLE public.examos_schema_migrations CASCADE");
         }
     }
 
-    /* ── Ensure checksum table exists BEFORE the migration loop ──────────────
-     * Previously this was created inside the i==0 block, which was skipped on
-     * re-deploys where migration 001 was already applied.  That caused
-     * checksum_lookup() to fail with "relation does not exist" for all
-     * subsequent migrations on every re-deploy.
-     */
+    if (has_migration_table(conn)) {
+        exec_command(conn, "BEGIN");
+        static const char repair_migrations[] =
+            "DELETE FROM public.examos_schema_migrations WHERE "
+            " (component='admin_auth'     AND version IN (3,4,5,6)) OR"
+            " (component='device_fleet'   AND version IN (1,2,3));";
+        PGresult *rr = PQexec(conn, repair_migrations);
+        int repair_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK;
+        if (rr) PQclear(rr);
+        if (repair_ok) {
+            exec_command(conn, "COMMIT");
+        } else {
+            exec_command(conn, "ROLLBACK");
+        }
+    }
+
+    /* ── Ensure checksum table exists BEFORE the migration loop ────────────── */
     if (exec_command(conn,
-            "CREATE TABLE IF NOT EXISTS examos_schema_migration_checksums ("
+            "CREATE TABLE IF NOT EXISTS public.examos_schema_migration_checksums ("
             "  component   text        NOT NULL,"
             "  version     integer     NOT NULL,"
             "  sha256      char(64)    NOT NULL "
@@ -388,22 +407,20 @@ int main(int argc, char **argv) {
         goto done;
     }
 
-    /* Repair checksum table for old stale entries (same rationale as above). */
+    /* Repair checksum table for old stale entries. */
     {
-        exec_command(conn, "SAVEPOINT repair_checksums_start");
+        exec_command(conn, "BEGIN");
         static const char repair_checksums[] =
-            "DELETE FROM examos_schema_migration_checksums WHERE "
-            " (component='admin_auth'     AND version IN (7,8,9)) OR"
-            " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
-            " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
+            "DELETE FROM public.examos_schema_migration_checksums WHERE "
+            " (component='admin_auth'     AND version IN (3,4,5,6)) OR"
+            " (component='device_fleet'   AND version IN (1,2,3));";
         PGresult *rr = PQexec(conn, repair_checksums);
         int repair_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK;
         if (rr) PQclear(rr);
         if (repair_ok) {
-            exec_command(conn, "RELEASE SAVEPOINT repair_checksums_start");
+            exec_command(conn, "COMMIT");
         } else {
-            exec_command(conn, "ROLLBACK TO SAVEPOINT repair_checksums_start");
-            exec_command(conn, "RELEASE SAVEPOINT repair_checksums_start");
+            exec_command(conn, "ROLLBACK");
         }
     }
 

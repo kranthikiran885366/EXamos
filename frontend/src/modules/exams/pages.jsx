@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
+import { put } from '../../core/db/db';
 import { useTenant, useCol, useColLoaded } from '../../core/db/tenant';
 import { usePerm, useLoad } from '../../core/ui/hooks';
+import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash, Empty,
   Icon, KeyValue, Timeline, Tabs, Loading, Modal, Field, Input, Select, Textarea, Checkbox,
@@ -243,12 +245,65 @@ export function ExamDetailPage() {
   const { user } = useAuth();
   const may = usePerm();
   const navigate = useNavigate();
-  const { rows: exams, loaded } = useColLoaded('exams');
+  // Backend-first: fetch exam detail from the real API.
+  const { rows: localExams, loaded } = useColLoaded('exams');
+  const [backendExam, setBackendExam] = useState(null);
+  const [detailLoaded, setDetailLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const fetchDetail = async () => {
+      try {
+        const res = await Api.getExamination(id);
+        const exam = res?.examination || res;
+        if (exam && !cancelled) {
+          const mapped = {
+            id: exam.id,
+            tenantId: exam.institution_id,
+            code: exam.code,
+            title: exam.name || exam.title,
+            type: exam.exam_type || exam.type || 'final',
+            course: exam.subject || exam.course || '',
+            academicYear: exam.academic_year || exam.academicYear || '',
+            status: exam.status || 'draft',
+            startAt: exam.scheduled_start || exam.startAt || 0,
+            durationMin: exam.duration_minutes || exam.durationMin || 60,
+            examUrl: exam.exam_url || exam.examUrl || '',
+            instructions: exam.instructions || '',
+            policyId: exam.policy_id || exam.policyId || null,
+            centerIds: exam.center_ids || exam.centerIds || [],
+            createdBy: exam.created_by || exam.createdBy || '',
+            createdAt: exam.created_at || exam.createdAt || 0,
+            updatedAt: exam.updated_at || exam.updatedAt || 0,
+            version: exam.version || 1,
+            history: exam.history || [],
+            attestationLevel: exam.attestation_level || exam.attestationLevel || 'tpm',
+            authMode: exam.auth_mode || exam.authMode || 'candidate-login',
+            submissionMode: exam.submission_mode || exam.submissionMode || 'either',
+            navigation: exam.navigation || 'locked',
+            sessionTimeoutMin: exam.session_timeout_min || exam.sessionTimeoutMin || 15,
+            reconnectPolicy: exam.reconnect_policy || exam.reconnectPolicy || 'allow-reconnect',
+            identityRequired: exam.identity_required ?? exam.identityRequired ?? true,
+          };
+          setBackendExam(mapped);
+          await put('exams', mapped).catch(() => {});
+        }
+      } catch { /* fall through to local */ }
+      if (!cancelled) setDetailLoaded(true);
+    };
+    fetchDetail();
+    return () => { cancelled = true; };
+  }, [id]);
   const centers = useCol('centers');
   const policies = useCol('policies');
   const candidates = useCol('candidates');
   const devices = useCol('devices');
   const releases = useCol('releases');
+
+  // Use backend data when available, fall back to local
+  const exams = backendExam ? [backendExam, ...localExams.filter(x => x.id !== backendExam.id)] : localExams;
+  const isLoaded = detailLoaded || loaded;
   const [tab, setTab] = useState('overview');
   const [edit, setEdit] = useState(false);
   const [pending, setPending] = useState(null);

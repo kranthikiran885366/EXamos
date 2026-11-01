@@ -223,6 +223,7 @@ static void generic_module_routes(int fd, const char *method, const char *path,
 static void admin_actions_routes(int fd, const char *method, const char *path,
                                  const char *body, const char *auth_header,
                                  const char *origin, char *extra, size_t extra_len) {
+    (void)body;
     auth_session_t sess;
     if (!mod_authorize(auth_header, AUTH_PERM_SECURITY_ADMIN, &sess)) {
         mod_send_json(fd, 401, "{\"error\":\"Security admin authorization required\"}",
@@ -249,6 +250,7 @@ static void admin_actions_routes(int fd, const char *method, const char *path,
 static void ledger_routes(int fd, const char *method, const char *path,
                           const char *body, const char *auth_header,
                           const char *origin, char *extra, size_t extra_len) {
+    (void)body;
     auth_session_t sess;
     if (!mod_authorize(auth_header, AUTH_PERM_READ, &sess)) {
         mod_send_json(fd, 401, "{\"error\":\"Admin credentials required\"}",
