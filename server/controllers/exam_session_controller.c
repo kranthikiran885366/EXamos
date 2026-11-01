@@ -116,9 +116,9 @@ static int verify_session_authorization(PGconn *conn, const char *exam_id, const
         snprintf(out_reason, reason_len, "Examination is closed or cancelled (status: %s)", ex_stat);
         return -1;
     }
-    if (out_inst_id && inst_len > 0) strncpy(out_inst_id, ex_inst, inst_len - 1);
-    if (out_exam_url && url_len > 0) strncpy(out_exam_url, ex_url, url_len - 1);
-    if (out_allowed_origins && org_len > 0) strncpy(out_allowed_origins, ex_orgs, org_len - 1);
+    if (out_inst_id && inst_len > 0) snprintf(out_inst_id, inst_len, "%s", ex_inst);
+    if (out_exam_url && url_len > 0) snprintf(out_exam_url, url_len, "%s", ex_url);
+    if (out_allowed_origins && org_len > 0) snprintf(out_allowed_origins, org_len, "%s", ex_orgs);
 
     /* 2. Verify Student Identity */
     const char *sp[2] = { student_id_or_roll, ex_inst };
@@ -138,7 +138,7 @@ static int verify_session_authorization(PGconn *conn, const char *exam_id, const
     strncpy(st_hreason, PQgetvalue(st_res, 0, 6), sizeof(st_hreason) - 1);
     PQclear(st_res);
 
-    if (out_student_id && sid_len > 0) strncpy(out_student_id, sid, sid_len - 1);
+    if (out_student_id && sid_len > 0) snprintf(out_student_id, sid_len, "%s", sid);
 
     if (strcmp(st_status, "active") != 0) {
         snprintf(out_reason, reason_len, "Student academic standing is not active (status: %s)", st_status);

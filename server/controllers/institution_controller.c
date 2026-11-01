@@ -3146,30 +3146,3 @@ void institution_handle(int client_fd, const char *method, const char *path,
     inst_send_error(client_fd, 404, "Endpoint not found", origin, extra_headers, extra_len);
 }
 
-/* ---------------------------------------------------------------------------
- * Kiosk broadcast stubs — real implementation lives in kiosk/launcher.
- * These are called from the OS deployment push path and must link cleanly.
- * In production the kiosk process receives updates via the heartbeat channel.
- * --------------------------------------------------------------------------- */
-void kiosk_broadcast_os_update(const char *release_id, const char *channel,
-                               const char *security_profile) {
-    if (release_id && channel && security_profile) {
-        fprintf(stderr, "[KioskBroadcast] OS update queued: release=%s channel=%s profile=%s\n",
-                release_id, channel, security_profile);
-    }
-}
-
-int kiosk_get_active_count(void) {
-    /* Query the devices table for enrolled kiosk devices reporting recent heartbeats */
-    PGconn *conn = db_acquire();
-    if (!conn) return 0;
-    PGresult *res = PQexec(conn,
-        "SELECT COUNT(*) FROM devices WHERE status='enrolled' "
-        "AND last_seen > EXTRACT(EPOCH FROM NOW())::bigint - 300000");
-    int count = 0;
-    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
-        count = atoi(PQgetvalue(res, 0, 0));
-    if (res) PQclear(res);
-    db_release(conn, 0);
-    return count;
-}
