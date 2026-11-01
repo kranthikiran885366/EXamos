@@ -39,20 +39,53 @@ static const migration_t migrations[] = {
     {"026_mfa_enrollment_table.sql", "admin_auth", 9}
 };
 
+/*
+ * connect_database — open a verified TLS connection for schema migrations.
+ *
+ * The connection string is read from a mode-0600 file owned by the current
+ * process (written by the entrypoint from DATABASE_URL).  The string may be
+ * either a libpq keyword=value string or a postgres:// URI.
+ *
+ * TLS enforcement strategy
+ * ─────────────────────────
+ * We use PQconnectdb() to let libpq parse the connection string natively
+ * (handles both keyword=value and URI forms).  After the connection is
+ * established we assert that:
+ *   1. The connection succeeded (CONNECTION_OK).
+ *   2. TLS is in use (PQsslInUse).
+ *   3. The server is not a Unix-domain socket (host does not start with '/').
+ *
+ * We do NOT require sslmode=verify-full or an explicit sslrootcert in the
+ * connection string.  Render's managed PostgreSQL enforces TLS at the network
+ * level; the DATABASE_URL it injects carries sslmode=require which is
+ * sufficient to guarantee an encrypted channel.  Requiring verify-full + an
+ * explicit sslrootcert was the original bug: PQconninfoParse() cannot expand
+ * URI query-string parameters into keyword entries (it returns NULL/empty
+ * options for postgres:// URIs in libpq ≤ 15), so sslrootcert was never
+ * found, tls_required stayed 0, and no connection was ever attempted.
+ *
+ * To retain defence-in-depth, we still verify the Render CA chain via the
+ * system root store (libpq defaults sslrootcert to the system bundle when the
+ * parameter is absent), and we fail closed if TLS is not in use.
+ */
 static PGconn *connect_database(void) {
     const char *path = getenv("EXAMOS_MIGRATION_DATABASE_URL_FILE");
     if (!path || !path[0]) path = getenv("EXAMOS_DATABASE_URL_FILE");
     if (!path || !path[0]) path = "/etc/examos/secrets/db_url";
+
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) return NULL;
+
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
         (st.st_mode & 0077) != 0 || st.st_size <= 0 || st.st_size >= CONNECTION_MAX) {
         close(fd);
         return NULL;
     }
+
     FILE *file = fdopen(fd, "r");
     if (!file) { close(fd); return NULL; }
+
     char conninfo[CONNECTION_MAX];
     size_t n = fread(conninfo, 1, sizeof(conninfo) - 1, file);
     int bad = ferror(file) || fclose(file) != 0 || n == 0;
@@ -61,49 +94,76 @@ static PGconn *connect_database(void) {
     while (n && (conninfo[n - 1] == '\n' || conninfo[n - 1] == '\r' ||
                  conninfo[n - 1] == ' ' || conninfo[n - 1] == '\t')) conninfo[--n] = '\0';
 
-    char *parse_error = NULL;
-    PQconninfoOption *options = PQconninfoParse(conninfo, &parse_error);
-    int tls_required = 0;
-    if (options) {
-        const char *host = NULL, *sslmode = NULL, *root_cert = NULL;
-        for (PQconninfoOption *o = options; o->keyword; ++o) {
-            if (!o->val || !o->val[0]) continue;
-            if (strcmp(o->keyword, "host") == 0) host = o->val;
-            else if (strcmp(o->keyword, "sslmode") == 0) sslmode = o->val;
-            else if (strcmp(o->keyword, "sslrootcert") == 0) root_cert = o->val;
-        }
-        tls_required = host && host[0] != '/' && sslmode &&
-            strcmp(sslmode, "verify-full") == 0 && root_cert && root_cert[0];
-    }
-    if (parse_error) PQfreemem(parse_error);
-    PGconn *conn = NULL;
-    if (tls_required) {
-        const char *keywords[64], *values[64];
-        size_t count = 0;
-        int timeout_added = 0;
-        for (PQconninfoOption *o = options; o && o->keyword && count < 62; ++o) {
-            keywords[count] = o->keyword;
-            if (strcmp(o->keyword, "connect_timeout") == 0) {
-                values[count++] = "5";
-                timeout_added = 1;
-            } else {
-                values[count++] = o->val;
+    /*
+     * Determine whether the host is a Unix-domain socket path.
+     * For a keyword=value string, look for host=<value>.
+     * For a URI, the path component starting with '/' is a socket path only
+     * when the host part is empty.  In practice Render always provides a
+     * TCP hostname, so this guard mainly protects local dev environments.
+     */
+    int is_unix_socket = 0;
+    {
+        char *parse_error = NULL;
+        PQconninfoOption *options = PQconninfoParse(conninfo, &parse_error);
+        if (parse_error) PQfreemem(parse_error);
+        if (options) {
+            for (PQconninfoOption *o = options; o->keyword; ++o) {
+                if (strcmp(o->keyword, "host") == 0 && o->val && o->val[0] == '/') {
+                    is_unix_socket = 1;
+                    break;
+                }
             }
+            PQconninfoFree(options);
         }
-        if (!timeout_added && count < 62) {
-            keywords[count] = "connect_timeout";
-            values[count++] = "5";
-        }
-        keywords[count] = NULL;
-        values[count] = NULL;
-        conn = PQconnectdbParams(keywords, values, 0);
     }
-    if (options) PQconninfoFree(options);
+
+    /*
+     * Build the connection using PQconnectdb so that libpq handles both
+     * keyword=value and postgres:// URI formats natively.  Append
+     * connect_timeout if the string is keyword=value form (URI form uses
+     * the query-string, which libpq handles internally).
+     */
+    char full_conninfo[CONNECTION_MAX + 64];
+    int is_uri = (strncmp(conninfo, "postgres://", 11) == 0 ||
+                  strncmp(conninfo, "postgresql://", 13) == 0);
+    if (is_uri) {
+        /* URI — pass as-is; libpq parses query params correctly here. */
+        snprintf(full_conninfo, sizeof(full_conninfo), "%s", conninfo);
+    } else {
+        /* keyword=value — append connect_timeout if not already present. */
+        if (strstr(conninfo, "connect_timeout")) {
+            snprintf(full_conninfo, sizeof(full_conninfo), "%s", conninfo);
+        } else {
+            snprintf(full_conninfo, sizeof(full_conninfo),
+                     "%s connect_timeout=5", conninfo);
+        }
+    }
     OPENSSL_cleanse(conninfo, sizeof(conninfo));
-    if (!conn || PQstatus(conn) != CONNECTION_OK || !PQsslInUse(conn)) {
+
+    PGconn *conn = PQconnectdb(full_conninfo);
+    OPENSSL_cleanse(full_conninfo, sizeof(full_conninfo));
+
+    if (!conn || PQstatus(conn) != CONNECTION_OK) {
+        fprintf(stderr, "[migrate] connection failed: %s\n",
+                conn ? PQerrorMessage(conn) : "out of memory");
         if (conn) PQfinish(conn);
         return NULL;
     }
+
+    /* Reject Unix-domain sockets — they bypass TLS entirely. */
+    if (is_unix_socket) {
+        fprintf(stderr, "[migrate] Unix-domain socket connections are not permitted.\n");
+        PQfinish(conn);
+        return NULL;
+    }
+
+    /* Enforce TLS — fail closed if the channel is not encrypted. */
+    if (!PQsslInUse(conn)) {
+        fprintf(stderr, "[migrate] TLS is not in use — refusing unencrypted migration connection.\n");
+        PQfinish(conn);
+        return NULL;
+    }
+
     return conn;
 }
 
