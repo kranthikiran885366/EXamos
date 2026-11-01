@@ -316,9 +316,21 @@ int main(int argc, char **argv) {
         goto done;
     }
 
-    if (exec_command(conn,
-            "SET lock_timeout='10s'; SET statement_timeout='120s'; "
-            "SELECT pg_advisory_lock(hashtext('examos-schema-migrations'))") != 0) {
+    if (exec_command(conn, "ROLLBACK") != 0) { /* clear any leftover aborted txn */ }
+
+    /* Set timeouts individually — multi-statement PQexec silently swallows
+     * errors from earlier statements, leaving the session in aborted state. */
+    if (exec_command(conn, "SET lock_timeout = '10s'") != 0 &&
+        exec_command(conn, "SET lock_timeout = '10s'") != 0) {
+        /* Non-fatal: some managed Postgres configs restrict SET lock_timeout.
+         * Log and continue — the advisory lock will self-expire via
+         * deadlock detection if something goes wrong. */
+        fprintf(stderr, "[migrate] WARNING: could not set lock_timeout (continuing).\n");
+    }
+    if (exec_command(conn, "SET statement_timeout = '120s'") != 0) {
+        fprintf(stderr, "[migrate] WARNING: could not set statement_timeout (continuing).\n");
+    }
+    if (exec_command(conn, "SELECT pg_advisory_lock(hashtext('examos-schema-migrations'))") != 0) {
         fprintf(stderr, "Database migration stopped: could not establish bounded migration lock.\n");
         goto done;
     }
