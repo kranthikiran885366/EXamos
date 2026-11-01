@@ -340,16 +340,34 @@ int main(int argc, char **argv) {
      * Earlier deploys used a broken (component, version) numbering scheme where
      * multiple files shared the same pair (e.g. admin_auth/9 was used by both
      * 015 and 026).  Delete the stale records so the correct ones can be
-     * inserted cleanly.  Errors are silently ignored — missing rows are fine.
+     * inserted cleanly.
+     *
+     * IMPORTANT: these repairs are executed in independent transactions so that
+     * a failure (e.g. the table not existing yet on a fresh DB) cannot abort the
+     * connection and corrupt subsequent queries.  Each DELETE is wrapped in its
+     * own BEGIN/COMMIT with a ROLLBACK fallback.
      */
     if (has_migration_table(conn)) {
-        static const char repair_migrations[] =
-            "DELETE FROM examos_schema_migrations WHERE "
-            " (component='admin_auth'     AND version IN (7,8,9)) OR"
-            " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
-            " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
-        PGresult *rr = PQexec(conn, repair_migrations);
-        if (rr) PQclear(rr);
+        /* Use a savepoint so a repair failure never leaves the connection in
+         * an aborted-transaction state that blocks all subsequent queries. */
+        exec_command(conn, "SAVEPOINT repair_start");
+        {
+            static const char repair_migrations[] =
+                "DELETE FROM examos_schema_migrations WHERE "
+                " (component='admin_auth'     AND version IN (7,8,9)) OR"
+                " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
+                " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
+            PGresult *rr = PQexec(conn, repair_migrations);
+            int repair_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK;
+            if (rr) PQclear(rr);
+            if (repair_ok) {
+                exec_command(conn, "RELEASE SAVEPOINT repair_start");
+            } else {
+                /* Roll back only to the savepoint — connection stays clean. */
+                exec_command(conn, "ROLLBACK TO SAVEPOINT repair_start");
+                exec_command(conn, "RELEASE SAVEPOINT repair_start");
+            }
+        }
     }
 
     /* ── Ensure checksum table exists BEFORE the migration loop ──────────────
@@ -372,13 +390,21 @@ int main(int argc, char **argv) {
 
     /* Repair checksum table for old stale entries (same rationale as above). */
     {
+        exec_command(conn, "SAVEPOINT repair_checksums_start");
         static const char repair_checksums[] =
             "DELETE FROM examos_schema_migration_checksums WHERE "
             " (component='admin_auth'     AND version IN (7,8,9)) OR"
             " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
             " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
         PGresult *rr = PQexec(conn, repair_checksums);
+        int repair_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK;
         if (rr) PQclear(rr);
+        if (repair_ok) {
+            exec_command(conn, "RELEASE SAVEPOINT repair_checksums_start");
+        } else {
+            exec_command(conn, "ROLLBACK TO SAVEPOINT repair_checksums_start");
+            exec_command(conn, "RELEASE SAVEPOINT repair_checksums_start");
+        }
     }
 
     /* ── Apply each migration in order ──────────────────────────────────────── */
@@ -398,8 +424,18 @@ int main(int argc, char **argv) {
         int table_exists = has_migration_table(conn);
         int applied      = table_exists ? is_applied(conn, m) : 0;
 
-        /* Fresh DB: table doesn't exist yet — only valid at i==0 (001_admin_auth.sql
-         * creates it).  Any other position means the registry is corrupt.         */
+        /* Guard: if is_applied() returned -1 the query itself failed, which
+         * means the connection may be in an aborted-transaction state.  Attempt
+         * to clear it with a ROLLBACK before giving up.  On a fresh database
+         * (table_exists == 0) only migration index 0 is valid. */
+        if (applied < 0) {
+            /* Try to clear any aborted transaction and retry once. */
+            exec_command(conn, "ROLLBACK");
+            if (PQstatus(conn) == CONNECTION_OK) {
+                applied = table_exists ? is_applied(conn, m) : 0;
+            }
+        }
+
         if (applied < 0 || (!table_exists && i != 0)) {
             OPENSSL_cleanse(sql, length); free(sql);
             fprintf(stderr, "Database migration stopped: migration registry is inconsistent "

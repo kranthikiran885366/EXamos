@@ -20,13 +20,16 @@ export default function Boot({ children }) {
 
         try {
           /*
-           * Local credential rows are legacy artifacts from the removed
-           * IndexedDB login realm. Purge them (and pending staff invitations)
-           * so no stale password hash survives in the browser.
+           * Purge only locally-created credential rows (rows with a password_hash
+           * field) — these are legacy artifacts from the removed IndexedDB login
+           * realm. Server-fetched user records (no password_hash) are kept as
+           * offline cache for the institution admin list and other UI.
            */
           const currentUsers = await all('users');
           for (const u of currentUsers) {
-            await del('users', u.id);
+            if (u.password_hash || u.passwordHash || u.salt) {
+              await del('users', u.id);
+            }
           }
           const currentInvites = await all('invitations');
           for (const inv of currentInvites) {

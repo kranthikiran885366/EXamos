@@ -3,7 +3,9 @@ import { useMemo, useState, useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant, useCol } from '../../core/db/tenant';
+import { put } from '../../core/db/db';
 import { can } from '../../core/security/rbac';
+import * as Api from '../../core/api/services';
 import { Page, Card, Stat, StatGrid, Badge, DataTable, Modal, Field, Input, Select, Textarea, Checkbox, ActionDialog, Flash, useFlash, KeyValue, Tabs, Empty, Icon, CopyField } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
 import {
@@ -75,14 +77,56 @@ function InstitutionForm({ value = {}, onSubmit, onClose, busy }) {
 export function InstitutionsPage() {
   const { user } = useAuth();
   const nav = useNavigate();
-  const tenants = useCol('tenants', false);
-  const users = useCol('users', false);
-  const exams = useCol('exams', false);
-  const devices = useCol('devices', false);
+  const localTenants = useCol('tenants', false);
+  const [tenants, setTenants] = useState(localTenants);
   const { msg, run, busy, setMsg } = useFlash();
   const [create, setCreate] = useState(false);
   const [action, setAction] = useState(null);
   const canCreate = can(user.role, 'tenant.manage');
+
+  // H4 fix: fetch institution list from the backend API on mount, not just IndexedDB.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchBackend = async () => {
+      try {
+        const res = await Api.listInstitutions();
+        const backendList = res?.institutions || res || [];
+        if (Array.isArray(backendList) && backendList.length > 0 && !cancelled) {
+          // Sync backend data to local IndexedDB for the UI to display.
+          for (const t of backendList) {
+            const mapped = {
+              id: t.id, name: t.name, code: t.code,
+              status: t.status || 'active', plan: t.plan || 'pilot',
+              region: t.region || '', timezone: t.timezone || '',
+              maxCenters: t.maxCenters || 0, maxCandidates: t.maxCandidates || 0,
+              deploymentModel: t.deploymentModel || '',
+              contactEmail: t.contactEmail || '', contactPhone: t.contactPhone || '',
+              domains: t.domains || [], examDefaults: t.examDefaults || null,
+              security: t.security || null, notificationPrefs: t.notificationPrefs || null,
+              createdAt: t.createdAt || 0,
+            };
+            await put('tenants', mapped).catch(() => {});
+            await put('institutions', mapped).catch(() => {});
+          }
+        }
+      } catch (err) {
+        // Backend unreachable — fall through to local IndexedDB data below.
+      }
+    };
+    fetchBackend();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Live per-institution stats fetched from backend
+  const [statsMap, setStatsMap] = useState({});
+  useEffect(() => {
+    if (!tenants.length) return;
+    tenants.forEach((t) => {
+      institutionStats(t.id).then((s) => {
+        if (s) setStatsMap((prev) => ({ ...prev, [t.id]: s }));
+      }).catch(() => {});
+    });
+  }, [tenants.length]);
 
   return (
     <Page
@@ -106,7 +150,7 @@ export function InstitutionsPage() {
         <Stat label="Institutions" value={tenants.length} icon="building" />
         <Stat label="Active" value={tenants.filter((t) => t.status === 'active').length} tone="green" icon="check" />
         <Stat label="Suspended" value={tenants.filter((t) => t.status === 'suspended').length} tone="amber" icon="warn" />
-        <Stat label="Accounts" value={users.length} tone="violet" icon="users" />
+        <Stat label="Accounts" value={Object.values(statsMap).reduce((s, x) => s + (x.users || 0), 0)} tone="violet" icon="users" />
       </StatGrid>
 
       <DataTable
@@ -133,9 +177,9 @@ export function InstitutionsPage() {
           },
           { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan} /> },
           { key: 'status', label: 'Status', badge: true },
-          { key: 'users', label: 'Accounts', render: (t) => users.filter((u) => u.tenantId === t.id).length },
-          { key: 'exams', label: 'Exams', render: (t) => exams.filter((e) => e.tenantId === t.id).length },
-          { key: 'devices', label: 'Devices', render: (t) => devices.filter((d) => d.tenantId === t.id).length },
+          { key: 'users', label: 'Accounts', render: (t) => statsMap[t.id]?.users ?? '—' },
+          { key: 'exams', label: 'Exams', render: (t) => statsMap[t.id]?.exams ?? '—' },
+          { key: 'devices', label: 'Devices', render: (t) => statsMap[t.id]?.devices ?? '—' },
           { key: 'createdAt', label: 'Created', render: (t) => fmt(t.createdAt) },
         ]}
         actions={(t) => [
@@ -207,41 +251,49 @@ export function InstitutionDetailPage() {
   const [license, setLicense] = useState(null);
   const [deployments, setDeployments] = useState([]);
   const [onboarding, setOnboarding] = useState(null);
+  const [liveStats, setLiveStats] = useState(null);
+  const { msg: flashMsg, setMsg: setFlashMsg } = useFlash();
+
+  const flash = (tone, text) => setFlashMsg({ tone, text });
 
   const t = tenants.find((x) => x.id === id);
 
   const loadDetails = async () => {
     if (!id) return;
     try {
-      const [agRes, licRes, depRes, onbRes] = await Promise.all([
+      const [agRes, licRes, depRes, onbRes, statsRes] = await Promise.all([
         fetchInstitutionAgreements(id).catch(() => []),
         fetchInstitutionLicense(id).catch(() => null),
         fetchInstitutionDeployments(id).catch(() => []),
-        fetchInstitutionOnboarding(id).catch(() => null)
+        fetchInstitutionOnboarding(id).catch(() => null),
+        institutionStats(id).catch(() => null),
       ]);
       setAgreements(agRes);
       setLicense(licRes);
       setDeployments(depRes);
       setOnboarding(onbRes);
+      if (statsRes) setLiveStats(statsRes);
     } catch (e) {
       console.warn('Error loading institution sub-resources:', e);
     }
   };
+
+  const loadAll = loadDetails;
 
   useEffect(() => {
     loadDetails();
   }, [id]);
 
   const stats = useMemo(() => ({
-    campuses: campuses.filter((c) => c.tenantId === id).length,
-    departments: departments.filter((d) => d.tenantId === id).length,
-    centers: centers.filter((c) => c.tenantId === id).length,
-    users: users.filter((u) => u.tenantId === id).length,
-    devices: devices.filter((d) => d.tenantId === id).length,
-    exams: exams.filter((e) => e.tenantId === id).length,
-    candidates: candidates.filter((c) => c.tenantId === id).length,
-    incidents: incidents.filter((i) => i.tenantId === id && ['open', 'investigating', 'contained'].includes(i.status)).length,
-  }), [id, campuses, departments, centers, users, devices, exams, candidates, incidents]);
+    campuses:    liveStats?.campuses    ?? campuses.filter((c) => c.tenantId === id).length,
+    departments: liveStats?.departments ?? departments.filter((d) => d.tenantId === id).length,
+    centers:     liveStats?.centers     ?? centers.filter((c) => c.tenantId === id).length,
+    users:       liveStats?.users       ?? users.filter((u) => u.tenantId === id).length,
+    devices:     liveStats?.devices     ?? devices.filter((d) => d.tenantId === id).length,
+    exams:       liveStats?.exams       ?? exams.filter((e) => e.tenantId === id).length,
+    candidates:  liveStats?.candidates  ?? candidates.filter((c) => c.tenantId === id).length,
+    incidents:   liveStats?.openIncidents ?? incidents.filter((i) => i.tenantId === id && ['open', 'investigating', 'contained'].includes(i.status)).length,
+  }), [id, liveStats, campuses, departments, centers, users, devices, exams, candidates, incidents]);
 
   if (!t) {
     return (
@@ -530,15 +582,11 @@ export function InstitutionDetailPage() {
             actions={(dep) => [
               {
                 label: 'Push to OS Kiosks',
-                onClick: async () => {
-                  try {
-                    const res = await pushDeployment(user, dep.id);
-                    flash('green', res?.message || 'Deployment pushed and synchronized to live ExamOS kiosk fleet.');
-                    loadAll();
-                  } catch (e) {
-                    flash('red', e.message);
-                  }
-                }
+                onClick: () => run(async () => {
+                  await pushDeployment(user, dep.id);
+                  await loadDetails();
+                  return 'Deployment pushed and synchronized to live ExamOS kiosk fleet.';
+                })
               },
               {
                 label: 'Rollout policy',
@@ -624,7 +672,7 @@ export function InstitutionDetailPage() {
             { key: 'centers', label: 'Centres', render: (c) => centers.filter((x) => x.campusId === c.id).length },
             { key: 'status', label: 'Status', badge: true }
           ]}
-          actions={(c) => [{ label: 'Open campuses', onClick: () => nav('/college/campuses') }]}
+          actions={(c) => [{ label: 'Open campuses', onClick: () => nav(`/admin/institutions/${id}?tab=campuses`) }]}
         />
       )}
 

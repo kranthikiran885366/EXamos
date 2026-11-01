@@ -147,31 +147,29 @@ export function InstitutionProfilePage() {
         <Card title="Official Institutional Identity" desc="Verified educational charter data">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div><small className="muted">Official Legal Name</small><br /><b>{tenant?.name || 'Institution Name'}</b></div>
-            <div><small className="muted">Institution Code</small><br /><code>{tenant?.code || 'INST-001'}</code></div>
-            <div><small className="muted">Accredited Website</small><br /><a href={`https://${tenant?.code?.toLowerCase()}.edu`} target="_blank" rel="noreferrer">https://{tenant?.code?.toLowerCase()}.edu</a></div>
-            <div><small className="muted">Jurisdiction / State</small><br /><span>{tenant?.region || 'India (Default Enclave)'}</span></div>
+            <div><small className="muted">Institution Code</small><br /><code>{tenant?.code || '—'}</code></div>
+            {/* H7 fix: show real website_url from backend, not fabricated URL. */}
+            {tenant?.website_url && (
+              <div><small className="muted">Accredited Website</small><br /><a href={tenant.website_url} target="_blank" rel="noreferrer">{tenant.website_url}</a></div>
+            )}
+            <div><small className="muted">Jurisdiction / State</small><br /><span>{tenant?.region || '—'}</span></div>
             <div><small className="muted">Operational Status</small><br /><Badge value={tenant?.status || 'active'} /></div>
           </div>
         </Card>
 
         <Card title="Verified Organizational Domains" desc="Domains permitted for SSO and email attribution">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
-              <div>
-                <b>@{tenant?.code?.toLowerCase() || 'univ'}.edu</b>
-                <br />
-                <small className="muted">DNS TXT Verified</small>
+            {/* H7 fix: show real domains from backend data, no fabricated entries or fake "Verified" badges. */}
+            {(tenant?.domains?.length ? tenant.domains : []).map((domain) => (
+              <div key={domain} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
+                <div>
+                  <b>@{domain}</b>
+                </div>
               </div>
-              <span className="badge g">Verified</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
-              <div>
-                <b>@exam.{tenant?.code?.toLowerCase() || 'univ'}.edu</b>
-                <br />
-                <small className="muted">Dedicated Examination Subdomain</small>
-              </div>
-              <span className="badge g">Active</span>
-            </div>
+            ))}
+            {!tenant?.domains?.length && (
+              <div style={{ padding: '12px', color: 'var(--muted, #94a3b8)' }}>No domains registered.</div>
+            )}
           </div>
         </Card>
       </div>
@@ -601,13 +599,15 @@ export function InstitutionSecurityPage() {
   const { tenant } = useTenant();
   const { msg, setMsg, run, busy } = useFlash();
 
-  const [settings, setSettings] = useState({
-    requireTpm: true,
-    blockUsb: true,
+  const [settings, setSettings] = useState(() => ({
+    requireTpm: tenant?.security?.requireTpm ?? true,
+    blockUsb: !(tenant?.security?.allowUsbStorage ?? false),
     kioskFullscreen: true,
     secondCameraAllowed: true,
-    allowedOrigins: 'https://assessment.sppio.io, https://exam.university.edu',
-  });
+    allowedOrigins: Array.isArray(tenant?.domains) && tenant.domains.length
+      ? tenant.domains.map((d) => `https://${d}`).join(', ')
+      : '',
+  }));
 
   const handleSave = async () => {
     await run(async () => {
@@ -657,6 +657,7 @@ export function InstitutionSecurityPage() {
 export function InstitutionDeploymentReadinessPage() {
   const devices = useCol('devices');
   const campuses = useCol('campuses');
+  const { tenant } = useTenant();
   const attested = devices.filter((d) => d.trust === 'attested');
 
   return (
@@ -731,7 +732,7 @@ export function InstitutionAuditPage() {
         />
         <Stat
           label="Latest Block Hash"
-          value={latestHash.slice(0, 10) + 'â€¦'}
+          value={latestHash.slice(0, 10) + '…'}
           icon="lock"
           sub="Head Block Commit"
         />
@@ -753,7 +754,7 @@ export function InstitutionAuditPage() {
             { key: 'event', label: 'Event Type', render: (l) => <code>{l.event}</code> },
             { key: 'actor', label: 'Actor', render: (l) => <b>{l.actor || 'system'}</b> },
             { key: 'detail', label: 'Operational Detail', render: (l) => <span>{l.detail}</span> },
-            { key: 'hash', label: 'Block Hash (SHA-256)', render: (l) => <code className="sm">{l.hash ? `${l.hash.slice(0, 14)}â€¦` : 'GENESIS'}</code> },
+            { key: 'hash', label: 'Block Hash (SHA-256)', render: (l) => <code className="sm">{l.hash ? `${l.hash.slice(0, 14)}…` : 'GENESIS'}</code> },
             { key: 'ts', label: 'Timestamp', render: (l) => ago(l.ts || l.time || Date.now()) },
           ]}
           empty={<Empty icon="checklist" title="No audit events logged yet" desc="Mutating operations will appear here in real-time." />}

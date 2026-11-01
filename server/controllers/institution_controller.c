@@ -139,12 +139,13 @@ static void inst_list_json(PGresult *res, char *out, size_t out_len) {
         const char *domains = PQgetvalue(res, i, 13);
         if (!domains || !domains[0]) domains = "[]";
         const char *exam_defs = PQgetvalue(res, i, 14);
-        if (!exam_defs || !exam_defs[0]) exam_defs = "{\"durationMin\":60,\"lateEntryMin\":15,\"attestationLevel\":\"tpm\"}";
+        if (!exam_defs || !exam_defs[0]) exam_defs = "null";
         const char *security = PQgetvalue(res, i, 15);
-        if (!security || !security[0]) security = "{\"requireTpm\":true,\"requireSecureBoot\":true,\"allowUsbStorage\":false}";
+        if (!security || !security[0]) security = "null";
         const char *notif = PQgetvalue(res, i, 16);
-        if (!notif || !notif[0]) notif = "{\"email\":true,\"inApp\":true}";
+        if (!notif || !notif[0]) notif = "null";
 
+        /* H1 fix: return actual DB values, null for missing fields — no fabrication. */
         pos += snprintf(out + pos, out_len - pos,
             "{\"id\":\"%s\",\"name\":\"%s\",\"code\":\"%s\","
             "\"status\":\"%s\",\"plan\":\"%s\",\"region\":\"%s\","
@@ -155,11 +156,11 @@ static void inst_list_json(PGresult *res, char *out, size_t out_len) {
             id_esc, name_esc, code_esc,
             status_esc[0] ? status_esc : "active",
             plan_esc[0] ? plan_esc : "pilot",
-            region_esc[0] ? region_esc : "India · Mumbai",
-            tz_esc[0] ? tz_esc : "Asia/Kolkata",
-            PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "5",
-            PQgetvalue(res, i, 8)[0] ? PQgetvalue(res, i, 8) : "500",
-            model_esc[0] ? model_esc : "usb-boot",
+            region_esc[0] ? region_esc : "null",
+            tz_esc[0] ? tz_esc : "null",
+            PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "0",
+            PQgetvalue(res, i, 8)[0] ? PQgetvalue(res, i, 8) : "0",
+            model_esc[0] ? model_esc : "null",
             PQgetvalue(res, i, 10)[0] ? PQgetvalue(res, i, 10) : "0",
             email_esc, phone_esc, domains, exam_defs, security, notif);
     }
@@ -706,8 +707,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "reviewed_by = $3, reviewed_at = $4::bigint, updated_at = $4::bigint "
                 "WHERE id = $5", 5, u_vals, u_lens);
             int ok = u_res && PQresultStatus(u_res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (u_res) PQclear(u_res);
+            if (!ok) { /* H3 fix: check UPDATE result, fail on error. */
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update application review status", origin, extra_headers, extra_len);
+                return;
+            }
 
             audit_and_ledger(sess.user_id, "INSTITUTION_APPLICATION_REVIEWED", app_id, action_val);
             db_release(conn, 0);
@@ -821,10 +826,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(c_str, sizeof(c_str), "%d", c_cnt > 0 ? c_cnt : 5);
             snprintf(s_str, sizeof(s_str), "%d", s_cnt > 0 ? s_cnt : 500);
 
-            const char *t_vals[21] = {
+            const char *t_vals[22] = {
                 new_inst_id, d_name, code, r_email, r_phone,
                 "India · Mumbai", "Asia/Kolkata", d_plan[0] ? d_plan : "pilot",
-                c_str, s_str, d_model[0] ? d_model : "usb-boot", now_ms, dom_json,
+                c_str, s_str, d_model[0] ? d_model : "usb-boot", now_ms,
+                /* M8 fix: created_by uses the real session user_id, not 'admin'. */
+                sess.user_id, dom_json,
                 /* corporate fields */
                 ent_type,
                 co_size[0]  ? co_size  : "",
@@ -835,20 +842,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 t_stack[0]  ? t_stack  : "",
                 web_url[0]  ? web_url  : ""
             };
-            int t_lens[21]; for (int i = 0; i < 21; i++) t_lens[i] = (int)strlen(t_vals[i]);
+            int t_lens[22]; for (int i = 0; i < 22; i++) t_lens[i] = (int)strlen(t_vals[i]);
 
             PGresult *t_ins = db_simple(conn,
                 "INSERT INTO tenants (id, name, code, contact_email, contact_phone, "
                 "region, timezone, plan, status, max_centers, max_candidates, "
                 "deployment_model, created_at, created_by, domains, exam_defaults, security, notification_prefs, history,"
                 "entity_type, company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email, tech_stack, website_url) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9::integer,$10::integer,$11,$12::bigint,'admin',$13::jsonb,"
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9::integer,$10::integer,$11,$12::bigint,$13::varchar,$14::jsonb,"
                 "'{\"durationMin\":60,\"lateEntryMin\":15,\"attestationLevel\":\"tpm\"}'::jsonb,"
                 "'{\"requireTpm\":true,\"requireSecureBoot\":true,\"allowUsbStorage\":false}'::jsonb,"
                 "'{\"email\":true,\"inApp\":true}'::jsonb,"
-                "jsonb_build_array(jsonb_build_object('at',$12::bigint,'by','admin','action','Provisioned from Application')),"
-                "$14, NULLIF($15,''), NULLIF($16,''), $17::integer, NULLIF($18,''), NULLIF($19,''), NULLIF($20,''), NULLIF($21,''))",
-                21, t_vals, t_lens);
+                "jsonb_build_array(jsonb_build_object('at',$12::bigint,'by',$13::varchar,'action','Provisioned from Application')),"
+                "$15, NULLIF($16,''), NULLIF($17,''), $18::integer, NULLIF($19,''), NULLIF($20,''), NULLIF($21,''), NULLIF($22,''))",
+                22, t_vals, t_lens);
 
             /* 2. Dual-sync examos_institutions */
             const char *s_vals[4] = { new_inst_id, d_name, code, r_email };
@@ -1541,19 +1548,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(agr_id, sizeof(agr_id), "agr_%ld_%04d", (long)time(NULL), rand() % 10000);
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
-            char sql[10240];
-            char escaped_terms[4096];
-            escape_sql_str(terms_raw, escaped_terms, sizeof(escaped_terms));
+            const char *av[8] = { agr_id, inst_id, type, title, version, terms_raw, now, sess.user_id };
+            int al[8]; for (int i = 0; i < 8; i++) al[i] = (int)strlen(av[i]);
 
-            snprintf(sql, sizeof(sql),
+            PGresult *res = db_simple(conn,
                 "INSERT INTO institution_agreements (id, institution_id, type, title, version, status, terms_payload, audit_trail, created_at) "
-                "VALUES ('%s', '%s', '%s', '%s', '%s', 'DRAFT', '%s'::jsonb, "
-                "jsonb_build_array(jsonb_build_object('at',%s::bigint,'by','%s','action','Draft created')), %s::bigint)",
-                agr_id, inst_id, type, title, version, escaped_terms, now, sess.user_id, now);
-
-            PGresult *res = PQexec(conn, sql);
+                "VALUES ($1, $2, $3, $4, $5, 'DRAFT', $6::jsonb, "
+                "jsonb_build_array(jsonb_build_object('at',$7::bigint,'by',$8::varchar,'action','Draft created')), $7::bigint)",
+                8, av, al);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (res) PQclear(res);
 
             if (!ok) {
@@ -1651,23 +1654,30 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_int(body, "maxExams", &max_ex);
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
+            char mc_s[16], md_s[16], mcd_s[16], me_s[16];
+            snprintf(mc_s,  sizeof(mc_s),  "%d", max_c);
+            snprintf(md_s,  sizeof(md_s),  "%d", max_d);
+            snprintf(mcd_s, sizeof(mcd_s), "%d", max_cand);
+            snprintf(me_s,  sizeof(me_s),  "%d", max_ex);
 
-            char sql[1024];
-            snprintf(sql, sizeof(sql),
+            const char *lv[7] = { plan[0] ? plan : "", status[0] ? status : "", mc_s, md_s, mcd_s, me_s, inst_id };
+            int ll[7]; for (int i = 0; i < 7; i++) ll[i] = (int)strlen(lv[i]);
+            /* now passed separately as $8 */
+            const char *lv8[8] = { plan[0] ? plan : "", status[0] ? status : "", mc_s, md_s, mcd_s, me_s, now, inst_id };
+            int ll8[8]; for (int i = 0; i < 8; i++) ll8[i] = (int)strlen(lv8[i]);
+
+            PGresult *res = db_simple(conn,
                 "UPDATE institution_licenses SET "
-                "plan = COALESCE(NULLIF('%s',''), plan), "
-                "status = COALESCE(NULLIF('%s',''), status), "
-                "max_campuses = CASE WHEN %d >= 0 THEN %d ELSE max_campuses END, "
-                "max_devices = CASE WHEN %d >= 0 THEN %d ELSE max_devices END, "
-                "max_candidates = CASE WHEN %d >= 0 THEN %d ELSE max_candidates END, "
-                "max_exams = CASE WHEN %d >= 0 THEN %d ELSE max_exams END, "
-                "updated_at = %s::bigint "
-                "WHERE institution_id = '%s'",
-                plan, status, max_c, max_c, max_d, max_d, max_cand, max_cand, max_ex, max_ex, now, inst_id);
-
-            PGresult *res = PQexec(conn, sql);
+                "plan = CASE WHEN $1 <> '' THEN $1 ELSE plan END, "
+                "status = CASE WHEN $2 <> '' THEN $2 ELSE status END, "
+                "max_campuses  = CASE WHEN $3::integer >= 0 THEN $3::integer ELSE max_campuses  END, "
+                "max_devices   = CASE WHEN $4::integer >= 0 THEN $4::integer ELSE max_devices   END, "
+                "max_candidates= CASE WHEN $5::integer >= 0 THEN $5::integer ELSE max_candidates END, "
+                "max_exams     = CASE WHEN $6::integer >= 0 THEN $6::integer ELSE max_exams     END, "
+                "updated_at = $7::bigint "
+                "WHERE institution_id = $8",
+                8, lv8, ll8);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (res) PQclear(res);
 
             audit_and_ledger(sess.user_id, "INSTITUTION_LICENSE_UPDATED", inst_id, plan[0] ? plan : "limits");
@@ -1726,18 +1736,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
             }
             if (res) PQclear(res);
 
-            /* Query live usage for requested resource */
-            char csql[256];
+            /* Query live usage for requested resource — parameterized to prevent injection */
+            const char *usage_sql;
             if (strcmp(res_type, "campuses") == 0)
-                snprintf(csql, sizeof(csql), "SELECT COUNT(*) FROM campuses WHERE tenant_id = '%s'", inst_id);
+                usage_sql = "SELECT COUNT(*) FROM campuses WHERE tenant_id = $1";
             else if (strcmp(res_type, "devices") == 0)
-                snprintf(csql, sizeof(csql), "SELECT COUNT(*) FROM devices WHERE tenant_id = '%s'", inst_id);
+                usage_sql = "SELECT COUNT(*) FROM devices WHERE tenant_id = $1";
             else if (strcmp(res_type, "candidates") == 0)
-                snprintf(csql, sizeof(csql), "SELECT COUNT(*) FROM candidates WHERE tenant_id = '%s'", inst_id);
+                usage_sql = "SELECT COUNT(*) FROM candidates WHERE tenant_id = $1";
             else
-                snprintf(csql, sizeof(csql), "SELECT COUNT(*) FROM exams WHERE tenant_id = '%s'", inst_id);
+                usage_sql = "SELECT COUNT(*) FROM exams WHERE tenant_id = $1";
 
-            PGresult *cres = PQexec(conn, csql);
+            const char *upv[1] = { inst_id };
+            int upl[1] = { (int)strlen(inst_id) };
+            PGresult *cres = db_simple(conn, usage_sql, 1, upv, upl);
             if (cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0) {
                 current = atoi(PQgetvalue(cres, 0, 0));
             }
@@ -1911,11 +1923,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int chain_total = 0, chain_linked = 0;
             int chain_ok = 0;
             {
+                /* C2 fix: scope audit chain to this institution only. */
                 PGresult *chain_res = db_simple(conn,
                     "SELECT COUNT(*) AS total, "
                     "  COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev != '') AS chained "
-                    "FROM audit",
-                    0, NULL, NULL);
+                    "FROM audit WHERE institution_id = $1",
+                    1, pv, pl);
                 if (chain_res && PQresultStatus(chain_res) == PGRES_TUPLES_OK && PQntuples(chain_res) > 0) {
                     chain_total = atoi(PQgetvalue(chain_res, 0, 0));
                     chain_linked = atoi(PQgetvalue(chain_res, 0, 1));
@@ -2248,11 +2261,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             /* Auto-initialize onboarding record if it does not exist yet */
             {
-                char init_sql[2048];
-                snprintf(init_sql, sizeof(init_sql),
+                const char *ov[3] = { inst_id, "admin@examos.local", now };
+                int ol[3]; for (int i = 0; i < 3; i++) ol[i] = (int)strlen(ov[i]);
+                PGresult *init_res = db_simple(conn,
                     "INSERT INTO institution_onboarding (institution_id, status, checklist, completed_steps, total_steps, "
                     "first_admin_email, first_admin_invited, mfa_enforced, updated_at) "
-                    "VALUES ('%s', 'VERIFIED', jsonb_build_object("
+                    "VALUES ($1, 'VERIFIED', jsonb_build_object("
                     "'registration', jsonb_build_object('completed', true),"
                     "'identity_verification', jsonb_build_object('completed', true),"
                     "'agreement', jsonb_build_object('completed', false),"
@@ -2261,38 +2275,40 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "'campus_hierarchy', jsonb_build_object('completed', true),"
                     "'os_deployment', jsonb_build_object('completed', true),"
                     "'production_readiness', jsonb_build_object('completed', false)"
-                    "), 4, 8, 'admin@examos.local', 1, 1, %s::bigint) "
+                    "), 4, 8, $2, 1, 1, $3::bigint) "
                     "ON CONFLICT (institution_id) DO NOTHING",
-                    inst_id, now);
-                PGresult *init_res = PQexec(conn, init_sql);
+                    3, ov, ol);
                 if (init_res) PQclear(init_res);
             }
 
-            char sql[2048];
-            snprintf(sql, sizeof(sql),
-                "UPDATE institution_onboarding SET "
-                "checklist = jsonb_set(checklist, '{%s}', jsonb_build_object('completed', %s, 'at', %s::bigint, 'by', '%s', 'notes', '%s')), "
-                "updated_at = %s::bigint "
-                "WHERE institution_id = '%s' "
-                "RETURNING checklist",
-                step_key, completed ? "true" : "false", now, sess.user_id, notes, now, inst_id);
+            /* completed flag as text for jsonb_build_object */
+            const char *comp_str = completed ? "true" : "false";
+            /* Use parameterized jsonb_set — step_key goes into the path array */
+            const char *uv[6] = { step_key, comp_str, now, sess.user_id, notes, inst_id };
+            int ul[6]; for (int i = 0; i < 6; i++) ul[i] = (int)strlen(uv[i]);
 
-            PGresult *res = PQexec(conn, sql);
+            PGresult *res = db_simple(conn,
+                "UPDATE institution_onboarding SET "
+                "checklist = jsonb_set(checklist, ARRAY[$1::text], "
+                "  jsonb_build_object('completed', $2::boolean, 'at', $3::bigint, 'by', $4::varchar, 'notes', $5::varchar)), "
+                "updated_at = $3::bigint "
+                "WHERE institution_id = $6 "
+                "RETURNING checklist",
+                6, uv, ul);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-                /* Count completed steps */
-                char count_sql[1024];
-                snprintf(count_sql, sizeof(count_sql),
+                /* Count completed steps — parameterized */
+                const char *cpv[1] = { inst_id };
+                int cpl[1] = { (int)strlen(inst_id) };
+                PGresult *cres = db_simple(conn,
                     "UPDATE institution_onboarding SET "
                     "completed_steps = (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true'), "
                     "status = CASE "
                     "  WHEN (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true') >= 8 THEN 'ACTIVE' "
                     "  WHEN (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true') >= 6 THEN 'CONFIGURED' "
                     "  WHEN (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true') >= 4 THEN 'LICENSED' "
-                    "  ELSE 'VERIFIED' "
-                    "END "
-                    "WHERE institution_id = '%s' RETURNING status, completed_steps", inst_id);
-
-                PGresult *cres = PQexec(conn, count_sql);
+                    "  ELSE 'VERIFIED' END "
+                    "WHERE institution_id = $1 RETURNING status, completed_steps",
+                    1, cpv, cpl);
                 char new_status[64] = "CONFIGURED", c_steps[16] = "5";
                 if (cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0) {
                     snprintf(new_status, sizeof(new_status), "%s", PQgetvalue(cres, 0, 0));
@@ -2381,37 +2397,43 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
-            char plan_clause[128] = {0}, dom_clause[600] = {0};
-            if (plan[0]) snprintf(plan_clause, sizeof(plan_clause), "plan = '%s', ", plan);
-            if (domains_raw[0]) snprintf(dom_clause, sizeof(dom_clause), "domains = '%s'::jsonb, ", domains_raw);
+            /* Build parameterized update — only set fields that were provided */
+            const char *uv[10] = {
+                name[0]   ? name   : "",
+                email[0]  ? email  : "",
+                phone[0]  ? phone  : "",
+                region[0] ? region : "",
+                tz[0]     ? tz     : "",
+                model[0]  ? model  : "",
+                plan[0]   ? plan   : "",
+                domains_raw[0] ? domains_raw : "",
+                now,
+                inst_id
+            };
+            int ul[10]; for (int i = 0; i < 10; i++) ul[i] = (int)strlen(uv[i]);
 
-            char sql[1536];
-            snprintf(sql, sizeof(sql),
+            PGresult *res = db_simple(conn,
                 "UPDATE tenants SET "
-                "name = COALESCE(NULLIF('%s',''), name), "
-                "contact_email = COALESCE(NULLIF('%s',''), contact_email), "
-                "contact_phone = COALESCE(NULLIF('%s',''), contact_phone), "
-                "region = COALESCE(NULLIF('%s',''), region), "
-                "timezone = COALESCE(NULLIF('%s',''), timezone), "
-                "deployment_model = COALESCE(NULLIF('%s',''), deployment_model), "
-                "%s%s"
-                "history = history || jsonb_build_array(jsonb_build_object('at',%s::bigint,'by','%s','action','Institution settings updated')) "
-                "WHERE id = '%s'",
-                name, email, phone, region, tz, model,
-                plan_clause, dom_clause,
-                now, sess.user_id, inst_id);
-
-            PGresult *res = PQexec(conn, sql);
+                "name             = CASE WHEN $1 <> '' THEN $1 ELSE name             END, "
+                "contact_email    = CASE WHEN $2 <> '' THEN $2 ELSE contact_email    END, "
+                "contact_phone    = CASE WHEN $3 <> '' THEN $3 ELSE contact_phone    END, "
+                "region           = CASE WHEN $4 <> '' THEN $4 ELSE region           END, "
+                "timezone         = CASE WHEN $5 <> '' THEN $5 ELSE timezone         END, "
+                "deployment_model = CASE WHEN $6 <> '' THEN $6 ELSE deployment_model END, "
+                "plan             = CASE WHEN $7 <> '' THEN $7 ELSE plan             END, "
+                "domains          = CASE WHEN $8 <> '' THEN $8::jsonb ELSE domains   END, "
+                "history = history || jsonb_build_array(jsonb_build_object('at',$9::bigint,'by',$10::varchar,'action','Institution settings updated')) "
+                "WHERE id = $10",
+                10, uv, ul);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (res) PQclear(res);
 
             if (name[0]) {
-                char s_sql[512];
-                snprintf(s_sql, sizeof(s_sql),
-                    "UPDATE examos_institutions SET name = '%s' WHERE institution_id = '%s'",
-                    name, inst_id);
-                PGresult *s_res = PQexec(conn, s_sql);
+                const char *sv[2] = { name, inst_id };
+                int sl[2] = { (int)strlen(name), (int)strlen(inst_id) };
+                PGresult *s_res = db_simple(conn,
+                    "UPDATE examos_institutions SET name = $1 WHERE institution_id = $2",
+                    2, sv, sl);
                 if (s_res) PQclear(s_res);
             }
 
@@ -2472,17 +2494,32 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 snprintf(affected_inst, sizeof(affected_inst), "%s", PQgetvalue(res, 0, 0));
                 PQclear(res);
 
+                /* C3 fix: verify caller has scope over this agreement's institution. */
+                if (!is_owner && strcmp(sess.institution_id, affected_inst) != 0) {
+                    /* Undo the UPDATE we just did — the caller had no scope. */
+                    const char *rv[1] = { agr_id };
+                    int rl[1] = { (int)strlen(agr_id) };
+                    PGresult *undo = db_simple(conn,
+                        "UPDATE institution_agreements SET status='DRAFT', signer_name=NULL, signer_email=NULL, "
+                        "signer_role=NULL, signed_at=NULL, document_digest=NULL, effective_from=NULL, effective_until=NULL "
+                        "WHERE id=$1", 1, rv, rl);
+                    if (undo) PQclear(undo);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 403, "Access denied: agreement belongs to a different institution", origin, extra_headers, extra_len);
+                    return;
+                }
+
                 /* Automatically advance agreement step on onboarding checklist */
                 if (affected_inst[0]) {
-                    char onb_up[1024];
-                    snprintf(onb_up, sizeof(onb_up),
+                    const char *ov[3] = { affected_inst, now_ms, digest };
+                    int ol[3] = { (int)strlen(affected_inst), (int)strlen(now_ms), (int)strlen(digest) };
+                    PGresult *onb_r = db_simple(conn,
                         "UPDATE institution_onboarding SET "
-                        "checklist = jsonb_set(checklist, '{agreement}', jsonb_build_object('completed', true, 'at', %s::bigint, 'digest', '%s')), "
+                        "checklist = jsonb_set(checklist, '{agreement}', jsonb_build_object('completed', true, 'at', $2::bigint, 'digest', $3::text)), "
                         "completed_steps = (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true'), "
-                        "updated_at = %s::bigint WHERE institution_id = '%s'",
-                        now_ms, digest, now_ms, affected_inst);
-                    PGresult *or = PQexec(conn, onb_up);
-                    if (or) PQclear(or);
+                        "updated_at = $2::bigint WHERE institution_id = $1",
+                        3, ov, ol);
+                    if (onb_r) PQclear(onb_r);
                 }
 
                 audit_and_ledger(sess.user_id, "AGREEMENT_DIGITALLY_SIGNED", agr_id, digest);
@@ -2510,26 +2547,50 @@ void institution_handle(int client_fd, const char *method, const char *path,
         extract_sub_id_and_action(path, "/api/v1/admin/deployments/", dep_id, sizeof(dep_id), act, sizeof(act));
 
         if (strcmp(method, "POST") == 0 && strcmp(act, "status") == 0) {
+            /* C3 fix: verify caller has scope over this deployment's institution. */
+            const char *scope_q_vals[1] = { dep_id };
+            int scope_q_lens[1] = { (int)strlen(dep_id) };
+            PGresult *scope_res = db_simple(conn,
+                "SELECT institution_id FROM institution_os_deployments WHERE id = $1",
+                1, scope_q_vals, scope_q_lens);
+            if (!scope_res || PQresultStatus(scope_res) != PGRES_TUPLES_OK || PQntuples(scope_res) == 0) {
+                if (scope_res) PQclear(scope_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Deployment not found", origin, extra_headers, extra_len);
+                return;
+            }
+            char dep_inst_id[64] = {0};
+            snprintf(dep_inst_id, sizeof(dep_inst_id), "%s", PQgetvalue(scope_res, 0, 0));
+            PQclear(scope_res);
+            if (!is_owner && strcmp(sess.institution_id, dep_inst_id) != 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 403, "Access denied: deployment belongs to a different institution", origin, extra_headers, extra_len);
+                return;
+            }
+
             char st[40] = {0};
             int ack = -1;
             ctrl_json_string(body, "status", st, sizeof(st));
             ctrl_json_int(body, "devicesAcknowledged", &ack);
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
-
-            char sql[512];
-            snprintf(sql, sizeof(sql),
+            char ack_s[16]; snprintf(ack_s, sizeof(ack_s), "%d", ack);
+            const char *uv[4] = { st[0] ? st : "", ack_s, now, dep_id };
+            int ul[4]; for (int i = 0; i < 4; i++) ul[i] = (int)strlen(uv[i]);
+            PGresult *res = db_simple(conn,
                 "UPDATE institution_os_deployments SET "
-                "status = COALESCE(NULLIF('%s',''), status), "
-                "devices_acknowledged = CASE WHEN %d >= 0 THEN %d ELSE devices_acknowledged END, "
-                "updated_at = %s::bigint "
-                "WHERE id = '%s'",
-                st, ack, ack, now, dep_id);
-
-            PGresult *res = PQexec(conn, sql);
+                "status=CASE WHEN $1<>'' THEN $1 ELSE status END, "
+                "devices_acknowledged=CASE WHEN $2::integer>=0 THEN $2::integer ELSE devices_acknowledged END, "
+                "updated_at=$3::bigint WHERE id=$4",
+                4, uv, ul);
+            /* H3 fix: check UPDATE result, return 500 on failure. */
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (res) PQclear(res);
+            if (!ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update deployment status", origin, extra_headers, extra_len);
+                return;
+            }
 
             audit_and_ledger(sess.user_id, "OS_DEPLOYMENT_STATUS_UPDATED", dep_id, st);
             db_release(conn, 0);
@@ -2541,11 +2602,32 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
 
         if (strcmp(method, "POST") == 0 && (strcmp(act, "push-kiosk") == 0 || strcmp(act, "push") == 0)) {
-            char sql[512];
-            snprintf(sql, sizeof(sql),
-                "SELECT release_id, channel, hardware_profile, security_profile FROM institution_os_deployments WHERE id = '%s'",
-                dep_id);
-            PGresult *q = PQexec(conn, sql);
+            /* C3 fix: verify the caller has scope over this deployment's institution. */
+            const char *dep_q_vals[1] = { dep_id };
+            int dep_q_lens[1] = { (int)strlen(dep_id) };
+            PGresult *scope_res = db_simple(conn,
+                "SELECT institution_id FROM institution_os_deployments WHERE id = $1",
+                1, dep_q_vals, dep_q_lens);
+            if (!scope_res || PQresultStatus(scope_res) != PGRES_TUPLES_OK || PQntuples(scope_res) == 0) {
+                if (scope_res) PQclear(scope_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Deployment not found", origin, extra_headers, extra_len);
+                return;
+            }
+            char dep_inst_id[64] = {0};
+            snprintf(dep_inst_id, sizeof(dep_inst_id), "%s", PQgetvalue(scope_res, 0, 0));
+            PQclear(scope_res);
+            if (!is_owner && strcmp(sess.institution_id, dep_inst_id) != 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 403, "Access denied: deployment belongs to a different institution", origin, extra_headers, extra_len);
+                return;
+            }
+
+            /* C1 fix: parameterized query — no string interpolation of dep_id. */
+            PGresult *q = db_simple(conn,
+                "SELECT release_id, channel, hardware_profile, security_profile "
+                "FROM institution_os_deployments WHERE id = $1",
+                1, dep_q_vals, dep_q_lens);
             char rel[64] = "examos-2026.1-stable", chan[40] = "stable", sec[60] = "high-assurance";
             if (q && PQresultStatus(q) == PGRES_TUPLES_OK && PQntuples(q) > 0) {
                 snprintf(rel, sizeof(rel), "%s", PQgetvalue(q, 0, 0));
@@ -2556,11 +2638,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             int target_count = kiosk_get_active_count();
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
+            char tc_str[16]; snprintf(tc_str, sizeof(tc_str), "%d", target_count);
 
-            snprintf(sql, sizeof(sql),
-                "UPDATE institution_os_deployments SET status = 'ACTIVE', devices_targeted = %d, updated_at = %s::bigint WHERE id = '%s'",
-                target_count, now, dep_id);
-            PGresult *u = PQexec(conn, sql);
+            const char *upd_vals[4] = { tc_str, now, dep_id };
+            int upd_lens[4]; for (int i = 0; i < 4; i++) upd_lens[i] = (int)strlen(upd_vals[i]);
+            PGresult *u = db_simple(conn,
+                "UPDATE institution_os_deployments SET status = 'ACTIVE', "
+                "devices_targeted = $1::integer, updated_at = $2::bigint WHERE id = $3",
+                3, upd_vals, upd_lens);
             if (u) PQclear(u);
 
             kiosk_broadcast_os_update(rel, chan, sec);
@@ -2699,16 +2784,23 @@ void institution_handle(int client_fd, const char *method, const char *path,
             }
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
-            char sql[512];
-            snprintf(sql, sizeof(sql),
-                "UPDATE campuses SET status = '%s', updated_at = %s::bigint "
-                "WHERE id = '%s'%s%s%s",
-                st, now, cmp_id,
-                !is_owner ? " AND tenant_id = '" : "", !is_owner ? sess.institution_id : "", !is_owner ? "'" : "");
+            const char *uv[3] = { st, now, cmp_id };
+            int ul[3]; for (int i = 0; i < 3; i++) ul[i] = (int)strlen(uv[i]);
 
-            PGresult *res = PQexec(conn, sql);
+            /* Scope: non-owners can only update campuses in their own institution */
+            PGresult *res;
+            if (is_owner) {
+                res = db_simple(conn,
+                    "UPDATE campuses SET status = $1, updated_at = $2::bigint WHERE id = $3",
+                    3, uv, ul);
+            } else {
+                const char *uv4[4] = { st, now, cmp_id, sess.institution_id };
+                int ul4[4]; for (int i = 0; i < 4; i++) ul4[i] = (int)strlen(uv4[i]);
+                res = db_simple(conn,
+                    "UPDATE campuses SET status = $1, updated_at = $2::bigint WHERE id = $3 AND tenant_id = $4",
+                    4, uv4, ul4);
+            }
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-            (void)ok;
             if (res) PQclear(res);
 
             audit_and_ledger(sess.user_id, "CAMPUS_STATUS_UPDATED", cmp_id, st);
@@ -2731,20 +2823,33 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_int(body, "capacity", &capacity);
 
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
-            char sql[1024];
-            snprintf(sql, sizeof(sql),
-                "UPDATE campuses SET "
-                "name = COALESCE(NULLIF('%s',''), name), "
-                "code = COALESCE(NULLIF('%s',''), code), "
-                "city = COALESCE(NULLIF('%s',''), city), "
-                "address = COALESCE(NULLIF('%s',''), address), "
-                "capacity = CASE WHEN %d >= 0 THEN %d ELSE capacity END, "
-                "updated_at = %s::bigint "
-                "WHERE id = '%s'%s%s%s",
-                name, code, city, address, capacity, capacity, now, cmp_id,
-                !is_owner ? " AND tenant_id = '" : "", !is_owner ? sess.institution_id : "", !is_owner ? "'" : "");
-
-            PGresult *res = PQexec(conn, sql);
+            char cap_s[16]; snprintf(cap_s, sizeof(cap_s), "%d", capacity);
+            PGresult *res;
+            if (is_owner) {
+                const char *uv[6] = { name, code, city, address, cap_s, cmp_id };
+                int ul[6]; for (int i = 0; i < 6; i++) ul[i] = (int)strlen(uv[i]);
+                res = db_simple(conn,
+                    "UPDATE campuses SET "
+                    "name=CASE WHEN $1<>'' THEN $1 ELSE name END, "
+                    "code=CASE WHEN $2<>'' THEN $2 ELSE code END, "
+                    "city=CASE WHEN $3<>'' THEN $3 ELSE city END, "
+                    "address=CASE WHEN $4<>'' THEN $4 ELSE address END, "
+                    "capacity=CASE WHEN $5::integer>=0 THEN $5::integer ELSE capacity END, "
+                    "updated_at=$7::bigint WHERE id=$6",
+                    6, uv, ul);
+            } else {
+                const char *uv[7] = { name, code, city, address, cap_s, cmp_id, sess.institution_id };
+                int ul[7]; for (int i = 0; i < 7; i++) ul[i] = (int)strlen(uv[i]);
+                res = db_simple(conn,
+                    "UPDATE campuses SET "
+                    "name=CASE WHEN $1<>'' THEN $1 ELSE name END, "
+                    "code=CASE WHEN $2<>'' THEN $2 ELSE code END, "
+                    "city=CASE WHEN $3<>'' THEN $3 ELSE city END, "
+                    "address=CASE WHEN $4<>'' THEN $4 ELSE address END, "
+                    "capacity=CASE WHEN $5::integer>=0 THEN $5::integer ELSE capacity END, "
+                    "updated_at=$8::bigint WHERE id=$6 AND tenant_id=$7",
+                    7, uv, ul);
+            }
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             (void)ok;
             if (res) PQclear(res);
@@ -2860,14 +2965,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "status", st, sizeof(st));
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
-            char sql[512];
-            snprintf(sql, sizeof(sql),
-                "UPDATE departments SET status = '%s', updated_at = %s::bigint "
-                "WHERE id = '%s'%s%s%s",
-                st, now, dep_id,
-                !is_owner ? " AND tenant_id = '" : "", !is_owner ? sess.institution_id : "", !is_owner ? "'" : "");
-
-            PGresult *res = PQexec(conn, sql);
+            PGresult *res;
+            if (is_owner) {
+                const char *uv[3] = { st, now, dep_id };
+                int ul[3] = { (int)strlen(st), (int)strlen(now), (int)strlen(dep_id) };
+                res = db_simple(conn,
+                    "UPDATE departments SET status=$1, updated_at=$2::bigint WHERE id=$3",
+                    3, uv, ul);
+            } else {
+                const char *uv[4] = { st, now, dep_id, sess.institution_id };
+                int ul[4] = { (int)strlen(st), (int)strlen(now), (int)strlen(dep_id), (int)strlen(sess.institution_id) };
+                res = db_simple(conn,
+                    "UPDATE departments SET status=$1, updated_at=$2::bigint WHERE id=$3 AND tenant_id=$4",
+                    4, uv, ul);
+            }
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             (void)ok;
             if (res) PQclear(res);
@@ -3003,14 +3114,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "reason", reason, sizeof(reason));
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
-            char sql[512];
-            snprintf(sql, sizeof(sql),
-                "UPDATE staff SET status = 'inactive', status_reason = '%s', updated_at = %s::bigint "
-                "WHERE id = '%s'%s%s%s",
-                reason, now, stf_id,
-                !is_owner ? " AND tenant_id = '" : "", !is_owner ? sess.institution_id : "", !is_owner ? "'" : "");
-
-            PGresult *res = PQexec(conn, sql);
+            PGresult *res;
+            if (is_owner) {
+                const char *uv[3] = { reason, now, stf_id };
+                int ul[3] = { (int)strlen(reason), (int)strlen(now), (int)strlen(stf_id) };
+                res = db_simple(conn,
+                    "UPDATE staff SET status='inactive', status_reason=$1, updated_at=$2::bigint WHERE id=$3",
+                    3, uv, ul);
+            } else {
+                const char *uv[4] = { reason, now, stf_id, sess.institution_id };
+                int ul[4] = { (int)strlen(reason), (int)strlen(now), (int)strlen(stf_id), (int)strlen(sess.institution_id) };
+                res = db_simple(conn,
+                    "UPDATE staff SET status='inactive', status_reason=$1, updated_at=$2::bigint WHERE id=$3 AND tenant_id=$4",
+                    4, uv, ul);
+            }
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             (void)ok;
             if (res) PQclear(res);
@@ -3027,4 +3144,32 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
     db_release(conn, 0);
     inst_send_error(client_fd, 404, "Endpoint not found", origin, extra_headers, extra_len);
+}
+
+/* ---------------------------------------------------------------------------
+ * Kiosk broadcast stubs — real implementation lives in kiosk/launcher.
+ * These are called from the OS deployment push path and must link cleanly.
+ * In production the kiosk process receives updates via the heartbeat channel.
+ * --------------------------------------------------------------------------- */
+void kiosk_broadcast_os_update(const char *release_id, const char *channel,
+                               const char *security_profile) {
+    if (release_id && channel && security_profile) {
+        fprintf(stderr, "[KioskBroadcast] OS update queued: release=%s channel=%s profile=%s\n",
+                release_id, channel, security_profile);
+    }
+}
+
+int kiosk_get_active_count(void) {
+    /* Query the devices table for enrolled kiosk devices reporting recent heartbeats */
+    PGconn *conn = db_acquire();
+    if (!conn) return 0;
+    PGresult *res = PQexec(conn,
+        "SELECT COUNT(*) FROM devices WHERE status='enrolled' "
+        "AND last_seen > EXTRACT(EPOCH FROM NOW())::bigint - 300000");
+    int count = 0;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0)
+        count = atoi(PQgetvalue(res, 0, 0));
+    if (res) PQclear(res);
+    db_release(conn, 0);
+    return count;
 }

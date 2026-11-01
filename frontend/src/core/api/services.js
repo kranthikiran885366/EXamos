@@ -38,7 +38,7 @@ export function backendRoleToFrontend(role) {
     EXAM_MANAGER: 'exam_controller',
     SECURITY_ADMIN: 'security_engineer',
     INVIGILATOR: 'invigilator',
-    TECH_OPERATOR: 'it_admin',
+    TECH_OPERATOR: 'ops_admin',
     INCIDENT_INVESTIGATOR: 'auditor',
     READONLY_AUDITOR: 'auditor',
     SUPPORT_ENGINEER: 'support',
@@ -178,6 +178,7 @@ export const createInstitution = wrap(async (data) => {
     max_centers: Number(maxCenters) || 5,
     max_candidates: Number(maxCandidates) || 500,
     deployment_model: deploymentModel || 'usb-boot',
+    /* M2 fix: send snake_case retention_days to match the backend's ctrl_json_int key. */
     retention_days: Number(retentionDays) || 365,
     domains: domains || [],
     active: 1,

@@ -121,3 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_tenants_industry_sector  ON tenants(industry_sect
 -- 7. Back-fill entity_type for existing tenants (default to university)
 -- ============================================================
 UPDATE tenants SET entity_type = 'university' WHERE entity_type IS NULL OR entity_type = '';
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('institutions', 1)
+ON CONFLICT (component, version) DO NOTHING;

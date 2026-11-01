@@ -51,18 +51,42 @@ export async function createInstitution(a, input) {
   need(a, 'tenant.manage');
   const name = clean(input.name, 80);
   if (name.length < 3) fail('Institution name needs 3+ characters.');
-  const tenants = await all('tenants');
-  if (tenants.some((t) => t.name.toLowerCase() === name.toLowerCase())) fail('An institution with this name already exists.');
   const code = clean(input.code, 20).toUpperCase() || codeOf(name);
-  if (tenants.some((t) => t.code === code)) fail('This institution code is already used.');
   const domains = (Array.isArray(input.domains) ? input.domains : String(input.domains || '').split(/[\s,]+/)).map((d) => d.trim().toLowerCase()).filter(Boolean);
   for (const d of domains) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
   if (input.contactEmail && !isEmail(input.contactEmail)) fail('Enter a valid contact email.');
+
+  /* H5 fix: backend must succeed first — no local-only institution creation.
+   * If the backend is unreachable or rejects, we fail immediately instead of
+   * silently creating a local-only IndexedDB record. */
+  let backendRes;
+  try {
+    backendRes = await Api.createInstitution({
+      name,
+      code,
+      contactEmail: clean(input.contactEmail, 120),
+      contactPhone: clean(input.contactPhone, 30),
+      region: clean(input.region, 40) || '',
+      timezone: input.timezone || '',
+      plan: input.plan || 'pilot',
+      maxCenters: Number(input.maxCenters) || 5,
+      maxCandidates: Number(input.maxCandidates) || 500,
+      deploymentModel: input.deploymentModel || 'usb-boot',
+      retentionDays: 365,
+      domains,
+    });
+  } catch (err) {
+    fail(err.message || 'Backend institution registration failed. Cannot create institution offline.');
+  }
+
+  const instId = backendRes?.institution_id || backendRes?.id;
+  if (!instId) fail('Backend did not return an institution ID.');
+
   const now = Date.now();
   const t = {
-    id: id('ten'), name, code, domains, contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
-    region: clean(input.region, 40) || 'India · Mumbai', timezone: input.timezone || 'Asia/Kolkata',
-    plan: input.plan || 'pilot', status: 'active', entityType: input.entityType || 'enterprise',
+    id: instId, name, code, domains, contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
+    region: clean(input.region, 40) || '', timezone: input.timezone || '',
+    plan: input.plan || 'pilot', status: 'active', entityType: input.entityType || 'university',
     registrationNumber: clean(input.registrationNumber || '', 60),
     maxCenters: Number(input.maxCenters) || 5,
     maxCandidates: Number(input.maxCandidates) || 500, deploymentModel: input.deploymentModel || 'usb-boot',
@@ -72,27 +96,6 @@ export async function createInstitution(a, input) {
     history: [{ at: now, by: a.id, action: 'Institution registered' }],
     createdAt: now, createdBy: a.id,
   };
-  try {
-    const backendRes = await Api.createInstitution({
-      name,
-      code,
-      contactEmail: t.contactEmail,
-      contactPhone: t.contactPhone,
-      region: t.region,
-      timezone: t.timezone,
-      plan: t.plan,
-      maxCenters: t.maxCenters,
-      maxCandidates: t.maxCandidates,
-      deploymentModel: t.deploymentModel,
-      retentionDays: 365,
-      domains: t.domains,
-    });
-    if (backendRes?.institution_id) {
-      t.id = backendRes.institution_id;
-    }
-  } catch (err) {
-    console.warn('Backend institution registration fallback:', err.message);
-  }
   await put('tenants', t);
   await put('institutions', t).catch(() => {});
   await log(a, 'TENANT_CREATED', `${name} (${code})`);
@@ -403,9 +406,10 @@ export async function listInstitutionAdmins(institutionId) {
           username: u.username,
           name: u.full_name || u.name || u.username,
           email: u.email || '',
-          role: u.role_name ? u.role_name.toLowerCase().replace(/ /g, '_') : 'inst_admin',
+          /* H6 fix: backend returns 'role' (e.g. 'inst_admin'), NOT 'role_name'. */
+          role: u.role || 'inst_admin',
           tenantId: institutionId,
-          status: u.active === 0 ? 'suspended' : 'active',
+          status: u.status || (u.active === 0 ? 'suspended' : 'active'),
           mfaEnabled: !!u.mfa_enabled,
           lastLogin: u.last_login || null,
           createdAt: u.created_at || Date.now(),
@@ -417,9 +421,10 @@ export async function listInstitutionAdmins(institutionId) {
         username: u.username,
         name: u.full_name || u.name || u.username,
         email: u.email || '',
-        role: u.role_name ? u.role_name.toLowerCase().replace(/ /g, '_') : 'inst_admin',
+        /* H6 fix: use u.role, not u.role_name which doesn't exist in the API response. */
+        role: u.role || 'inst_admin',
         tenantId: institutionId,
-        status: u.active === 0 ? 'suspended' : 'active',
+        status: u.status || (u.active === 0 ? 'suspended' : 'active'),
         mfaEnabled: !!u.mfa_enabled,
         lastLogin: u.last_login || null,
         createdAt: u.created_at || Date.now(),
@@ -578,16 +583,20 @@ export async function reviewApplication(user, id, action, reviewNotes) {
 export async function provisionApplication(user, id) {
   need(user, 'tenant.manage');
   const res = await Api.provisionInstitutionApplication(id);
-  if (res?.tenant_id) {
-    // Sync local IndexedDB for immediate responsive UI
-    await put('tenants', {
-      id: res.tenant_id,
-      name: res.name || 'Provisioned Institution',
-      code: 'INS',
+  /* H5/D3 fix: do NOT fabricate a stub tenant in IndexedDB — the backend
+   * created the real tenant record.  Use the backend response data only. */
+  if (res?.institution_id || res?.tenant_id) {
+    const instId = res.institution_id || res.tenant_id;
+    const t = {
+      id: instId,
+      name: res.name || '',
+      code: res.code || '',
       status: 'active',
-      plan: 'pilot',
+      plan: res.plan || 'pilot',
       createdAt: Date.now(),
-    }).catch(() => {});
+    };
+    await put('tenants', t).catch(() => {});
+    await put('institutions', t).catch(() => {});
   }
   await log(user, 'INSTITUTION_PROVISIONED', `${res?.institution_id || id}`);
   return res;

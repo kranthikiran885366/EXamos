@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS examos_admin_mfa_enrollments_user_idx
 -- (Handled by application; index supports efficient WHERE expires_at < now().)
 
 INSERT INTO examos_schema_migrations (component, version)
-VALUES ('admin_auth', 9)
+VALUES ('admin_auth', 6)
 ON CONFLICT (component, version) DO NOTHING;
 
 COMMIT;

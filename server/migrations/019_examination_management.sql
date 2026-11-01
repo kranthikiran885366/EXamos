@@ -232,7 +232,8 @@ SELECT
 FROM exams
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO examos_schema_migrations (component, version, notes)
-VALUES ('examination_management', 19, 'Module 9 Examination Management');
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('examination_management', 19)
+ON CONFLICT (component, version) DO NOTHING;
 
 COMMIT;

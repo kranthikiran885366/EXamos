@@ -194,3 +194,7 @@ ON CONFLICT (release_version) DO NOTHING;
 INSERT INTO device_trust_policies (id, institution_id, policy_name, version, require_registration, require_admin_approval, require_tpm, require_secure_boot, require_approved_release, max_evidence_age_sec, status, approved_by, approved_at, activated_at, created_at, updated_at)
 VALUES ('dtpol_default_vignan', 'inst_vignan', 'Vignan Standard Examination Device Policy', 1, TRUE, FALSE, TRUE, TRUE, TRUE, 600, 'active', 'usr_root', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('device_fleet', 7)
+ON CONFLICT (component, version) DO NOTHING;
