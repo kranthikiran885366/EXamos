@@ -60,9 +60,8 @@ export async function commitImport(a, tenantId, valid) {
       await Api.confirmStudentImport(previewRes.job_id);
     }
   } catch (err) {
-    console.warn('Backend Module 5 bulk import notice:', err.message);
-  }
-  const have = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.rollNo));
+    fail(err.message || 'Backend bulk import failed.');
+  }  const have = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.rollNo));
   const fresh = valid.filter((c) => !have.has(c.rollNo));
   await putMany('candidates', fresh.map((c) => ({ id: id('cnd'), tenantId, ...c, examId: null, centerId: null, seat: null, identity: 'pending', status: 'registered', verification_status: 'UNVERIFIED', exceptions: [], corrections: [], createdAt: Date.now() })));
   await log(a, 'CANDIDATES_IMPORTED', `${fresh.length} of ${valid.length}`);
@@ -95,8 +94,9 @@ export async function addCandidate(a, input) {
       notes,
     });
     backendStudentId = res?.student_id || res?.id;
+    if (!backendStudentId) fail('Backend did not return a student ID.');
   } catch (err) {
-    console.warn('Backend Module 5 student creation notice:', err.message);
+    fail(err.message || 'Backend student creation failed. Candidate not saved.');
   }
 
   const candRecord = {
@@ -181,7 +181,7 @@ export async function setIdentity(a, c, outcome, reason) {
       notes: r,
     });
   } catch (err) {
-    console.warn('Backend Module 5 identity verification notice:', err.message);
+    fail(err.message || 'Backend identity verification failed. Update not saved.');
   }
   const next = { ...c, identity: outcome, verification_status: outcome === 'verified' ? 'VERIFIED' : 'REJECTED', identityBy: a.id, identityAt: Date.now(), identityNote: r };
   await put('candidates', next);
@@ -210,7 +210,7 @@ export async function correctName(a, c, newName, reason) {
       });
     }
   } catch (err) {
-    console.warn('Backend Module 5 student correction notice:', err.message);
+    fail(err.message || 'Backend correction request failed.');
   }
   const next = { ...c, name: nm, corrections: [...(c.corrections || []), { at: Date.now(), by: a.id, from: c.name, to: nm, reason: r }] };
   await put('candidates', next);
@@ -225,7 +225,7 @@ export async function suspendStudent(a, c, reason) {
   try {
     await Api.suspendStudentAccount(c.id, r);
   } catch (err) {
-    console.warn('Backend Module 5 suspension notice:', err.message);
+    fail(err.message || 'Backend suspension failed.');
   }
   const next = { ...c, academic_status: 'suspended', administrative_hold: true, hold_reason: r };
   await put('candidates', next);
@@ -240,7 +240,7 @@ export async function reactivateStudent(a, c, reason) {
   try {
     await Api.reactivateStudentAccount(c.id, r);
   } catch (err) {
-    console.warn('Backend Module 5 reactivation notice:', err.message);
+    fail(err.message || 'Backend reactivation failed.');
   }
   const next = { ...c, academic_status: 'active', administrative_hold: false, hold_reason: '' };
   await put('candidates', next);
@@ -262,7 +262,7 @@ export async function progressSemester(a, c, newSemester, section = 'A', academi
       notes: `Promoted to semester ${sem}`,
     });
   } catch (err) {
-    console.warn('Backend Module 5 progression notice:', err.message);
+    fail(err.message || 'Backend semester progression failed.');
   }
   const next = { ...c, semester: sem, section, academic_year: academicYear };
   await put('candidates', next);

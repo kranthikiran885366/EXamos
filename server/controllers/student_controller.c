@@ -95,8 +95,8 @@ void student_handle(int client_fd, const char *method, const char *path,
         (strcmp(path, "/api/v1/students") == 0 || strcmp(path, "/api/v1/admin/students") == 0)) {
         char sid[64] = {0}, roll_no[64] = {0}, name[128] = {0}, disp_name[128] = {0};
         char email[128] = {0}, p_email[128] = {0}, phone[32] = {0};
-        char course[128] = "B.Tech CSE", dept_id[64] = {0}, campus_id[64] = {0};
-        char batch[64] = "2026", section[32] = "A", status[32] = "active";
+        char course[128] = {0}, dept_id[64] = {0}, campus_id[64] = {0};
+        char batch[64] = {0}, section[32] = {0}, status[32] = {0};
         char prereq[256] = {0}, hold_reason[256] = {0}, inst_id[64] = {0};
         char accommodations[256] = {0}, notes[256] = {0};
         int semester = 1, attendance = 100, hold = 0;
@@ -126,7 +126,13 @@ void student_handle(int client_fd, const char *method, const char *path,
         ctrl_json_bool(body, "administrative_hold", &hold);
 
         if (!is_owner || !inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "inst_vignan");
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "");
+        }
+        /* Reject if no institution scope can be determined */
+        if (!inst_id[0]) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, 400, "institution_id is required to create a student record", origin, extra_headers, extra_len);
+            return;
         }
 
         if (!roll_no[0] || !name[0]) {
@@ -397,7 +403,7 @@ void student_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/students/:id/verify (Identity Verification) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/verify") == 0) {
-            char v_stat[32] = "VERIFIED", v_type[64] = "institutional_id", notes[256] = "Staff identity review passed";
+            char v_stat[32] = {0}, v_type[64] = {0}, notes[256] = {0};
             ctrl_json_string(body, "status", v_stat, sizeof(v_stat));
             ctrl_json_string(body, "verification_type", v_type, sizeof(v_type));
             ctrl_json_string(body, "notes", notes, sizeof(notes));
@@ -431,7 +437,7 @@ void student_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/students/:id/suspend (Institutional Suspension) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/suspend") == 0) {
-            char reason[256] = "Administrative disciplinary suspension";
+            char reason[256] = {0};
             ctrl_json_string(body, "reason", reason, sizeof(reason));
 
             const char *up[2] = { reason, s_pk };
@@ -550,7 +556,7 @@ void student_handle(int client_fd, const char *method, const char *path,
         /* ---------------- POST /api/v1/students/:id/enrollments (Progression / Transfer) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/enrollments") == 0) {
             int new_sem = s_sem + 1;
-            char new_sec[32] = "A", new_prog[128] = {0}, new_acad[32] = "2026-2027";
+            char new_sec[32] = {0}, new_prog[128] = {0}, new_acad[32] = {0};
             ctrl_json_int(body, "semester", &new_sem);
             ctrl_json_string(body, "section", new_sec, sizeof(new_sec));
             ctrl_json_string(body, "program_id", new_prog, sizeof(new_prog));
