@@ -20,23 +20,32 @@ typedef struct {
 } migration_t;
 
 static const migration_t migrations[] = {
-    {"001_admin_auth.sql", "admin_auth", 1},
-    {"002_admin_mfa_and_rbac.sql", "admin_auth", 2},
-    {"003_exam_lifecycle.sql", "exam_lifecycle", 3},
-    {"004_device_fleet.sql", "device_fleet", 4},
-    {"005_remove_fabricated_fleet_defaults.sql", "device_fleet", 5},
-    {"006_agent_heartbeat_records.sql", "device_fleet", 6},
-    {"007_admin_login_throttle.sql", "admin_auth", 7},
-    {"008_require_explicit_exam_policy.sql", "exam_lifecycle", 4},
-    {"009_require_explicit_device_group.sql", "device_fleet", 7},
-    {"010_attestation_challenge_state.sql", "device_fleet", 8},
-    {"011_attestation_revocations.sql", "device_fleet", 9},
-    {"012_incidents_and_releases.sql", "operations", 1},
-    {"013_session_journal_and_audit_completions.sql", "admin_auth", 8},
-    {"014_exam_key_releases.sql", "exam_key_releases", 1},
-    {"015_audit_event_catalogue.sql", "admin_auth", 9},
-    {"016_exam_questions.sql", "exam_lifecycle", 5},
-    {"026_mfa_enrollment_table.sql", "admin_auth", 9}
+    {"001_admin_auth.sql",                                  "admin_auth",        1},
+    {"002_admin_mfa_and_rbac.sql",                          "admin_auth",        2},
+    {"003_exam_lifecycle.sql",                              "exam_lifecycle",     1},
+    {"004_device_fleet.sql",                                "device_fleet",       1},
+    {"005_remove_fabricated_fleet_defaults.sql",            "device_fleet",       2},
+    {"006_agent_heartbeat_records.sql",                     "device_fleet",       3},
+    {"007_admin_login_throttle.sql",                        "admin_auth",         3},
+    {"008_require_explicit_exam_policy.sql",                "exam_lifecycle",     2},
+    {"009_require_explicit_device_group.sql",               "device_fleet",       4},
+    {"010_attestation_challenge_state.sql",                 "device_fleet",       5},
+    {"011_attestation_revocations.sql",                     "device_fleet",       6},
+    {"012_incidents_and_releases.sql",                      "operations",         1},
+    {"013_session_journal_and_audit_completions.sql",       "admin_auth",         4},
+    {"014_exam_key_releases.sql",                           "exam_key_releases",  1},
+    {"015_audit_event_catalogue.sql",                       "admin_auth",         5},
+    {"016_exam_questions.sql",                              "exam_lifecycle",     3},
+    {"017_session_risk_table.sql",                          "operations",         2},
+    {"018_campus_department_management.sql",                "campus_dept",        1},
+    {"019_examination_management.sql",                      "exam_lifecycle",     4},
+    {"020_examination_registration_and_eligibility.sql",    "exam_lifecycle",     5},
+    {"021_exam_session_management.sql",                     "exam_lifecycle",     6},
+    {"022_device_trust_registration_and_attestation.sql",   "device_fleet",       7},
+    {"023_secure_os_release_updates_and_deployment.sql",    "os_releases",        1},
+    {"024_student_management_system.sql",                   "students",           1},
+    {"025_corporate_entity_support.sql",                    "institutions",       1},
+    {"026_mfa_enrollment_table.sql",                        "admin_auth",         6},
 };
 
 /*
@@ -306,7 +315,33 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Database migration stopped: could not establish bounded migration lock.\n");
         goto done;
     }
-    migration_lock_held = 1;
+    /*
+     * ── Registry repair ──────────────────────────────────────────────────────
+     * Earlier deployments used a broken (component, version) numbering scheme
+     * where multiple migration files shared the same (component, version) pair.
+     * If those stale records exist in examos_schema_migrations, remove them so
+     * the correct records from this run can be inserted cleanly.
+     * This block only fires when the migration table already exists.
+     */
+    if (has_migration_table(conn)) {
+        static const char *repair_sql =
+            "DELETE FROM examos_schema_migrations WHERE "
+            /* Old broken records that used wrong version numbers */
+            "  (component='admin_auth'       AND version IN (7,8,9)) OR"
+            "  (component='exam_lifecycle'   AND version IN (3,4,5)) OR"
+            "  (component='device_fleet'     AND version IN (4,5,6,7,8,9));";
+        /* Ignore errors — if the table doesn't have these rows, that's fine. */
+        PGresult *rr = PQexec(conn, repair_sql);
+        if (rr) PQclear(rr);
+
+        static const char *repair_checksums =
+            "DELETE FROM examos_schema_migration_checksums WHERE "
+            "  (component='admin_auth'       AND version IN (7,8,9)) OR"
+            "  (component='exam_lifecycle'   AND version IN (3,4,5)) OR"
+            "  (component='device_fleet'     AND version IN (4,5,6,7,8,9));";
+        PGresult *rc2 = PQexec(conn, repair_checksums);
+        if (rc2) PQclear(rc2);
+    }
     for (size_t i = 0; i < sizeof(migrations) / sizeof(migrations[0]); ++i) {
         const migration_t *migration = &migrations[i];
         char *sql = NULL, hash[65] = {0}, recorded_hash[65] = {0};
