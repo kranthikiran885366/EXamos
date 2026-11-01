@@ -109,6 +109,40 @@ if [ -z "${EXAMOS_DATABASE_URL:-}" ]; then
     exit 1
 fi
 
+# ── 7a. Ensure the connection string satisfies verify-full TLS ────────────────
+# The migration tool and admin_auth_store both require sslmode=verify-full
+# and a sslrootcert in the connection string. Render's DATABASE_URL only
+# ships with sslmode=require. Patch it here using the system CA bundle
+# (installed via ca-certificates in the Dockerfile) so the C code sees a
+# fully-verified TLS connection.
+SYSTEM_CA="/etc/ssl/certs/ca-certificates.crt"
+
+_patch_db_url() {
+    local url="$1"
+    # If already a libpq keyword=value string that has verify-full, leave alone.
+    if echo "$url" | grep -q "sslmode=verify-full"; then
+        # Add sslrootcert only if missing.
+        if echo "$url" | grep -q "sslrootcert="; then
+            echo "$url"
+        else
+            echo "${url} sslrootcert=${SYSTEM_CA}"
+        fi
+        return
+    fi
+    # postgres:// or postgresql:// URI form.
+    if echo "$url" | grep -qE '^postgres(ql)?://'; then
+        local sep="?"
+        echo "$url" | grep -q "?" && sep="&"
+        echo "${url}${sep}sslmode=verify-full&sslrootcert=${SYSTEM_CA}"
+        return
+    fi
+    # libpq keyword=value form — append the parameters.
+    echo "${url} sslmode=verify-full sslrootcert=${SYSTEM_CA}"
+}
+
+EXAMOS_DATABASE_URL="$(_patch_db_url "$EXAMOS_DATABASE_URL")"
+export EXAMOS_DATABASE_URL
+
 # Write the DB URL to a mode-600 temp file so the C server reads it securely.
 export EXAMOS_DATABASE_URL_FILE="/tmp/examos_secrets/db_url"
 export EXAMOS_MIGRATION_DATABASE_URL_FILE="$EXAMOS_DATABASE_URL_FILE"
