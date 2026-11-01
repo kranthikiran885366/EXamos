@@ -45,23 +45,19 @@ services:
         value: "128"
 
       # ── Session journal HMAC key ───────────────────────────────────────────
-      # Required in production mode. Set via Render dashboard → Environment
-      # as a secret (not committed here). Must be ≥ 32 characters.
-      # Key name: EXAMOS_LEDGER_HMAC_KEY
+      # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
       - key: EXAMOS_LEDGER_HMAC_KEY
-        sync: false   # set manually in Render dashboard — never in source
+        value: "31d126f82cb147d0c71d0acc5a28cc4c760a74269f6b532f1bd9209801f90f3b"
 
-      # ── Agent API token (for device attestation) ──────────────────────────
-      # Must be ≥ 32 characters. Set via Render dashboard as a secret.
-      # Key name: EXAMOS_AGENT_API_TOKEN
+      # ── Agent API token (device attestation) ──────────────────────────────
+      # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
       - key: EXAMOS_AGENT_API_TOKEN
-        sync: false   # set manually in Render dashboard — never in source
+        value: "6d264348b229a1e8ac6bf8dba35f63022b8fe4de11f7a7e4f751a2002e4a6a82"
 
       # ── Exam key encryption KEK ────────────────────────────────────────────
-      # AES-256 key for sealing exam keys. Set via Render dashboard as a secret.
-      # Key name: EXAMOS_EXAM_KEY_KEK
+      # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
       - key: EXAMOS_EXAM_KEY_KEK
-        sync: false   # set manually in Render dashboard — never in source
+        value: "55356519e746d6a28e24e2ec11118ef7405fba1e73ba8ed3e9efa44579964725"
 
 databases:
   - name: sppio-db
