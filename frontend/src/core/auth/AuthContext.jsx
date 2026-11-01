@@ -6,14 +6,14 @@
 // Falls back to local IndexedDB users when the backend is unreachable (demo mode).
 import { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
 import { all, get, put } from '../db/db';
-import { pbkdf2, safeEqual, sha256, randomId } from '../security/crypto';
-import { verifyTotp, newSecret } from '../security/totp';
+import { sha256, randomId } from '../security/crypto';
+import { verifyTotp } from '../security/totp';
 import { clean } from '../security/sanitize';
 import { record } from '../security/auditChain';
 import { roleLabel } from '../security/rbac';
 import { pwIssues } from '../../modules/users/service';
 import { authService } from './authService';
-import { setAdminToken, getAdminToken, setCandidateToken, getCandidateToken, clearTokens } from '../api/client';
+import { ApiError, setAdminToken, getAdminToken, setCandidateToken, getCandidateToken, clearTokens } from '../api/client';
 import { AUTH_TOKEN_KEY, CANDIDATE_TOKEN_KEY, CANDIDATE_ID_KEY } from '../../config/api';
 import { syncAll } from '../api/sync';
 
@@ -47,6 +47,7 @@ function publicUser(u) {
   const isStudent = role === 'student' || role === 'candidate' || !!u.candidateId;
   return {
     id: u.id,
+    username: u.username || u.id,
     name: u.name || u.username || 'User',
     initials: u.initials || (u.name || u.username || 'US').slice(0, 2).toUpperCase(),
     role: role,
@@ -64,6 +65,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [pending, setPending] = useState(null);
   const [pendingCredentials, setPendingCredentials] = useState(null); // in-memory during MFA challenge
+  const enrollmentRef = useRef(null); // single-use token from MFA_SETUP_REQUIRED
   const [locked, setLocked] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [backendMode, setBackendMode] = useState('none'); // 'none' | 'admin' | 'candidate'
@@ -80,12 +82,6 @@ export function AuthProvider({ children }) {
     if (n >= 5) fails.current.until = Date.now() + Math.min(300000, 30000 * 2 ** (n - 5));
     record(who, why);
   };
-  const checkPassword = async (key, password) => {
-    const u = await get('users', key);
-    const given = await pbkdf2(String(password).slice(0, 128), u?.salt || 'decoy-salt-000');
-    return !!u && u.status === 'active' && safeEqual(given, u.pwHash);
-  };
-
   const beginSession = useCallback(async (u) => {
     const sid = 'ase_' + randomId(6);
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 180) : 'unknown';
@@ -105,6 +101,7 @@ export function AuthProvider({ children }) {
     setUser(publicUser(fresh));
     setPending(null);
     setPendingCredentials(null);
+    enrollmentRef.current = null;
     setLocked(false);
     record(u.id, 'LOGIN_SUCCESS', 'mfa=verified');
     return publicUser(fresh);
@@ -129,7 +126,7 @@ export function AuthProvider({ children }) {
                   id: profile.user_id || profile.username,
                   username: profile.username,
                   name: profile.name || profile.full_name || profile.username,
-                  role: profile.role || 'PLATFORM_OWNER',
+                  role: profile.role || '',
                   tenantId: profile.institution_id || null,
                   email: profile.email || '',
                   status: 'active',
@@ -151,34 +148,14 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
-  /* ---------- Local (IndexedDB) admin login ---------- */
-  const login = useCallback(async (username, password) => {
-    const e = throttle(); if (e) return { error: e };
-    const key = clean(username, 40).toLowerCase();
-    if (!(await checkPassword(key, password))) {
-      fail(key || 'anonymous', 'LOGIN_FAILED');
-      return { error: GENERIC };
-    }
-    setPending(key);
-    setPendingCredentials(null);
-    const u = await get('users', key);
-    const isStudent = u.role === 'student' || u.role === 'candidate' || !!u.candidateId;
-    if (isStudent || u.mfaEnabled === false) {
-      await beginSession(u);
-      return { ok: true };
-    }
-    // New management users who have neither TOTP secret nor recovery codes must set up MFA
-    const hasEnrolledTotp = !!(u.totp || u.totpSecret || u.totpEnrolled);
-    if (!hasEnrolledTotp && (!u.recoveryCodes || u.recoveryCodes.length === 0)) {
-      setPendingCredentials({ username: key, password });
-      setPending(key);
-      return { mfaSetupRequired: true, username: key };
-    }
-    record(key, 'LOGIN_PASSWORD_OK');
-    return { mfa: true };
-  }, [beginSession]);
+  /*
+   * There is deliberately no local (IndexedDB) credential login.  Accounts and
+   * password verification live in the ExamOS server only; keeping a local copy
+   * created a second, weaker authentication realm that survived backend
+   * outages and credential revocations.
+   */
 
-  /* ---------- Unified MFA verification (Backend + Local) ---------- */
+  /* ---------- Unified MFA verification ---------- */
   const verifyMfa = useCallback(async (code) => {
     const e = throttle(); if (e) return { error: e };
     if (!pending) return { error: 'Session expired. Sign in again.' };
@@ -201,7 +178,7 @@ export function AuthProvider({ children }) {
           id: profile.user_id || pendingCredentials.username,
           username: profile.username || pendingCredentials.username,
           name: profile.name || profile.full_name || pendingCredentials.username,
-          role: profile.role || 'PLATFORM_OWNER',
+          role: profile.role || '',
           tenantId: profile.institution_id || null,
           email: profile.email || '',
           status: 'active',
@@ -251,6 +228,7 @@ export function AuthProvider({ children }) {
   const cancelPending = useCallback(() => {
     setPending(null);
     setPendingCredentials(null);
+    enrollmentRef.current = null;
   }, []);
 
   /* ---------- Backend admin login ---------- */
@@ -262,25 +240,28 @@ export function AuthProvider({ children }) {
         ready = true;
         setBackendReady(true);
       } catch {
-        // Server is offline - try local IndexedDB fallback
-        try {
-          const localRes = await login(username, password);
-          if (localRes?.ok || localRes?.mfa) {
-            setBackendMode('none');
-            return localRes;
-          }
-        } catch {}
+        /*
+         * No local credential fallback.  An unreachable server must never
+         * downgrade to IndexedDB accounts: that turns a backend outage into a
+         * privilege-escalation path.
+         */
         return { error: 'ExamOS server is unreachable. Check that the backend is running on port 8895.' };
       }
     }
     try {
       const result = await authService.adminLogin({ username, password, mfaCode });
       if (result.mfaSetupRequired) {
+        enrollmentRef.current = result.enrollmentToken || null;
         setPendingCredentials({ username, password });
         setPending(username);
-        return { mfaSetupRequired: true, username: result.username || username };
+        return {
+          mfaSetupRequired: true,
+          username: result.username || username,
+          enrollmentToken: result.enrollmentToken || null,
+        };
       }
       if (result.mfaRequired) {
+        enrollmentRef.current = null;
         setPendingCredentials({ username, password });
         setPending(username);
         return { mfa: true };
@@ -288,12 +269,13 @@ export function AuthProvider({ children }) {
 
       setPendingCredentials(null);
       setPending(null);
+      enrollmentRef.current = null;
       const profile = result.profile || {};
       const u = {
         id: profile.user_id || username,
         username: profile.username || username,
         name: profile.name || profile.full_name || username,
-        role: profile.role || 'PLATFORM_OWNER',
+        role: profile.role || '',
         tenantId: profile.institution_id || null,
         email: profile.email || '',
         status: 'active',
@@ -305,17 +287,11 @@ export function AuthProvider({ children }) {
     } catch (err) {
       setPendingCredentials(null);
       setPending(null);
-      // If backend authentication failed, try local IndexedDB demo accounts as fallback
-      try {
-        const localRes = await login(username, password);
-        if (localRes?.ok || localRes?.mfa) {
-          setBackendMode('none');
-          return localRes;
-        }
-      } catch {}
+      enrollmentRef.current = null;
+      /* Backend rejected these credentials. Do not retry against local data. */
       return { error: err.message || 'Authentication failed' };
     }
-  }, [backendReady, beginSession, login]);
+  }, [backendReady, beginSession]);
 
   const backendLogout = useCallback(async () => {
     try { await authService.adminLogout(); } catch {}
@@ -323,6 +299,7 @@ export function AuthProvider({ children }) {
     setUser(null);
     setPending(null);
     setPendingCredentials(null);
+    enrollmentRef.current = null;
     setLocked(false);
     setSessionId(null);
     clearTokens();
@@ -368,6 +345,7 @@ export function AuthProvider({ children }) {
     setUser(null);
     setPending(null);
     setPendingCredentials(null);
+    enrollmentRef.current = null;
     setLocked(false);
     setSessionId(null);
     clearTokens();
@@ -379,8 +357,10 @@ export function AuthProvider({ children }) {
 
     if (backendMode === 'admin') {
       try {
-        const r = await authService.adminLogin({ username: user.id || user.name, password });
-        if (r.ok || r.mfaRequired) {
+        /* user.id is the database row id (e.g. usr_admin); the login endpoint
+         * expects the login name, so use the username carried by the profile. */
+        const r = await authService.adminLogin({ username: user.username || user.id, password });
+        if (r.ok || r.mfaRequired || r.mfaSetupRequired) {
           fails.current = { n: 0, until: 0 };
           record(user.id, 'REAUTH_OK');
           return { ok: true };
@@ -389,15 +369,16 @@ export function AuthProvider({ children }) {
         fail(user.id, 'REAUTH_FAILED');
         return { error: 'Password verification failed.' };
       }
+      fail(user.id, 'REAUTH_FAILED');
+      return { error: 'Password verification failed.' };
     }
 
-    if (!(await checkPassword(user.id, password))) {
-      fail(user?.id || 'unknown', 'REAUTH_FAILED');
-      return { error: 'Password is incorrect.' };
-    }
-    fails.current = { n: 0, until: 0 };
-    record(user.id, 'REAUTH_OK');
-    return { ok: true };
+    /*
+     * There is no local credential realm any more, so a session that was not
+     * established by the ExamOS server cannot be re-authenticated at all.
+     */
+    fail(user?.id || 'unknown', 'REAUTH_FAILED');
+    return { error: 'This session cannot be re-authenticated. Sign in again.' };
   }, [user, backendMode]);
 
   const logout = useCallback(async (why = 'LOGOUT') => {
@@ -413,6 +394,7 @@ export function AuthProvider({ children }) {
     setUser(null);
     setPending(null);
     setPendingCredentials(null);
+    enrollmentRef.current = null;
     setLocked(false);
     setSessionId(null);
     clearTokens();
@@ -431,160 +413,100 @@ export function AuthProvider({ children }) {
 
   const changePassword = useCallback(async (current, next) => {
     if (!user) return { error: 'Not signed in.' };
-    if (!(await checkPassword(user.id, current))) {
-      record(user.id, 'PASSWORD_CHANGE_FAILED');
-      return { error: 'Current password is incorrect.' };
-    }
     const bad = pwIssues(next || '');
     if (bad.length) return { error: 'New password needs ' + bad.join(', ') + '.' };
-    const u = await get('users', user.id);
-    const salt = randomId(12);
-    await put('users', { ...u, salt, pwHash: await pbkdf2(next, salt), passwordChangedAt: Date.now() });
-    record(user.id, 'PASSWORD_CHANGED');
-    return { ok: true };
-  }, [user]);
+
+    if (backendMode === 'admin') {
+      try {
+        const res = await authService.changePassword({ currentPassword: current, newPassword: next });
+        if (res?.status === 'SUCCESS' || res?.ok) {
+          record(user.id, 'PASSWORD_CHANGED');
+          return { ok: true };
+        }
+        return { error: res?.error || 'Password change failed.' };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          record(user.id, 'PASSWORD_CHANGE_FAILED');
+          return { error: 'Current password is incorrect.' };
+        }
+        return { error: err.message || 'Password change failed.' };
+      }
+    }
+
+    /* No local credential realm exists: passwords are owned by the server. */
+    return { error: 'This session cannot change its password. Sign in through the ExamOS server.' };
+  }, [user, backendMode]);
 
   const regenerateRecovery = useCallback(async () => {
     if (!user) return { error: 'Not signed in.' };
-    const plain = Array.from({ length: 8 }, () => normCode(randomId(5)).slice(0, 8).replace(/(.{4})/, '$1-'));
-    const hashes = await Promise.all(plain.map((c) => sha256(normCode(c))));
-    const u = await get('users', user.id);
-    await put('users', { ...u, recoveryCodes: hashes, recoveryGeneratedAt: Date.now() });
-    record(user.id, 'MFA_RECOVERY_ROTATED', `count=${plain.length}`);
-    return { ok: true, codes: plain };
+    /*
+     * Recovery codes must be generated and stored by the server, otherwise the
+     * console would display codes that can never reset the real account.
+     */
+    return { error: 'Recovery codes are managed by the ExamOS server. Use Authenticator setup or account recovery to rotate them.' };
   }, [user]);
 
   const rotateMfa = useCallback(async () => {
     if (!user) return { error: 'Not signed in.' };
-    const secret = newSecret();
-    const u = await get('users', user.id);
-    await put('users', { ...u, totp: secret });
-    record(user.id, 'MFA_SECRET_ROTATED');
-    const uri = `otpauth://totp/ExamOS:${encodeURIComponent(user.id)}?secret=${secret}&issuer=ExamOS&algorithm=SHA1&digits=6&period=30`;
-    return { ok: true, secret, uri };
+    /* Never fabricate a local secret that the server does not know about. */
+    return { error: 'Authenticator rotation must be completed through the server enrollment flow.' };
   }, [user]);
 
   const resetWithRecovery = useCallback(async (username, code, next) => {
     const e = throttle(); if (e) return { error: e };
 
-    // 1. Real ExamOS C server recovery
-    if (backendReady) {
-      try {
-        const res = await authService.recoveryReset({ username, code, newPassword: next });
-        if (res.status === 'SUCCESS' || res.ok) {
-          fails.current = { n: 0, until: 0 };
-          return { ok: true, message: res.message };
-        }
-        return { error: res.error || 'Password recovery failed' };
-      } catch (err) {
-        return { error: err.message || 'Failed to reset password via recovery code' };
-      }
+    // Real ExamOS C server recovery only — no local fallback.
+    // A local fallback would let an attacker bypass server-side revocation
+    // and use a recovery code against a stale IndexedDB copy.
+    if (!backendReady) {
+      return { error: 'ExamOS server is unreachable. Account recovery requires a live server connection.' };
     }
-
-    // 2. Local fallback
-    const key = clean(username, 40).toLowerCase();
-    const u = await get('users', key);
-    if (!u || u.status !== 'active') {
-      fail(key || 'anonymous', 'RECOVERY_FAILED');
-      return { error: 'Invalid recovery details.' };
-    }
-    const h = await sha256(normCode(code));
-    if (!(u.recoveryCodes || []).includes(h)) {
-      fail(key, 'RECOVERY_FAILED');
-      return { error: 'Invalid recovery details.' };
-    }
-    const bad = pwIssues(next || '');
-    if (bad.length) return { error: 'New password needs ' + bad.join(', ') + '.' };
-    const salt = randomId(12);
-    const codes = (u.recoveryCodes || []).filter((x) => x !== h);
-    await put('users', {
-      ...u,
-      salt,
-      pwHash: await pbkdf2(next, salt),
-      recoveryCodes: codes,
-      passwordChangedAt: Date.now()
-    });
-    record(key, 'ACCOUNT_RECOVERED', `remaining=${codes.length}`);
-    fails.current = { n: 0, until: 0 };
-    return { ok: true };
-  }, [backendReady]);
-
-  const mfaSetup = useCallback(async (username) => {
-    if (backendReady) {
-      try {
-        const res = await authService.mfaSetup(username);
-        if (res?.status === 'SUCCESS' || res?.secret) return res;
-      } catch (err) {
-        console.warn('Backend mfaSetup failed, falling back to local generator', err);
-      }
-    }
-    const secret = newSecret();
-    const codes = Array.from({ length: 8 }, () => {
-      const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-      let c1 = '', c2 = '';
-      for (let i = 0; i < 4; i++) c1 += chars[Math.floor(Math.random() * chars.length)];
-      for (let i = 0; i < 4; i++) c2 += chars[Math.floor(Math.random() * chars.length)];
-      return `${c1}-${c2}`;
-    });
-    const targetUser = username || 'root';
-    const otpauth_url = `otpauth://totp/ExamOS:${encodeURIComponent(targetUser)}?secret=${secret}&issuer=ExamOS&algorithm=SHA1&digits=6&period=30`;
-    return {
-      status: 'SUCCESS',
-      username: targetUser,
-      secret,
-      otpauth_url,
-      recovery_codes: codes,
-      algorithm: 'SHA1',
-      digits: 6,
-      period: 30,
-      issuer: 'ExamOS',
-    };
-  }, [backendReady]);
-
-  const mfaConfirm = useCallback(async ({ username, secret, code, recoveryCodes }) => {
-    let backendSuccess = false;
-    let backendErr = null;
-    const targetUser = username || 'root';
-
-    if (backendReady) {
-      try {
-        const res = await authService.mfaConfirm({ username: targetUser, secret, code, recoveryCodes });
-        if (res?.status === 'SUCCESS' || res?.ok) {
-          backendSuccess = true;
-        } else if (res?.error) {
-          return { error: res.error };
-        }
-      } catch (err) {
-        backendErr = err.message;
-      }
-    }
-
-    // Always synchronize the local IndexedDB cache with the newly enrolled secret & recovery codes
     try {
-      const u = await get('users', targetUser);
-      if (u) {
-        // Hash recovery codes if plain
-        const hashes = [];
-        for (const rc of (recoveryCodes || [])) {
-          const h = await sha256(normCode(rc));
-          hashes.push(h);
-        }
-        await put('users', {
-          ...u,
-          totp: secret,
-          totpEnrolled: true,
-          mfaEnabled: true,
-          recoveryCodes: hashes.length > 0 ? hashes : u.recoveryCodes,
-        });
+      const res = await authService.recoveryReset({ username, code, newPassword: next });
+      if (res.status === 'SUCCESS' || res.ok) {
+        fails.current = { n: 0, until: 0 };
+        return { ok: true, message: res.message };
       }
-    } catch (e) {
-      console.warn('Could not update local user TOTP:', e);
+      fail(username || 'anonymous', 'RECOVERY_FAILED');
+      return { error: res.error || 'Password recovery failed' };
+    } catch (err) {
+      fail(username || 'anonymous', 'RECOVERY_FAILED');
+      return { error: err.message || 'Failed to reset password via recovery code' };
     }
+  }, [backendReady]);
 
-    if (backendReady && !backendSuccess && backendErr) {
-      return { error: backendErr };
+  const mfaSetup = useCallback(async () => {
+    if (!backendReady) {
+      return { error: 'ExamOS server is unreachable. Authenticator enrollment cannot complete offline.' };
     }
-    return { ok: true, status: 'SUCCESS' };
+    try {
+      const res = await authService.mfaSetup(enrollmentRef.current);
+      if (res?.error) return { error: res.error };
+      if (!res?.secret || !res?.otpauth_url) {
+        return { error: 'The server did not return an authenticator secret. Sign in again to restart setup.' };
+      }
+      /* The secret is generated and held by the server; we only display it. */
+      if (res.enrollment_token) enrollmentRef.current = res.enrollment_token;
+      return res;
+    } catch (err) {
+      return { error: err.message || 'Failed to initialize Google Authenticator' };
+    }
+  }, [backendReady]);
+
+  const mfaConfirm = useCallback(async ({ code }) => {
+    if (!backendReady) {
+      return { error: 'ExamOS server is unreachable. Authenticator enrollment cannot complete offline.' };
+    }
+    try {
+      const res = await authService.mfaConfirm({ enrollmentToken: enrollmentRef.current, code });
+      if (res?.status === 'SUCCESS' || res?.ok) {
+        /* The challenge is consumed; the next login uses the enrolled secret. */
+        return { ok: true, status: 'SUCCESS' };
+      }
+      return { error: res?.error || 'Invalid authenticator code. Check your device clock.' };
+    } catch (err) {
+      return { error: err.message || 'Failed to activate Google Authenticator' };
+    }
   }, [backendReady]);
 
   const touchSession = useCallback(async () => {
@@ -618,7 +540,7 @@ export function AuthProvider({ children }) {
 
   return <Ctx.Provider value={{
     user, pending, pendingCredentials, locked, sessionId, backendMode, backendReady,
-    login, verifyMfa, cancelPending, backendLogin, backendLogout, backendCandidateLogin, backendCandidateLogout,
+    verifyMfa, cancelPending, backendLogin, backendLogout, backendCandidateLogin, backendCandidateLogout,
     reauth, logout, lock, unlock, changePassword, regenerateRecovery, rotateMfa,
     mfaSetup, mfaConfirm,
     resetWithRecovery, touchSession, listSessions, revokeSession, revokeOthers,

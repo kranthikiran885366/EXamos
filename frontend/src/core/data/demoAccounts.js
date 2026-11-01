@@ -1,11 +1,10 @@
-// Production platform bootstrap identities. All operational accounts are managed via the database.
-export const DEMO = [
-  { username: 'root', name: 'Platform Root', role: 'superadmin', password: 'Exam0S!Root#2026', tenant: null, email: 'root@examos.local' },
-  { username: 'admin', name: 'Platform Administrator', role: 'superadmin', password: 'StrongAdminPassword#2026!', tenant: null, email: 'admin@examos.local' },
-];
+// Demo seed identities.
+//
+// This file used to ship plaintext platform bootstrap passwords inside the
+// JavaScript bundle. That is a credential disclosure hazard (anyone who can
+// fetch the login page can read it) and it duplicated the server's account
+// database. Management accounts are now provisioned by the ExamOS server and
+// the console has no local credential login, so no seed identities exist.
+export const DEMO = [];
 
-export const DEMO_BY_ROLE = DEMO.reduce((acc, u) => {
-  if (!acc[u.role]) acc[u.role] = [];
-  acc[u.role].push(u);
-  return acc;
-}, {});
+export const DEMO_BY_ROLE = {};

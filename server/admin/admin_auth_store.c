@@ -462,12 +462,12 @@ int admin_auth_store_login(const char *username, const char *password,
     /* MFA Verification Step */
     if (account.mfa_enabled) {
         if (!mfa_code || !mfa_code[0]) {
-            int throttle_recorded = login_subject_failure(conn, subject_hash) == 0;
+            /* No code supplied — prompt the client, do NOT count as a failure. */
             OPENSSL_cleanse(&account, sizeof(account));
             OPENSSL_cleanse(totp_secret, sizeof(totp_secret));
             OPENSSL_cleanse(subject_hash, sizeof(subject_hash));
             release_connection(conn, 0);
-            return throttle_recorded ? AUTH_LOGIN_MFA_REQUIRED : AUTH_LOGIN_FAILED;
+            return AUTH_LOGIN_MFA_REQUIRED;
         }
 
         int mfa_ok = totp_verify_code(totp_secret, mfa_code, time(NULL), 1);
@@ -983,7 +983,7 @@ int admin_auth_store_password_reset_complete(const char *username, const char *r
     unsigned char hash[32];
     if (RAND_bytes(salt, sizeof(salt)) != 1 ||
         PKCS5_PBKDF2_HMAC(new_password, (int)strlen(new_password), salt, sizeof(salt),
-                          600000, EVP_sha256(), sizeof(hash), hash) != 1) {
+                          210000, EVP_sha256(), sizeof(hash), hash) != 1) {
         return -1;
     }
 
@@ -1001,7 +1001,7 @@ int admin_auth_store_password_reset_complete(const char *username, const char *r
     hash_hex[64] = '\0';
 
     char new_credential[160];
-    snprintf(new_credential, sizeof(new_credential), "600000:%s:%s", salt_hex, hash_hex);
+    snprintf(new_credential, sizeof(new_credential), "210000:%s:%s", salt_hex, hash_hex);
     OPENSSL_cleanse(salt, sizeof(salt));
     OPENSSL_cleanse(hash, sizeof(hash));
 
@@ -1121,4 +1121,45 @@ int admin_auth_store_list_users_json(char *out_buf, size_t max_len) {
     PQclear(result);
     release_connection(conn, 0);
     return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Public durable throttle wrappers (used by auth_controller.c so that
+ * lockout state survives server restarts and is not split across two
+ * independent systems).
+ * ----------------------------------------------------------------------- */
+int admin_auth_throttle_check(const char *subject) {
+    if (!subject || !subject[0]) return 0;
+    char hash[65] = {0};
+    if (login_subject_hash(subject, hash) != 0) return -1;
+    PGconn *conn = acquire_connection();
+    if (!conn) return -1;
+    int locked = login_subject_locked(conn, hash);
+    release_connection(conn, 0);
+    OPENSSL_cleanse(hash, sizeof(hash));
+    return locked;
+}
+
+int admin_auth_throttle_failure(const char *subject) {
+    if (!subject || !subject[0]) return -1;
+    char hash[65] = {0};
+    if (login_subject_hash(subject, hash) != 0) return -1;
+    PGconn *conn = acquire_connection();
+    if (!conn) { OPENSSL_cleanse(hash, sizeof(hash)); return -1; }
+    int rc = login_subject_failure(conn, hash);
+    release_connection(conn, 0);
+    OPENSSL_cleanse(hash, sizeof(hash));
+    return rc;
+}
+
+int admin_auth_throttle_clear(const char *subject) {
+    if (!subject || !subject[0]) return -1;
+    char hash[65] = {0};
+    if (login_subject_hash(subject, hash) != 0) return -1;
+    PGconn *conn = acquire_connection();
+    if (!conn) { OPENSSL_cleanse(hash, sizeof(hash)); return -1; }
+    int rc = login_subject_clear(conn, hash);
+    release_connection(conn, 0);
+    OPENSSL_cleanse(hash, sizeof(hash));
+    return rc;
 }

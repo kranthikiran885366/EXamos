@@ -24,12 +24,19 @@ function removeItem(key) {
 
 export class AuthService {
   constructor() {
-    this.adminToken = loadStored(AUTH_TOKEN_KEY) || null;
+    /*
+     * The admin session token is intentionally NOT restored from Web Storage.
+     * It lives only in memory for the lifetime of the page; durable session
+     * continuity comes from the HttpOnly `admin_session` cookie set by
+     * /api/v1/admin/login, which JavaScript cannot read or exfiltrate.
+     * Candidate tokens still use sessionStorage because the kiosk exam
+     * workbench runs in the same tab and has no cookie session.
+     */
+    this.adminToken = null;
     this.candidateToken = loadStored(CANDIDATE_TOKEN_KEY) || null;
     this.candidateId = loadStored(CANDIDATE_ID_KEY) || null;
     this.adminProfile = null;
     this.candidateProfile = null;
-    if (this.adminToken) setAdminToken(this.adminToken);
     if (this.candidateToken) setCandidateToken(this.candidateToken);
   }
 
@@ -44,7 +51,12 @@ export class AuthService {
 
     const data = res.data;
     if (data.status === 'MFA_SETUP_REQUIRED' || data.mfa_setup_required) {
-      return { mfaSetupRequired: true, username: data.username || username, message: data.message };
+      return {
+        mfaSetupRequired: true,
+        username: data.username || username,
+        enrollmentToken: data.enrollment_token || null,
+        message: data.message,
+      };
     }
     if (data.status === 'MFA_REQUIRED') {
       return { mfaRequired: true, username: data.username || username };
@@ -55,7 +67,7 @@ export class AuthService {
 
     this.adminToken = data.token;
     setAdminToken(this.adminToken);
-    storeItem(AUTH_TOKEN_KEY, this.adminToken);
+    /* Token stays in memory only; the HttpOnly cookie is the durable copy. */
 
     // Fetch profile to populate role/institution.
     try {
@@ -64,7 +76,7 @@ export class AuthService {
     } catch (e) {
       this.adminProfile = {
         username: data.username || username,
-        role: data.role || 'PLATFORM_OWNER',
+        role: data.role,
         institution_id: data.institution_id || '',
         name: data.name || username,
         user_id: data.user_id,
@@ -91,28 +103,32 @@ export class AuthService {
   }
 
   async getAdminProfile() {
-    if (!this.adminToken) return null;
-    const prof = await api.get(ENDPOINTS.adminSession, { actor: 'admin' });
-    this.adminProfile = prof.data;
-    return prof.data;
+    /* Works with an in-memory token or solely with the HttpOnly session
+     * cookie (page reload).  A 401 simply means "no active session". */
+    try {
+      const prof = await api.get(ENDPOINTS.adminSession, { actor: 'admin' });
+      this.adminProfile = prof.data;
+      return prof.data;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return null;
+      if (!this.adminToken) return null;
+      throw err;
+    }
   }
 
   /* ---------- MFA Enrollment & Recovery ---------- */
 
-  async mfaSetup(username) {
-    const res = await api.post(ENDPOINTS.mfaSetup, {
-      username: username || (this.adminProfile?.username || ''),
-    }, { actor: 'admin', sign: true });
+  async mfaSetup(enrollmentToken) {
+    const headers = enrollmentToken ? { 'X-Enrollment-Token': enrollmentToken } : undefined;
+    const res = await api.post(ENDPOINTS.mfaSetup, {}, { actor: 'admin', sign: true, headers });
     return res.data;
   }
 
-  async mfaConfirm({ username, secret, code, recoveryCodes }) {
-    const res = await api.post(ENDPOINTS.mfaConfirm, {
-      username: username || (this.adminProfile?.username || ''),
-      secret,
-      code,
-      recovery_codes: recoveryCodes || [],
-    }, { actor: 'admin', sign: true });
+  async mfaConfirm({ enrollmentToken, code }) {
+    const headers = enrollmentToken ? { 'X-Enrollment-Token': enrollmentToken } : undefined;
+    /* The server holds the secret and the account binding; the client only
+     * proves possession with a code. */
+    const res = await api.post(ENDPOINTS.mfaConfirm, { code }, { actor: 'admin', sign: true, headers });
     return res.data;
   }
 
@@ -120,6 +136,14 @@ export class AuthService {
     const res = await api.post(ENDPOINTS.recoveryReset, {
       username,
       code,
+      new_password: newPassword,
+    }, { actor: 'admin', sign: true });
+    return res.data;
+  }
+
+  async changePassword({ currentPassword, newPassword }) {
+    const res = await api.post(ENDPOINTS.passwordChange, {
+      current_password: currentPassword,
       new_password: newPassword,
     }, { actor: 'admin', sign: true });
     return res.data;
@@ -161,13 +185,16 @@ export class AuthService {
   }
 
   async candidateLogout() {
+    try {
+      await api.post(ENDPOINTS.candidateLogout, {}, { useCandidateToken: true, actor: 'candidate', sign: true });
+    } catch { /* best-effort revocation */ }
     this.candidateToken = null;
     this.candidateId = null;
     this.candidateProfile = null;
     setCandidateToken(null);
     removeItem(CANDIDATE_TOKEN_KEY);
     removeItem(CANDIDATE_ID_KEY);
-    await audit.record({ actor: 'candidate', event: 'CANDIDATE_LOGOUT', resource: '/api/v1/candidate/login', severity: 'info' });
+    await audit.record({ actor: 'candidate', event: 'CANDIDATE_LOGOUT', resource: '/api/v1/candidate/logout', severity: 'info' });
     return { ok: true };
   }
 

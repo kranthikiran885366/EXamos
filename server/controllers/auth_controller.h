@@ -19,16 +19,26 @@ void auth_admin_session(int client_fd, const char *auth_header,
 void auth_candidate_login(int client_fd, const char *body,
                           const char *origin, char *extra_headers, size_t extra_len);
 
+/* POST /api/v1/candidate/logout */
+void auth_candidate_logout(int client_fd, const char *auth_header,
+                           const char *origin, char *extra_headers, size_t extra_len);
+
 /* POST /api/v1/admin/mfa/setup */
 void auth_mfa_setup(int client_fd, const char *body, const char *auth_header,
+                    const char *enrollment_token,
                     const char *origin, char *extra_headers, size_t extra_len);
 
 /* POST /api/v1/admin/mfa/confirm */
 void auth_mfa_confirm(int client_fd, const char *body, const char *auth_header,
+                      const char *enrollment_token,
                       const char *origin, char *extra_headers, size_t extra_len);
 
 /* POST /api/v1/admin/recovery/reset */
 void auth_recovery_reset(int client_fd, const char *body,
                          const char *origin, char *extra_headers, size_t extra_len);
+
+/* POST /api/v1/admin/password/change */
+void auth_change_password(int client_fd, const char *body, const char *auth_header,
+                          const char *origin, char *extra_headers, size_t extra_len);
 
 #endif /* EXAMOS_AUTH_CONTROLLER_H */

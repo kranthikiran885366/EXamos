@@ -60,6 +60,7 @@ export async function request({
   method = 'GET',
   path,
   body,
+  headers: requestHeaders,
   useCandidateToken = false,
   sign = true,
   actor = 'console',
@@ -89,7 +90,8 @@ export async function request({
     try {
       const extraHeaders = sign ? await signHeaders(method, url, JSON.stringify(body || ''), {}) : {};
       const headers = headersFor(useCandidateToken ? undefined : adminToken, useCandidateToken);
-      // Merge signed headers over base headers.
+      // Caller-supplied headers (e.g. X-Enrollment-Token) then signed headers.
+      Object.assign(headers, requestHeaders || {});
       Object.assign(headers, extraHeaders);
 
       const fetchInit = {

@@ -19,18 +19,14 @@ export default function Boot({ children }) {
         }
 
         try {
+          /*
+           * Local credential rows are legacy artifacts from the removed
+           * IndexedDB login realm. Purge them (and pending staff invitations)
+           * so no stale password hash survives in the browser.
+           */
           const currentUsers = await all('users');
-          const allowedAdmins = new Set(['root', 'admin']);
           for (const u of currentUsers) {
-            if (!allowedAdmins.has(u.id) && !allowedAdmins.has(u.username)) {
-              await del('users', u.id);
-            }
-          }
-          const currentStaff = await all('staff');
-          for (const s of currentStaff) {
-            if (!allowedAdmins.has(s.userId)) {
-              await del('staff', s.id);
-            }
+            await del('users', u.id);
           }
           const currentInvites = await all('invitations');
           for (const inv of currentInvites) {

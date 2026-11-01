@@ -103,7 +103,7 @@ export default function LoginPage() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrData, setQrData] = useState(null);
-  const [setupUsername, setSetupUsername] = useState('root');
+  const [setupUsername, setSetupUsername] = useState('');
   const [confirmCode, setConfirmCode] = useState('');
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedCodes, setCopiedCodes] = useState(false);
@@ -140,7 +140,7 @@ export default function LoginPage() {
       const res = await backendLogin({ username: u, password: p });
       if (res?.mfaSetupRequired) {
         setInfo('First-time login: Please set up Google Authenticator to secure your management account.');
-        openQrSetup(res.username || u);
+        openQrSetup();
       } else if (res?.mfa) {
         setInfo('Enter the 6-digit code from your Google Authenticator app.');
       } else if (res?.error) {
@@ -192,39 +192,15 @@ export default function LoginPage() {
     setBusy(false);
   };
 
-  const fillAdmin = () => {
-    setU('admin');
-    setP('StrongAdminPassword#2026!');
-    setErr('');
-  };
 
-  const fillRoot = () => {
-    setU('root');
-    setP('Exam0S!Root#2026');
-    setErr('');
-  };
-
-  const fillController = () => {
-    setU('controller');
-    setP('Exam0S!Ctrl#2026');
-    setErr('');
-  };
-
-  const fillInstadmin = () => {
-    setU('instadmin');
-    setP('Exam0S!Inst#2026');
-    setErr('');
-  };
-
-  const openQrSetup = async (targetUser) => {
-    const userToEnroll = targetUser || pending || u || 'root';
-    setSetupUsername(userToEnroll);
+  const openQrSetup = async () => {
+    setSetupUsername(pending || u || '');
     setQrLoading(true);
     setErr('');
     setConfirmCode('');
     setShowQrModal(true);
     try {
-      const data = await mfaSetup(userToEnroll);
+      const data = await mfaSetup();
       if (data?.error) {
         setErr(data.error);
         setShowQrModal(false);
@@ -250,13 +226,7 @@ export default function LoginPage() {
 
       const res = await mfaConfirm({
 
-        username: qrData.username,
-
-        secret: qrData.secret,
-
         code: confirmCode,
-
-        recoveryCodes: qrData.recovery_codes,
 
       });
 
@@ -371,7 +341,7 @@ export default function LoginPage() {
                 </div>
                 <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>
                   <span className="status-ping" />
-                  <span>{backendReady ? 'Backend Online' : 'Local Offline'}</span>
+                  <span>{backendReady ? 'Backend Online' : 'Backend Offline'}</span>
                 </div>
               </div>
 
@@ -455,22 +425,12 @@ export default function LoginPage() {
                     </div>
                   </div>
 
-                  {/* Quick-fill helper chips */}
-                  <div className="quick-fill-row" style={{ flexWrap: 'wrap', gap: '6px' }}>
-                    <span className="quick-fill-label">Autofill credentials:</span>
-                    <button type="button" className="quick-chip" onClick={fillRoot} title="Cryptographic Root Superadmin">
-                      root (Superadmin)
-                    </button>
-                    <button type="button" className="quick-chip" onClick={fillController} title="Exam Controller">
-                      controller (Exam Controller)
-                    </button>
-                    <button type="button" className="quick-chip" onClick={fillInstadmin} title="Institution Admin">
-                      instadmin (Institution Admin)
-                    </button>
-                    <button type="button" className="quick-chip" onClick={fillAdmin} title="Platform Administrator">
-                      admin (Admin)
-                    </button>
-                  </div>
+                  {/*
+                    Credential quick-fill chips were removed deliberately.
+                    Shipping admin passwords in the bundle lets anyone with the
+                    login page obtain management credentials; operators must
+                    receive their first password out of band.
+                  */}
 
                   {err && (
                     <div className="polished-error-banner" role="alert">
@@ -508,13 +468,12 @@ export default function LoginPage() {
 
                   <div className="form-secondary-links">
                     <Link to="/recovery" className="secondary-link">Lost Phone / Recovery Code</Link>
-                    <button
-                      type="button"
-                      className="secondary-btn-link"
-                      onClick={() => openQrSetup(u || 'root')}
-                    >
-                      Setup Authenticator
-                    </button>
+                    {/*
+                      Authenticator enrollment is bound to a single-use token issued
+                      by a successful password check (first-time login) or to an
+                      authenticated management session. A standalone button here
+                      could never satisfy either requirement, so it is not offered.
+                    */}
                     <Link to="/landing" className="secondary-link">Platform Overview →</Link>
                   </div>
                   <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)', textAlign: 'center' }}>

@@ -15,7 +15,7 @@ const BACKEND_ROLE_TO_FRONTEND = {
   EXAM_MANAGER: 'exam_controller',
   SECURITY_ADMIN: 'security_engineer',
   INVIGILATOR: 'invigilator',
-  TECH_OPERATOR: 'it_admin',
+  TECH_OPERATOR: 'ops_admin',
   INCIDENT_INVESTIGATOR: 'auditor',
   READONLY_AUDITOR: 'auditor',
   SUPPORT_ENGINEER: 'support',

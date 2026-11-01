@@ -20,6 +20,26 @@
 static void db_ensure_admin_accounts(PGconn *conn);
 static pthread_once_t db_init_once = PTHREAD_ONCE_INIT;
 
+/*
+ * Bootstrap seeding creates documented accounts with documented passwords.
+ * That is useful on a laptop and unacceptable on an appliance, so it is
+ * disabled whenever the process is configured as a production deployment and
+ * can always be disabled explicitly with EXAMOS_ALLOW_DEV_SEED=0.
+ */
+static int dev_bootstrap_allowed(void) {
+    const char *explicit_flag = getenv("EXAMOS_ALLOW_DEV_SEED");
+    if (explicit_flag && explicit_flag[0])
+        return strcmp(explicit_flag, "1") == 0;
+
+    const char *test_mode = getenv("EXAMOS_TEST_MODE");
+    if (test_mode && strcmp(test_mode, "production") == 0) return 0;
+
+    const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
+    if (tpm_mode && strcmp(tpm_mode, "production") == 0) return 0;
+
+    return 1;
+}
+
 db_pool_t g_db_pool;
 int g_db_pool_count = 0;
 
@@ -749,6 +769,26 @@ static const char *migration_sql =
 "  status VARCHAR(20) DEFAULT 'active'"
 ");"
 
+/*
+ * Single-use MFA enrollment challenges.  A challenge is created only after a
+ * successful password verification and is bound to exactly one account, so an
+ * unauthenticated caller can never enroll (or replace) another user's
+ * authenticator.  The token is stored as a SHA-256 hash; the TOTP secret stays
+ * here until the user proves they can generate a valid code.
+ */
+"CREATE TABLE IF NOT EXISTS examos_admin_mfa_enrollments ("
+"  token_hash CHAR(64) PRIMARY KEY,"
+"  user_id VARCHAR(64) NOT NULL,"
+"  username VARCHAR(64) NOT NULL,"
+"  secret VARCHAR(64) NOT NULL,"
+"  recovery_hashes TEXT NOT NULL DEFAULT '',"
+"  attempts INTEGER NOT NULL DEFAULT 0,"
+"  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),"
+"  expires_at TIMESTAMPTZ NOT NULL"
+");"
+"CREATE INDEX IF NOT EXISTS idx_mfa_enrollments_username "
+"  ON examos_admin_mfa_enrollments (username);"
+
 "CREATE TABLE IF NOT EXISTS configs ("
 "  id VARCHAR(64) PRIMARY KEY,"
 "  value JSONB NOT NULL DEFAULT '{}'::jsonb,"
@@ -1030,6 +1070,10 @@ static const char *migration_sql =
 
 static void db_seed_bootstrap(PGconn *conn) {
     if (!conn) return;
+    if (!dev_bootstrap_allowed()) {
+        fprintf(stderr, "[DB] Production mode: demo user/candidate seeding disabled.\n");
+        return;
+    }
     PGresult *cnt = PQexec(conn, "SELECT COUNT(*) FROM users");
     int empty = 0;
     if (cnt && PQresultStatus(cnt) == PGRES_TUPLES_OK && PQntuples(cnt) > 0) {
@@ -1057,12 +1101,12 @@ static void db_seed_bootstrap(PGconn *conn) {
         const char *salt;
         const char *totp_secret;
     } seeds[] = {
-        { "usr_root", "root", "Platform Root", "superadmin", NULL, "root@examos.example", "Exam0S!Root#2026", "s1_salt_root_001", "JBSWY3DPEHPK3PXP" },
-        { "usr_ananya", "ananya", "Ananya Kumar", "ops_admin", NULL, "ananya@examos.example", "Exam0S!Ops#2026", "s2_salt_ananya_02", "JBSWY3DPEHPK3PXP" },
-        { "usr_instadmin", "instadmin", "Priya Menon", "inst_admin", "T1", "priya.menon@tcsion.example", "Exam0S!Inst#2026", "s3_salt_instadmin", "JBSWY3DPEHPK3PXP" },
-        { "usr_controller", "controller", "Arjun Nair", "exam_controller", "T1", "arjun.nair@tcsion.example", "Exam0S!Ctrl#2026", "s4_salt_controller", "JBSWY3DPEHPK3PXP" },
-        { "usr_security", "security", "Kabir Bose", "security_engineer", "T1", "kabir.bose@tcsion.example", "Exam0S!Sec#2026", "s5_salt_security_0", "JBSWY3DPEHPK3PXP" },
-        { "usr_auditor", "auditor", "Meera Rao", "auditor", NULL, "meera.rao@audit.example", "Exam0S!Audit#2026", "s6_salt_auditor_00", "JBSWY3DPEHPK3PXP" }
+        { "usr_root", "root", "Platform Root", "superadmin", NULL, "root@examos.example", "Exam0S!Root#2026", "s1_salt_root_001", "" },
+        { "usr_ananya", "ananya", "Ananya Kumar", "ops_admin", NULL, "ananya@examos.example", "Exam0S!Ops#2026", "s2_salt_ananya_02", "" },
+        { "usr_instadmin", "instadmin", "Priya Menon", "inst_admin", "T1", "priya.menon@tcsion.example", "Exam0S!Inst#2026", "s3_salt_instadmin", "" },
+        { "usr_controller", "controller", "Arjun Nair", "exam_controller", "T1", "arjun.nair@tcsion.example", "Exam0S!Ctrl#2026", "s4_salt_controller", "" },
+        { "usr_security", "security", "Kabir Bose", "security_engineer", "T1", "kabir.bose@tcsion.example", "Exam0S!Sec#2026", "s5_salt_security_0", "" },
+        { "usr_auditor", "auditor", "Meera Rao", "auditor", NULL, "meera.rao@audit.example", "Exam0S!Audit#2026", "s6_salt_auditor_00", "" }
     };
 
     long now = (long)time(NULL);
@@ -1121,48 +1165,57 @@ static void exec_sql_step(PGconn *conn, const char *sql) {
 static void db_ensure_admin_accounts(PGconn *conn) {
     if (!conn) return;
 
-    /* 1. Ensure tenant T1 */
-    exec_sql_step(conn,
-        "INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at) "
-        "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000) "
-        "ON CONFLICT (id) DO NOTHING;");
+    /*
+     * Credential seeding is deliberately separated from schema maintenance.
+     * A production appliance must never be given a documented password, and
+     * an existing password must never be reset because the server restarted.
+     */
+    if (dev_bootstrap_allowed()) {
+        /* 1. Ensure tenant T1 */
+        exec_sql_step(conn,
+            "INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at) "
+            "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000) "
+            "ON CONFLICT (id) DO NOTHING;");
 
-    /* 2. Upsert admin in users - preserve enrolled MFA on restart */
-    exec_sql_step(conn,
-        "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-        "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local', "
-        "'0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0) "
-        "ON CONFLICT (username) DO UPDATE SET "
-        "password_hash = '0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', "
-        "salt = 's0_salt_admin_001', "
-        "status = 'active';");
+        /* 2. Create the bootstrap admin on a fresh install only.
+         *    ON CONFLICT intentionally does not touch password_hash/salt: a
+         *    password changed through the UI must survive a restart. */
+        exec_sql_step(conn,
+            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
+            "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local', "
+            "'0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0) "
+            "ON CONFLICT (username) DO UPDATE SET "
+            "status = 'active';");
 
-    /* 3. Upsert root in users - preserve enrolled MFA on restart */
-    exec_sql_step(conn,
-        "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-        "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local', "
-        "'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0) "
-        "ON CONFLICT (username) DO UPDATE SET "
-        "password_hash = 'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', "
-        "salt = 's1_salt_root_001', "
-        "status = 'active';");
+        /* 3. Create the bootstrap root on a fresh install only (same rule). */
+        exec_sql_step(conn,
+            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
+            "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local', "
+            "'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0) "
+            "ON CONFLICT (username) DO UPDATE SET "
+            "status = 'active';");
 
-    /* 4. Ensure seed users have valid defaults without wiping existing enrolled MFA */
-    exec_sql_step(conn, "UPDATE users SET mfa_enabled = 0 WHERE username IN ('admin', 'root') AND (totp_secret IS NULL OR totp_secret = '');");
-    exec_sql_step(conn, "UPDATE users SET totp_secret = 'JBSWY3DPEHPK3PXP', mfa_enabled = 1 WHERE username IN ('instadmin', 'controller') AND (totp_secret IS NULL OR totp_secret = '');");
+        /* 4. Never enrol a shared secret: a published TOTP secret is no MFA at
+         *    all. Accounts without a secret must go through enrolment. */
+        exec_sql_step(conn, "UPDATE users SET mfa_enabled = 0 WHERE username IN ('admin', 'root') AND (totp_secret IS NULL OR totp_secret = '');");
 
-    /* 5. examos_admin_users upserts - preserve existing enrolled totp_secret and mfa_enabled */
-    exec_sql_step(conn,
-        "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
-        "VALUES ('usr_admin', 'admin', '310000:ee8e19c449b8e1e6e485c672cee05862:aae2df837f94fd673c33afc7692e0221a485fa5cd48c9206f4c4f77193e41289', "
-        "'Platform Administrator', 'admin@examos.local', 1, true, false, NULL) "
-        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash;");
+        /* 5. examos_admin_users rows: create once, never overwrite the hash. */
+        exec_sql_step(conn,
+            "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
+            "VALUES ('usr_admin', 'admin', '310000:ee8e19c449b8e1e6e485c672cee05862:aae2df837f94fd673c33afc7692e0221a485fa5cd48c9206f4c4f77193e41289', "
+            "'Platform Administrator', 'admin@examos.local', 1, true, false, NULL) "
+            "ON CONFLICT (username) DO NOTHING;");
 
-    exec_sql_step(conn,
-        "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
-        "VALUES ('usr_root', 'root', '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0', "
-        "'Platform Root', 'root@examos.local', 1, true, false, NULL) "
-        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash;");
+        exec_sql_step(conn,
+            "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
+            "VALUES ('usr_root', 'root', '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0', "
+            "'Platform Root', 'root@examos.local', 1, true, false, NULL) "
+            "ON CONFLICT (username) DO NOTHING;");
+
+        fprintf(stderr, "[DB] Development bootstrap accounts verified (EXAMOS_ALLOW_DEV_SEED).\n");
+    } else {
+        fprintf(stderr, "[DB] Production mode: bootstrap credential seeding disabled.\n");
+    }
 
     /* 5b. Ensure exam_url column on exams table */
     exec_sql_step(conn, "ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_url TEXT;");
@@ -1236,7 +1289,9 @@ static void db_ensure_admin_accounts(PGconn *conn) {
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;");
 
-    /* 6. Login throttle table ensure and clear */
+    /* 6. Login throttle table ensure. Existing lockouts are deliberately kept:
+     *    clearing them on every restart would hand an attacker an unlimited
+     *    password-guessing budget. */
     exec_sql_step(conn,
         "CREATE TABLE IF NOT EXISTS examos_admin_login_throttle ("
         "  subject_hash varchar(64) PRIMARY KEY,"
@@ -1245,9 +1300,8 @@ static void db_ensure_admin_accounts(PGconn *conn) {
         "  locked_until timestamptz,"
         "  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()"
         ");");
-    exec_sql_step(conn, "DELETE FROM examos_admin_login_throttle WHERE 1=1;");
 
-    fprintf(stderr, "[DB] Administrative accounts (admin, root) guaranteed and active.\n");
+    fprintf(stderr, "[DB] Administrative schema verified.\n");
 }
 
 int db_create_schema(void) {

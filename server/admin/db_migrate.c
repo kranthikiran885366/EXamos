@@ -35,7 +35,8 @@ static const migration_t migrations[] = {
     {"013_session_journal_and_audit_completions.sql", "admin_auth", 8},
     {"014_exam_key_releases.sql", "exam_key_releases", 1},
     {"015_audit_event_catalogue.sql", "admin_auth", 9},
-    {"016_exam_questions.sql", "exam_lifecycle", 5}
+    {"016_exam_questions.sql", "exam_lifecycle", 5},
+    {"026_mfa_enrollment_table.sql", "admin_auth", 9}
 };
 
 static PGconn *connect_database(void) {

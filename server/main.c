@@ -263,6 +263,51 @@ static int extract_authorization_header(const char *buffer, char *out, size_t ou
     return 0;
 }
 
+/*
+ * Extract an arbitrary request header from the parsed header block.  Returns 0
+ * when the header was found exactly once, -1 otherwise.  Used for the MFA
+ * enrollment token, which must travel in a header (never the URL or body) so it
+ * cannot leak through logs, referrers, or JavaScript-visible query strings.
+ */
+static int extract_named_header(const char *buffer, const char *wanted,
+                                char *out, size_t out_size) {
+    if (!buffer || !wanted || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    size_t wanted_len = strlen(wanted);
+    const char *headers_end = strstr(buffer, "\r\n\r\n");
+    const char *line = strstr(buffer, "\r\n");
+    if (!headers_end || !line || line > headers_end) return -1;
+    line += 2;
+    int found = 0;
+    while (line < headers_end) {
+        const char *line_end = strstr(line, "\r\n");
+        if (!line_end || line_end > headers_end) return -1;
+        const char *colon = memchr(line, ':', (size_t)(line_end - line));
+        if (!colon || colon == line) return -1;
+        size_t name_length = (size_t)(colon - line);
+        if (name_length == wanted_len &&
+            strncasecmp(line, wanted, name_length) == 0) {
+            if (found) return -1;
+            found = 1;
+            const char *value = colon + 1;
+            while (value < line_end && (*value == ' ' || *value == '\t')) value++;
+            const char *value_end = line_end;
+            while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end--;
+            size_t value_length = (size_t)(value_end - value);
+            if (value_length == 0 || value_length >= out_size) return -1;
+            for (size_t i = 0; i < value_length; i++) {
+                unsigned char c = (unsigned char)value[i];
+                if (c < 0x20 || c == 0x7f) return -1;
+            }
+            memcpy(out, value, value_length);
+            out[value_length] = '\0';
+        }
+        line = line_end + 2;
+    }
+    return found ? 0 : -1;
+}
+
+
 static int extract_candidate_session_token(const char *buffer, const char *auth_header, char *out, size_t out_size) {
     if (!out || out_size == 0) return 0;
     out[0] = '\0';
@@ -1189,7 +1234,7 @@ static void* handle_client(void *arg) {
         char extra[512];
         int elen = snprintf(extra, sizeof(extra),
             "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Authorization, Content-Type, X-ExamOS-Console, X-ExamOS-Console-Version, X-ExamOS-Request-Id, X-ExamOS-Timestamp, X-ExamOS-Signature, X-ExamOS-Signature-Alg, X-ExamOS-Signature-Key-Id, X-Requested-With\r\n"
+            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Enrollment-Token, X-ExamOS-Console, X-ExamOS-Console-Version, X-ExamOS-Request-Id, X-ExamOS-Timestamp, X-ExamOS-Signature, X-ExamOS-Signature-Alg, X-ExamOS-Signature-Key-Id, X-Requested-With\r\n"
             "Access-Control-Max-Age: 86400\r\n");
         if (elen > 0 && (size_t)elen < sizeof(extra))
             send_http_response_ex(client_fd, 204, "application/json", "", extra);
@@ -1212,6 +1257,13 @@ static void* handle_client(void *arg) {
         if (extract_admin_session_cookie(buffer, cookie_token, sizeof(cookie_token)) == 0 && cookie_token[0]) {
             snprintf(auth_header, sizeof(auth_header), "Bearer %s", cookie_token);
         }
+    }
+
+    /* Single-use authenticator enrollment token issued by /admin/login. */
+    char enrollment_token[128] = {0};
+    if (extract_named_header(buffer, "X-Enrollment-Token",
+                             enrollment_token, sizeof(enrollment_token)) != 0) {
+        enrollment_token[0] = '\0';
     }
 
     // Extract body if POST
@@ -1242,6 +1294,11 @@ static void* handle_client(void *arg) {
         auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
         goto client_done;
     }
+    /* Route: POST /api/v1/candidate/logout */
+    else if (strcmp(route_path, "/api/v1/candidate/logout") == 0 && strcmp(method, "POST") == 0) {
+        auth_candidate_logout(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
     /* Canonical dashboard route plus the established API login alias. */
     else if ((strcmp(route_path, "/api/v1/admin/login") == 0 ||
               strcmp(route_path, "/api/v1/auth/login") == 0) && strcmp(method, "POST") == 0) {
@@ -1259,17 +1316,22 @@ static void* handle_client(void *arg) {
     }
     else if ((strcmp(route_path, "/api/v1/admin/mfa/setup") == 0 ||
               strcmp(route_path, "/api/v1/auth/mfa/setup") == 0) && strcmp(method, "POST") == 0) {
-        auth_mfa_setup(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+        auth_mfa_setup(client_fd, req_body, auth_header, enrollment_token, origin, extra, sizeof(extra));
         goto client_done;
     }
     else if ((strcmp(route_path, "/api/v1/admin/mfa/confirm") == 0 ||
               strcmp(route_path, "/api/v1/auth/mfa/confirm") == 0) && strcmp(method, "POST") == 0) {
-        auth_mfa_confirm(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+        auth_mfa_confirm(client_fd, req_body, auth_header, enrollment_token, origin, extra, sizeof(extra));
         goto client_done;
     }
     else if ((strcmp(route_path, "/api/v1/admin/recovery/reset") == 0 ||
               strcmp(route_path, "/api/v1/auth/recovery/reset") == 0) && strcmp(method, "POST") == 0) {
         auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/password/change") == 0 ||
+              strcmp(route_path, "/api/v1/auth/password/change") == 0) && strcmp(method, "POST") == 0) {
+        auth_change_password(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
         goto client_done;
     }
     else if ((strcmp(route_path, "/api/v1/audit/batch") == 0 ||
@@ -4295,17 +4357,22 @@ p5_score_done:
             }
             if ((strcmp(route_path, "/api/v1/admin/mfa/setup") == 0 ||
                  strcmp(route_path, "/api/v1/auth/mfa/setup") == 0) && strcmp(method, "POST") == 0) {
-                auth_mfa_setup(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+                auth_mfa_setup(client_fd, req_body, auth_header, enrollment_token, origin, extra, sizeof(extra));
                 goto client_done;
             }
             if ((strcmp(route_path, "/api/v1/admin/mfa/confirm") == 0 ||
                  strcmp(route_path, "/api/v1/auth/mfa/confirm") == 0) && strcmp(method, "POST") == 0) {
-                auth_mfa_confirm(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+                auth_mfa_confirm(client_fd, req_body, auth_header, enrollment_token, origin, extra, sizeof(extra));
                 goto client_done;
             }
             if ((strcmp(route_path, "/api/v1/admin/recovery/reset") == 0 ||
                  strcmp(route_path, "/api/v1/auth/recovery/reset") == 0) && strcmp(method, "POST") == 0) {
                 auth_recovery_reset(client_fd, req_body, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if ((strcmp(route_path, "/api/v1/admin/password/change") == 0 ||
+                 strcmp(route_path, "/api/v1/auth/password/change") == 0) && strcmp(method, "POST") == 0) {
+                auth_change_password(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
             if (strcmp(route_path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
@@ -4316,6 +4383,10 @@ p5_score_done:
                     goto client_done;
                 }
                 auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+            if (strcmp(route_path, "/api/v1/candidate/logout") == 0 && strcmp(method, "POST") == 0) {
+                auth_candidate_logout(client_fd, auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 

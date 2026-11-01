@@ -32,9 +32,11 @@ export const ENDPOINTS = {
   mfaSetup: '/api/v1/admin/mfa/setup',
   mfaConfirm: '/api/v1/admin/mfa/confirm',
   recoveryReset: '/api/v1/admin/recovery/reset',
+  passwordChange: '/api/v1/admin/password/change',
 
   // Auth — candidate
   candidateLogin: '/api/v1/candidate/login',
+  candidateLogout: '/api/v1/candidate/logout',
 
   // Admin platform
   institutions: '/api/v1/admin/institutions',

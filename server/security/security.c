@@ -15,6 +15,8 @@
 #include "security.h"
 #include "../db/db.h"
 #include "../include/admin_auth_store.h"
+#include "../include/secure_token.h"
+#include "../include/totp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,20 +92,29 @@ int security_verify_session(const char *token, auth_session_t *out) {
     if (!token || !out) return -1;
     memset(out, 0, sizeof(*out));
 
-    /* Check auth_sessions in DB */
+    /* Check auth_sessions in DB.  Only the SHA-256 digest of the bearer token
+     * is persisted, so hash before lookup: a leaked database must not yield
+     * replayable session tokens. */
+    char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (secure_token_hash(token, token_hash) != 0) return -1;
     PGconn *conn = db_acquire();
     if (conn) {
-        const char *params[1] = { token };
-        int lens[1] = { (int)strlen(token) };
+        const char *params[1] = { token_hash };
+        int lens[1] = { (int)strlen(token_hash) };
         PGresult *res = db_simple(conn,
             "SELECT user_id, username, institution_id, role, expires_at "
-            "FROM auth_sessions WHERE session_token = $1 AND status = 'active'",
+            "FROM auth_sessions WHERE session_token = $1 AND status = 'active'"
+            " AND expires_at > EXTRACT(EPOCH FROM clock_timestamp())::bigint",
             1, params, lens);
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
             strncpy(out->user_id, PQgetvalue(res, 0, 0), sizeof(out->user_id) - 1);
             strncpy(out->username, PQgetvalue(res, 0, 1), sizeof(out->username) - 1);
             strncpy(out->institution_id, PQgetvalue(res, 0, 2), sizeof(out->institution_id) - 1);
             const char *role_str = PQgetvalue(res, 0, 3);
+            /* Default deny.  Candidate/student sessions share the auth_sessions
+             * table, so an unknown or non-management role must invalidate the
+             * session rather than being promoted to a read-only admin role. */
+            int role_ok = 1;
             if (strcmp(role_str, "PLATFORM_OWNER") == 0 || strcmp(role_str, "superadmin") == 0) out->role = ROLE_PLATFORM_OWNER;
             else if (strcmp(role_str, "INSTITUTION_ADMIN") == 0 || strcmp(role_str, "inst_admin") == 0) out->role = ROLE_INSTITUTION_ADMIN;
             else if (strcmp(role_str, "EXAM_MANAGER") == 0 || strcmp(role_str, "exam_controller") == 0) out->role = ROLE_EXAM_MANAGER;
@@ -113,13 +124,21 @@ int security_verify_session(const char *token, auth_session_t *out) {
             else if (strcmp(role_str, "INCIDENT_INVESTIGATOR") == 0) out->role = ROLE_INCIDENT_INVESTIGATOR;
             else if (strcmp(role_str, "READONLY_AUDITOR") == 0 || strcmp(role_str, "auditor") == 0) out->role = ROLE_READONLY_AUDITOR;
             else if (strcmp(role_str, "SUPPORT_ENGINEER") == 0 || strcmp(role_str, "support") == 0) out->role = ROLE_SUPPORT_ENGINEER;
-            else out->role = ROLE_READONLY_AUDITOR;
+            else role_ok = 0;
+
+            if (!role_ok) {
+                PQclear(res);
+                db_release(conn, 0);
+                memset(out, 0, sizeof(*out));
+                return -1;
+            }
 
             out->expires_at = (time_t)strtoll(PQgetvalue(res, 0, 4), NULL, 10);
             PQclear(res);
             db_release(conn, 0);
 
             if (out->expires_at < time(NULL)) {
+                memset(out, 0, sizeof(*out));
                 return -1; /* expired */
             }
             return 0;
@@ -189,75 +208,9 @@ static int b32_decode_char(char c) {
 
 int security_totp_verify(const char *secret, const char *code) {
     if (!secret || !code) return 0;
-    /* Decode base32 secret */
-    unsigned char key[64];
-    int key_len = 0;
-    for (size_t i = 0; secret[i] && key_len < 64; i++) {
-        int v = b32_decode_char(secret[i]);
-        if (v < 0) continue; /* skip padding */
-        /* pack 5-bit groups */
-        /* simple approach: accumulate bits */
-    }
-    /* Use OpenSSL HMAC for simplicity */
-    /* Decode properly */
-    unsigned char bits[80];
-    int bit_count = 0;
-    for (size_t i = 0; secret[i]; i++) {
-        int v = b32_decode_char(secret[i]);
-        if (v < 0) continue;
-        for (int b = 4; b >= 0; b--) {
-            if (bit_count / 8 < 80)
-                bits[bit_count / 8] = (unsigned char)((bits[bit_count / 8] << 1) | ((v >> b) & 1));
-            bit_count++;
-        }
-    }
-    key_len = bit_count / 8;
-
-    time_t now = time(NULL);
-    uint64_t counter = (uint64_t)(now / 30);
-    unsigned char msg[8];
-    for (int i = 7; i >= 0; i--) {
-        msg[i] = (unsigned char)(counter & 0xff);
-        counter >>= 8;
-    }
-
-    unsigned char hmac[EVP_MAX_MD_SIZE];
-    unsigned int hmac_len;
-    HMAC(EVP_sha1(), key, key_len, msg, 8, hmac, &hmac_len);
-
-    /* Dynamic truncation */
-    int offset = hmac[hmac_len - 1] & 0x0f;
-    uint32_t truncated = ((uint32_t)hmac[offset] & 0x7f) << 24 |
-                         ((uint32_t)hmac[offset + 1] & 0xff) << 16 |
-                         ((uint32_t)hmac[offset + 2] & 0xff) << 8 |
-                         ((uint32_t)hmac[offset + 3] & 0xff);
-    int otp = truncated % 1000000;
-
-    /* Check current and previous time step for clock drift */
-    int expected = otp;
-    char expected_str[8];
-    snprintf(expected_str, sizeof(expected_str), "%06d", expected);
-    if (security_safe_equal(code, expected_str)) return 1;
-
-    /* Previous step */
-    uint64_t prev = (uint64_t)((now - 30) / 30);
-    unsigned char pmsg[8];
-    for (int i = 7; i >= 0; i--) {
-        pmsg[i] = (unsigned char)(prev & 0xff);
-        prev >>= 8;
-    }
-    unsigned char phmac[EVP_MAX_MD_SIZE];
-    unsigned int phmac_len;
-    HMAC(EVP_sha1(), key, key_len, pmsg, 8, phmac, &phmac_len);
-    int poffset = phmac[phmac_len - 1] & 0x0f;
-    uint32_t ptruncated = ((uint32_t)phmac[poffset] & 0x7f) << 24 |
-                          ((uint32_t)phmac[poffset + 1] & 0xff) << 16 |
-                          ((uint32_t)phmac[poffset + 2] & 0xff) << 8 |
-                          ((uint32_t)phmac[poffset + 3] & 0xff);
-    int potp = ptruncated % 1000000;
-    char pstr[8];
-    snprintf(pstr, sizeof(pstr), "%06d", potp);
-    return security_safe_equal(code, pstr);
+    /* Delegate entirely to the canonical totp.c implementation which has
+     * a correct base32 decoder and constant-time comparison. */
+    return totp_verify_code(secret, code, time(NULL), 1);
 }
 
 /* -----------------------------------------------------------------------
@@ -428,7 +381,9 @@ int security_rate_check(const char *ip) {
     }
     /* Create new bucket */
     if (g_rate_bucket_count < 256) {
-        strcpy(g_rate_buckets[g_rate_bucket_count].ip, ip);
+        strncpy(g_rate_buckets[g_rate_bucket_count].ip, ip,
+                sizeof(g_rate_buckets[g_rate_bucket_count].ip) - 1);
+        g_rate_buckets[g_rate_bucket_count].ip[sizeof(g_rate_buckets[g_rate_bucket_count].ip) - 1] = '\0';
         g_rate_buckets[g_rate_bucket_count].count = 1;
         g_rate_buckets[g_rate_bucket_count].window_start = now;
         g_rate_bucket_count++;

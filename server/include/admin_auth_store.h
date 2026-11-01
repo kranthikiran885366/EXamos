@@ -67,4 +67,13 @@ int admin_auth_store_password_reset_request(const char *username, char out_token
 int admin_auth_store_password_reset_complete(const char *username, const char *reset_token,
                                              const char *new_password);
 
+/*
+ * Durable login throttle — backed by examos_admin_login_throttle.
+ * subject is the raw username or candidate_id (hashed internally).
+ * Returns 1 if locked, 0 if not locked, -1 on DB error.
+ */
+int admin_auth_throttle_check(const char *subject);
+int admin_auth_throttle_failure(const char *subject);
+int admin_auth_throttle_clear(const char *subject);
+
 #endif

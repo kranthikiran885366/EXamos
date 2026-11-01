@@ -7,6 +7,7 @@
 #include "../db/db.h"
 #include "../audit/audit.h"
 #include "../security/security.h"
+#include "../include/secure_token.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +31,13 @@ static int candidate_authorized(const char *auth_header, char *cid_out, size_t c
         return 0;
     PGconn *conn = db_acquire();
     if (!conn) return 0;
-    const char *p[1] = { token };
-    int l[1] = { (int)strlen(token) };
+    char token_hash[65] = {0};
+    if (secure_token_hash(token, token_hash) != 0) {
+        db_release(conn, 0);
+        return 0;
+    }
+    const char *p[1] = { token_hash };
+    int l[1] = { (int)strlen(token_hash) };
     PGresult *r = db_simple(conn, "SELECT user_id FROM auth_sessions WHERE session_token = $1 AND status = 'active'", 1, p, l);
     int found = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0;
     if (found && cid_out) {
