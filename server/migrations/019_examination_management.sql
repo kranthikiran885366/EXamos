@@ -193,7 +193,8 @@ CREATE TABLE IF NOT EXISTS exam_audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_exam_audit_logs_exam ON exam_audit_logs (exam_id);
 
--- Seed backwards-compatibility trigger or copy if exams table exists
+-- Seed backwards-compatibility: copy existing exams rows into examinations.
+-- Only copy rows with a real tenant_id and created_by to avoid fabricated placeholders.
 INSERT INTO examinations (
     id, institution_id, code, name, subject, academic_year, exam_type,
     duration_minutes, total_marks, passing_marks, instructions, status,
@@ -201,17 +202,17 @@ INSERT INTO examinations (
 )
 SELECT
     id,
-    COALESCE(tenant_id, 'inst_demo'),
+    tenant_id,
     COALESCE(code, SUBSTRING(id FROM 5 FOR 8)),
     COALESCE(title, 'Untitled Exam'),
     COALESCE(course, 'General'),
-    COALESCE(academic_year, '2026-2027'),
+    COALESCE(academic_year, ''),
     COALESCE(type, 'final'),
     COALESCE(duration_min, 60),
     100,
     40,
     COALESCE(instructions, ''),
-    CASE 
+    CASE
         WHEN status = 'DRAFT' OR status = 'draft' THEN 'draft'
         WHEN status = 'VALIDATED' OR status = 'review' THEN 'configured'
         WHEN status = 'APPROVED' OR status = 'approved' THEN 'approved'
@@ -223,13 +224,16 @@ SELECT
         WHEN status = 'cancelled' THEN 'cancelled'
         ELSE 'draft'
     END,
-    COALESCE(allowed_destinations->>0, 'https://exam.university.edu'),
+    COALESCE(allowed_destinations->>0, ''),
     COALESCE(origins->>0, ''),
     policy_id,
-    COALESCE(created_by, 'root'),
+    created_by,
     COALESCE(created_at, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000),
     COALESCE(updated_at, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
 FROM exams
+-- Skip rows without a real institution scope or creator — never fabricate placeholders.
+WHERE tenant_id IS NOT NULL AND tenant_id <> ''
+  AND created_by IS NOT NULL AND created_by <> ''
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO examos_schema_migrations (component, version)

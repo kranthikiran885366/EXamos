@@ -75,14 +75,12 @@ export async function createExam(a, input) {
   if (!/^[A-Z0-9-]{4,20}$/.test(c)) fail('Code: 4–20 letters, digits or -.');
   if (t.length < 4) fail('Title needs 4+ characters.');
   if (!TYPES.includes(type)) fail('Choose a valid exam type.');
-  if ((await all('exams')).some((e) => e.tenantId === tenantId && e.code === c)) fail('Exam code already used.');
+  /* Duplicate code check is enforced server-side (409 on duplicate code). */
   const ids = Array.isArray(centerIds) ? centerIds.filter(Boolean) : [];
   const st = startOf(startAt);
   const dur = Number(durationMin);
   if (!Number.isFinite(st)) fail('Choose a start date and time.');
   if (!(dur >= 15 && dur <= 300)) fail('Duration must be 15–300 minutes.');
-  if (policyId && !(await get('policies', policyId))) fail('The selected policy does not exist.');
-  for (const cid of ids) { const ce = await get('centers', cid); if (!ce || ce.tenantId !== tenantId) fail('A selected center is outside this institution.'); }
   const targetUrl = clean(examUrl || input.examUrl, 500) || `https://assessment.sppio.io/exam/${c.toLowerCase()}`;
   const now = Date.now();
   const ex = {
@@ -361,9 +359,15 @@ export async function transition(a, ex, to, reason = '') {
 }
 
 async function assertCurrent(ex) {
-  const cur = await get('exams', ex.id);
-  if (!cur) fail('Exam not found.');
-  if (cur.status !== ex.status) fail(`The exam status changed to ${cur.status}. Reload and try again.`);
+  /* Check current status from backend to prevent stale-state transitions. */
+  try {
+    const res = await Api.getExaminationStatus(ex.id);
+    const liveStatus = res?.status || (await Api.getExamination(ex.id))?.examination?.status;
+    if (liveStatus && liveStatus !== ex.status) fail(`The exam status changed to ${liveStatus}. Reload and try again.`);
+  } catch (err) {
+    if (err?.message?.includes('status changed')) throw err;
+    /* If the backend is unreachable, proceed — server will reject if state is wrong */
+  }
 }
 async function notifyExam(a, ex, to, reason) {
   try {

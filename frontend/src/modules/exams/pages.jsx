@@ -314,10 +314,8 @@ export function ExamDetailPage() {
   const { data: checks, loading: readinessLoading, reload: reloadReadiness } = useLoad(async () => (e ? readiness(e) : []), [e?.id, e?.version, e?.status]);
   const { data: preview } = useLoad(async () => (e ? policyPreview(e) : null), [e?.id, e?.policyId]);
 
-  if (!loaded) return <Page title="Exam"><Loading /></Page>;
+  if (!isLoaded) return <Page title="Exam"><Loading /></Page>;
   if (!e) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/college/exams">Back to exams</Link>} /></Page>;
-
-  const pol = policies.find((p) => p.id === e.policyId);
   const assigned = candidates.filter((c) => c.examId === e.id);
   const centersList = (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid)).filter(Boolean);
   const currentStep = LIFECYCLE.indexOf(e.status);
@@ -781,3 +779,4 @@ export function ExamPoliciesPage() {
     </Page>
   );
 }
+
