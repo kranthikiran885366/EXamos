@@ -300,104 +300,147 @@ int main(int argc, char **argv) {
     }
     const char *directory = argc == 2 ? argv[1] : getenv("EXAMOS_MIGRATIONS_DIR");
     if (!directory || !directory[0]) directory = "/usr/share/examos/migrations";
+
     PGconn *conn = connect_database();
     if (!conn) {
         fprintf(stderr, "Database migration stopped: verified TLS database connection unavailable.\n");
         return 1;
     }
+
     int rc = 1;
     int migration_lock_held = 0;
+
     if (!migration_role_is_ready(conn)) {
-        fprintf(stderr, "Database migration stopped before changes: role must have CONNECT and public CREATE privileges and own all existing public ExamOS tables.\n");
+        fprintf(stderr, "Database migration stopped before changes: role must have CONNECT and "
+                        "public CREATE privileges and own all existing public ExamOS tables.\n");
         goto done;
     }
-    if (exec_command(conn, "SET lock_timeout='10s'; SET statement_timeout='120s'; SELECT pg_advisory_lock(hashtext('examos-schema-migrations'))") != 0) {
+
+    if (exec_command(conn,
+            "SET lock_timeout='10s'; SET statement_timeout='120s'; "
+            "SELECT pg_advisory_lock(hashtext('examos-schema-migrations'))") != 0) {
         fprintf(stderr, "Database migration stopped: could not establish bounded migration lock.\n");
         goto done;
     }
-    /*
-     * ── Registry repair ──────────────────────────────────────────────────────
-     * Earlier deployments used a broken (component, version) numbering scheme
-     * where multiple migration files shared the same (component, version) pair.
-     * If those stale records exist in examos_schema_migrations, remove them so
-     * the correct records from this run can be inserted cleanly.
-     * This block only fires when the migration table already exists.
+    migration_lock_held = 1;
+
+    /* ── Registry repair ──────────────────────────────────────────────────────
+     * Earlier deploys used a broken (component, version) numbering scheme where
+     * multiple files shared the same pair (e.g. admin_auth/9 was used by both
+     * 015 and 026).  Delete the stale records so the correct ones can be
+     * inserted cleanly.  Errors are silently ignored — missing rows are fine.
      */
     if (has_migration_table(conn)) {
-        static const char *repair_sql =
+        static const char repair_migrations[] =
             "DELETE FROM examos_schema_migrations WHERE "
-            /* Old broken records that used wrong version numbers */
-            "  (component='admin_auth'       AND version IN (7,8,9)) OR"
-            "  (component='exam_lifecycle'   AND version IN (3,4,5)) OR"
-            "  (component='device_fleet'     AND version IN (4,5,6,7,8,9));";
-        /* Ignore errors — if the table doesn't have these rows, that's fine. */
-        PGresult *rr = PQexec(conn, repair_sql);
+            " (component='admin_auth'     AND version IN (7,8,9)) OR"
+            " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
+            " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
+        PGresult *rr = PQexec(conn, repair_migrations);
         if (rr) PQclear(rr);
-
-        static const char *repair_checksums =
-            "DELETE FROM examos_schema_migration_checksums WHERE "
-            "  (component='admin_auth'       AND version IN (7,8,9)) OR"
-            "  (component='exam_lifecycle'   AND version IN (3,4,5)) OR"
-            "  (component='device_fleet'     AND version IN (4,5,6,7,8,9));";
-        PGresult *rc2 = PQexec(conn, repair_checksums);
-        if (rc2) PQclear(rc2);
     }
+
+    /* ── Ensure checksum table exists BEFORE the migration loop ──────────────
+     * Previously this was created inside the i==0 block, which was skipped on
+     * re-deploys where migration 001 was already applied.  That caused
+     * checksum_lookup() to fail with "relation does not exist" for all
+     * subsequent migrations on every re-deploy.
+     */
+    if (exec_command(conn,
+            "CREATE TABLE IF NOT EXISTS examos_schema_migration_checksums ("
+            "  component   text        NOT NULL,"
+            "  version     integer     NOT NULL,"
+            "  sha256      char(64)    NOT NULL "
+            "    CHECK (sha256 ~ '^[0-9a-f]{64}$'),"
+            "  recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),"
+            "  PRIMARY KEY (component, version))") != 0) {
+        fprintf(stderr, "Migration checksum registry is unavailable.\n");
+        goto done;
+    }
+
+    /* Repair checksum table for old stale entries (same rationale as above). */
+    {
+        static const char repair_checksums[] =
+            "DELETE FROM examos_schema_migration_checksums WHERE "
+            " (component='admin_auth'     AND version IN (7,8,9)) OR"
+            " (component='exam_lifecycle' AND version IN (3,4,5)) OR"
+            " (component='device_fleet'   AND version IN (4,5,6,7,8,9));";
+        PGresult *rr = PQexec(conn, repair_checksums);
+        if (rr) PQclear(rr);
+    }
+
+    /* ── Apply each migration in order ──────────────────────────────────────── */
     for (size_t i = 0; i < sizeof(migrations) / sizeof(migrations[0]); ++i) {
-        const migration_t *migration = &migrations[i];
-        char *sql = NULL, hash[65] = {0}, recorded_hash[65] = {0};
+        const migration_t *m = &migrations[i];
+        char *sql = NULL;
+        char hash[65] = {0};
+        char recorded_hash[65] = {0};
         size_t length = 0;
-        if (read_migration(directory, migration->file, &sql, &length, hash) != 0) {
-            fprintf(stderr, "Database migration stopped: required migration file is unreadable.\n");
+
+        if (read_migration(directory, m->file, &sql, &length, hash) != 0) {
+            fprintf(stderr, "Database migration stopped: required file '%s' is unreadable.\n",
+                    m->file);
             goto done;
         }
+
         int table_exists = has_migration_table(conn);
-        int applied = table_exists ? is_applied(conn, migration) : 0;
+        int applied      = table_exists ? is_applied(conn, m) : 0;
+
+        /* Fresh DB: table doesn't exist yet — only valid at i==0 (001_admin_auth.sql
+         * creates it).  Any other position means the registry is corrupt.         */
         if (applied < 0 || (!table_exists && i != 0)) {
             OPENSSL_cleanse(sql, length); free(sql);
-            fprintf(stderr, "Database migration stopped: migration registry is inconsistent.\n");
+            fprintf(stderr, "Database migration stopped: migration registry is inconsistent "
+                            "(file=%s, table_exists=%d, applied=%d).\n",
+                    m->file, table_exists, applied);
             goto done;
         }
+
         if (!applied) {
             if (exec_command(conn, sql) != 0) {
                 OPENSSL_cleanse(sql, length); free(sql);
-                fprintf(stderr, "Database migration failed; database transaction was rolled back: %s",
-                        PQerrorMessage(conn));
+                fprintf(stderr, "Database migration failed for '%s': %s",
+                        m->file, PQerrorMessage(conn));
                 goto done;
             }
-            applied = is_applied(conn, migration);
-            if (applied != 1) {
+            /* Verify the migration registered its own version marker. */
+            if (is_applied(conn, m) != 1) {
                 OPENSSL_cleanse(sql, length); free(sql);
-                fprintf(stderr, "Database migration completed without its required version marker.\n");
+                fprintf(stderr, "Migration '%s' completed without inserting its version marker.\n",
+                        m->file);
                 goto done;
             }
-            printf("Applied %s (%s version %d).\n", migration->file,
-                   migration->component, migration->version);
+            printf("[migrate] Applied %s (%s v%d)\n", m->file, m->component, m->version);
         }
-        OPENSSL_cleanse(sql, length); free(sql);
-        if (i == 0 && exec_command(conn,
-            "CREATE TABLE IF NOT EXISTS examos_schema_migration_checksums ("
-            "component text NOT NULL, version integer NOT NULL, sha256 char(64) NOT NULL "
-            "CHECK (sha256 ~ '^[0-9a-f]{64}$'), recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(), "
-            "PRIMARY KEY(component,version))") != 0) {
-            fprintf(stderr, "Migration checksum registry is unavailable.\n");
+        OPENSSL_cleanse(sql, length);
+        free(sql);
+
+        /* Checksum verification — detect accidental file edits post-apply. */
+        int cs = checksum_lookup(conn, m, recorded_hash);
+        if (cs < 0) {
+            fprintf(stderr, "Checksum lookup failed for '%s'.\n", m->file);
             goto done;
         }
-        int checksum_status = checksum_lookup(conn, migration, recorded_hash);
-        if (checksum_status < 0 || (checksum_status == 1 &&
-            CRYPTO_memcmp(recorded_hash, hash, 64) != 0)) {
-            fprintf(stderr, "Migration checksum mismatch; refusing to continue.\n");
+        if (cs == 1 && CRYPTO_memcmp(recorded_hash, hash, 64) != 0) {
+            fprintf(stderr, "Checksum mismatch for '%s' — migration file was modified after it "
+                            "was applied.  Refusing to continue.\n", m->file);
             goto done;
         }
-        if (checksum_status == 0 && checksum_insert(conn, migration, hash) != 0) {
-            fprintf(stderr, "Could not record migration checksum.\n");
+        if (cs == 0 && checksum_insert(conn, m, hash) != 0) {
+            fprintf(stderr, "Could not record checksum for '%s'.\n", m->file);
             goto done;
         }
     }
     rc = 0;
+
 done:
     if (migration_lock_held)
-        (void)exec_command(conn, "SELECT pg_advisory_unlock(hashtext('examos-schema-migrations'))");
+        (void)exec_command(conn,
+            "SELECT pg_advisory_unlock(hashtext('examos-schema-migrations'))");
     PQfinish(conn);
-    if (rc == 0) printf("PostgreSQL schema migrations are current and checksummed.\n");
+    if (rc == 0)
+        printf("[migrate] All %zu schema migrations are current and checksummed.\n",
+               sizeof(migrations) / sizeof(migrations[0]));
     return rc;
 }
+
