@@ -179,7 +179,8 @@ CREATE TABLE IF NOT EXISTS registration_audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_reg_audit_logs_exam ON registration_audit_logs (examination_id);
 
-INSERT INTO examos_schema_migrations (component, version, notes)
-VALUES ('examination_registration', 20, 'Module 10 Examination Registration and Eligibility Management');
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('examination_registration', 20)
+ON CONFLICT (component, version) DO NOTHING;
 
 COMMIT;

@@ -244,3 +244,7 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Grant permissions to examos_app
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO examos_app;
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('os_releases', 1)
+ON CONFLICT (component, version) DO NOTHING;

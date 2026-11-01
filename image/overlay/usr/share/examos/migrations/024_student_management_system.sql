@@ -119,3 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_student_audit_inst ON student_audit_events(instit
 
 -- Grant permissions to examos_app
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO examos_app;
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('students', 1)
+ON CONFLICT (component, version) DO NOTHING;

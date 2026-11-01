@@ -246,6 +246,6 @@ BEGIN
 END $$;
 
 -- Record migration
-INSERT INTO examos_schema_migrations (version, applied_at)
-VALUES ('018', EXTRACT(EPOCH FROM NOW()) * 1000)
-ON CONFLICT (version) DO NOTHING;
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('campus_dept', 1)
+ON CONFLICT (component, version) DO NOTHING;

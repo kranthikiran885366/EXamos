@@ -1,6 +1,6 @@
 BEGIN;
 
-CREATE TABLE examos_attestation_challenges (
+CREATE TABLE IF NOT EXISTS examos_attestation_challenges (
     attestation_id varchar(63) PRIMARY KEY
         CHECK (attestation_id ~ '^attest-[A-Fa-f0-9]{32}$'),
     session_id varchar(63) NOT NULL
@@ -24,13 +24,14 @@ CREATE TABLE examos_attestation_challenges (
     CHECK (state <> 'TRUSTED' OR verified_at IS NOT NULL)
 );
 
-CREATE INDEX examos_attestation_session_latest_idx
+CREATE INDEX IF NOT EXISTS examos_attestation_session_latest_idx
     ON examos_attestation_challenges (session_id, created_at DESC);
-CREATE INDEX examos_attestation_expiry_idx
+CREATE INDEX IF NOT EXISTS examos_attestation_expiry_idx
     ON examos_attestation_challenges (expires_at)
     WHERE state IN ('PENDING', 'VERIFYING');
 
 INSERT INTO examos_schema_migrations (component, version)
-VALUES ('device_fleet', 8);
+VALUES ('device_fleet', 8)
+ON CONFLICT (component, version) DO NOTHING;
 
 COMMIT;

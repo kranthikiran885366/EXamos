@@ -67,8 +67,8 @@ ALTER TABLE examos_schema_migrations
 -- Record migration
 INSERT INTO examos_schema_migrations (component, version, applied_at, notes)
 VALUES (
-    'session_risk',
-    1,
+    'operations',
+    2,
     clock_timestamp(),
     'Initial session risk persistence table (ISS-03 resolution). '
     'Enables restart-safe proctoring anomaly tracking and invigilator alert polling.'

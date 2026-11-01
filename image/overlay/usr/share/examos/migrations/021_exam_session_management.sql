@@ -99,3 +99,7 @@ CREATE TABLE IF NOT EXISTS exam_session_audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_exam_session_audit_session ON exam_session_audit_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_exam_session_audit_exam ON exam_session_audit_logs(examination_id);
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('exam_lifecycle', 6)
+ON CONFLICT (component, version) DO NOTHING;
