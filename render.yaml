@@ -5,21 +5,63 @@ services:
     plan: free
     region: oregon
     dockerfilePath: ./Dockerfile
+
+    # ── Health check ──────────────────────────────────────────────────────────
+    healthCheckPath: /api/v1/health
+
     envVars:
+      # ── CORS ──────────────────────────────────────────────────────────────
       - key: EXAMOS_CORS_ALLOWED_ORIGINS
         value: https://sppio-os.vercel.app,http://localhost:5173
+
+      # ── Runtime mode ──────────────────────────────────────────────────────
+      # production: enables HMAC journal enforcement, Secure cookie flag,
+      # TPM attestation checks, and disallows unauthenticated fallbacks.
       - key: EXAMOS_TPM_MODE
-        value: development
-      - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
+        value: production
+
+      # ── Admin cookie Secure flag ───────────────────────────────────────────
+      # Must be "1" so the HttpOnly admin_session cookie carries Secure=true
+      # on the Render HTTPS endpoint (the C server checks this env var).
+      - key: EXAMOS_ADMIN_COOKIE_SECURE
         value: "1"
+
+      # ── Unprovisioned dev bypass — DISABLED in production ─────────────────
+      - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
+        value: "0"
+
+      # ── Browser policy catalog ────────────────────────────────────────────
       - key: EXAMOS_BROWSER_POLICY_CATALOG
         value: /opt/sppio/config/browser_policies.json
+
+      # ── Database (injected by Render from the linked database) ────────────
       - key: DATABASE_URL
         fromDatabase:
           name: sppio-db
           property: connectionString
+
+      # ── Connection limits ─────────────────────────────────────────────────
       - key: EXAMOS_MAX_CLIENTS
-        value: 128
+        value: "128"
+
+      # ── Session journal HMAC key ───────────────────────────────────────────
+      # Required in production mode. Set via Render dashboard → Environment
+      # as a secret (not committed here). Must be ≥ 32 characters.
+      # Key name: EXAMOS_LEDGER_HMAC_KEY
+      - key: EXAMOS_LEDGER_HMAC_KEY
+        sync: false   # set manually in Render dashboard — never in source
+
+      # ── Agent API token (for device attestation) ──────────────────────────
+      # Must be ≥ 32 characters. Set via Render dashboard as a secret.
+      # Key name: EXAMOS_AGENT_API_TOKEN
+      - key: EXAMOS_AGENT_API_TOKEN
+        sync: false   # set manually in Render dashboard — never in source
+
+      # ── Exam key encryption KEK ────────────────────────────────────────────
+      # AES-256 key for sealing exam keys. Set via Render dashboard as a secret.
+      # Key name: EXAMOS_EXAM_KEY_KEK
+      - key: EXAMOS_EXAM_KEY_KEK
+        sync: false   # set manually in Render dashboard — never in source
 
 databases:
   - name: sppio-db

@@ -1,69 +1,68 @@
-// ExamOS Console — Audit chain client.
-// Sends audit events to the backend ledger (/api/v1/ledger) and mirrors
-// them locally in IndexedDB for offline resilience. Every mutating API call
-// through the console client is recorded here.
-
-import { put } from '../db/db';
-import { sha256 } from './crypto';
-
-const AUDIT_COL = 'apiAudit';
+// ExamOS Console — Audit client (server-only, no local storage).
+//
+// Audit events are sent exclusively to the ExamOS C server ledger endpoint.
+// Nothing is written to IndexedDB, localStorage, or sessionStorage.
+// The server is the single source of truth for all audit records.
 
 export class AuditClient {
-  constructor({ enabled = true, serverEnabled = true } = {}) {
-    this.enabled = enabled;
-    this.serverEnabled = serverEnabled;
-    this.queue = [];
+  constructor() {
+    this.queue   = [];
+    this.sending = false;
   }
 
   async record({ actor, event, detail = '', resource = '', severity = 'info' }) {
     const entry = {
-      id: `audit_${crypto.randomUUID?.() || Date.now()}`,
-      actor: actor || 'system',
+      actor:      actor || 'system',
       event,
       detail,
       resource,
       severity,
       created_at: Date.now(),
-      local_hash: '',
     };
-    try {
-      entry.local_hash = await sha256(JSON.stringify({ ...entry, local_hash: '' }));
-    } catch { entry.local_hash = String(Date.now()); }
-
-    if (this.enabled) {
-      await put(AUDIT_COL, entry).catch(() => {});
-    }
     this.queue.push(entry);
-    if (this.serverEnabled) this.flush().catch(() => {});
+    this._scheduleFlush();
     return entry;
   }
 
+  _scheduleFlush() {
+    if (this.sending) return;
+    // Flush asynchronously so the calling code is never blocked.
+    Promise.resolve().then(() => this.flush()).catch(() => {});
+  }
+
   async flush() {
-    if (!this.serverEnabled || this.queue.length === 0) return;
-    const batch = this.queue.splice(0);
+    if (this.sending || this.queue.length === 0) return;
+    this.sending   = true;
+    const batch    = this.queue.splice(0);
     try {
       const res = await fetch('/api/v1/audit/batch', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-ExamOS-Console': '1' },
-        body: JSON.stringify({ events: batch }),
+        body:    JSON.stringify({ events: batch }),
+        // credentials:'include' sends the HttpOnly admin_session cookie so the
+        // server can attribute audit entries to the right session.
+        credentials: 'include',
       });
-      if (!res.ok) {
-        // Stop server push attempts on 404/error to avoid spam; audit remains local in IndexedDB
-        this.serverEnabled = false;
-      }
+      // On server-side error just drop — we never fall back to local storage.
+      if (!res.ok) console.warn('[AuditClient] server returned', res.status);
     } catch {
-      this.serverEnabled = false;
+      // Network failure — entries are dropped. The server-side audit trail
+      // (produced by the C backend on every API call) remains intact.
+    } finally {
+      this.sending = false;
+      // Drain any entries that arrived while we were flushing.
+      if (this.queue.length > 0) this._scheduleFlush();
     }
   }
 }
 
 export const audit = new AuditClient();
 
-export async function auditApiCall({ actor, method, path, status, durationMs, requestId, error }) {
+export async function auditApiCall({ actor, method, path, status, error }) {
   return audit.record({
     actor,
-    event: 'API_CALL',
-    detail: `${method} ${path} -> ${status || 'unknown'} ${error ? `(error: ${error})` : ''}`,
+    event:    'API_CALL',
+    detail:   `${method} ${path} -> ${status ?? 'unknown'}${error ? ` (${error})` : ''}`,
     resource: path,
     severity: status && status >= 400 ? 'error' : 'info',
   });
