@@ -40,7 +40,7 @@ export function OperatorOverviewPage() {
   const doLookup = (e) => {
     e.preventDefault();
     flash.run(async () => {
-      const c = await deskLookup(roll, tenantId);
+      const c = await deskLookup(roll, targetTenantId);
       setLookup(c);
       return `${c.name} · ${c.rollNo}`;
     });

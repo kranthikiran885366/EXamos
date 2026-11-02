@@ -6,7 +6,7 @@ import { compliant } from '../fleet/service';
 export const TYPES = { attendance: 'Attendance by exam', results: 'Exam results', attestation: 'Attestation outcomes', fleet: 'Fleet compliance by center', incidents: 'Incident register' };
 const d = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0, 19) : '');
 export async function build(type, tenantId) {
-  const f = (r) => r.tenantId === tenantId;
+  const f = (r) => !tenantId || r.tenantId === tenantId;
   const [exams, cands, sess, devs, atts, incs, pols, rels, ctrs] = await Promise.all(['exams', 'candidates', 'sessions', 'devices', 'attestations', 'incidents', 'policies', 'releases', 'centers'].map(all));
   if (type === 'attendance') return { cols: ['Exam', 'Status', 'Assigned', 'Started', 'Submitted', 'Attendance %'], rows: exams.filter(f).map((e) => { const a = cands.filter((c) => c.examId === e.id).length, s = sess.filter((x) => x.examId === e.id), sub = s.filter((x) => x.status === 'submitted').length; return [e.code, e.status, a, s.length, sub, a ? Math.round((s.length / a) * 100) : 0]; }) };
   if (type === 'results') return { cols: ['Exam', 'Roll no', 'Candidate', 'Score', 'Out of', 'Receipt'], rows: sess.filter((s) => f(s) && s.status === 'submitted').map((s) => { const c = cands.find((x) => x.id === s.candidateId), e = exams.find((x) => x.id === s.examId); return [e?.code, c?.rollNo, c?.name, s.score, e?.questions.length, s.receipt]; }) };
@@ -44,7 +44,7 @@ const fmtTime = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0,
 
 export async function buildReport(type, tenantId, opts = {}) {
   if (['attendance', 'results', 'attestation', 'fleet', 'incidents'].includes(type)) return build(type, tenantId);
-  const f = (r) => r.tenantId === tenantId;
+  const f = (r) => !tenantId || r.tenantId === tenantId;
   const [exams, cands, sess, devs, atts, incs, pols, rels, ctrs, usbs, sec, vul, rev, sup, inv, audit] = await Promise.all(
     ['exams', 'candidates', 'sessions', 'devices', 'attestations', 'incidents', 'policies', 'releases', 'centers', 'usbs', 'securityEvents', 'vulnerabilities', 'releaseEvidence', 'support', 'invoices', 'audit'].map(all),
   );

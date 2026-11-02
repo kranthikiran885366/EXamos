@@ -3,6 +3,7 @@ import { fail, log, need, requireReason, pct } from '../../core/services/common'
 import { setIdentity } from '../candidates/service';
 import { startSession, terminate } from '../submissions/service';
 import { deviceState, reachable } from '../fleet/service';
+import { listStudents } from '../../core/api/services';
 
 export async function assignedExams(user, ctx = {}) {
   const { exams = await all('exams'), centers = await all('centers'), candidates = await all('candidates'), sessions = await all('sessions') } = ctx;
@@ -94,9 +95,32 @@ export function submissionStats(list) {
 }
 export async function deskLookup(rollNo, tenantId, ctx = {}) {
   const { candidates = await all('candidates'), centers = await all('centers'), devices = await all('devices') } = ctx;
-  const c = candidates.find((x) => x.tenantId === tenantId && x.rollNo.toLowerCase() === String(rollNo || '').trim().toLowerCase());
+  const trimmed = String(rollNo || '').trim().toLowerCase();
+  let c = candidates.find((x) => (!tenantId || x.tenantId === tenantId) && (String(x.rollNo || '').trim().toLowerCase() === trimmed || String(x.id || '').trim().toLowerCase() === trimmed));
+  if (!c) {
+    try {
+      const live = await listStudents();
+      const match = (live?.students || live?.candidates || live || []).find(
+        (x) => (!tenantId || x.tenant_id === tenantId || x.tenantId === tenantId) &&
+               (String(x.roll_number || x.rollNo || '').trim().toLowerCase() === trimmed ||
+                String(x.id || x.candidate_id || '').trim().toLowerCase() === trimmed)
+      );
+      if (match) {
+        c = {
+          id: match.id || match.candidate_id,
+          name: match.name || match.full_name,
+          rollNo: match.roll_number || match.rollNo || match.id,
+          tenantId: match.tenant_id || match.tenantId || tenantId,
+          centerId: match.center_id || match.centerId,
+          examId: match.exam_id || match.examId,
+          seat: match.assigned_seat || match.seat,
+          identity: match.identity || 'pending',
+        };
+      }
+    } catch (_) {}
+  }
   if (!c) fail('No candidate matches that roll number.');
-  return { ...c, center: centers.find((x) => x.id === c.centerId) || null, device: devices.find((d) => d.centerId === c.centerId && d.seat === c.seat) || null };
+  return { ...c, center: centers.find((x) => x.id === c.centerId) || null, device: devices.find((d) => (d.centerId === c.centerId && d.seat === c.seat) || (c.deviceId && d.id === c.deviceId)) || null };
 }
 export const isLive = (e) => e.status === 'live';
 export const deviceOk = (d) => d && d.status === 'enrolled' && !d.isolated && reachable(d);
