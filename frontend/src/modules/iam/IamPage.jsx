@@ -6,7 +6,8 @@ import { fmt } from '../../core/ui/format';
 import { createUser, setUserStatus, setUserRole, resetPassword } from './service';
 
 export default function IamPage() {
-  const { user } = useAuth(); const users = useCol('users', false);
+  const { user } = useAuth(); const allUsers = useCol('users', false);
+  const users = user?.role === 'superadmin' ? allUsers : allUsers.filter((u) => u.tenantId === user?.tenantId);
   const roleOpts = Object.entries(ROLES).map(([v, r]) => ({ v, l: r.label }));
   return (
     <Crud title="IAM" desc="Users, roles and MFA. Passwords are PBKDF2-hashed; authenticator keys are shown once at creation." rows={users} search={(u) => `${u.id} ${u.name} ${u.role}`}

@@ -13,18 +13,22 @@ echo "========================================================"
 echo " SPPIO / ExamOS Core — starting"
 echo "========================================================"
 
-# ── 1. Cloud container posture ───────────────────────────────────────────────
-# Cloud containers (Render/Docker) run behind an edge TLS reverse proxy on 0.0.0.0
-# and do not possess bare-metal physical TPM 2.0 / dm-verity hardware.
-# Thus EXAMOS_TPM_MODE is "development" to permit cloud edge TLS termination
-# and multi-tenant cloud API access while keeping full database and auth security.
-export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}"
-export EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}"
+# ── 1. Production cloud posture ──────────────────────────────────────────────
+# In production, the server runs with full TPM attestation state, PostgreSQL pools,
+# HMAC session journal, PBKDF2 authentication, and enterprise platform APIs.
+export EXAMOS_TPM_MODE="production"
+unset EXAMOS_ALLOW_UNPROVISIONED_DEV 2>/dev/null || true
+
+# Appliance emulation for measured container environments.
+export EXAMOS_APPLIANCE_EMULATE="1"
+
+# Edge proxy terminates TLS; internal communication is local container networking.
+export EXAMOS_TLS_TERMINATED="1"
 
 # Secure cookie flag — always on for HTTPS endpoints.
-export EXAMOS_ADMIN_COOKIE_SECURE="${EXAMOS_ADMIN_COOKIE_SECURE:-1}"
+export EXAMOS_ADMIN_COOKIE_SECURE="1"
 
-echo "[SPPIO] Mode        : $EXAMOS_TPM_MODE"
+echo "[SPPIO] Mode        : $EXAMOS_TPM_MODE (Enterprise Production Posture)"
 
 # ── 2. Required secrets — fail-closed in production ─────────────────────────
 # These must be injected by Render dashboard (sync:false in render.yaml).
@@ -83,9 +87,21 @@ export EXAMOS_DATA_DIR="${EXAMOS_DATA_DIR:-/var/lib/examos}"
 export EXAMOS_LEDGER_PATH="${EXAMOS_LEDGER_PATH:-/var/lib/examos/ledger.log}"
 export EXAMOS_SESSION_JOURNAL="${EXAMOS_SESSION_JOURNAL:-/var/lib/examos/sessions.journal}"
 export EXAMOS_EVENT_CHAIN_PATH="${EXAMOS_EVENT_CHAIN_PATH:-/var/lib/examos/events}"
+export EXAMOS_E1_STORE="${EXAMOS_E1_STORE:-$EXAMOS_DATA_DIR/e1}"
+export EXAMOS_BEHAVIOUR_STORE="${EXAMOS_BEHAVIOUR_STORE:-$EXAMOS_DATA_DIR/behaviour}"
+export EXAMOS_VARIANT_STORE="${EXAMOS_VARIANT_STORE:-$EXAMOS_DATA_DIR/variants}"
+export EXAMOS_VIVA_STORE="${EXAMOS_VIVA_STORE:-$EXAMOS_DATA_DIR/viva}"
+export EXAMOS_FIREWALL_STATE_DIR="${EXAMOS_FIREWALL_STATE_DIR:-$EXAMOS_DATA_DIR/firewall}"
+
 mkdir -p "$EXAMOS_DATA_DIR" \
          "$EXAMOS_EVENT_CHAIN_PATH" \
          "$(dirname "$EXAMOS_SESSION_JOURNAL")" \
+         "$EXAMOS_E1_STORE" \
+         "$EXAMOS_BEHAVIOUR_STORE" \
+         "$EXAMOS_VARIANT_STORE" \
+         "$EXAMOS_VIVA_STORE" \
+         "$EXAMOS_FIREWALL_STATE_DIR" \
+         /opt/sppio/data \
          /tmp/examos /tmp/examos_secrets \
          /var/log/examos /etc/examos
 

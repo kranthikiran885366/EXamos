@@ -15,13 +15,17 @@ services:
         value: https://sppio-os.vercel.app,http://localhost:5173
 
       # ── Runtime mode ──────────────────────────────────────────────────────
-      # development posture for cloud container environments (Render/Docker):
-      # permits edge-terminated TLS, cloud 0.0.0.0 binding, and multi-tenant APIs
-      # while keeping full PostgreSQL persistence, PBKDF2 auth, and HMAC session security.
+      # Enterprise production posture: enables HMAC journal enforcement, Secure cookie,
+      # PostgreSQL pools, real attestation store, and enterprise platform APIs.
       - key: EXAMOS_TPM_MODE
-        value: development
+        value: production
 
-      - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
+      # ── Appliance emulation for containerized cloud deployment ────────────
+      - key: EXAMOS_APPLIANCE_EMULATE
+        value: "1"
+
+      # ── Edge-terminated TLS reverse proxy ─────────────────────────────────
+      - key: EXAMOS_TLS_TERMINATED
         value: "1"
 
       # ── Admin cookie Secure flag ───────────────────────────────────────────

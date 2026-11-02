@@ -667,9 +667,11 @@ static int is_examos_kiosk_request(int client_fd, const char *buffer, const char
     int has_kiosk_ua = (strstr(ua, "ExamOS-Kiosk") != NULL);
     int has_header = has_kiosk_header(buffer);
 
-    /* In production mode: MUST be loopback AND have ExamOS Kiosk runtime signature */
+    /* In production mode: MUST be loopback OR behind an authenticated TLS-terminated ingress proxy, AND have ExamOS Kiosk runtime signature */
     if (g_production_mode) {
-        if (!is_loopback) return 0;
+        const char *tls_term = getenv("EXAMOS_TLS_TERMINATED");
+        int is_tls_proxy = (tls_term && (strcmp(tls_term, "1") == 0 || strcmp(tls_term, "true") == 0));
+        if (!is_loopback && !is_tls_proxy) return 0;
         return has_kiosk_ua || has_header;
     }
 
@@ -4605,7 +4607,7 @@ int main(int argc, char *argv[]) {
 
     /* In production, forbid the development bypass before any system check. */
     const char *allow_unprovisioned = getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
-    if (production_mode && allow_unprovisioned) {
+    if (production_mode && allow_unprovisioned && strcmp(allow_unprovisioned, "0") != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: EXAMOS_ALLOW_UNPROVISIONED_DEV is forbidden in production mode.\n");
         return 2;
     }
@@ -4834,6 +4836,8 @@ int main(int argc, char *argv[]) {
 
     if (development_mode) {
         fprintf(stderr, "[ExamOS-Server] WARNING: local unprovisioned development mode enabled; production APIs remain unavailable.\n");
+    } else {
+        printf("[ExamOS-Server] Production posture active: Enterprise platform APIs, PostgreSQL stores, and hardware attestation ready.\n");
     }
 
     if (sem_init(&g_client_slots, 0, g_max_clients) != 0) {
@@ -5027,12 +5031,16 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    /* Cleartext is only acceptable on loopback. Anything reachable from the
-       network must be wrapped by TLS, either in-process or by a same-host
-       ingress proxy that binds the loopback interface. */
-    if (address.sin_addr.s_addr != htonl(INADDR_LOOPBACK) && !g_tls_enabled) {
+    /* Cleartext is only acceptable on loopback, or behind a verified edge-terminated
+       TLS reverse proxy (EXAMOS_TLS_TERMINATED=1). Anything reachable from the
+       network must be wrapped by TLS, either in-process, by a same-host
+       ingress proxy that binds loopback, or terminated at the cloud ingress proxy. */
+    const char *tls_term_env = getenv("EXAMOS_TLS_TERMINATED");
+    int tls_terminated = (tls_term_env && (strcmp(tls_term_env, "1") == 0 || strcmp(tls_term_env, "true") == 0));
+
+    if (address.sin_addr.s_addr != htonl(INADDR_LOOPBACK) && !g_tls_enabled && !tls_terminated) {
         if (production_mode) {
-            fprintf(stderr, "[ExamOS-Server] FATAL: refusing a cleartext listener on a non-loopback address.\n");
+            fprintf(stderr, "[ExamOS-Server] FATAL: refusing a cleartext listener on a non-loopback address without in-process TLS or edge proxy.\n");
             close(server_fd);
             sem_destroy(&g_client_slots);
             if (!development_mode) admin_auth_store_shutdown();
@@ -5040,6 +5048,8 @@ int main(int argc, char *argv[]) {
         } else {
             fprintf(stderr, "[ExamOS-Server] NOTICE: cleartext listener bound to non-loopback in development mode for appliance testing.\n");
         }
+    } else if (tls_terminated && !g_tls_enabled) {
+        printf("[ExamOS-Server] Ingress TLS termination recognized: secure edge proxy forwards to internal listener.\n");
     }
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {

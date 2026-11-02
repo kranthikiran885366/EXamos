@@ -184,6 +184,7 @@ export function StudentSessionPage() {
   const { data, loading, error, reload } = useLoad(() => briefing(user, id), [user?.id, id]);
   const { msg, setMsg, run } = useFlash();
   const [confirmSubmit, setConfirmSubmit] = useState(false);
+  const [saving] = useState(false);
   const now = useNow(1000);
   if (loading) return <StudentShell title="Exam session"><Card><div className="loading"><span className="spinner" /> Loading your session…</div></Card></StudentShell>;
   if (error) return <StudentShell title="Exam session"><Alert tone="danger">{error.message}</Alert></StudentShell>;

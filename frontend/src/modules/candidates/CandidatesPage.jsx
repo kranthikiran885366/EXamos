@@ -1,7 +1,9 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../core/auth/AuthContext';
+import { put } from '../../core/db/db';
 import { useTenant, useCol } from '../../core/db/tenant';
 import { usePerm, useLoad } from '../../core/ui/hooks';
+import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash, Empty,
   Icon, Modal, Field, Input, Select, Textarea, KeyValue, Loading, CopyButton, Tabs,
@@ -288,7 +290,65 @@ export default function CandidatesPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const may = usePerm();
-  const candidates = useCol('candidates');
+  const localCandidates = useCol('candidates');
+  const [backendCandidates, setBackendCandidates] = useState(null);
+  const [loadingBackend, setLoadingBackend] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
+
+  const fetchCandidates = useCallback(async () => {
+    try {
+      setLoadingBackend(true);
+      const res = await Api.listStudents();
+      const list = res?.students || (Array.isArray(res) ? res : []);
+      const localMap = new Map((localCandidates || []).map((c) => [c.rollNo || c.id, c]));
+      const mapped = list.map((s) => {
+        const local = localMap.get(s.roll_no) || localMap.get(s.id) || {};
+        return {
+          id: s.id,
+          tenantId: s.institution_id || tenantId,
+          rollNo: s.roll_no,
+          name: s.name,
+          displayName: s.display_name || s.name,
+          email: s.email,
+          course: s.course || 'B.Tech CSE',
+          batch: s.batch || '2026',
+          semester: s.semester || 1,
+          section: s.section || 'A',
+          academic_status: s.academic_status || 'active',
+          attendance_pct: s.attendance_pct ?? 100,
+          administrative_hold: !!s.administrative_hold,
+          verification_status: s.verification_status || 'UNVERIFIED',
+          identity: (s.verification_status || '').toLowerCase() === 'verified'
+            ? 'verified'
+            : (s.verification_status || '').toLowerCase() === 'rejected'
+              ? 'rejected'
+              : (local.identity || 'pending'),
+          examId: local.examId || null,
+          centerId: local.centerId || null,
+          seat: local.seat || null,
+          personalEmail: s.personal_email || local.personalEmail || '',
+          phoneNumber: s.phone_number || local.phoneNumber || '',
+          accommodations: s.accommodations || local.accommodations || '',
+          notes: s.notes || local.notes || '',
+          createdAt: s.created_at || local.createdAt || Date.now(),
+        };
+      });
+      setBackendCandidates(mapped);
+      for (const c of mapped) {
+        await put('candidates', c).catch(() => {});
+      }
+    } catch {
+      setFetchError(true);
+    } finally {
+      setLoadingBackend(false);
+    }
+  }, [localCandidates, tenantId]);
+
+  useEffect(() => {
+    fetchCandidates();
+  }, [fetchCandidates]);
+
+  const candidates = backendCandidates ?? localCandidates;
   const exams = useCol('exams');
   const centers = useCol('centers');
   const devices = useCol('devices');
@@ -312,17 +372,26 @@ export default function CandidatesPage() {
       title="Candidates"
       desc="Enrolment, seat allocation, identity verification and readiness for every candidate."
       actions={<>
+        <button className="btn" disabled={busy || loadingBackend} onClick={fetchCandidates}>
+          <Icon name="refresh" size={14} /> Refresh
+        </button>
         <button className="btn" disabled={busy || !may('candidate.verify')} onClick={() => run(async () => {
           const target = candidates.filter((c) => c.examId && c.identity === 'pending');
           if (!target.length) throw new Error('No candidates are waiting for identity verification.');
           let done = 0;
           for (const c of target.slice(0, 50)) { await setIdentity(user, c, 'verified', 'Bulk verification from candidate list'); done += 1; }
+          await fetchCandidates();
           return `${done} candidate(s) verified.`;
         })}>Verify pending</button>
         <button className="btn primary" disabled={!may('candidate.manage')} onClick={() => setAdd(true)}><Icon name="plus" size={15} /> Add candidate</button>
       </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {fetchError && !backendCandidates && (
+        <Alert tone="warn" title="Using cached candidate roster">
+          Live student directory from backend server could not be reached. Showing local cached candidates.
+        </Alert>
+      )}
       <StatGrid cols={4}>
         <Stat label="Candidates" value={stats.total} icon="candidate" />
         <Stat label="Assigned" value={stats.assigned} icon="exam" sub={`${stats.total - stats.assigned} unassigned`} />
@@ -331,8 +400,8 @@ export default function CandidatesPage() {
       </StatGrid>
 
       <div className="two">
-        <ImportPanel tenantId={tenantId} onDone={() => {}} />
-        <AssignPanel tenantId={tenantId} onDone={() => {}} />
+        <ImportPanel tenantId={tenantId} onDone={fetchCandidates} />
+        <AssignPanel tenantId={tenantId} onDone={fetchCandidates} />
       </div>
 
       <Card title="Candidate register">
@@ -368,7 +437,7 @@ export default function CandidatesPage() {
         />
       </Card>
 
-      {add && <AddCandidate tenantId={tenantId} onClose={() => setAdd(false)} onDone={() => {}} />}
+      {add && <AddCandidate tenantId={tenantId} onClose={() => setAdd(false)} onDone={fetchCandidates} />}
       {detail && <CandidateDetail c={detail} exams={exams} centers={centers} devices={devices} policies={policies} releases={releases} onClose={() => setDetail(null)} />}
 
       {pending && <ActionDialog
@@ -405,7 +474,7 @@ export default function CandidatesPage() {
         requireReason={pending.kind !== 'progress'}
         onClose={() => setPending(null)}
         onConfirm={async (reason, value) => {
-          await run(() => {
+          await run(async () => {
             if (pending.kind === 'unassign') return unassign(user, pending.c, reason);
             if (pending.kind === 'name') return correctName(user, pending.c, value, reason);
             if (pending.kind === 'suspend') return suspendStudent(user, pending.c, reason);
@@ -413,6 +482,7 @@ export default function CandidatesPage() {
             if (pending.kind === 'progress') return progressSemester(user, pending.c, value || (pending.c.semester || 1) + 1);
             return setIdentity(user, pending.c, pending.outcome, reason);
           });
+          await fetchCandidates();
           setPending(null);
         }}
       />}

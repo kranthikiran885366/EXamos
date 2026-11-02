@@ -5,6 +5,7 @@ import { can } from '../../core/security/rbac';
 import { csvCell } from '../../core/security/sanitize';
 import { record, verifyChain } from '../../core/security/auditChain';
 import { fmt, ago } from '../../core/ui/format';
+import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, Flash, useFlash,
   KeyValue, Modal, CopyField, Icon,
@@ -26,10 +27,12 @@ export default function AuditPage() {
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(true);
   const [view, setView] = useState(null);
+  const [serverLedger, setServerLedger] = useState(null);
 
   useEffect(() => {
     let live = true;
     verifyChain().then((r) => { if (live) { setCheck(r); setChecking(false); } }).catch((e) => { if (live) { setCheck({ ok: false, error: e.message }); setChecking(false); } });
+    Api.getLedger().then(setServerLedger).catch(() => {});
     return () => { live = false; };
   }, []);
 
