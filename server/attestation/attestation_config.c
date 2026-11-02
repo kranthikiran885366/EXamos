@@ -556,12 +556,13 @@ int attestation_config_load_releases(const char *json_path) {
 int attestation_config_load_all(const char *binary_dir) {
     const char *mode = getenv("EXAMOS_TPM_MODE");
     const int production = mode && strcmp(mode, "production") == 0;
+    const int emulate = getenv("EXAMOS_APPLIANCE_EMULATE") && strcmp(getenv("EXAMOS_APPLIANCE_EMULATE"), "1") == 0;
 
     /* --- Devices --- */
     const char *dev_cfg = getenv("EXAMOS_DEVICES_CONFIG");
     char dev_path[512] = {0};
 
-    if (production && dev_cfg && dev_cfg[0] && access(dev_cfg, R_OK) != 0) {
+    if (production && !emulate && dev_cfg && dev_cfg[0] && access(dev_cfg, R_OK) != 0) {
         fprintf(stderr, "[AttestConfig] Configured production device registry is unreadable: %s\n",
                 dev_cfg);
         return -1;
@@ -584,7 +585,7 @@ int attestation_config_load_all(const char *binary_dir) {
     const char *rel_cfg = getenv("EXAMOS_RELEASES_CONFIG");
     char rel_path[512] = {0};
 
-    if (production && rel_cfg && rel_cfg[0] && access(rel_cfg, R_OK) != 0) {
+    if (production && !emulate && rel_cfg && rel_cfg[0] && access(rel_cfg, R_OK) != 0) {
         fprintf(stderr, "[AttestConfig] Configured production release registry is unreadable: %s\n",
                 rel_cfg);
         return -1;
@@ -616,13 +617,13 @@ int attestation_config_load_all(const char *binary_dir) {
     if (devices_loaded == 0 || releases_loaded == 0) {
         fprintf(stderr, "[AttestConfig] %s: config not found, invalid, or empty "
                 "(devices=%d releases=%d).\n",
-                production ? "FATAL production config error" : "WARNING",
+                (production && !emulate) ? "FATAL production config error" : "WARNING",
                 devices_loaded, releases_loaded);
-        if (production) {
-            /* Production MUST have >=1 enrolled device and >=1 known release. */
+        if (production && !emulate) {
+            /* Production bare metal appliance MUST have >=1 enrolled device and >=1 known release. */
             return -1;
         }
-        /* Development: proceed with empty registries. Attestation API calls
+        /* Development or Emulated appliance: proceed with empty registries. Attestation API calls
          * will return NOT_FOUND for unknown devices; event ingestion,
          * proctoring, and admin routes are unaffected. */
         return 0;
