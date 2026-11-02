@@ -77,40 +77,46 @@ function InstitutionForm({ value = {}, onSubmit, onClose, busy }) {
 export function InstitutionsPage() {
   const { user } = useAuth();
   const nav = useNavigate();
-  const localTenants = useCol('tenants', false);
-  const [tenants, setTenants] = useState(localTenants);
+  const [tenants, setTenants] = useState([]);
+  const [loadError, setLoadError] = useState('');
   const { msg, run, busy, setMsg } = useFlash();
   const [create, setCreate] = useState(false);
   const [action, setAction] = useState(null);
   const canCreate = can(user.role, 'tenant.manage');
 
-  // H4 fix: fetch institution list from the backend API on mount, not just IndexedDB.
+  // The backend is the source of truth. The local cache is refreshed only
+  // after a successful API response, never used as a substitute for it.
   useEffect(() => {
     let cancelled = false;
     const fetchBackend = async () => {
       try {
         const res = await Api.listInstitutions();
         const backendList = res?.institutions || res || [];
-        if (Array.isArray(backendList) && backendList.length > 0 && !cancelled) {
-          // Sync backend data to local IndexedDB for the UI to display.
-          for (const t of backendList) {
-            const mapped = {
-              id: t.id, name: t.name, code: t.code,
-              status: t.status || 'active', plan: t.plan || 'pilot',
-              region: t.region || '', timezone: t.timezone || '',
-              maxCenters: t.maxCenters || 0, maxCandidates: t.maxCandidates || 0,
-              deploymentModel: t.deploymentModel || '',
-              contactEmail: t.contactEmail || '', contactPhone: t.contactPhone || '',
-              domains: t.domains || [], examDefaults: t.examDefaults || null,
-              security: t.security || null, notificationPrefs: t.notificationPrefs || null,
-              createdAt: t.createdAt || 0,
-            };
-            await put('tenants', mapped).catch(() => {});
-            await put('institutions', mapped).catch(() => {});
-          }
+        if (!Array.isArray(backendList)) throw new Error('Unexpected institution response.');
+        const mapped = backendList.map((t) => ({
+          id: t.id || t.institution_id,
+          name: t.name,
+          code: t.code,
+          status: t.status || 'active',
+          plan: t.plan || '',
+          region: t.region || '', timezone: t.timezone || '',
+          maxCenters: t.maxCenters ?? 0, maxCandidates: t.maxCandidates ?? 0,
+          deploymentModel: t.deploymentModel || '',
+          contactEmail: t.contactEmail || '', contactPhone: t.contactPhone || '',
+          domains: t.domains || [], examDefaults: t.examDefaults || null,
+          security: t.security || null, notificationPrefs: t.notificationPrefs || null,
+          createdAt: t.createdAt || null,
+        })).filter((t) => t.id);
+        if (!cancelled) {
+          setTenants(mapped);
+          setLoadError('');
+        }
+        for (const t of mapped) {
+          await put('tenants', t).catch(() => {});
+          await put('institutions', t).catch(() => {});
         }
       } catch (err) {
-        // Backend unreachable — fall through to local IndexedDB data below.
+        if (!cancelled) setLoadError(err.message || 'Unable to load institutions from the backend.');
       }
     };
     fetchBackend();
@@ -224,11 +230,30 @@ export function InstitutionsPage() {
   );
 }
 
+const mapInstitution = (t) => ({
+  id: t.id || t.institution_id,
+  name: t.name,
+  code: t.code,
+  status: t.status || null,
+  plan: t.plan || null,
+  region: t.region || '',
+  timezone: t.timezone || '',
+  maxCenters: t.maxCenters ?? null,
+  maxCandidates: t.maxCandidates ?? null,
+  deploymentModel: t.deploymentModel || '',
+  contactEmail: t.contactEmail || '',
+  contactPhone: t.contactPhone || '',
+  domains: Array.isArray(t.domains) ? t.domains : [],
+  examDefaults: t.examDefaults || null,
+  security: t.security || null,
+  notificationPrefs: t.notificationPrefs || null,
+  createdAt: t.createdAt || null,
+});
+
 export function InstitutionDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const tenants = useCol('tenants', false);
   const campuses = useCol('campuses', false);
   const departments = useCol('departments', false);
   const centers = useCol('centers', false);
@@ -246,58 +271,89 @@ export function InstitutionDetailPage() {
   const [deployModal, setDeployModal] = useState(false);
   const [entitlementCheckResult, setEntitlementCheckResult] = useState(null);
 
-  // Dynamic remote states
+  // Backend is the source of truth for the institution record and all of its
+  // lifecycle sub-resources. Local collections are only a cache populated by
+  // a successful sync; they never stand in for a failed backend call.
+  const [tenant, setTenant] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [agreements, setAgreements] = useState([]);
   const [license, setLicense] = useState(null);
   const [deployments, setDeployments] = useState([]);
   const [onboarding, setOnboarding] = useState(null);
   const [liveStats, setLiveStats] = useState(null);
+  const [liveCampuses, setLiveCampuses] = useState([]);
   const { msg: flashMsg, setMsg: setFlashMsg } = useFlash();
 
   const flash = (tone, text) => setFlashMsg({ tone, text });
 
-  const t = tenants.find((x) => x.id === id);
+  const t = tenant;
 
   const loadDetails = async () => {
     if (!id) return;
+    setLoading(true);
+    setLoadError('');
     try {
-      const [agRes, licRes, depRes, onbRes, statsRes] = await Promise.all([
+      const inst = await Api.getInstitution(id);
+      if (!inst || !(inst.id || inst.institution_id)) {
+        throw new Error('The backend did not return this institution.');
+      }
+      const mapped = mapInstitution(inst);
+      setTenant(mapped);
+      await put('tenants', mapped).catch(() => {});
+
+      const [agRes, licRes, depRes, onbRes, statsRes, campRes] = await Promise.all([
         fetchInstitutionAgreements(id).catch(() => []),
         fetchInstitutionLicense(id).catch(() => null),
         fetchInstitutionDeployments(id).catch(() => []),
         fetchInstitutionOnboarding(id).catch(() => null),
         institutionStats(id).catch(() => null),
+        Api.listCampuses(id).catch(() => []),
       ]);
-      setAgreements(agRes);
-      setLicense(licRes);
-      setDeployments(depRes);
-      setOnboarding(onbRes);
-      if (statsRes) setLiveStats(statsRes);
+      setAgreements(Array.isArray(agRes) ? agRes : []);
+      setLicense(licRes || null);
+      setDeployments(Array.isArray(depRes) ? depRes : []);
+      setOnboarding(onbRes || null);
+      setLiveStats(statsRes || null);
+      const campList = campRes?.campuses || campRes || [];
+      if (Array.isArray(campList)) setLiveCampuses(campList.map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })));
     } catch (e) {
-      console.warn('Error loading institution sub-resources:', e);
+      setLoadError(e.message || 'Unable to load institution from the backend.');
+    } finally {
+      setLoading(false);
     }
   };
 
   const loadAll = loadDetails;
 
   useEffect(() => {
+    setTenant(null);
     loadDetails();
   }, [id]);
 
   const stats = useMemo(() => ({
-    campuses:    liveStats?.campuses    ?? campuses.filter((c) => c.tenantId === id).length,
-    departments: liveStats?.departments ?? departments.filter((d) => d.tenantId === id).length,
-    centers:     liveStats?.centers     ?? centers.filter((c) => c.tenantId === id).length,
-    users:       liveStats?.users       ?? users.filter((u) => u.tenantId === id).length,
-    devices:     liveStats?.devices     ?? devices.filter((d) => d.tenantId === id).length,
-    exams:       liveStats?.exams       ?? exams.filter((e) => e.tenantId === id).length,
-    candidates:  liveStats?.candidates  ?? candidates.filter((c) => c.tenantId === id).length,
-    incidents:   liveStats?.openIncidents ?? incidents.filter((i) => i.tenantId === id && ['open', 'investigating', 'contained'].includes(i.status)).length,
-  }), [id, liveStats, campuses, departments, centers, users, devices, exams, candidates, incidents]);
+    campuses:    liveStats?.campuses    ?? 0,
+    departments: liveStats?.departments ?? 0,
+    centers:     liveStats?.centers     ?? 0,
+    users:       liveStats?.users       ?? 0,
+    devices:     liveStats?.devices     ?? 0,
+    exams:       liveStats?.exams       ?? 0,
+    candidates:  liveStats?.candidates  ?? 0,
+    incidents:   liveStats?.openIncidents ?? 0,
+  }), [liveStats]);
+
+  if (loading) {
+    return (
+      <Page title="Loading institution">
+        <Flash msg={{ tone: 'info', text: 'Loading institution from the backend…' }} onClose={() => {}} />
+      </Page>
+    );
+  }
 
   if (!t) {
     return (
-      <Page title="Institution not found">
+      <Page title="Institution unavailable">
+        <Flash msg={{ tone: 'danger', text: loadError || 'No such institution.' }} onClose={() => {}} />
         <Empty icon="building" title="No such institution" action={<Link className="btn" to="/admin/institutions">Back to institutions</Link>} />
       </Page>
     );
@@ -317,7 +373,7 @@ export function InstitutionDetailPage() {
   return (
     <Page
       title={t.name}
-      desc={`${t.code} · ${t.region || '—'} · Plan: ${t.plan.toUpperCase()} · Multi-Campus Tenant`}
+      desc={`${t.code} · ${t.region || '—'}${t.plan ? ` · Plan: ${t.plan.toUpperCase()}` : ''} · Multi-Campus Tenant`}
       breadcrumb={
         <div className="crumbs-inline">
           <Link to="/admin/institutions">Institutions</Link>
@@ -342,7 +398,7 @@ export function InstitutionDetailPage() {
         <Stat label="Accounts" value={stats.users} icon="users" />
         <Stat label="Live / Total Exams" value={`${exams.filter((e) => e.tenantId === id && e.status === 'live').length} / ${stats.exams}`} icon="exam" />
         <Stat label="Candidates" value={stats.candidates} icon="candidate" />
-        <Stat label="License Status" value={license?.status || 'ACTIVE'} tone="green" icon="shield" />
+        <Stat label="License Status" value={license?.status || '—'} tone={license?.status === 'ACTIVE' ? 'green' : 'amber'} icon="shield" />
         <Stat label="Open Incidents" value={stats.incidents} tone={stats.incidents ? 'amber' : 'green'} icon="alert" />
       </StatGrid>
 
@@ -354,11 +410,11 @@ export function InstitutionDetailPage() {
           <Card title="Institutional Onboarding State Machine" desc="Step-by-step verification, agreements, and live deployment gate.">
             <div style={{ marginBottom: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <b>Lifecycle Stage: <Badge value={onboarding?.status || 'VERIFIED'} tone="green" /></b>
-                <span><b>{onboarding?.completedSteps ?? 5}</b> of 8 steps completed</span>
+                <b>Lifecycle Stage: <Badge value={onboarding?.status || '—'} tone={onboarding?.status ? 'green' : 'amber'} /></b>
+                <span><b>{onboarding?.completedSteps ?? 0}</b> of 8 steps completed</span>
               </div>
               <div style={{ height: '8px', background: 'var(--border, #e2e8f0)', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: `${((onboarding?.completedSteps ?? 5) / 8) * 100}%`, height: '100%', background: 'var(--primary, #2f5bea)' }} />
+                <div style={{ width: `${((onboarding?.completedSteps ?? 0) / 8) * 100}%`, height: '100%', background: 'var(--primary, #2f5bea)' }} />
               </div>
             </div>
 
@@ -372,8 +428,8 @@ export function InstitutionDetailPage() {
                 { k: 'campus_hierarchy', title: '6. Sites & Org Structure', desc: 'Establish sites, departments / business units, examination centres, and seat allocation.' },
                 { k: 'os_deployment', title: '7. ExamOS Release & Hardware Assignment', desc: 'Approved bootable OS releases, channels (stable/pilot), and security policies assigned.' },
                 { k: 'production_readiness', title: '8. Operational Readiness & Go-Live', desc: 'Hardware health check, TPM attestation verification, and exam scheduling authorized.' },
-              ].map((step, idx) => {
-                const isDone = onboarding?.checklist?.[step.k]?.completed ?? (idx < 5);
+              ].map((step) => {
+                const isDone = onboarding?.checklist?.[step.k]?.completed === true;
                 const stepMeta = onboarding?.checklist?.[step.k];
                 return (
                   <li key={step.k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--border, #eee)' }}>
@@ -414,9 +470,9 @@ export function InstitutionDetailPage() {
                 ['Database Scope', 'Strict tenant_id foreign-key isolation'],
                 ['Tamper-Evident Ledger', 'Intact & cryptographically chained'],
                 ['MFA Policy', 'Enforced for all institution administrators'],
-                ['Assigned Release', deployments[0]?.releaseId || 'examos-dev-0.1'],
-                ['Release Channel', deployments[0]?.channel?.toUpperCase() || 'STABLE'],
-                ['Hardware Profile', deployments[0]?.hardwareProfile || 'standard-uefi'],
+                ['Assigned Release', deployments[0]?.releaseId || '—'],
+                ['Release Channel', deployments[0]?.channel?.toUpperCase() || '—'],
+                ['Hardware Profile', deployments[0]?.hardwareProfile || '—'],
               ]} />
             </Card>
           </div>
@@ -527,26 +583,26 @@ export function InstitutionDetailPage() {
             }
           >
             <KeyValue items={[
-              ['License Plan', (license?.plan || t.plan || 'pilot').toUpperCase()],
-              ['Plan Version', license?.planVersion || '2026.1'],
-              ['License Status', <Badge key="st" value={license?.status || 'ACTIVE'} tone="green" />],
-              ['Valid From', fmt(license?.validFrom || t.createdAt)],
-              ['Valid Until', fmt(license?.validUntil || (t.createdAt + 31536000000))],
-              ['Grace Period', `${license?.gracePeriodDays || 14} days`],
-              ['Allowed OS Channels', (license?.allowedChannels || ['stable', 'pilot']).join(', ')],
-              ['Enabled Modules', (license?.enabledModules || ['exams', 'kiosk', 'tpm', 'firewall']).join(', ')],
+              ['License Plan', (license?.plan || t.plan || '—').toUpperCase()],
+              ['Plan Version', license?.planVersion || '—'],
+              ['License Status', license?.status ? <Badge key="st" value={license.status} tone={license.status === 'ACTIVE' ? 'green' : 'amber'} /> : '—'],
+              ['Valid From', license?.validFrom ? fmt(license.validFrom) : '—'],
+              ['Valid Until', license?.validUntil ? fmt(license.validUntil) : '—'],
+              ['Grace Period', license?.gracePeriodDays != null ? `${license.gracePeriodDays} days` : '—'],
+              ['Allowed OS Channels', (license?.allowedChannels || []).join(', ') || '—'],
+              ['Enabled Modules', (license?.enabledModules || []).join(', ') || '—'],
             ]} />
           </Card>
 
           <Card title="Resource Quotas vs Live Usage" desc="Automatic server-enforced quotas.">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {[
-                { label: 'Campuses', usage: license?.usage?.campuses ?? stats.campuses, limit: license?.maxCampuses ?? t.maxCenters ?? 5 },
-                { label: 'Managed Devices', usage: license?.usage?.devices ?? stats.devices, limit: license?.maxDevices ?? 250 },
-                { label: 'Candidate Capacity', usage: license?.usage?.candidates ?? stats.candidates, limit: license?.maxCandidates ?? t.maxCandidates ?? 500 },
-                { label: 'Exam Windows', usage: license?.usage?.exams ?? stats.exams, limit: license?.maxExams ?? 50 },
+                { label: 'Campuses', usage: license?.usage?.campuses ?? stats.campuses, limit: license?.maxCampuses ?? t.maxCenters ?? '—' },
+                { label: 'Managed Devices', usage: license?.usage?.devices ?? stats.devices, limit: license?.maxDevices ?? '—' },
+                { label: 'Candidate Capacity', usage: license?.usage?.candidates ?? stats.candidates, limit: license?.maxCandidates ?? t.maxCandidates ?? '—' },
+                { label: 'Exam Windows', usage: license?.usage?.exams ?? stats.exams, limit: license?.maxExams ?? '—' },
               ].map((res) => {
-                const pct = Math.min(100, Math.round((res.usage / (res.limit || 1)) * 100));
+                const pct = res.limit === '—' || !res.limit ? 0 : Math.min(100, Math.round((res.usage / res.limit) * 100));
                 return (
                   <div key={res.label}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
@@ -640,9 +696,9 @@ export function InstitutionDetailPage() {
               ['Require TPM', t.security?.requireTpm ? 'Yes' : 'No'],
               ['Require Secure Boot', t.security?.requireSecureBoot ? 'Yes' : 'No'],
               ['USB storage', t.security?.allowUsbStorage ? 'Allowed' : 'Blocked'],
-              ['Exam duration default', `${t.examDefaults?.durationMin || 60} min`],
-              ['Late entry', `${t.examDefaults?.lateEntryMin || 0} min`],
-              ['Attestation', t.examDefaults?.attestationLevel || 'tpm']
+              ['Exam duration default', t.examDefaults?.durationMin != null ? `${t.examDefaults.durationMin} min` : '—'],
+              ['Late entry', t.examDefaults?.lateEntryMin != null ? `${t.examDefaults.lateEntryMin} min` : '—'],
+              ['Attestation', t.examDefaults?.attestationLevel || '—']
             ]} />
           </Card>
           <Card title="Recent history" className="span2">
@@ -663,7 +719,7 @@ export function InstitutionDetailPage() {
 
       {tab === 'campuses' && (
         <DataTable
-          rows={campuses.filter((c) => c.tenantId === id)}
+          rows={liveCampuses.length > 0 ? liveCampuses : campuses.filter((c) => c.tenantId === id)}
           search={['name', 'code', 'city']}
           columns={[
             { key: 'name', label: 'Campus', render: (c) => <><b>{c.name}</b><br /><small className="muted">{c.code}</small></> },
@@ -694,10 +750,10 @@ export function InstitutionDetailPage() {
       {tab === 'settings' && (
         <Card title="Operating settings" desc="These defaults are applied to new exams.">
           <KeyValue items={[
-            ['Deployment', t.deploymentModel],
-            ['Exam duration', `${t.examDefaults?.durationMin || 60} minutes`],
-            ['Late entry', `${t.examDefaults?.lateEntryMin || 0} minutes`],
-            ['Attestation', t.examDefaults?.attestationLevel],
+            ['Deployment', t.deploymentModel || '—'],
+            ['Exam duration', t.examDefaults?.durationMin != null ? `${t.examDefaults.durationMin} minutes` : '—'],
+            ['Late entry', t.examDefaults?.lateEntryMin != null ? `${t.examDefaults.lateEntryMin} minutes` : '—'],
+            ['Attestation', t.examDefaults?.attestationLevel || '—'],
             ['Notification email', t.notificationPrefs?.email ? 'On' : 'Off'],
             ['In-app notifications', t.notificationPrefs?.inApp ? 'On' : 'Off']
           ]} />
@@ -729,13 +785,15 @@ export function InstitutionApplicationsPage() {
 
   const [apps, setApps] = useState([]);
   const [reviewModal, setReviewModal] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   const reloadApps = async () => {
     try {
       const list = await fetchInstitutionApplications();
-      setApps(list);
+      setApps(Array.isArray(list) ? list : []);
+      setLoadError('');
     } catch (e) {
-      console.warn('Error loading applications:', e);
+      setLoadError(e.message || 'Unable to load institution applications from the backend.');
     }
   };
 
@@ -756,6 +814,7 @@ export function InstitutionApplicationsPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
         <Stat label="Total Applications" value={apps.length} icon="building" />
         <Stat label="Submitted" value={apps.filter((a) => a.status === 'SUBMITTED').length} tone="blue" icon="inbox" />
@@ -791,9 +850,9 @@ export function InstitutionApplicationsPage() {
           {
             key: 'scale',
             label: 'Requested Scale',
-            render: (a) => `${a.campusCount || 1} sites · ${a.deviceCount || 100} devices`
+            render: (a) => `${a.campusCount ?? '—'} sites · ${a.deviceCount ?? '—'} devices`
           },
-          { key: 'plan', label: 'Plan', render: (a) => <Badge value={a.plan || 'pilot'} /> },
+          { key: 'plan', label: 'Plan', render: (a) => <Badge value={a.plan || '—'} /> },
           {
             key: 'status',
             label: 'Status',
@@ -878,14 +937,16 @@ export function InstitutionApplicationDetailPage() {
   const { user } = useAuth();
   const { msg, run, busy, setMsg } = useFlash();
   const [app, setApp] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   const loadApp = async () => {
     if (!id) return;
     try {
       const data = await fetchInstitutionApplication(id);
       setApp(data);
+      setLoadError('');
     } catch (e) {
-      console.warn('Error loading application:', e);
+      setLoadError(e.message || 'Unable to load this application from the backend.');
     }
   };
 
@@ -896,7 +957,10 @@ export function InstitutionApplicationDetailPage() {
   if (!app) {
     return (
       <Page title="Application Details">
-        <Empty icon="building" title="Loading application details..." />
+        {loadError
+          ? <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />
+          : <Empty icon="building" title="Loading application details..." />}
+        <Empty icon="building" title="Application unavailable" action={<Link className="btn" to="/admin/institution-applications">Back to applications</Link>} />
       </Page>
     );
   }
@@ -963,10 +1027,10 @@ export function InstitutionApplicationDetailPage() {
           <KeyValue items={[
             ['Legal Entity Name', app.legalName],
             ['Display Name', app.displayName || app.legalName],
-            ['Entity Type', (app.entityType || 'university').toUpperCase()],
+            ['Entity Type', (app.entityType || '—').toUpperCase()],
             ['Official Registration No', app.registrationNumber],
             ['Official Domain', app.domain],
-            ['Country / State', `${app.country || 'India'} · ${app.state || 'Maharashtra'}`],
+            ['Country / State', [app.country, app.state].filter(Boolean).join(' · ') || '—'],
             ['Registered Address', app.address],
             ['Submitted Date', fmt(app.createdAt)],
             ...(app.reviewNotes ? [['Reviewer Notes', app.reviewNotes]] : []),
@@ -990,8 +1054,8 @@ export function InstitutionApplicationDetailPage() {
             ['Estimated Student Volume', app.studentCount],
             ['Target Device Fleet', app.deviceCount],
             ['Deployment Model', app.deploymentModel],
-            ['Hardware Profile', app.hardwareProfile || 'standard-uefi'],
-            ['Requested Plan', (app.plan || 'pilot').toUpperCase()],
+            ['Hardware Profile', app.hardwareProfile || '—'],
+            ['Requested Plan', (app.plan || '—').toUpperCase()],
           ]} />
         </Card>
       </div>
@@ -1013,6 +1077,23 @@ export function CollegeOverviewPage() {
   const users = useCol('users', false);
   const live = exams.filter((e) => e.status === 'live');
 
+  const [liveStats, setLiveStats] = useState(null);
+
+  useEffect(() => {
+    if (tenantId) {
+      institutionStats(tenantId).then(setLiveStats).catch(() => {});
+    }
+  }, [tenantId]);
+
+  const stats = useMemo(() => ({
+    campuses: liveStats?.campuses ?? campuses.length,
+    departments: liveStats?.departments ?? departments.length,
+    centers: liveStats?.centers ?? centers.length,
+    devices: liveStats?.devices ?? devices.length,
+    candidates: liveStats?.candidates ?? candidates.length,
+    openIncidents: liveStats?.openIncidents ?? incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length,
+  }), [liveStats, campuses.length, departments.length, centers.length, devices.length, candidates.length, incidents]);
+
   return (
     <Page
       title={tenant?.name || 'Institution overview'}
@@ -1026,13 +1107,13 @@ export function CollegeOverviewPage() {
     >
       <StatGrid cols={4}>
         <Stat label="Live exams" value={live.length} icon="exam" to="/college/exams" />
-        <Stat label="Centres" value={centers.length} icon="building" to="/college/campuses" />
-        <Stat label="Devices" value={devices.length} icon="device" to="/devices" sub={`${devices.filter((d) => d.trust === 'attested').length} attested`} />
-        <Stat label="Candidates" value={candidates.length} icon="candidate" to="/college/candidates" />
-        <Stat label="Campuses" value={campuses.length} icon="pin" to="/college/campuses" />
-        <Stat label="Departments" value={departments.length} icon="layers" to="/college/departments" />
+        <Stat label="Centres" value={stats.centers} icon="building" to="/college/campuses" />
+        <Stat label="Devices" value={stats.devices} icon="device" to="/devices" sub={`${devices.filter((d) => d.trust === 'attested').length} attested`} />
+        <Stat label="Candidates" value={stats.candidates} icon="candidate" to="/college/candidates" />
+        <Stat label="Campuses" value={stats.campuses} icon="pin" to="/college/campuses" />
+        <Stat label="Departments" value={stats.departments} icon="layers" to="/college/departments" />
         <Stat label="USBs" value={usbs.length} icon="usb" to="/usb-inventory" sub={`${usbs.filter((u) => u.status === 'issued').length} issued`} />
-        <Stat label="Open incidents" value={incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length} icon="alert" tone="amber" to="/operator/incidents" />
+        <Stat label="Open incidents" value={stats.openIncidents} icon="alert" tone="amber" to="/operator/incidents" />
       </StatGrid>
       <div className="two">
         <Card title="Exam readiness" desc="Live and published windows">
@@ -1071,15 +1152,25 @@ export function CollegeOverviewPage() {
 export function CampusesPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const campuses = useCol('campuses');
-  const centers = useCol('centers');
-  const devices = useCol('devices');
+  const [campuses, setCampuses] = useState([]);
+  const [centers, setCenters] = useState([]);
+  const [devices, setDevices] = useState([]);
   const { msg, run, busy, setMsg } = useFlash();
   const [modal, setModal] = useState(null);
   const [action, setAction] = useState(null);
   const [f, setF] = useState({ name: '', code: '', city: '', address: '', capacity: 100 });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const canManage = can(user.role, 'campus.manage');
+
+  const loadCampuses = async () => {
+    try {
+      const res = await Api.listCampuses(tenantId);
+      const list = res?.campuses || res || [];
+      setCampuses(Array.isArray(list) ? list.map((c) => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })) : []);
+    } catch {}
+  };
+
+  useEffect(() => { loadCampuses(); }, [tenantId]);
 
   return (
     <Page
@@ -1123,7 +1214,7 @@ export function CampusesPage() {
           onClose={() => setModal(null)}
           footer={<><button className="btn" onClick={() => setModal(null)}>Cancel</button><button className="btn primary" form="campus-form" disabled={busy}>{modal.mode === 'create' ? 'Create campus' : 'Save changes'}</button></>}
         >
-          <form id="campus-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { if (modal.mode === 'create') await createCampus(user, { tenantId, ...f }); else await updateCampus(user, modal.c, f); setModal(null); }); }}>
+          <form id="campus-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { if (modal.mode === 'create') await createCampus(user, { tenantId, ...f }); else await updateCampus(user, modal.c, f); setModal(null); await loadCampuses(); }); }}>
             <Field label="Campus name" required className="span2"><Input value={f.name} onChange={set('name')} maxLength={80} /></Field>
             <Field label="Code"><Input value={f.code} onChange={set('code')} maxLength={10} placeholder="Auto" /></Field>
             <Field label="City"><Input value={f.city} onChange={set('city')} maxLength={40} /></Field>
@@ -1138,7 +1229,7 @@ export function CampusesPage() {
           confirmLabel={action.status === 'active' ? 'Activate' : 'Deactivate'}
           danger={action.status !== 'active'}
           onClose={() => setAction(null)}
-          onConfirm={(reason) => run(async () => { await setCampusStatus(user, action.c, action.status, reason); setAction(null); })}
+          onConfirm={(reason) => run(async () => { await setCampusStatus(user, action.c, action.status, reason); setAction(null); await loadCampuses(); })}
         />
       )}
     </Page>
@@ -1148,9 +1239,20 @@ export function CampusesPage() {
 export function DepartmentsPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const departments = useCol('departments');
-  const campuses = useCol('campuses');
+  const [departments, setDepartments] = useState([]);
+  const [campuses, setCampuses] = useState([]);
   const users = useCol('users', false);
+
+  const loadDepts = async () => {
+    try {
+      const [dr, cr] = await Promise.allSettled([Api.listDepartments(tenantId), Api.listCampuses(tenantId)]);
+      if (dr.status === 'fulfilled') { const l = dr.value?.departments || dr.value || []; setDepartments(Array.isArray(l) ? l : []); }
+      if (cr.status === 'fulfilled') { const l = cr.value?.campuses || cr.value || []; setCampuses(Array.isArray(l) ? l : []); }
+    } catch {}
+  };
+
+  useEffect(() => { loadDepts(); }, [tenantId]);
+
   const { msg, run, busy, setMsg } = useFlash();
   const [modal, setModal] = useState(false);
   const [f, setF] = useState({ name: '', code: '', campusId: '', type: 'academic' });
@@ -1190,7 +1292,7 @@ export function DepartmentsPage() {
           onClose={() => setModal(false)}
           footer={<><button className="btn" onClick={() => setModal(false)}>Cancel</button><button className="btn primary" form="dept-form" disabled={busy}>Create</button></>}
         >
-          <form id="dept-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await createDepartment(user, { tenantId, ...f }); setModal(false); }); }}>
+          <form id="dept-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await createDepartment(user, { tenantId, ...f }); setModal(false); await loadDepts(); }); }}>
             <Field label="Name" required className="span2"><Input value={f.name} onChange={set('name')} maxLength={80} /></Field>
             <Field label="Code"><Input value={f.code} onChange={set('code')} maxLength={12} /></Field>
             <Field label="Type"><Select value={f.type} onChange={set('type')} options={DEPT_TYPES} placeholder={false} /></Field>
@@ -1202,7 +1304,7 @@ export function DepartmentsPage() {
         <ActionDialog
           title={`${action.status === 'active' ? 'Activate' : 'Deactivate'} ${action.d.name}`}
           onClose={() => setAction(null)}
-          onConfirm={(reason) => run(async () => { await setDepartmentStatus(user, action.d, action.status, reason); setAction(null); })}
+          onConfirm={(reason) => run(async () => { await setDepartmentStatus(user, action.d, action.status, reason); setAction(null); await loadDepts(); })}
         />
       )}
     </Page>
@@ -1212,10 +1314,22 @@ export function DepartmentsPage() {
 export function StaffPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const staff = useCol('staff');
+  const [staff, setStaff] = useState([]);
   const users = useCol('users', false);
-  const campuses = useCol('campuses');
-  const departments = useCol('departments');
+  const [campuses, setCampuses] = useState([]);
+  const [departments, setDepartments] = useState([]);
+
+  const loadStaff = async () => {
+    try {
+      const [sr, cr, dr] = await Promise.allSettled([Api.listStaff(tenantId), Api.listCampuses(tenantId), Api.listDepartments(tenantId)]);
+      if (sr.status === 'fulfilled') { const l = sr.value?.staff || sr.value || []; setStaff(Array.isArray(l) ? l : []); }
+      if (cr.status === 'fulfilled') { const l = cr.value?.campuses || cr.value || []; setCampuses(Array.isArray(l) ? l : []); }
+      if (dr.status === 'fulfilled') { const l = dr.value?.departments || dr.value || []; setDepartments(Array.isArray(l) ? l : []); }
+    } catch {}
+  };
+
+  useEffect(() => { loadStaff(); }, [tenantId]);
+
   const { msg, run, busy, setMsg } = useFlash();
   const [modal, setModal] = useState(false);
   const [action, setAction] = useState(null);
@@ -1257,7 +1371,7 @@ export function StaffPage() {
           onClose={() => setModal(false)}
           footer={<><button className="btn" onClick={() => setModal(false)}>Cancel</button><button className="btn primary" form="staff-form" disabled={busy}>Save assignment</button></>}
         >
-          <form id="staff-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await assignStaff(user, { tenantId, ...f }); setModal(false); }); }}>
+          <form id="staff-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await assignStaff(user, { tenantId, ...f }); setModal(false); await loadStaff(); }); }}>
             <Field label="Staff account" required className="span2"><Select value={f.userId} onChange={set('userId')} options={pool.map((u) => ({ v: u.id, l: `${u.name} · ${u.role}` }))} /></Field>
             <Field label="Campus"><Select value={f.campusId} onChange={set('campusId')} options={campuses.map((c) => ({ v: c.id, l: c.name }))} placeholder="All campuses" /></Field>
             <Field label="Department"><Select value={f.departmentId} onChange={set('departmentId')} options={departments.map((d) => ({ v: d.id, l: d.name }))} placeholder="None" /></Field>
@@ -1272,7 +1386,7 @@ export function StaffPage() {
           danger
           confirmLabel="Remove assignment"
           onClose={() => setAction(null)}
-          onConfirm={(reason) => run(async () => { await removeStaff(user, action, reason); setAction(null); })}
+          onConfirm={(reason) => run(async () => { await removeStaff(user, action, reason); setAction(null); await loadStaff(); })}
         />
       )}
     </Page>
@@ -1285,11 +1399,11 @@ export function CollegeSettingsPage() {
   const { msg, run, busy, setMsg } = useFlash();
   const [f, setF] = useState(() => ({
     name: tenant?.name || '', contactEmail: tenant?.contactEmail || '', contactPhone: tenant?.contactPhone || '',
-    region: tenant?.region || '', timezone: tenant?.timezone || 'Asia/Kolkata', deploymentModel: tenant?.deploymentModel || 'usb-boot',
-    maxCandidates: tenant?.maxCandidates || 500, domains: (tenant?.domains || []).join(' '),
-    requireTpm: tenant?.security?.requireTpm ?? true, requireSecureBoot: tenant?.security?.requireSecureBoot ?? true, allowUsbStorage: tenant?.security?.allowUsbStorage ?? false,
-    durationMin: tenant?.examDefaults?.durationMin || 60, lateEntryMin: tenant?.examDefaults?.lateEntryMin || 0, attestationLevel: tenant?.examDefaults?.attestationLevel || 'tpm',
-    email: tenant?.notificationPrefs?.email ?? true, inApp: tenant?.notificationPrefs?.inApp ?? true,
+    region: tenant?.region || '', timezone: tenant?.timezone || '', deploymentModel: tenant?.deploymentModel || '',
+    maxCandidates: tenant?.maxCandidates ?? '', domains: (tenant?.domains || []).join(' '),
+    requireTpm: tenant?.security?.requireTpm ?? false, requireSecureBoot: tenant?.security?.requireSecureBoot ?? false, allowUsbStorage: tenant?.security?.allowUsbStorage ?? false,
+    durationMin: tenant?.examDefaults?.durationMin ?? '', lateEntryMin: tenant?.examDefaults?.lateEntryMin ?? '', attestationLevel: tenant?.examDefaults?.attestationLevel || '',
+    email: tenant?.notificationPrefs?.email ?? false, inApp: tenant?.notificationPrefs?.inApp ?? false,
   }));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
 

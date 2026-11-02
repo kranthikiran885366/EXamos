@@ -17,6 +17,8 @@ const COLLECTION_MAP = {
   exams: { list: Api.listExams, get: null },
   campuses: { list: Api.listCampuses, get: null },
   centers: { list: Api.listCampuses, get: null },
+  departments: { list: Api.listDepartments, get: null },
+  staff: { list: Api.listStaff, get: null },
   rooms: { list: Api.listRooms, get: null },
   roles: { list: Api.listRoles, get: null },
   policies: { list: Api.listPolicies, get: null },
@@ -48,7 +50,7 @@ export async function syncCollection(collection, opts = {}) {
 
   const rows = Array.isArray(data)
     ? data
-    : (data.items || data.data || data[collection] || data.devices || data.users || data.institutions || data.exams || data.policies || data.roles || data.incidents || data.campuses || data.rooms || []);
+    : (data.items || data.data || data[collection] || data.devices || data.users || data.institutions || data.exams || data.policies || data.roles || data.incidents || data.campuses || data.departments || data.staff || data.rooms || []);
   const normalized = rows.map((r) => ({
     ...r,
     id: r.id || r.exam_id || r.institution_id || r.user_id || r.campus_id || r.room_id || r.role || r.policy_id || r.device_id || r.incident_id,

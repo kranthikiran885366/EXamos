@@ -53,6 +53,8 @@ export const ENDPOINTS = {
   institutionApplicationProvision: (id) => `/api/v1/admin/institution-applications/${id}/provision`,
   institutionAdmins: (id) => `/api/v1/admin/institutions/${id}/admins`,
   institutionAdminInvite: (id) => `/api/v1/admin/institutions/${id}/admins/invite`,
+  institutionAdminRemove: (id, userId) => `/api/v1/admin/institutions/${id}/admins/${userId}`,
+  auditTrail: '/api/v1/admin/audit',
   institutionAgreements: (id) => `/api/v1/admin/institutions/${id}/agreements`,
   signAgreement: (id) => `/api/v1/admin/agreements/${id}/sign`,
   institutionLicense: (id) => `/api/v1/admin/institutions/${id}/license`,

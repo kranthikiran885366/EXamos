@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { seed } from './seed';
 import { initChain } from './security/auditChain';
 import { all, del, wipe } from './db/db';
 import { registerRoles } from './security/rbac';
@@ -11,13 +10,6 @@ export default function Boot({ children }) {
   useEffect(() => {
     (async () => {
       try {
-        // Attempt non-blocking local cache seed; never block the application
-        try {
-          await seed();
-        } catch (seedErr) {
-          console.warn('[SPPIO-Boot] Local seed warning (non-fatal):', seedErr?.message || seedErr);
-        }
-
         try {
           /*
            * Purge only locally-created credential rows (rows with a password_hash

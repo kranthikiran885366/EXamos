@@ -109,7 +109,7 @@ static int role_clearance_tier(user_role_t role) {
 
 static const char *role_clearance_label(user_role_t role) {
     switch (role) {
-        case ROLE_PLATFORM_OWNER: return "TIER-5 PLATFORM_OWNER (HARDWARE ROOT CLEARANCE)";
+        case ROLE_PLATFORM_OWNER: return "TIER-5 PLATFORM_OWNER (FULL PLATFORM CLEARANCE)";
         case ROLE_SECURITY_ADMIN: return "TIER-4 SECURITY_ADMIN (TPM POLICY & FLEET ATTESTATION)";
         case ROLE_EXAM_MANAGER: return "TIER-3 EXAM_MANAGER (EXAM KEYS & ENCRYPTION CONTROL)";
         case ROLE_INSTITUTION_ADMIN: return "TIER-2 INSTITUTION_ADMIN (CAMPUS & PROCTOR MANAGEMENT)";

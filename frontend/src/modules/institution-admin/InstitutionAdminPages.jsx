@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { verifyChain } from '../../core/security/auditChain';
+import * as Api from '../../core/api/services';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant, useCol } from '../../core/db/tenant';
@@ -71,7 +71,7 @@ export function InstitutionDashboardPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
               <span>1. Official Profile &amp; Domains</span>
-              <span className="badge g">Completed</span>
+              <span className={`badge ${tenant?.name && tenant?.code ? 'g' : 'a'}`}>{tenant?.name && tenant?.code ? 'Configured' : 'Setup Required'}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
               <span>{`2. Organization & ${getOrgTerms(tenant?.entityType).campusLabel}`}</span>
@@ -83,7 +83,9 @@ export function InstitutionDashboardPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0' }}>
               <span>4. Target Exam URL Assessment</span>
-              <span className="badge g">URL-Only Configured</span>
+              <span className={`badge ${exams.some((e) => e.targetUrl || e.examUrl || e.url) ? 'g' : 'a'}`}>
+                {exams.some((e) => e.targetUrl || e.examUrl || e.url) ? 'Configured' : 'Not Configured'}
+              </span>
             </div>
           </div>
         </Card>
@@ -116,44 +118,25 @@ export function InstitutionDashboardPage() {
    PAGE 10 — Institution Profile (/institution/settings/profile)
 ===================================================================== */
 export function InstitutionProfilePage() {
-  const { tenant, setTenantId } = useTenant();
-  const { user } = useAuth();
-  const { msg, setMsg, run, busy } = useFlash();
-
-  const [editRequestModal, setEditRequestModal] = useState(false);
-  const [requestedChange, setRequestedChange] = useState('');
-
-  const handleSendRequest = async () => {
-    await run(async () => {
-      setEditRequestModal(false);
-      setRequestedChange('');
-      return 'Sensitive modification request submitted to ExamOS Platform Team for review.';
-    }, 'Request submitted.');
-  };
+  const { tenant } = useTenant();
 
   return (
     <Page
       title="Institution Profile"
       desc="Official legal identity, registration identifier, primary physical address, and verified organizational domains."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Profile</span></div>}
-      actions={
-        <button className="btn" onClick={() => setEditRequestModal(true)}>
-          <Icon name="lock" size={14} /> Request Sensitive Profile Edit
-        </button>
-      }
     >
-      <Flash msg={msg} onClose={() => setMsg(null)} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
         <Card title="Official Institutional Identity" desc="Verified educational charter data">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div><small className="muted">Official Legal Name</small><br /><b>{tenant?.name || 'Institution Name'}</b></div>
+            <div><small className="muted">Official Legal Name</small><br /><b>{tenant?.name || '—'}</b></div>
             <div><small className="muted">Institution Code</small><br /><code>{tenant?.code || '—'}</code></div>
             {/* H7 fix: show real website_url from backend, not fabricated URL. */}
             {tenant?.website_url && (
               <div><small className="muted">Accredited Website</small><br /><a href={tenant.website_url} target="_blank" rel="noreferrer">{tenant.website_url}</a></div>
             )}
             <div><small className="muted">Jurisdiction / State</small><br /><span>{tenant?.region || '—'}</span></div>
-            <div><small className="muted">Operational Status</small><br /><Badge value={tenant?.status || 'active'} /></div>
+            <div><small className="muted">Operational Status</small><br /><Badge value={tenant?.status || '—'} /></div>
           </div>
         </Card>
 
@@ -172,19 +155,15 @@ export function InstitutionProfilePage() {
             )}
           </div>
         </Card>
-      </div>
 
-      {editRequestModal && (
-        <Modal title="Request Sensitive Profile Update" desc="Changes to the official legal name or accredited domains require Platform Admin verification." onClose={() => setEditRequestModal(false)}>
-          <Field label="Modification Details & Justification">
-            <Textarea rows={4} value={requestedChange} onChange={(e) => setRequestedChange(e.target.value)} placeholder="State the revised legal entity name or additional domain, and reference official university senate / board resolutions..." />
-          </Field>
-          <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
-            <button className="btn" onClick={() => setEditRequestModal(false)}>Cancel</button>
-            <button className="btn primary" onClick={handleSendRequest} disabled={busy || !requestedChange.trim()}>Submit Request</button>
-          </div>
-        </Modal>
-      )}
+        <Card title="Sensitive profile updates" desc="Legal name, registration number and accredited domains" className="span2">
+          <p className="muted" style={{ margin: 0 }}>
+            Changes to the official legal identity or accredited domains require verification by the
+            ExamOS platform team. There is no self-service change path: a platform administrator must
+            review the supporting documentation and apply the update in the backend before it appears here.
+          </p>
+        </Card>
+      </div>
     </Page>
   );
 }
@@ -195,12 +174,37 @@ export function InstitutionProfilePage() {
 export function InstitutionOrganizationPage() {
   const { user } = useAuth();
   const { tenant } = useTenant();
-  const campuses = useCol('campuses');
-  const departments = useCol('departments');
+  const cachedCampuses = useCol('campuses');
+  const cachedDepartments = useCol('departments');
+  const [liveCampuses, setLiveCampuses] = useState(null);
+  const [liveDepartments, setLiveDepartments] = useState(null);
   const { msg, setMsg, run, busy } = useFlash();
 
+  const loadOrg = async () => {
+    if (!tenant?.id) return;
+    try {
+      const [cr, dr] = await Promise.allSettled([
+        Api.listCampuses(tenant.id),
+        Api.listDepartments(tenant.id),
+      ]);
+      if (cr.status === 'fulfilled') {
+        const cl = cr.value?.campuses || cr.value || [];
+        if (Array.isArray(cl)) setLiveCampuses(cl.map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })));
+      }
+      if (dr.status === 'fulfilled') {
+        const dl = dr.value?.departments || dr.value || [];
+        if (Array.isArray(dl)) setLiveDepartments(dl.map(d => ({ ...d, id: d.id || d.department_id, tenantId: d.tenantId || d.tenant_id })));
+      }
+    } catch {}
+  };
+
+  useEffect(() => { loadOrg(); }, [tenant?.id]);
+
+  const campuses = liveCampuses || cachedCampuses;
+  const departments = liveDepartments || cachedDepartments;
+
   const [newCampusModal, setNewCampusModal] = useState(false);
-  const [newCampus, setNewCampus] = useState({ name: '', code: '', city: '', address: '', capacity: 250 });
+  const [newCampus, setNewCampus] = useState({ name: '', code: '', city: '', address: '', capacity: '' });
 
   const [newDeptModal, setNewDeptModal] = useState(false);
   const [newDept, setNewDept] = useState({ name: '', code: '', campusId: '', type: 'academic' });
@@ -209,6 +213,7 @@ export function InstitutionOrganizationPage() {
     await run(async () => {
       await createCampus(user, { tenantId: tenant?.id, ...newCampus });
       setNewCampusModal(false);
+      await loadOrg();
       return `Campus ${newCampus.name} created.`;
     }, 'Campus added.');
   };
@@ -217,6 +222,7 @@ export function InstitutionOrganizationPage() {
     await run(async () => {
       await createDepartment(user, { tenantId: tenant?.id, ...newDept });
       setNewDeptModal(false);
+      await loadOrg();
       return `Department ${newDept.name} created.`;
     }, 'Department added.');
   };
@@ -250,7 +256,7 @@ export function InstitutionOrganizationPage() {
             rows={campuses}
             columns={[
               { key: 'name', label: 'Campus', render: (c) => <><b>{c.name}</b><br /><small className="muted">{c.code} · {c.city}</small></> },
-              { key: 'capacity', label: 'Capacity', render: (c) => `${c.capacity || 0} seats` },
+              { key: 'capacity', label: 'Capacity', render: (c) => (c.capacity != null ? `${c.capacity} seats` : '—') },
               { key: 'status', label: 'Status', badge: true },
             ]}
             empty={<Empty icon="pin" title={`No ${getOrgTerms(tenant?.entityType).campusLabel} added yet`} />}
@@ -262,7 +268,7 @@ export function InstitutionOrganizationPage() {
             rows={departments}
             columns={[
               { key: 'name', label: 'Department', render: (d) => <><b>{d.name}</b><br /><small className="muted">{d.code}</small></> },
-              { key: 'campus', label: 'Campus', render: (d) => campuses.find((c) => c.id === d.campusId)?.code || 'Main' },
+              { key: 'campus', label: 'Campus', render: (d) => campuses.find((c) => c.id === d.campusId)?.code || '—' },
               { key: 'type', label: 'Type', badge: true },
             ]}
             empty={<Empty icon="layers" title="No departments added yet" />}
@@ -315,6 +321,7 @@ export function InstitutionAccessPage() {
 
   const [admins, setAdmins] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [inviteModal, setInviteModal] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
   const [inviteResult, setInviteResult] = useState(null); // shows credentials popup
@@ -328,8 +335,10 @@ export function InstitutionAccessPage() {
     try {
       const list = await listInstitutionAdmins(tenantId);
       setAdmins(Array.isArray(list) ? list : []);
-    } catch {
+      setLoadError('');
+    } catch (e) {
       setAdmins([]);
+      setLoadError(e.message || 'Unable to load administrators from the backend.');
     } finally {
       setLoading(false);
     }
@@ -381,6 +390,7 @@ export function InstitutionAccessPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
 
       <StatGrid cols={4}>
         <Stat label="Total Administrators" value={admins.length} icon="users" />
@@ -600,18 +610,22 @@ export function InstitutionSecurityPage() {
   const { msg, setMsg, run, busy } = useFlash();
 
   const [settings, setSettings] = useState(() => ({
-    requireTpm: tenant?.security?.requireTpm ?? true,
+    requireTpm: tenant?.security?.requireTpm ?? false,
     blockUsb: !(tenant?.security?.allowUsbStorage ?? false),
-    kioskFullscreen: true,
-    secondCameraAllowed: true,
-    allowedOrigins: Array.isArray(tenant?.domains) && tenant.domains.length
-      ? tenant.domains.map((d) => `https://${d}`).join(', ')
-      : '',
+    kioskFullscreen: tenant?.security?.kioskFullscreen ?? false,
+    secondCameraAllowed: tenant?.security?.secondCameraAllowed ?? false,
+    allowedOrigins: tenant?.security?.allowedOrigins || '',
   }));
 
   const handleSave = async () => {
     await run(async () => {
-      await saveSecuritySettings(user, tenant, settings);
+      await saveSecuritySettings(user, tenant, {
+        requireTpm: settings.requireTpm,
+        allowUsbStorage: !settings.blockUsb,
+        kioskFullscreen: settings.kioskFullscreen,
+        secondCameraAllowed: settings.secondCameraAllowed,
+        allowedOrigins: settings.allowedOrigins,
+      });
       return 'Security configuration saved and synchronized.';
     }, 'Settings updated.');
   };
@@ -655,10 +669,29 @@ export function InstitutionSecurityPage() {
    PAGE 14 — Deployment Readiness (/institution/deployment)
 ===================================================================== */
 export function InstitutionDeploymentReadinessPage() {
-  const devices = useCol('devices');
-  const campuses = useCol('campuses');
+  const cachedDevices = useCol('devices');
+  const cachedCampuses = useCol('campuses');
   const { tenant } = useTenant();
-  const attested = devices.filter((d) => d.trust === 'attested');
+  const [liveDevices, setLiveDevices] = useState(null);
+  const [liveCampuses, setLiveCampuses] = useState(null);
+
+  useEffect(() => {
+    if (tenant?.id) {
+      Api.listCampuses(tenant.id).then(r => {
+        const cl = r?.campuses || r || [];
+        if (Array.isArray(cl)) setLiveCampuses(cl);
+      }).catch(() => {});
+    }
+    Api.listRegisteredDevices().then(r => {
+      const dl = r?.devices || r || [];
+      if (Array.isArray(dl)) setLiveDevices(dl);
+    }).catch(() => {});
+  }, [tenant?.id]);
+
+  const devices = liveDevices || cachedDevices;
+  const campuses = liveCampuses || cachedCampuses;
+  const attested = devices.filter((d) => d.trust === 'attested' || d.trust_status === 'trusted' || d.tpm_enrolled);
+  const readiness = devices.length === 0 ? 'NOT ENROLLED' : (attested.length === devices.length ? 'READY' : 'PENDING');
 
   return (
     <Page
@@ -670,7 +703,7 @@ export function InstitutionDeploymentReadinessPage() {
         <Stat label="Total Workstations" value={devices.length} icon="device" />
         <Stat label="Hardware Attested" value={attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="TPM Validated" />
         <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} Scoped`} value={campuses.length} icon="pin" />
-        <Stat label="Readiness State" value={devices.length ? 'READY' : 'ENROLLING'} tone={devices.length ? 'green' : 'amber'} icon="checklist" />
+        <Stat label="Readiness State" value={readiness} tone={readiness === 'READY' ? 'green' : 'amber'} icon="checklist" />
       </StatGrid>
 
       <Card title="Workstation Telemetry & Hardware Health" desc="Preflight verification across testing centers">
@@ -678,10 +711,10 @@ export function InstitutionDeploymentReadinessPage() {
           rows={devices}
           columns={[
             { key: 'hostname', label: 'Workstation', render: (d) => <><b>{d.hostname}</b><br /><small className="muted">{d.mac || '—'}</small></> },
-            { key: 'seat', label: 'Seat / Room', render: (d) => d.seat || 'Center Lab 1' },
-            { key: 'trust', label: 'TPM Attestation', render: (d) => <Badge value={d.trust || 'attested'} tone={d.trust === 'attested' ? 'green' : 'amber'} /> },
+            { key: 'seat', label: 'Seat / Room', render: (d) => d.seat || '—' },
+            { key: 'trust', label: 'TPM Attestation', render: (d) => <Badge value={d.trust || '—'} tone={d.trust === 'attested' ? 'green' : 'amber'} /> },
             { key: 'status', label: 'Status', badge: true },
-            { key: 'lastSeen', label: 'Last Heartbeat', render: (d) => d.lastSeen ? ago(d.lastSeen) : 'Active' },
+            { key: 'lastSeen', label: 'Last Heartbeat', render: (d) => d.lastSeen ? ago(d.lastSeen) : '—' },
           ]}
           empty={<Empty icon="device" title="No workstations enrolled yet">Enroll testing devices via ExamOS bootable USB.</Empty>}
         />
@@ -694,70 +727,82 @@ export function InstitutionDeploymentReadinessPage() {
    PAGE 15 — Audit and Activity (/institution/audit)
 ===================================================================== */
 export function InstitutionAuditPage() {
-  const liveAudit = useCol('audit', false);
-  const [chainStatus, setChainStatus] = useState({ ok: true, count: 0 });
+  const [auditRows, setAuditRows] = useState([]);
+  const [ledger, setLedger] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    verifyChain().then((res) => {
-      if (res) setChainStatus(res);
-    }).catch(() => {});
-  }, [liveAudit.length]);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [trail, led] = await Promise.all([
+        Api.listAuditTrail({ limit: 500 }),
+        Api.getLedger(),
+      ]);
+      const rows = Array.isArray(trail) ? trail : (trail?.events || trail?.audit || []);
+      setAuditRows([...rows].sort((a, b) => String(b.recorded_at || b.ts || '').localeCompare(String(a.recorded_at || a.ts || ''))));
+      setLedger(led || null);
+      setLoadError('');
+    } catch (e) {
+      setLoadError(e.message || 'Unable to load the audit trail from the backend.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const auditRows = useMemo(() => {
-    return [...liveAudit].sort((a, b) => (b.seq || 0) - (a.seq || 0));
-  }, [liveAudit]);
+  useEffect(() => { load(); }, []);
 
-  const latestHash = auditRows[0]?.hash || 'GENESIS_ROOT';
+  const chainOk = ledger?.ledger_integrity === 'INTACT';
+  const chainKnown = ledger?.ledger_integrity === 'INTACT' || ledger?.ledger_integrity === 'TAMPERED';
 
   return (
     <Page
       title="Institutional Audit & Activity"
-      desc="Cryptographically sealed audit trail of administrative actions, policy adjustments, and deployment events."
+      desc="Backend audit trail of administrative actions, policy adjustments, and deployment events, backed by the tamper-evident ledger."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Audit</span></div>}
     >
+      {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
         <Stat
           label="Ledger Chain State"
-          value={chainStatus.ok ? 'INTACT' : 'TAMPERED'}
-          tone={chainStatus.ok ? 'green' : 'red'}
+          value={ledger?.ledger_integrity || '—'}
+          tone={chainOk ? 'green' : (chainKnown ? 'red' : 'amber')}
           icon="shield"
-          sub="HMAC-SHA256 Chained"
+          sub="SHA-256 Chained"
         />
         <Stat
           label="Verified Blocks"
-          value={chainStatus.count || liveAudit.length}
+          value={ledger?.total_blocks ?? '—'}
           tone="green"
           icon="checklist"
           sub="Cryptographically Proven"
         />
         <Stat
-          label="Latest Block Hash"
-          value={latestHash.slice(0, 10) + '…'}
-          icon="lock"
-          sub="Head Block Commit"
+          label="Audit Events"
+          value={auditRows.length}
+          icon="audit"
+          sub="Returned by backend"
         />
         <Stat
           label="Tamper Detection"
-          value="ZERO BROKEN"
-          tone="green"
+          value={chainKnown ? (chainOk ? 'NONE' : 'BROKEN') : '—'}
+          tone={chainOk ? 'green' : (chainKnown ? 'red' : 'amber')}
           icon="check"
           sub="Continuous Validation"
         />
       </StatGrid>
 
-      <Card title="Immutable Audit Chain" desc="Every mutating administrative and security operation is committed to the dual-persistence ledger">
+      <Card title="Immutable Audit Chain" desc="Read directly from the backend audit store; the local browser cache is not used as evidence.">
         <DataTable
           rows={auditRows}
-          search={['event', 'actor', 'detail', 'hash']}
+          search={['event_type', 'event', 'actor', 'subject_id', 'subject_type']}
           columns={[
-            { key: 'seq', label: 'Block #', render: (l) => <span className="mono bold">#{l.seq || l.id || '1'}</span> },
-            { key: 'event', label: 'Event Type', render: (l) => <code>{l.event}</code> },
+            { key: 'event_type', label: 'Event Type', render: (l) => <code>{l.event_type || l.event}</code> },
             { key: 'actor', label: 'Actor', render: (l) => <b>{l.actor || 'system'}</b> },
-            { key: 'detail', label: 'Operational Detail', render: (l) => <span>{l.detail}</span> },
-            { key: 'hash', label: 'Block Hash (SHA-256)', render: (l) => <code className="sm">{l.hash ? `${l.hash.slice(0, 14)}…` : 'GENESIS'}</code> },
-            { key: 'ts', label: 'Timestamp', render: (l) => ago(l.ts || l.time || Date.now()) },
+            { key: 'subject', label: 'Subject', render: (l) => `${l.subject_type || '—'} · ${l.subject_id || '—'}` },
+            { key: 'recorded_at', label: 'Timestamp', render: (l) => (l.recorded_at || l.ts) ? fmt(l.recorded_at || l.ts) : '—' },
           ]}
-          empty={<Empty icon="checklist" title="No audit events logged yet" desc="Mutating operations will appear here in real-time." />}
+          empty={<Empty icon="checklist" title={loading ? 'Loading audit trail…' : 'No audit events logged yet'} desc="Mutating backend operations will appear here." />}
         />
       </Card>
     </Page>

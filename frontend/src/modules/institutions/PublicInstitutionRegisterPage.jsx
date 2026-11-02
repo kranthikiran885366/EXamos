@@ -69,7 +69,10 @@ export default function PublicInstitutionRegisterPage() {
     setBusy(true);
     try {
       const res = await submitInstitutionApplication(f);
-      const appId = res?.application_id || res?.id || ('APP-' + Math.floor(100000 + Math.random() * 900000));
+      const appId = res?.application_id || res?.id;
+      if (!appId) {
+        throw new Error('Registration failed: the server did not return a valid application reference ID.');
+      }
       setReceipt({
         id: appId,
         name: f.legalName,

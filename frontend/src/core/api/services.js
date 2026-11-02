@@ -170,7 +170,7 @@ export const createInstitution = wrap(async (data) => {
   const res = await api.post(ENDPOINTS.institutions, {
     name,
     code: code || (name || 'INST').replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase(),
-    contact_email: contactEmail || 'admin@examos.local',
+    contact_email: contactEmail || '',
     contact_phone: contactPhone || '',
     region: region || 'India · Mumbai',
     timezone: timezone || 'Asia/Kolkata',
@@ -235,44 +235,31 @@ export const listInstitutionApplications = wrap(async () => {
 // ---------------------------------------------------------------------------
 
 export const listInstitutionAdmins = wrap(async (institutionId) => {
-  // Primary: try the dedicated /admins endpoint
-  try {
-    const res = await api.get(ENDPOINTS.institutionAdmins(institutionId), { actor: ACTOR });
-    if (res?.data?.admins) return res.data.admins;
-  } catch {}
-  // Fallback: filter the global users list by institution_id
-  const res = await api.get(`${ENDPOINTS.users}?institution_id=${encodeURIComponent(institutionId)}`, { actor: ACTOR });
-  const raw = res?.data?.users || res?.data || [];
-  return Array.isArray(raw) ? raw.filter((u) => u.institution_id === institutionId || u.tenantId === institutionId) : [];
+  const res = await api.get(ENDPOINTS.institutionAdmins(institutionId), { actor: ACTOR });
+  const admins = res?.data?.admins;
+  return Array.isArray(admins) ? admins : [];
 });
 
 export const inviteInstitutionAdmin = wrap(async (institutionId, { name, email, role, campusId }) => {
-  // Create the user account directly via POST /api/v1/admin/users
-  // The backend links the user to the institution via institution_id
-  const roleInt = {
-    inst_admin: 2, institution_admin: 2,
-    exam_controller: 3, exam_manager: 3,
-    invigilator: 5,
-    it_admin: 6, tech_operator: 6,
-    security_engineer: 4,
-    auditor: 7,
-  }[String(role || 'inst_admin').toLowerCase()] || 2;
-
-  const username = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase() + '_' + Date.now().toString(36);
-  const tempPassword = 'ExamOS!' + Math.random().toString(36).slice(2, 10).toUpperCase() + Math.floor(Math.random() * 90 + 10);
-
-  const res = await api.post(ENDPOINTS.users, {
-    username,
-    full_name: name,
-    email: email.toLowerCase(),
-    password: tempPassword,
-    institution_id: institutionId,
-    campus_id: campusId || '',
-    role: roleInt,
-    active: 1,
+  /* The backend creates the account, generates a cryptographically random
+   * one-time credential, and persists the institution scope. The client must
+   * never invent a password, username, or user row. */
+  const res = await api.post(ENDPOINTS.institutionAdminInvite(institutionId), {
+    name,
+    email: String(email || '').toLowerCase(),
+    role: role || 'inst_admin',
+    campusId: campusId || '',
   }, { actor: ACTOR, sign: true });
+  return {
+    ...res.data,
+    id: res.data?.user_id || res.data?.id,
+    institutionId,
+  };
+});
 
-  return { ...res.data, tempPassword, username, email, name, role, institutionId };
+export const removeInstitutionAdmin = wrap(async (institutionId, userId, reason) => {
+  const res = await api.post(ENDPOINTS.institutionAdminRemove(institutionId, userId), { reason }, { actor: ACTOR, sign: true });
+  return res.data;
 });
 
 export const getInstitutionApplication = wrap(async (id) => {
@@ -447,6 +434,57 @@ export const createUser = wrap(async ({ username, fullName, email, password, ins
   }, { actor: ACTOR, sign: true });
   return res.data;
 });
+
+export const updateUser = wrap(async (id, data) => {
+  const res = await api.put(`${ENDPOINTS.users}/${id}`, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setUserStatus = wrap(async (id, status, reason) => {
+  const res = await api.post(`${ENDPOINTS.users}/${id}/status`, { status, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setUserRole = wrap(async (id, role, reason) => {
+  const res = await api.post(`${ENDPOINTS.users}/${id}/role`, { role, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const resetUserPassword = wrap(async (id, password) => {
+  const res = await api.post(`${ENDPOINTS.users}/${id}/reset-password`, { password }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const revokeUserSessions = wrap(async (userId, why) => {
+  const res = await api.post(`${ENDPOINTS.users}/${userId}/revoke-sessions`, { why }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const inviteUser = wrap(async (data) => {
+  const res = await api.post(`${ENDPOINTS.users}/invite`, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const acceptInvitation = wrap(async (data) => {
+  const res = await api.post(`${ENDPOINTS.users}/accept-invite`, data, { actor: ACTOR });
+  return res.data;
+});
+
+export const createRole = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.roles, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const updateRole = wrap(async (id, data) => {
+  const res = await api.put(`${ENDPOINTS.roles}/${id}`, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const deleteRole = wrap(async (id) => {
+  const res = await api.delete(`${ENDPOINTS.roles}/${id}`, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
 
 // ---------------------------------------------------------------------------
 // Roles
@@ -1296,6 +1334,15 @@ export const secondCameraPair = wrap(async ({ sessionId, token }) => {
 
 export const getLedger = wrap(async () => {
   const res = await api.get(ENDPOINTS.ledger, { actor: ACTOR });
+  return res.data;
+});
+
+export const listAuditTrail = wrap(async ({ examId = '', limit = 200 } = {}) => {
+  const qs = new URLSearchParams();
+  if (examId) qs.set('exam_id', examId);
+  if (limit) qs.set('limit', String(limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await api.get(`${ENDPOINTS.auditTrail}${suffix}`, { actor: ACTOR });
   return res.data;
 });
 

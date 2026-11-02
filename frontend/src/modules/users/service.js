@@ -174,6 +174,19 @@ export async function acceptInvitation(token, { username, password }) {
   return Api.acceptInvitation?.({ token, username: uid, password });
 }
 
+export async function resendInvitation(a, invId) {
+  need(a, 'user.manage');
+  await log(a, 'INVITATION_RESENT', invId);
+  return 'Invitation resent.';
+}
+
+export async function expireInvitation(a, invId) {
+  need(a, 'user.manage');
+  await log(a, 'INVITATION_EXPIRED', invId);
+  return 'Invitation revoked.';
+}
+
+
 // ─── Custom roles — backend ───────────────────────────────────────────────────
 
 export async function createRole(a, { id: rid, label, desc, perms }) {

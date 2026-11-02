@@ -117,8 +117,13 @@ CREATE TABLE IF NOT EXISTS student_audit_events (
 CREATE INDEX IF NOT EXISTS idx_student_audit_stu ON student_audit_events(student_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_student_audit_inst ON student_audit_events(institution_id);
 
--- Grant permissions to examos_app
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO examos_app;
+-- Grant permissions to examos_app if the role exists (e.g. self-hosted / dedicated environments)
+DO $$
+BEGIN
+   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'examos_app') THEN
+      EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO examos_app';
+   END IF;
+END $$;
 
 INSERT INTO examos_schema_migrations (component, version)
 VALUES ('students', 1)

@@ -1,6 +1,6 @@
 import { all, get, put, del } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
-import { id, need, fail, log, assertScope, requireReason, isEmail } from '../../core/services/common';
+import { need, fail, log, assertScope, requireReason, isEmail } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
 import * as Api from '../../core/api/services';
 
@@ -45,7 +45,17 @@ export const getOrgTerms = (entityType) => {
   };
 };
 export const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'UTC'];
-const codeOf = (name) => 'INS-' + clean(name, 20).replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X') + '-' + Math.floor(Math.random() * 900 + 100);
+const randomSuffix = () => {
+  const buf = new Uint32Array(1);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(buf);
+  else buf[0] = Date.now();
+  return 100 + (buf[0] % 900);
+};
+const codeOf = (name) => 'INS-' + clean(name, 20).replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X') + '-' + randomSuffix();
+const requireBackendId = (value, what) => {
+  if (!value) fail(`The backend did not return a ${what} identifier. The operation was not saved.`);
+  return value;
+};
 
 export async function createInstitution(a, input) {
   need(a, 'tenant.manage');
@@ -127,22 +137,18 @@ export async function updateInstitution(a, t, patch) {
   if (patch.branding) next.branding = { ...next.branding, ...patch.branding };
   next.history = [...(t.history || []), { at: Date.now(), by: a.id, action: 'Institution settings updated' }];
 
-  try {
-    await Api.updateInstitution(t.id, {
-      name: next.name,
-      contactEmail: next.contactEmail,
-      contactPhone: next.contactPhone,
-      region: next.region,
-      timezone: next.timezone,
-      deploymentModel: next.deploymentModel,
-      maxCandidates: next.maxCandidates,
-      maxCenters: next.maxCenters,
-      plan: next.plan,
-      domains: next.domains,
-    });
-  } catch (err) {
-    console.warn('Backend updateInstitution sync:', err.message);
-  }
+  await Api.updateInstitution(t.id, {
+    name: next.name,
+    contactEmail: next.contactEmail,
+    contactPhone: next.contactPhone,
+    region: next.region,
+    timezone: next.timezone,
+    deploymentModel: next.deploymentModel,
+    maxCandidates: next.maxCandidates,
+    maxCenters: next.maxCenters,
+    plan: next.plan,
+    domains: next.domains,
+  });
 
   await put('tenants', next);
   await put('institutions', next).catch(() => {});
@@ -162,11 +168,7 @@ export async function setInstitutionStatus(a, t, status, reason) {
     if ((await all('exams')).some((e) => e.tenantId === t.id && ['live', 'published'].includes(e.status))) fail('Close or cancel published/live exams before archiving.');
   }
 
-  try {
-    await Api.setInstitutionStatus(t.id, status, r);
-  } catch (err) {
-    console.warn('Backend setInstitutionStatus sync:', err.message);
-  }
+  await Api.setInstitutionStatus(t.id, status, r);
 
   const next = { ...t, status, statusReason: r, statusAt: Date.now(), history: [...(t.history || []), { at: Date.now(), by: a.id, action: `Status → ${status}`, reason: r }] };
   await put('tenants', next);
@@ -179,11 +181,7 @@ export async function saveExamDefaults(a, t, defaults) {
   need(a, 'settings.inst'); assertScope(a, t.id);
   const next = { ...t, examDefaults: { ...t.examDefaults, ...defaults }, history: [...(t.history || []), { at: Date.now(), by: a.id, action: 'Exam defaults updated' }] };
 
-  try {
-    await Api.saveInstitutionExamDefaults(t.id, defaults);
-  } catch (err) {
-    console.warn('Backend saveExamDefaults sync:', err.message);
-  }
+  await Api.saveInstitutionExamDefaults(t.id, defaults);
 
   await put('tenants', next);
   await put('institutions', next).catch(() => {});
@@ -195,11 +193,7 @@ export async function saveSecuritySettings(a, t, security) {
   need(a, 'settings.inst'); assertScope(a, t.id);
   const next = { ...t, security: { ...t.security, ...security }, history: [...(t.history || []), { at: Date.now(), by: a.id, action: 'Security defaults updated' }] };
 
-  try {
-    await Api.saveInstitutionSecurity(t.id, security);
-  } catch (err) {
-    console.warn('Backend saveSecuritySettings sync:', err.message);
-  }
+  await Api.saveInstitutionSecurity(t.id, security);
 
   await put('tenants', next);
   await put('institutions', next).catch(() => {});
@@ -210,31 +204,28 @@ export async function saveSecuritySettings(a, t, security) {
 /* ---------------- Campuses ---------------- */
 export async function createCampus(a, { tenantId, name, code, city, address, capacity }) {
   need(a, 'campus.manage'); assertScope(a, tenantId);
-  const t = await get('tenants', tenantId); if (!t) fail('Institution not found.');
-  if ((await all('campuses')).filter((c) => c.tenantId === tenantId).length >= 200) fail('Campus limit reached.');
+  if (!tenantId) fail('Pick an institution.');
   const n = clean(name, 80); if (n.length < 3) fail('Campus name needs 3+ characters.');
-  const c = clean(code, 10).toUpperCase() || `CMP-${Math.floor(Math.random() * 900 + 100)}`;
-  if ((await all('campuses')).some((x) => x.tenantId === tenantId && x.code === c)) fail('Campus code already used.');
+  const c = clean(code, 10).toUpperCase() || `CMP-${randomSuffix()}`;
   const cap = Number(capacity); if (!(cap >= 1 && cap <= 5000)) fail('Capacity must be 1–5,000.');
-  const campusObj = { id: id('cmp'), tenantId, name: n, code: c, city: clean(city, 40), address: clean(address, 160), capacity: cap, status: 'active', adminIds: [], createdAt: Date.now() };
 
-  try {
-    const res = await Api.createCampus({
-      tenantId,
-      name: n,
-      code: c,
-      city: campusObj.city,
-      address: campusObj.address,
-      capacity: cap,
-    });
-    if (res?.campus_id) campusObj.id = res.campus_id;
-  } catch (err) {
-    console.warn('Backend createCampus sync:', err.message);
-  }
-
+  const res = await Api.createCampus({
+    tenantId,
+    name: n,
+    code: c,
+    city: clean(city, 40),
+    address: clean(address, 160),
+    capacity: cap,
+  });
+  const campusId = requireBackendId(res?.campus_id || res?.id, 'campus');
+  const campusObj = {
+    id: campusId, tenantId, name: n, code: c,
+    city: clean(city, 40), address: clean(address, 160),
+    capacity: cap, status: 'active', adminIds: [], createdAt: Date.now(),
+  };
   await put('campuses', campusObj);
   await put('centers', campusObj).catch(() => {});
-  await log(a, 'CAMPUS_CREATED', `${t.name} · ${c}`);
+  await log(a, 'CAMPUS_CREATED', `${tenantId} · ${c}`);
   return `Campus ${c} created.`;
 }
 
@@ -243,16 +234,12 @@ export async function updateCampus(a, c, patch) {
   const next = { ...c, name: patch.name !== undefined ? clean(patch.name, 80) : c.name, city: patch.city !== undefined ? clean(patch.city, 40) : c.city, address: patch.address !== undefined ? clean(patch.address, 160) : c.address };
   if (patch.capacity !== undefined) { const cap = Number(patch.capacity); if (!(cap >= 1 && cap <= 5000)) fail('Capacity must be 1–5,000.'); next.capacity = cap; }
 
-  try {
-    await Api.updateCampus(c.id, {
-      name: next.name,
-      city: next.city,
-      address: next.address,
-      capacity: next.capacity,
-    });
-  } catch (err) {
-    console.warn('Backend updateCampus sync:', err.message);
-  }
+  await Api.updateCampus(c.id, {
+    name: next.name,
+    city: next.city,
+    address: next.address,
+    capacity: next.capacity,
+  });
 
   await put('campuses', next);
   await log(a, 'CAMPUS_UPDATED', c.code);
@@ -269,23 +256,11 @@ export async function setCampusStatus(a, c, status, reason) {
     if (open) fail('An open exam uses a center in this campus.');
   }
 
-  try {
-    await Api.setCampusStatus(c.id, status, r);
-  } catch (err) {
-    console.warn('Backend setCampusStatus sync:', err.message);
-  }
+  await Api.setCampusStatus(c.id, status, r);
 
   await put('campuses', { ...c, status, statusReason: r });
   await log(a, 'CAMPUS_' + status.toUpperCase(), `${c.code}: ${r}`);
   return `${c.code} is now ${status}.`;
-}
-
-export async function assignCampusAdmin(a, c, userId) {
-  need(a, 'campus.manage'); assertScope(a, c.tenantId);
-  const u = await get('users', userId); if (!u || u.tenantId !== c.tenantId) fail('Pick a user from this institution.');
-  await put('campuses', { ...c, adminIds: [...new Set([...(c.adminIds || []), u.id])] });
-  await log(a, 'CAMPUS_ADMIN_ASSIGNED', `${c.code} -> ${u.id}`);
-  return 'Campus administrator assigned.';
 }
 
 /* ---------------- Departments ---------------- */
@@ -305,26 +280,20 @@ export const DEPT_TYPES = [
 
 export async function createDepartment(a, { tenantId, name, code, campusId, type = 'academic' }) {
   need(a, 'dept.manage'); assertScope(a, tenantId);
+  if (!tenantId) fail('Pick an institution.');
   const n = clean(name, 80); if (n.length < 3) fail('Department name needs 3+ characters.');
-  const c = clean(code, 12).toUpperCase() || `DEP-${Math.floor(Math.random() * 900 + 100)}`;
-  if ((await all('departments')).some((x) => x.tenantId === tenantId && x.code === c)) fail('Department code already used.');
+  const c = clean(code, 12).toUpperCase() || `DEP-${randomSuffix()}`;
   if (!DEPT_TYPES.some((t) => t.v === type)) fail('Pick a department type.');
-  if (campusId) { const cp = await get('campuses', campusId); if (!cp || cp.tenantId !== tenantId) fail('Pick a campus in this institution.'); }
-  const deptObj = { id: id('dep'), tenantId, name: n, code: c, type, campusId: campusId || null, status: 'active', createdAt: Date.now() };
 
-  try {
-    const res = await Api.createDepartment({
-      tenantId,
-      name: n,
-      code: c,
-      type,
-      campusId: deptObj.campusId,
-    });
-    if (res?.department_id) deptObj.id = res.department_id;
-  } catch (err) {
-    console.warn('Backend createDepartment sync:', err.message);
-  }
-
+  const res = await Api.createDepartment({
+    tenantId,
+    name: n,
+    code: c,
+    type,
+    campusId: campusId || '',
+  });
+  const depId = requireBackendId(res?.department_id || res?.id, 'department');
+  const deptObj = { id: depId, tenantId, name: n, code: c, type, campusId: campusId || null, status: 'active', createdAt: Date.now() };
   await put('departments', deptObj);
   await log(a, 'DEPARTMENT_CREATED', c);
   return `Department ${c} created.`;
@@ -335,11 +304,7 @@ export async function setDepartmentStatus(a, d, status, reason) {
   const r = requireReason(reason, 8);
   if (status === 'inactive' && (await all('users')).some((u) => u.departmentId === d.id && u.status === 'active')) fail('Reassign active staff before deactivating this department.');
 
-  try {
-    await Api.setDepartmentStatus(d.id, status, r);
-  } catch (err) {
-    console.warn('Backend setDepartmentStatus sync:', err.message);
-  }
+  await Api.setDepartmentStatus(d.id, status, r);
 
   await put('departments', { ...d, status, statusReason: r });
   await log(a, 'DEPARTMENT_' + status.toUpperCase(), `${d.code}: ${r}`);
@@ -349,28 +314,27 @@ export async function setDepartmentStatus(a, d, status, reason) {
 /* ---------------- Staff assignments ---------------- */
 export async function assignStaff(a, { tenantId, userId, campusId = '', departmentId = '', roleTitle }) {
   need(a, 'staff.manage'); assertScope(a, tenantId);
-  const u = await get('users', userId); if (!u || u.tenantId !== tenantId) fail('Pick a user from this institution.');
-  if (campusId) { const c = await get('campuses', campusId); if (!c || c.tenantId !== tenantId) fail('Pick a campus in this institution.'); }
-  if (departmentId) { const d = await get('departments', departmentId); if (!d || d.tenantId !== tenantId) fail('Pick a department in this institution.'); }
-  const existing = (await all('staff')).find((s) => s.tenantId === tenantId && s.userId === userId);
-  const rec = { id: existing?.id || id('stf'), tenantId, userId, name: u.name, roleTitle: clean(roleTitle, 60) || u.title, campusId, departmentId, status: 'active', createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() };
+  if (!tenantId || !userId) fail('Pick an institution and a user.');
+  const u = await get('users', userId).catch(() => null);
 
-  try {
-    const res = await Api.assignStaff({
-      tenantId,
-      userId,
-      name: u.name,
-      roleTitle: rec.roleTitle,
-      campusId,
-      departmentId,
-    });
-    if (res?.staff_id) rec.id = res.staff_id;
-  } catch (err) {
-    console.warn('Backend assignStaff sync:', err.message);
-  }
-
+  const res = await Api.assignStaff({
+    tenantId,
+    userId,
+    name: u?.name || '',
+    roleTitle: clean(roleTitle, 60) || u?.title || '',
+    campusId,
+    departmentId,
+  });
+  const staffId = requireBackendId(res?.staff_id || res?.id, 'staff');
+  const rec = {
+    id: staffId, tenantId, userId,
+    name: u?.name || res?.name || '',
+    roleTitle: clean(roleTitle, 60) || u?.title || '',
+    campusId, departmentId, status: 'active',
+    createdAt: Date.now(), updatedAt: Date.now(),
+  };
   await put('staff', rec);
-  await log(a, 'STAFF_ASSIGNED', `${u.id} ${campusId || 'all campuses'}`);
+  await log(a, 'STAFF_ASSIGNED', `${userId} ${campusId || 'all campuses'}`);
   return 'Staff assignment saved.';
 }
 
@@ -378,11 +342,7 @@ export async function removeStaff(a, s, reason) {
   need(a, 'staff.manage'); assertScope(a, s.tenantId);
   const r = requireReason(reason, 8);
 
-  try {
-    await Api.removeStaff(s.id, r);
-  } catch (err) {
-    console.warn('Backend removeStaff sync:', err.message);
-  }
+  await Api.removeStaff(s.id, r);
 
   await put('staff', { ...s, status: 'inactive', statusReason: r, updatedAt: Date.now() });
   await log(a, 'STAFF_REMOVED', `${s.userId}: ${r}`);
@@ -392,94 +352,64 @@ export async function removeStaff(a, s, reason) {
 /* ---------------- Institution Admin Management ---------------- */
 
 /**
- * List administrators for a specific institution.
- * Fetches from API first, falls back to local IndexedDB filtered by tenantId.
+ * List administrators for a specific institution. The backend is the only
+ * source of truth — a network or authorization failure is surfaced to the
+ * caller instead of silently showing stale local rows.
  */
 export async function listInstitutionAdmins(institutionId) {
-  try {
-    const apiAdmins = await Api.listInstitutionAdmins(institutionId);
-    if (Array.isArray(apiAdmins) && apiAdmins.length > 0) {
-      // Sync to local cache
-      for (const u of apiAdmins) {
-        const local = {
-          id: u.user_id || u.id || u.username,
-          username: u.username,
-          name: u.full_name || u.name || u.username,
-          email: u.email || '',
-          /* H6 fix: backend returns 'role' (e.g. 'inst_admin'), NOT 'role_name'. */
-          role: u.role || 'inst_admin',
-          tenantId: institutionId,
-          status: u.status || (u.active === 0 ? 'suspended' : 'active'),
-          mfaEnabled: !!u.mfa_enabled,
-          lastLogin: u.last_login || null,
-          createdAt: u.created_at || Date.now(),
-        };
-        await put('users', local).catch(() => {});
-      }
-      return apiAdmins.map((u) => ({
-        id: u.user_id || u.id || u.username,
-        username: u.username,
-        name: u.full_name || u.name || u.username,
-        email: u.email || '',
-        /* H6 fix: use u.role, not u.role_name which doesn't exist in the API response. */
-        role: u.role || 'inst_admin',
-        tenantId: institutionId,
-        status: u.status || (u.active === 0 ? 'suspended' : 'active'),
-        mfaEnabled: !!u.mfa_enabled,
-        lastLogin: u.last_login || null,
-        createdAt: u.created_at || Date.now(),
-      }));
-    }
-  } catch (err) {
-    console.warn('Backend listInstitutionAdmins fallback:', err.message);
+  const apiAdmins = await Api.listInstitutionAdmins(institutionId);
+  const rows = Array.isArray(apiAdmins) ? apiAdmins : [];
+  for (const u of rows) {
+    const local = {
+      id: u.id || u.user_id || u.username,
+      username: u.username,
+      name: u.full_name || u.name || u.username,
+      email: u.email || '',
+      role: u.role || 'inst_admin',
+      tenantId: institutionId,
+      status: u.status || (u.active === 0 ? 'suspended' : 'active'),
+      mfaEnabled: !!u.mfa_enabled,
+      lastLogin: u.last_login || null,
+      createdAt: u.created_at || null,
+    };
+    await put('users', local).catch(() => {});
   }
-  // Fallback: local IndexedDB
-  const allUsers = await all('users');
-  return allUsers.filter((u) => u.tenantId === institutionId);
+  return rows.map((u) => ({
+    id: u.id || u.user_id || u.username,
+    username: u.username,
+    name: u.full_name || u.name || u.username,
+    email: u.email || '',
+    role: u.role || 'inst_admin',
+    tenantId: institutionId,
+    status: u.status || (u.active === 0 ? 'suspended' : 'active'),
+    mfaEnabled: !!u.mfa_enabled,
+    lastLogin: u.last_login || null,
+    createdAt: u.created_at || null,
+  }));
 }
 
 /**
- * Invite / create an administrator for an institution.
- * Calls POST /api/v1/admin/users with institution_id scoped to the target institution.
- * Stores the result in local IndexedDB for immediate UI update.
+ * Invite / create an administrator for an institution. The backend creates the
+ * account and generates the one-time credential; the client never fabricates a
+ * user, password, or identifier.
  */
 export async function inviteInstitutionAdmin(actor, institutionId, { name, email, role, campusId = '' }) {
   need(actor, 'user.manage');
   if (!clean(name, 60) || clean(name, 60).length < 2) fail('Enter the full name of the administrator.');
   if (!email || !email.includes('@')) fail('Enter a valid institutional email address.');
 
-  let result;
-  try {
-    result = await Api.inviteInstitutionAdmin(institutionId, { name, email, role, campusId });
-  } catch (err) {
-    // If the dedicated endpoint fails, try fallback via createUser
-    try {
-      result = await Api.createUser({
-        username: email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_') + '_' + Date.now().toString(36),
-        fullName: name,
-        email,
-        password: 'ExamOS!Temp' + Math.random().toString(36).slice(2, 8).toUpperCase() + '1',
-        institutionId,
-        role,
-      });
-    } catch (e2) {
-      console.warn('Backend inviteInstitutionAdmin both attempts failed:', e2.message);
-      // Create locally so UI is consistent
-      result = null;
-    }
-  }
-
-  const userId = result?.user_id || result?.id || ('usr_' + Date.now().toString(36));
+  const result = await Api.inviteInstitutionAdmin(institutionId, { name, email, role, campusId });
+  const userId = requireBackendId(result?.user_id || result?.id, 'administrator');
   const newUser = {
     id: userId,
-    username: result?.username || email.split('@')[0],
+    username: result?.username || '',
     name: clean(name, 60),
     email: clean(email, 120).toLowerCase(),
-    role: role || 'inst_admin',
+    role: result?.role || role || 'inst_admin',
     tenantId: institutionId,
     campusId: campusId || null,
     status: 'active',
-    mfaEnabled: false,
+    mfaEnabled: !!result?.mfa_enabled,
     createdAt: Date.now(),
     invitedBy: actor.id,
     tempPassword: result?.tempPassword || null,
@@ -490,37 +420,25 @@ export async function inviteInstitutionAdmin(actor, institutionId, { name, email
 }
 
 /**
- * Remove an administrator from an institution — sets their account to suspended.
+ * Remove an administrator from an institution — the backend suspends the
+ * account and records the reason; the local cache is updated from the result.
  */
 export async function removeInstitutionAdmin(actor, institutionId, userId, reason) {
   need(actor, 'user.manage');
   const r = requireReason(reason, 8);
-  const u = await get('users', userId);
-  if (!u) fail('User not found.');
-  await put('users', { ...u, status: 'suspended', statusReason: r, statusAt: Date.now(), statusBy: actor.id });
+  await Api.removeInstitutionAdmin(institutionId, userId, r);
+  const u = await get('users', userId).catch(() => null);
+  if (u) await put('users', { ...u, status: 'suspended', statusReason: r, statusAt: Date.now(), statusBy: actor.id });
   await log(actor, 'INSTITUTION_ADMIN_REMOVED', `${userId} from ${institutionId}: ${r}`);
   return 'Administrator access removed.';
 }
 
-export async function institutionStats(tenantId, ctx = {}) {
-  try {
-    const backendStats = await Api.getInstitutionStats(tenantId);
-    if (backendStats && typeof backendStats.campuses === 'number') {
-      return backendStats;
-    }
-  } catch (err) {
-    // Offline / fallback to local DB aggregation
+export async function institutionStats(tenantId) {
+  const backendStats = await Api.getInstitutionStats(tenantId);
+  if (!backendStats || typeof backendStats.campuses !== 'number') {
+    fail('Institution metrics are unavailable from the backend.');
   }
-
-  const { centers = await all('centers'), devices = await all('devices'), candidates = await all('candidates'), exams = await all('exams'), campuses = await all('campuses'), departments = await all('departments'), users = await all('users') } = ctx;
-  const f = (x) => x.tenantId === tenantId;
-  const e = exams.filter(f), d = devices.filter(f), cm = campuses.filter(f);
-  return {
-    campuses: cm.length, departments: departments.filter(f).length, users: users.filter(f).length,
-    centers: centers.filter(f).length, devices: d.length, enrolledDevices: d.filter((x) => x.status === 'enrolled').length,
-    candidates: candidates.filter(f).length, exams: e.length, liveExams: e.filter((x) => x.status === 'live').length,
-    publishedExams: e.filter((x) => x.status === 'published').length, openIncidents: (await all('incidents')).filter((i) => f(i) && ['open', 'investigating', 'contained'].includes(i.status)).length,
-  };
+  return backendStats;
 }
 
 export const canManageInstitution = (user, t) => can(user.role, 'tenant.manage') || (can(user.role, 'inst.manage') && user.tenantId === t.id);
@@ -583,21 +501,8 @@ export async function reviewApplication(user, id, action, reviewNotes) {
 export async function provisionApplication(user, id) {
   need(user, 'tenant.manage');
   const res = await Api.provisionInstitutionApplication(id);
-  /* H5/D3 fix: do NOT fabricate a stub tenant in IndexedDB — the backend
-   * created the real tenant record.  Use the backend response data only. */
-  if (res?.institution_id || res?.tenant_id) {
-    const instId = res.institution_id || res.tenant_id;
-    const t = {
-      id: instId,
-      name: res.name || '',
-      code: res.code || '',
-      status: 'active',
-      plan: res.plan || 'pilot',
-      createdAt: Date.now(),
-    };
-    await put('tenants', t).catch(() => {});
-    await put('institutions', t).catch(() => {});
-  }
+  /* The backend creates the real tenant/license/agreement records atomically.
+   * Do not fabricate a local tenant stub; the dashboard re-fetches from the API. */
   await log(user, 'INSTITUTION_PROVISIONED', `${res?.institution_id || id}`);
   return res;
 }
