@@ -57,7 +57,7 @@ COPY server/config /usr/local/bin/config
 COPY server/config /etc/examos
 
 # Setup runtime storage directories
-RUN mkdir -p /var/lib/examos /opt/sppio /var/log/examos /etc/examos
+RUN mkdir -p /var/lib/examos /opt/sppio /opt/sppio/data /var/log/examos /etc/examos
 
 # Setup Render entrypoint
 COPY docker/render-entrypoint.sh /usr/local/bin/render-entrypoint.sh

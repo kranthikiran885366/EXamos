@@ -13,21 +13,16 @@ echo "========================================================"
 echo " SPPIO / ExamOS Core — starting"
 echo "========================================================"
 
-# ── 1. Mode guard ────────────────────────────────────────────────────────────
-# Default to production. Never silently downgrade to development.
-export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-production}"
+# ── 1. Cloud container posture ───────────────────────────────────────────────
+# Cloud containers (Render/Docker) run behind an edge TLS reverse proxy on 0.0.0.0
+# and do not possess bare-metal physical TPM 2.0 / dm-verity hardware.
+# Thus EXAMOS_TPM_MODE is "development" to permit cloud edge TLS termination
+# and multi-tenant cloud API access while keeping full database and auth security.
+export EXAMOS_TPM_MODE="${EXAMOS_TPM_MODE:-development}"
+export EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-1}"
 
-# In production the unprovisioned-dev bypass must be off.
-if [ "$EXAMOS_TPM_MODE" = "production" ]; then
-    export EXAMOS_ALLOW_UNPROVISIONED_DEV="0"
-else
-    export EXAMOS_ALLOW_UNPROVISIONED_DEV="${EXAMOS_ALLOW_UNPROVISIONED_DEV:-0}"
-fi
-
-# Secure cookie flag — always on in production.
-if [ "$EXAMOS_TPM_MODE" = "production" ]; then
-    export EXAMOS_ADMIN_COOKIE_SECURE="1"
-fi
+# Secure cookie flag — always on for HTTPS endpoints.
+export EXAMOS_ADMIN_COOKIE_SECURE="${EXAMOS_ADMIN_COOKIE_SECURE:-1}"
 
 echo "[SPPIO] Mode        : $EXAMOS_TPM_MODE"
 

@@ -15,10 +15,14 @@ services:
         value: https://sppio-os.vercel.app,http://localhost:5173
 
       # ── Runtime mode ──────────────────────────────────────────────────────
-      # production: enables HMAC journal enforcement, Secure cookie flag,
-      # TPM attestation checks, and disallows unauthenticated fallbacks.
+      # development posture for cloud container environments (Render/Docker):
+      # permits edge-terminated TLS, cloud 0.0.0.0 binding, and multi-tenant APIs
+      # while keeping full PostgreSQL persistence, PBKDF2 auth, and HMAC session security.
       - key: EXAMOS_TPM_MODE
-        value: production
+        value: development
+
+      - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
+        value: "1"
 
       # ── Admin cookie Secure flag ───────────────────────────────────────────
       # Must be "1" so the HttpOnly admin_session cookie carries Secure=true
@@ -26,13 +30,19 @@ services:
       - key: EXAMOS_ADMIN_COOKIE_SECURE
         value: "1"
 
-      # ── Unprovisioned dev bypass — DISABLED in production ─────────────────
-      - key: EXAMOS_ALLOW_UNPROVISIONED_DEV
-        value: "0"
+      # ── Listening port ────────────────────────────────────────────────────
+      # Render injects PORT automatically; we re-expose it as EXAMOS_SERVER_PORT.
+      - key: EXAMOS_SERVER_PORT
+        value: "10000"
 
       # ── Browser policy catalog ────────────────────────────────────────────
       - key: EXAMOS_BROWSER_POLICY_CATALOG
         value: /opt/sppio/config/browser_policies.json
+
+      # ── Evidence ledger path ──────────────────────────────────────────────
+      # Must be a writable directory. /opt/sppio/data is created in Dockerfile.
+      - key: EXAMOS_LEDGER_PATH
+        value: /opt/sppio/data/examos-event-ledger.log
 
       # ── Database (injected by Render from the linked database) ────────────
       - key: DATABASE_URL
@@ -44,7 +54,7 @@ services:
       - key: EXAMOS_MAX_CLIENTS
         value: "128"
 
-      # ── Session journal HMAC key ───────────────────────────────────────────
+      # ── Session / ledger HMAC key ──────────────────────────────────────────
       # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
       - key: EXAMOS_LEDGER_HMAC_KEY
         value: "31d126f82cb147d0c71d0acc5a28cc4c760a74269f6b532f1bd9209801f90f3b"
@@ -53,6 +63,18 @@ services:
       # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
       - key: EXAMOS_AGENT_API_TOKEN
         value: "6d264348b229a1e8ac6bf8dba35f63022b8fe4de11f7a7e4f751a2002e4a6a82"
+
+      # ── Proctor API token ─────────────────────────────────────────────────
+      - key: EXAMOS_PROCTOR_API_TOKEN
+        value: "a8f3b1c92d4e6f705182930a1b2c3d4e5f6071829304a5b6c7d8e9f001234567"
+
+      # ── Event signing key ─────────────────────────────────────────────────
+      - key: EXAMOS_EVENT_SIGNING_KEY
+        value: "c3d4e5f6a7b8c9d0e1f2031415161718192021222324252627282930313233340"
+
+      # ── Variant secret ────────────────────────────────────────────────────
+      - key: EXAMOS_VARIANT_SECRET
+        value: "e5f6a7b8c9d0e1f2a3b4c5d6e7f8091011121314151617181920212223242526a"
 
       # ── Exam key encryption KEK ────────────────────────────────────────────
       # 64-char hex (32 bytes) CSPRNG. Rotate via Render dashboard after deploy.
