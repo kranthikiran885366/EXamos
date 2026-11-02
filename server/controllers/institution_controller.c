@@ -120,19 +120,6 @@ static void escape_json_str(const char *in, char *out, size_t out_len) {
     out[j] = '\0';
 }
 
-static void escape_sql_str(const char *in, char *out, size_t out_len) {
-    if (!in || !out || out_len == 0) return;
-    size_t j = 0;
-    for (size_t i = 0; in[i] && j + 2 < out_len; i++) {
-        if (in[i] == '\'') {
-            out[j++] = '\'';
-            out[j++] = '\'';
-        } else {
-            out[j++] = in[i];
-        }
-    }
-    out[j] = '\0';
-}
 
 static void compute_sha256_hex(const char *input, char *out, size_t out_len) {
     if (!input || !out || out_len < 65) return;
@@ -963,7 +950,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 9, lic_vals, lic_lens);
 
             /* 5. Guided Onboarding State Record — use real rep_email, not a placeholder */
-            const char *onb_vals[4] = { new_inst_id, r_email[0] ? r_email : rep_email, now_ms, app_id };
+            const char *first_admin = r_email[0] ? r_email : (hr_email[0] ? hr_email : "pending@institution");
+            const char *onb_vals[4] = { new_inst_id, first_admin, now_ms, app_id };
             int onb_lens[4]; for (int i = 0; i < 4; i++) onb_lens[i] = (int)strlen(onb_vals[i]);
             PGresult *onb_ins = db_simple(conn,
                 "INSERT INTO institution_onboarding (institution_id, status, checklist, completed_steps, total_steps, "
@@ -1785,9 +1773,6 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(mcd_s, sizeof(mcd_s), "%d", max_cand);
             snprintf(me_s,  sizeof(me_s),  "%d", max_ex);
 
-            const char *lv[7] = { plan[0] ? plan : "", status[0] ? status : "", mc_s, md_s, mcd_s, me_s, inst_id };
-            int ll[7]; for (int i = 0; i < 7; i++) ll[i] = (int)strlen(lv[i]);
-            /* now passed separately as $8 */
             const char *lv8[8] = { plan[0] ? plan : "", status[0] ? status : "", mc_s, md_s, mcd_s, me_s, now, inst_id };
             int ll8[8]; for (int i = 0; i < 8; i++) ll8[i] = (int)strlen(lv8[i]);
 
@@ -1804,6 +1789,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 8, lv8, ll8);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             if (res) PQclear(res);
+            if (!ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update institution license", origin, extra_headers, extra_len);
+                return;
+            }
 
             audit_and_ledger(sess.user_id, "INSTITUTION_LICENSE_UPDATED", inst_id, plan[0] ? plan : "limits");
             db_release(conn, 0);
@@ -2659,6 +2649,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 10, uv, ul);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             if (res) PQclear(res);
+            if (!ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update institution settings", origin, extra_headers, extra_len);
+                return;
+            }
 
             if (name[0]) {
                 const char *sv[2] = { name, inst_id };
@@ -3034,6 +3029,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
             }
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             if (res) PQclear(res);
+            if (!ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update campus status", origin, extra_headers, extra_len);
+                return;
+            }
 
             audit_and_ledger(sess.user_id, "CAMPUS_STATUS_UPDATED", cmp_id, st);
             db_release(conn, 0);
