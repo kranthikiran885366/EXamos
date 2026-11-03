@@ -15,7 +15,7 @@ import {
 } from '../institutions/onboardingWorkflow';
 import {
   createInstitution, setInstitutionStatus,
-  fetchInstitutionApplications, reviewApplication, provisionApplication,
+  fetchInstitutionApplications, fetchInstitutionApplication, reviewApplication, provisionApplication,
   fetchInstitutionAgreements, fetchInstitutionLicense, fetchInstitutionDeployments,
   fetchInstitutionOnboarding, updateOnboardingStep, fetchInstitutionPilotReadiness
 } from '../institutions/service';
@@ -443,64 +443,168 @@ export function PlatformVerificationPage() {
   const { tenantId, setTenantId } = useTenant();
   const institutions = useCol('tenants', false);
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
+  const isApp = Boolean(targetId?.startsWith('app_'));
   const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
-  const inst = instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'under_review' } : null);
+
+  const [appData, setAppData] = useState(null);
+  const [appLoading, setAppLoading] = useState(isApp);
+  const [dnsProbe, setDnsProbe] = useState(null);
+
+  // Load application details if targetId is an application
+  useEffect(() => {
+    if (!targetId) return;
+    if (isApp) {
+      setAppLoading(true);
+      fetchInstitutionApplication(targetId)
+        .then((data) => {
+          if (data && data.id) {
+            setAppData(data);
+          } else {
+            throw new Error('Application payload empty');
+          }
+        })
+        .catch(() => {
+          // Fallback to fetchInstitutionApplications list
+          fetchInstitutionApplications()
+            .then((apps) => {
+              const found = apps.find((a) => a.id === targetId);
+              if (found) setAppData(found);
+            })
+            .catch(() => {});
+        })
+        .finally(() => setAppLoading(false));
+    }
+  }, [targetId, isApp]);
+
+  // Unified institution/applicant profile
+  const inst = useMemo(() => {
+    if (isApp) {
+      if (appData) {
+        const cleanDom = (appData.domain || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+        return {
+          id: appData.id,
+          name: appData.legalName || appData.displayName || appData.id,
+          legalName: appData.legalName || '',
+          displayName: appData.displayName || '',
+          code: appData.displayName || appData.id,
+          domain: cleanDom,
+          rawDomain: appData.domain || '',
+          registrationNumber: appData.registrationNumber || '',
+          repEmail: appData.repEmail || '',
+          repName: appData.repName || '',
+          repRole: appData.repRole || '',
+          repPhone: appData.repPhone || '',
+          address: appData.address || '',
+          country: appData.country || 'India',
+          state: appData.state || '',
+          campusCount: appData.campusCount || 1,
+          studentCount: appData.studentCount || 0,
+          deviceCount: appData.deviceCount || 0,
+          deploymentModel: appData.deploymentModel || 'usb-boot',
+          hardwareProfile: appData.hardwareProfile || 'standard-uefi',
+          plan: appData.plan || 'pilot',
+          status: (appData.status || 'submitted').toLowerCase(),
+          entityType: appData.entityType || 'university',
+          institutionId: appData.institutionId || '',
+          reviewNotes: appData.reviewNotes || '',
+          createdAt: appData.createdAt,
+          isApplication: true,
+        };
+      }
+      return { id: targetId, name: 'Loading application dossier...', status: 'under_review', isApplication: true };
+    }
+    return instFromCache || (targetId ? { id: targetId, name: 'Loading institution...', status: 'under_review' } : null);
+  }, [isApp, appData, instFromCache, targetId]);
+
   const id = targetId;
   const { msg, setMsg, run, busy } = useFlash();
 
-  // Checklist starts unchecked — reviewer must manually confirm each item
+  // If application is already approved, pre-check all for immediate visibility
+  const isAlreadyApproved = inst?.status === 'approved';
   const [checklist, setChecklist] = useState({
-    identity: false,
-    domain: false,
-    accreditation: false,
-    representative: false,
-    datacenter: false,
+    identity: isAlreadyApproved,
+    domain: isAlreadyApproved,
+    accreditation: isAlreadyApproved,
+    representative: isAlreadyApproved,
+    datacenter: isAlreadyApproved,
   });
-  const [evidenceNotes, setEvidenceNotes] = useState('');
-  const [successAlert, setSuccessAlert] = useState(null); // { verdict, nextStep }
 
-  // Load the linked application so we can use its ID for the review API call
-  const [linkedApp, setLinkedApp] = useState(null);
   useEffect(() => {
-    fetchInstitutionApplications()
-      .then((apps) => {
-        const found = apps.find(
-          (a) => a.institutionId === id || a.domain === inst?.domain ||
-                 (a.legalName && inst?.name && a.legalName.toLowerCase() === inst.name.toLowerCase())
-        );
-        setLinkedApp(found || null);
-      })
-      .catch(() => setLinkedApp(null));
-  }, [id]);
+    if (isAlreadyApproved) {
+      setChecklist({ identity: true, domain: true, accreditation: true, representative: true, datacenter: true });
+    }
+  }, [isAlreadyApproved]);
+
+  const [evidenceNotes, setEvidenceNotes] = useState(inst?.reviewNotes || '');
+  const [successAlert, setSuccessAlert] = useState(null);
 
   const toggleCheck = (k) => setChecklist((s) => ({ ...s, [k]: !s[k] }));
   const checkedCount = Object.values(checklist).filter(Boolean).length;
   const allChecked = checkedCount === 5;
 
+  // Domain security analysis
+  const repDomain = (inst?.repEmail || '').split('@')[1] || '';
+  const isWebmail = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(repDomain.toLowerCase());
+  const isMatchingDomain = inst?.domain && repDomain && inst.domain.toLowerCase().includes(repDomain.toLowerCase());
+
+  // Live DNS TXT Challenge Probe
+  const handleRunDnsProbe = async () => {
+    if (!inst?.domain) return;
+    const probeHost = `_examosverify.${inst.domain}`;
+    setDnsProbe({ probing: true, msg: `Querying DNS over HTTPS for ${probeHost}...` });
+    try {
+      const resp = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(probeHost)}&type=TXT`, {
+        headers: { Accept: 'application/dns-json' },
+      });
+      const data = await resp.json();
+      const answers = data?.Answer || [];
+      const expectedToken = `examos-verify=${id}`;
+      const hasMatch = answers.some((a) => a.data && a.data.includes(expectedToken));
+      if (hasMatch) {
+        setDnsProbe({ probing: false, found: true, msg: `DNS TXT challenge verified on ${probeHost}!` });
+        setChecklist((s) => ({ ...s, domain: true }));
+      } else if (answers.length > 0) {
+        setDnsProbe({
+          probing: false,
+          found: false,
+          msg: `TXT record found (${answers[0].data}), but expected token '${expectedToken}' was missing.`,
+        });
+      } else {
+        setDnsProbe({
+          probing: false,
+          found: false,
+          msg: `No TXT records published at ${probeHost} yet. (DNS propagation may take 15m–24h).`,
+        });
+      }
+    } catch (err) {
+      setDnsProbe({ probing: false, found: false, msg: `Public DNS query failed: ${err.message}` });
+    }
+  };
+
   const handleRecordVerdict = async (verdict) => {
     if (!id) {
-      setMsg('Error: No institution ID available. Navigate to this page from the Applications queue.');
+      setMsg('Error: No institution reference available.');
       return;
     }
     await run(async () => {
       const isApproved = verdict === 'verified';
-      await updateOnboardingStep(user, id, 'verification', isApproved, evidenceNotes);
+      const action = isApproved ? 'APPROVED' : (verdict === 'corrections_requested' ? 'MORE_INFORMATION_REQUIRED' : 'REJECTED');
 
-      // Use linked application ID if available for backend review call
-      const appId = linkedApp?.id || id;
-      try {
-        const action = isApproved ? 'APPROVED' : (verdict === 'corrections_requested' ? 'MORE_INFORMATION_REQUIRED' : 'REJECTED');
-        await reviewApplication(user, appId, action, evidenceNotes || 'Identity & domain challenges verified by platform admin');
-      } catch (err) {
-        console.warn('Backend sync review:', err?.message);
+      if (isApp) {
+        // APPLICATION WORKFLOW: Record review verdict on institution_applications table.
+        // NEVER call updateOnboardingStep because tenant is not provisioned yet!
+        await reviewApplication(user, id, action, evidenceNotes || 'Statutory charter and identity challenges verified by platform admin');
+        setAppData((prev) => prev ? { ...prev, status: action, reviewNotes: evidenceNotes } : null);
+      } else {
+        // PROVISIONED TENANT WORKFLOW: Update onboarding step for existing tenant.
+        await updateOnboardingStep(user, id, 'verification', isApproved, evidenceNotes);
       }
 
-      // Show success popup with next step
       if (verdict === 'verified') {
         setSuccessAlert({
           verdict: 'verified',
-          title: 'Verification Complete!',
-          msg: `${inst.name} has been successfully verified and approved. The institution is now ready for Tenant Provisioning.`,
+          title: 'Verification Complete & Approved!',
+          msg: `${inst.name} has been verified and approved. The next step is Tenant Provisioning to set up their isolated database enclave, cryptographic keys, and license.`,
           nextLabel: 'Proceed to Tenant Provisioning →',
           nextPath: `/platform/institutions/${id}/provisioning`,
         });
@@ -508,7 +612,7 @@ export function PlatformVerificationPage() {
         setSuccessAlert({
           verdict: 'corrections',
           title: 'Corrections Requested',
-          msg: 'The applicant has been notified that additional information is required. Application status updated.',
+          msg: 'The applicant has been notified that additional verification evidence is required. Status updated to MORE_INFORMATION_REQUIRED.',
           nextLabel: 'Back to Applications Queue',
           nextPath: '/platform/institutions/applications',
         });
@@ -522,8 +626,8 @@ export function PlatformVerificationPage() {
         });
       }
 
-      return `Verification decision recorded: ${verdict.toUpperCase()}`;
-    }, 'Verification recorded.');
+      return `Verification decision recorded: ${action}`;
+    }, 'Verification decision recorded.');
   };
 
   const handleSwitch = (newId) => {
@@ -537,21 +641,154 @@ export function PlatformVerificationPage() {
   return (
     <Page
       title={`Identity Verification · ${inst.name}`}
-      desc="Verify official educational charter, domain DNS TXT records, and authorized signatory credentials."
-      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst.name}</Link><Icon name="arrow" size={12} /><span>Verification</span></div>}
+      desc="Inspect applicant charter, verify domain DNS TXT challenge, audit authorized signatory credentials, and record compliance approval."
+      breadcrumb={
+        <div className="crumbs-inline">
+          <Link to="/platform/institutions">Platform</Link>
+          <Icon name="arrow" size={12} />
+          <Link to="/platform/institutions/applications">Applications</Link>
+          <Icon name="arrow" size={12} />
+          <span>{inst.name}</span>
+        </div>
+      }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
-      <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
+      {!isApp && <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />}
       <OnboardingWorkflowBar currentStage={1} />
-      <StatusMatrix inst={{ ...inst, verificationStatus: allChecked ? 'verified' : 'in_review' }} />
 
-      {/* Verification Progress Indicator */}
+      {/* Prominent Next Action Banner when Already Approved */}
+      {isAlreadyApproved && (
+        <div style={{ background: '#EEF4FF', border: '1px solid #BFDBFE', borderRadius: '10px', padding: '16px 20px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', boxShadow: 'var(--shadow)' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+              <span style={{ fontSize: '18px' }}>✅</span>
+              <b style={{ color: '#1E40AF', fontSize: '14.5px' }}>Application Verified &amp; Approved</b>
+              <Badge value="APPROVED" tone="green" />
+            </div>
+            <p style={{ margin: 0, fontSize: '13px', color: '#3B82F6' }}>
+              This institution has passed identity verification. Next step: execute <b>Tenant Provisioning</b> to initialize their isolated database, cryptographic keys, and active license.
+            </p>
+          </div>
+          <button
+            className="btn primary"
+            onClick={() => nav(`/platform/institutions/${id}/provisioning`)}
+            style={{ flexShrink: 0, padding: '10px 18px', fontWeight: 700 }}
+          >
+            Proceed to Tenant Provisioning →
+          </button>
+        </div>
+      )}
+
+      {/* Applicant Dossier / Submitted Documents & Data Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+        {/* Card 1: Statutory Charter & Registration */}
+        <div style={{ background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '16px', boxShadow: 'var(--shadow)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <span style={{ color: 'var(--copper, #B54F34)' }}><Icon name="building" size={18} /></span>
+            <b style={{ fontSize: '13.5px', color: 'var(--aubergine, #302337)' }}>Legal Charter &amp; Accreditation</b>
+          </div>
+          <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div><span className="muted">Legal Name:</span> <b>{inst.legalName || inst.name}</b></div>
+            <div><span className="muted">Entity Type:</span> <Badge value={(inst.entityType || 'university').toUpperCase()} tone="purple" /></div>
+            <div>
+              <span className="muted">Registration / Charter #:</span>{' '}
+              <code style={{ background: '#F4EFEA', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, color: '#B54F34' }}>
+                {inst.registrationNumber || 'Pending Submission'}
+              </code>
+            </div>
+            <div><span className="muted">Registered Address:</span> {inst.address ? `${inst.address}, ` : ''}{inst.state ? `${inst.state}, ` : ''}{inst.country || 'India'}</div>
+            <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px solid #F0ECE6' }}>
+              <small className="muted">Statutory Verification: Confirm against UGC, AICTE, NAAC, NBA, or statutory portal.</small>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 2: Academic Domain & DNS Challenge */}
+        <div style={{ background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '16px', boxShadow: 'var(--shadow)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <span style={{ color: 'var(--copper, #B54F34)' }}><Icon name="globe" size={18} /></span>
+            <b style={{ fontSize: '13.5px', color: 'var(--aubergine, #302337)' }}>Domain &amp; DNS TXT Challenge</b>
+          </div>
+          <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div>
+              <span className="muted">Official Domain:</span>{' '}
+              {inst.domain ? (
+                <a href={inst.rawDomain?.startsWith('http') ? inst.rawDomain : `https://${inst.domain}`} target="_blank" rel="noreferrer" style={{ fontWeight: 700, color: 'var(--copper, #B54F34)' }}>
+                  {inst.domain} ↗
+                </a>
+              ) : <b>Not provided</b>}
+            </div>
+            <div>
+              <span className="muted">Required DNS Host:</span> <code>_examosverify.{inst.domain || 'domain'}</code>
+            </div>
+            <div>
+              <span className="muted">Required TXT Value:</span> <code>examos-verify={id}</code>
+            </div>
+            <div style={{ marginTop: '6px' }}>
+              <button
+                className="btn small"
+                onClick={handleRunDnsProbe}
+                disabled={!inst.domain || dnsProbe?.probing}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+              >
+                <Icon name="search" size={13} /> {dnsProbe?.probing ? 'Probing Public DNS...' : 'Verify DNS TXT Record Now'}
+              </button>
+            </div>
+            {dnsProbe && (
+              <div style={{ marginTop: '4px', padding: '6px 8px', borderRadius: '6px', fontSize: '11.5px', background: dnsProbe.found ? 'var(--gbg, #edf7f1)' : '#FEF3C7', color: dnsProbe.found ? 'var(--g, #1b7a4b)' : '#92400E', border: `1px solid ${dnsProbe.found ? 'var(--gline, #b9e3cc)' : '#FDE68A'}` }}>
+                {dnsProbe.msg}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Card 3: Authorized Signatory */}
+        <div style={{ background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '16px', boxShadow: 'var(--shadow)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <span style={{ color: 'var(--copper, #B54F34)' }}><Icon name="users" size={18} /></span>
+            <b style={{ fontSize: '13.5px', color: 'var(--aubergine, #302337)' }}>Authorized Signatory &amp; Contact</b>
+          </div>
+          <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div><span className="muted">Representative:</span> <b>{inst.repName || 'Official Signatory'}</b></div>
+            <div><span className="muted">Designation:</span> {inst.repRole || 'Vice-Chancellor / Dean / Director'}</div>
+            <div><span className="muted">Official Email:</span> <code>{inst.repEmail || 'Not provided'}</code></div>
+            <div><span className="muted">Contact Phone:</span> {inst.repPhone || 'Not provided'}</div>
+            <div style={{ marginTop: '4px' }}>
+              {isMatchingDomain ? (
+                <span className="badge sm" style={{ background: 'var(--gbg, #edf7f1)', color: 'var(--g, #1b7a4b)' }}>✓ Matches Academic Domain</span>
+              ) : isWebmail ? (
+                <span className="badge sm" style={{ background: '#FEF3C7', color: '#92400E' }}>⚠ Webmail Domain — Verify Official Letterhead</span>
+              ) : (
+                <span className="badge sm">External Email Domain</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Card 4: Fleet & Examination Scope */}
+        <div style={{ background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', padding: '16px', boxShadow: 'var(--shadow)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <span style={{ color: 'var(--copper, #B54F34)' }}><Icon name="cpu" size={18} /></span>
+            <b style={{ fontSize: '13.5px', color: 'var(--aubergine, #302337)' }}>Fleet &amp; Examination Scope</b>
+          </div>
+          <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div><span className="muted">Testing Campuses / Centers:</span> <b>{inst.campusCount}</b></div>
+            <div><span className="muted">Workstations Fleet:</span> <b>{inst.deviceCount} bare-metal kiosks</b></div>
+            <div><span className="muted">Annual Candidate Volume:</span> <b>{inst.studentCount}</b> candidates/yr</div>
+            <div><span className="muted">Deployment Model:</span> <Badge value={inst.deploymentModel?.toUpperCase()} tone="amber" /></div>
+            <div><span className="muted">Hardware Profile:</span> <code>{inst.hardwareProfile}</code></div>
+            <div><span className="muted">Enclave Tier:</span> <b>{inst.plan?.toUpperCase()}</b></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Checklist Progress */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', marginBottom: '16px', boxShadow: 'var(--shadow)' }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 700 }}>Checklist Progress</span>
+            <span style={{ fontSize: '13px', fontWeight: 700 }}>Reviewer Verification Progress</span>
             <span style={{ fontSize: '13px', color: allChecked ? 'var(--g, #1b7a4b)' : 'var(--mut, #756F79)', fontWeight: 700 }}>
-              {checkedCount} / 5 verified {allChecked ? '— Ready to approve ✓' : '— Complete all checks to approve'}
+              {checkedCount} / 5 verified {allChecked ? '— Ready to approve ✓' : '— Complete all 5 checks to record approval'}
             </span>
           </div>
           <div style={{ height: '6px', background: '#EAE4DC', borderRadius: '3px', overflow: 'hidden' }}>
@@ -560,21 +797,74 @@ export function PlatformVerificationPage() {
         </div>
       </div>
 
-      <Card title="Reviewer Verification Checklist" desc="Manually confirm each item after independent verification. All checks are required before approval.">
+      {/* Reviewer Verification Checklist Card */}
+      <Card
+        title="Reviewer Evidence Checklist"
+        desc="Inspect the dossier above and independently verify each item before recording official platform accreditation."
+      >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', margin: '10px 0' }}>
           {[
-            { key: 'identity', label: 'Official Institution Legal Charter & Registration Verified', hint: 'Check against UGC / AICTE / statutory regulatory body records.' },
-            { key: 'domain', label: 'Academic Domain Ownership Confirmed via DNS TXT / SPF', hint: 'Verify _examosverify TXT record published on the domain.' },
-            { key: 'accreditation', label: 'Authorization Record / Corporate Incorporation Certificate on File', hint: 'Confirm NAAC / NBA / ABET, CIN, or equivalent certification reference.' },
-            { key: 'representative', label: 'Authorized Institutional Signatory / Vice-Chancellor Authorization Validated', hint: 'Letter of authorization from the legal head of the institution received.' },
-            { key: 'datacenter', label: 'Site / Campus Workstation Subnet & Kiosk IP Range Scoped', hint: 'Site network range and exam center IP boundaries confirmed.' },
+            {
+              key: 'identity',
+              label: '1. Official Educational Charter & Statutory Registration Verified',
+              hint: `Registration #${inst.registrationNumber || 'N/A'} for ${inst.name} confirmed against UGC / AICTE / Statutory Registry.`,
+            },
+            {
+              key: 'domain',
+              label: '2. Academic Domain Ownership & Control Confirmed',
+              hint: `Control of ${inst.domain || 'domain'} validated via DNS TXT record or official institutional website.`,
+            },
+            {
+              key: 'accreditation',
+              label: '3. Accreditation & Institutional Letterhead on File',
+              hint: `Official accreditation references and charter documents confirmed in compliance records.`,
+            },
+            {
+              key: 'representative',
+              label: '4. Authorized Institutional Signatory Authority Validated',
+              hint: `Signatory ${inst.repName || 'representative'} (${inst.repEmail}) authorized by the institution's legal head.`,
+            },
+            {
+              key: 'datacenter',
+              label: '5. Workstation Fleet & Kiosk Deployment Architecture Scoped',
+              hint: `Deployment profile (${inst.deviceCount} workstations across ${inst.campusCount} center(s), ${inst.deploymentModel}) confirmed feasible.`,
+            },
           ].map((item) => (
-            <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 14px', background: checklist[item.key] ? 'var(--gbg, #edf7f1)' : '#FAFAFA', border: `1px solid ${checklist[item.key] ? 'var(--gline, #b9e3cc)' : 'var(--line, #DCD5D2)'}`, borderRadius: '8px', cursor: 'pointer', transition: 'all 0.2s' }} onClick={() => toggleCheck(item.key)}>
-              <div style={{ width: '20px', height: '20px', borderRadius: '4px', border: `2px solid ${checklist[item.key] ? 'var(--g, #1b7a4b)' : '#C0B8C4'}`, background: checklist[item.key] ? 'var(--g, #1b7a4b)' : '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '2px' }}>
+            <div
+              key={item.key}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '12px',
+                padding: '12px 14px',
+                background: checklist[item.key] ? 'var(--gbg, #edf7f1)' : '#FAFAFA',
+                border: `1px solid ${checklist[item.key] ? 'var(--gline, #b9e3cc)' : 'var(--line, #DCD5D2)'}`,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+              }}
+              onClick={() => toggleCheck(item.key)}
+            >
+              <div
+                style={{
+                  width: '20px',
+                  height: '20px',
+                  borderRadius: '4px',
+                  border: `2px solid ${checklist[item.key] ? 'var(--g, #1b7a4b)' : '#C0B8C4'}`,
+                  background: checklist[item.key] ? 'var(--g, #1b7a4b)' : '#FFFFFF',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  marginTop: '2px',
+                }}
+              >
                 {checklist[item.key] && <span style={{ color: '#FFFFFF', fontSize: '12px', fontWeight: 800 }}>✓</span>}
               </div>
               <div>
-                <div style={{ fontWeight: 700, fontSize: '13.5px', color: checklist[item.key] ? 'var(--g, #1b7a4b)' : 'var(--aubergine, #302337)' }}>{item.label}</div>
+                <div style={{ fontWeight: 700, fontSize: '13.5px', color: checklist[item.key] ? 'var(--g, #1b7a4b)' : 'var(--aubergine, #302337)' }}>
+                  {item.label}
+                </div>
                 <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)', marginTop: '2px' }}>{item.hint}</div>
               </div>
             </div>
@@ -582,18 +872,19 @@ export function PlatformVerificationPage() {
         </div>
 
         <div style={{ marginTop: '20px' }}>
-          <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>Evidence References &amp; Auditable Notes</label>
-          <Textarea rows={3} value={evidenceNotes} onChange={(e) => setEvidenceNotes(e.target.value)} placeholder="Record certificate hash, registrar ticket ID, domain challenge response, or accreditation reference number..." />
-          <small style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', marginTop: '4px', display: 'block' }}>These notes are permanently written to the tamper-evident audit ledger.</small>
+          <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: 'var(--ink2, #48394F)', marginBottom: '6px' }}>
+            Auditable Evidence References &amp; Reviewer Notes
+          </label>
+          <Textarea
+            rows={3}
+            value={evidenceNotes}
+            onChange={(e) => setEvidenceNotes(e.target.value)}
+            placeholder="Record certificate hash, statutory registry verification ticket ID, registrar notes, or reasoning..."
+          />
+          <small style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', marginTop: '4px', display: 'block' }}>
+            These verification notes are permanently committed to the immutable HMAC-authenticated audit ledger.
+          </small>
         </div>
-
-        {linkedApp && (
-          <div style={{ marginTop: '16px', padding: '12px 16px', background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', fontSize: '13px' }}>
-            <b>Linked Application:</b> {linkedApp.legalName} · <code>{linkedApp.id}</code> ·
-            Status: <b>{linkedApp.status}</b>
-            {linkedApp.registrationNumber && <> · Reg: {linkedApp.registrationNumber}</>}
-          </div>
-        )}
 
         <div className="row end" style={{ marginTop: '20px', gap: '10px' }}>
           <button className="btn" onClick={() => handleRecordVerdict('corrections_requested')} disabled={busy}>
@@ -616,17 +907,23 @@ export function PlatformVerificationPage() {
       {/* Success Alert / Next Step Modal */}
       {successAlert && (
         <Modal
-          title={successAlert.verdict === 'verified' ? '✅ Verification Complete' : successAlert.verdict === 'corrections' ? '📋 Corrections Requested' : '❌ Application Rejected'}
+          title={
+            successAlert.verdict === 'verified'
+              ? '✅ Verification Complete & Approved'
+              : successAlert.verdict === 'corrections'
+              ? '📋 Corrections Requested'
+              : '❌ Application Rejected'
+          }
           desc={successAlert.msg}
           onClose={() => { setSuccessAlert(null); nav('/platform/institutions/applications'); }}
         >
           <div style={{ padding: '16px 0' }}>
             {successAlert.verdict === 'verified' && (
-              <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '32px', textAlign: 'center', marginBottom: '10px' }}>🎉</div>
-                <h3 style={{ textAlign: 'center', color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Identity Verified Successfully</h3>
-                <p style={{ textAlign: 'center', color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  <b>{inst.name}</b> has passed all verification checks. The next step is <b>Tenant Provisioning</b> — setting up the isolated database schema, cryptographic master keys, and license entitlements.
+              <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '36px', marginBottom: '8px' }}>🎉</div>
+                <h3 style={{ color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Institution Verified!</h3>
+                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
+                  <b>{inst.name}</b> has passed all verification challenges. The application is now <b>APPROVED</b>. Next step: execute <b>Tenant Provisioning</b> to allocate their isolated database, cryptographic master keys, and license.
                 </p>
               </div>
             )}
@@ -635,24 +932,21 @@ export function PlatformVerificationPage() {
               <b>What happens next:</b>
               {successAlert.verdict === 'verified' && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
-                  <li>The application status is now <b>APPROVED</b></li>
-                  <li>Go to <b>Tenant Provisioning</b> to execute the database schema creation</li>
-                  <li>After provisioning, send the admin invitation to <b>{inst.contactEmail || 'the representative email'}</b></li>
-                  <li>Institution admin will receive a link to set up their account and MFA</li>
+                  <li>Application status recorded as <b>APPROVED</b> in compliance ledger</li>
+                  <li>Proceed directly to <b>Tenant Provisioning</b> to create the isolated enclave</li>
+                  <li>Invite the primary administrator to activate their account and enroll MFA</li>
                 </ul>
               )}
               {successAlert.verdict === 'corrections' && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
                   <li>Application status set to <b>MORE_INFORMATION_REQUIRED</b></li>
-                  <li>The institution can resubmit or provide corrections via the tracking portal</li>
-                  <li>Review the application again once they respond</li>
+                  <li>Applicant can update their submission via the public registration tracker</li>
                 </ul>
               )}
               {successAlert.verdict === 'rejected' && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
-                  <li>Application status set to <b>REJECTED</b></li>
-                  <li>Rejection reason recorded in the audit ledger</li>
-                  <li>The institution can reapply with corrected information</li>
+                  <li>Application permanently marked as <b>REJECTED</b></li>
+                  <li>Reason written to audit ledger</li>
                 </ul>
               )}
             </div>
@@ -672,6 +966,7 @@ export function PlatformVerificationPage() {
     </Page>
   );
 }
+
 
 /* =====================================================================
    PAGE 5 — Institution Details and Approval (/platform/institutions/:id)

@@ -135,6 +135,132 @@ int audit_append(const char *actor, const char *event, const char *detail) {
     return rc;
 }
 
+/* Minimal JSON string extractor for audit entries. Handles the escapes that
+ * clients can realistically emit, including \\uXXXX (emitted as '?'). */
+static int audit_json_string(const char *obj, const char *key,
+                             char *out, size_t out_len) {
+    if (!obj || !key || !out || out_len == 0) return 0;
+    out[0] = '\0';
+    char pattern[96];
+    if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern)) return 0;
+    const char *p = strstr(obj, pattern);
+    if (!p) return 0;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != '"') return 0;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < out_len) {
+        if (*p == '\\' && p[1]) {
+            p++;
+            switch (*p) {
+                case 'n': out[i++] = '\n'; break;
+                case 'r': out[i++] = '\r'; break;
+                case 't': out[i++] = '\t'; break;
+                case 'b': out[i++] = '\b'; break;
+                case 'f': out[i++] = '\f'; break;
+                case '"': out[i++] = '"';  break;
+                case '\\': out[i++] = '\\'; break;
+                case '/': out[i++] = '/';  break;
+                case 'u':
+                    for (int k = 0; k < 4 && p[1]; k++) p++;
+                    if (i + 1 < out_len) out[i++] = '?';
+                    break;
+                default: out[i++] = *p; break;
+            }
+            p++;
+        } else {
+            out[i++] = *p++;
+        }
+    }
+    out[i] = '\0';
+    return 1;
+}
+
+static const char *audit_json_object_end(const char *start) {
+    if (!start || *start != '{') return NULL;
+    int depth = 0, in_str = 0, esc = 0;
+    for (const char *p = start; *p; p++) {
+        char c = *p;
+        if (in_str) {
+            if (esc) esc = 0;
+            else if (c == '\\') esc = 1;
+            else if (c == '"') in_str = 0;
+            continue;
+        }
+        if (c == '"') { in_str = 1; continue; }
+        if (c == '{') depth++;
+        else if (c == '}') {
+            depth--;
+            if (depth == 0) return p;
+        }
+    }
+    return NULL;
+}
+
+int audit_append_batch_json(const char *body, const char *actor_override,
+                            int *out_appended, char *out_error,
+                            size_t error_len) {
+    if (out_appended) *out_appended = 0;
+    if (out_error && error_len) out_error[0] = '\0';
+#define AUDIT_BATCH_FAIL(msg) do { \
+        if (out_error && error_len) snprintf(out_error, error_len, "%s", (msg)); \
+        return -1; \
+    } while (0)
+
+    if (!body || !body[0]) AUDIT_BATCH_FAIL("Request body is required");
+    if (out_appended) *out_appended = 0;
+
+    const char *p = strstr(body, "\"events\"");
+    if (!p) AUDIT_BATCH_FAIL("events array is required");
+    p = strchr(p, '[');
+    if (!p) AUDIT_BATCH_FAIL("events array is required");
+    p++;
+
+    int appended = 0;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') p++;
+        if (*p == ']') break;
+        if (*p != '{') AUDIT_BATCH_FAIL("Malformed event entry");
+
+        const char *end = audit_json_object_end(p);
+        if (!end) AUDIT_BATCH_FAIL("Unterminated event object");
+
+        size_t obj_len = (size_t)(end - p) + 1;
+        if (obj_len >= 2048) AUDIT_BATCH_FAIL("Audit event exceeds the 2 KB entry limit");
+
+        char obj[2048];
+        memcpy(obj, p, obj_len);
+        obj[obj_len] = '\0';
+
+        char event[160] = {0}, detail[640] = {0}, actor[96] = {0};
+        audit_json_string(obj, "event", event, sizeof(event));
+        audit_json_string(obj, "detail", detail, sizeof(detail));
+        if (!actor_override || !actor_override[0]) {
+            audit_json_string(obj, "actor", actor, sizeof(actor));
+        }
+        if (!event[0]) AUDIT_BATCH_FAIL("Audit event is missing its event name");
+
+        const char *use_actor = (actor_override && actor_override[0])
+            ? actor_override
+            : (actor[0] ? actor : "system");
+        if (audit_append(use_actor, event, detail) != 0) {
+            AUDIT_BATCH_FAIL("Failed to persist an audit entry in the durable chain");
+        }
+        appended++;
+        if (appended > 200) AUDIT_BATCH_FAIL("Batch limit exceeded (maximum 200 events)");
+        p = end + 1;
+    }
+
+    if (appended == 0) AUDIT_BATCH_FAIL("events array is empty");
+    if (out_appended) *out_appended = appended;
+    return 0;
+#undef AUDIT_BATCH_FAIL
+}
+
 int audit_verify(void) {
     PGconn *conn = db_acquire();
     if (!conn) return 0;

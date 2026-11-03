@@ -169,17 +169,17 @@ export const createInstitution = wrap(async (data) => {
   const { name, code, contactEmail, contactPhone, region, timezone, plan, maxCenters, maxCandidates, deploymentModel, retentionDays, domains } = data || {};
   const res = await api.post(ENDPOINTS.institutions, {
     name,
-    code: code || (name || 'INST').replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase(),
+    code: code || '',
     contact_email: contactEmail || '',
     contact_phone: contactPhone || '',
-    region: region || 'India · Mumbai',
-    timezone: timezone || 'Asia/Kolkata',
-    plan: plan || 'pilot',
-    max_centers: Number(maxCenters) || 5,
-    max_candidates: Number(maxCandidates) || 500,
-    deployment_model: deploymentModel || 'usb-boot',
+    region: region || '',
+    timezone: timezone || '',
+    plan: plan || '',
+    max_centers: Number(maxCenters) || 0,
+    max_candidates: Number(maxCandidates) || 0,
+    deployment_model: deploymentModel || '',
     /* M2 fix: send snake_case retention_days to match the backend's ctrl_json_int key. */
-    retention_days: Number(retentionDays) || 365,
+    ...(Number(retentionDays) ? { retention_days: Number(retentionDays) } : {}),
     domains: domains || [],
     active: 1,
   }, { actor: ACTOR, sign: true });

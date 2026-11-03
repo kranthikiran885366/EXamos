@@ -178,7 +178,7 @@ int kiosk_get_active_count(void) {
     pthread_mutex_lock(&g_kiosk_sync_lock);
     int count = g_tracked_kiosk_count;
     pthread_mutex_unlock(&g_kiosk_sync_lock);
-    return count > 0 ? count : 1;
+    return count;
 }
 
 static void sig_handler(int sig) {
@@ -1339,7 +1339,48 @@ static void* handle_client(void *arg) {
     else if ((strcmp(route_path, "/api/v1/audit/batch") == 0 ||
               strcmp(route_path, "/api/v1/admin/audit/batch") == 0) && strcmp(method, "POST") == 0) {
         ctrl_set_cors(extra, sizeof(extra), origin, ctrl_cors_origin_allowed(origin));
-        ctrl_send_json(client_fd, 200, "{\"status\":\"SUCCESS\",\"received\":true}", extra);
+
+        /* Audit writes are attributed to the authenticated principal, never to
+         * an actor string supplied in the request body. */
+        char audit_actor[80] = {0};
+        auth_session_t audit_sess;
+        memset(&audit_sess, 0, sizeof(audit_sess));
+        if (ctrl_authorize(auth_header, AUTH_PERM_READ, &audit_sess) == 0) {
+            snprintf(audit_actor, sizeof(audit_actor), "%s",
+                     audit_sess.user_id[0] ? audit_sess.user_id : "admin");
+        } else {
+            char candidate_token[128] = {0};
+            char candidate_id[64] = {0};
+            if (ctrl_extract_bearer(auth_header, candidate_token, sizeof(candidate_token)) &&
+                candidate_session_validate(candidate_token) &&
+                candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id)) &&
+                candidate_id[0]) {
+                snprintf(audit_actor, sizeof(audit_actor), "%s", candidate_id);
+            }
+        }
+
+        if (!audit_actor[0]) {
+            ctrl_send_json(client_fd, 401,
+                "{\"error\":\"Authenticated session required to record audit events\"}", extra);
+            goto client_done;
+        }
+
+        int audit_appended = 0;
+        char audit_error[192] = {0};
+        if (audit_append_batch_json(req_body, audit_actor, &audit_appended,
+                                    audit_error, sizeof(audit_error)) != 0) {
+            int status = strstr(audit_error, "Failed to persist") ? 500 : 400;
+            char err_body[384];
+            snprintf(err_body, sizeof(err_body),
+                     "{\"error\":\"%s\",\"appended\":%d}", audit_error, audit_appended);
+            ctrl_send_json(client_fd, status, err_body, extra);
+            goto client_done;
+        }
+
+        char ok_body[96];
+        snprintf(ok_body, sizeof(ok_body),
+                 "{\"status\":\"RECORDED\",\"appended\":%d}", audit_appended);
+        ctrl_send_json(client_fd, 200, ok_body, extra);
         goto client_done;
     }
     /* Enterprise Institution, Applications, Agreements, Licenses, Deployments, Campuses, Departments, and Staff Management */
@@ -1851,11 +1892,11 @@ static void* handle_client(void *arg) {
             parse_json_string(ann_json, "announcement", safe_ann, sizeof(safe_ann));
         }
 
-        char dep_inst[64] = "inst-default", dep_rel[64] = "examos-2026.1-stable", dep_chan[32] = "stable";
-        char dep_hw[64] = "standard-uefi", dep_sec[64] = "high-assurance", dep_hash[128] = "sha256-default";
+        char dep_inst[64] = {0}, dep_rel[64] = {0}, dep_chan[32] = {0};
+        char dep_hw[64] = {0}, dep_sec[64] = {0}, dep_hash[128] = {0};
         PGconn *c_db = db_acquire();
         if (c_db) {
-            PGresult *dr = PQexec(c_db, "SELECT institution_id, release_id, channel, hardware_profile, security_profile, COALESCE(policy_hash,'sha256-standard') "
+            PGresult *dr = PQexec(c_db, "SELECT institution_id, release_id, channel, hardware_profile, security_profile, COALESCE(policy_hash,'') "
                                         "FROM institution_os_deployments WHERE status = 'ACTIVE' ORDER BY updated_at DESC LIMIT 1");
             if (dr && PQresultStatus(dr) == PGRES_TUPLES_OK && PQntuples(dr) > 0) {
                 snprintf(dep_inst, sizeof(dep_inst), "%s", PQgetvalue(dr, 0, 0));
@@ -1894,23 +1935,28 @@ static void* handle_client(void *arg) {
                  "}",
                  cfg.configured ? "true" : "false",
                  safe_url, safe_name,
-                 cfg.exam_id[0] ? cfg.exam_id : "EXAM-2026-DEFAULT",
-                 cfg.exam_duration_minutes > 0 ? cfg.exam_duration_minutes : 120,
+                 cfg.exam_id[0] ? cfg.exam_id : "",
+                 cfg.exam_duration_minutes,
                  lock ? "true" : "false",
                  cmd, seq, safe_ann,
                  (long)time(NULL),
-                 g_production_mode ? "PRODUCTION" : "DEVELOPMENT",
-                 g_production_mode ? "production" : "development",
+                 "UNKNOWN",
+                 "UNKNOWN",
                  dep_inst, dep_rel, dep_chan, dep_hw, dep_sec, dep_hash);
         send_http_response(client_fd, 200, "application/json", resp);
     }
     /* Route: POST /api/v1/kiosk/heartbeat -> Kiosk terminal presence & telemetry */
     else if (strcmp(route_path, "/api/v1/kiosk/heartbeat") == 0 && strcmp(method, "POST") == 0) {
-        char term_id[64] = "DEV-KIOSK-01", term_ip[64] = "127.0.0.1", active_url[512] = "", term_status[32] = "ONLINE";
-        int focus = 1;
+        char term_id[64] = {0}, term_ip[64] = {0}, active_url[512] = {0}, term_status[32] = "UNKNOWN";
+        int focus = 0;
         char p_id[64] = {0}, p_ip[64] = {0}, p_url[512] = {0}, p_status[32] = {0};
         parse_json_string(req_body, "terminal_id", p_id, sizeof(p_id));
         if (p_id[0]) snprintf(term_id, sizeof(term_id), "%s", p_id);
+        if (!term_id[0]) {
+            send_http_response(client_fd, 400, "application/json",
+                               "{\"error\":\"terminal_id is required\"}");
+            goto client_done;
+        }
 
         parse_json_string(req_body, "ip", p_ip, sizeof(p_ip));
         if (p_ip[0]) snprintf(term_ip, sizeof(term_ip), "%s", p_ip);
@@ -1921,7 +1967,7 @@ static void* handle_client(void *arg) {
         parse_json_string(req_body, "status", p_status, sizeof(p_status));
         if (p_status[0]) snprintf(term_status, sizeof(term_status), "%s", p_status);
 
-        focus = parse_json_int(req_body, "screen_focus", 1);
+        focus = parse_json_int(req_body, "screen_focus", 0);
 
         kiosk_register_heartbeat(term_id, term_ip, active_url, term_status, focus);
 

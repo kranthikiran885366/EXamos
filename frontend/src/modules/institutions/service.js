@@ -1,4 +1,4 @@
-import { all, get, put, del } from '../../core/db/db';
+import { get, put } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
 import { need, fail, log, assertScope, requireReason, isEmail } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
@@ -45,13 +45,6 @@ export const getOrgTerms = (entityType) => {
   };
 };
 export const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'UTC'];
-const randomSuffix = () => {
-  const buf = new Uint32Array(1);
-  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(buf);
-  else buf[0] = Date.now();
-  return 100 + (buf[0] % 900);
-};
-const codeOf = (name) => 'INS-' + clean(name, 20).replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X') + '-' + randomSuffix();
 const requireBackendId = (value, what) => {
   if (!value) fail(`The backend did not return a ${what} identifier. The operation was not saved.`);
   return value;
@@ -61,7 +54,7 @@ export async function createInstitution(a, input) {
   need(a, 'tenant.manage');
   const name = clean(input.name, 80);
   if (name.length < 3) fail('Institution name needs 3+ characters.');
-  const code = clean(input.code, 20).toUpperCase() || codeOf(name);
+  const code = clean(input.code, 20).toUpperCase();
   const domains = (Array.isArray(input.domains) ? input.domains : String(input.domains || '').split(/[\s,]+/)).map((d) => d.trim().toLowerCase()).filter(Boolean);
   for (const d of domains) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
   if (input.contactEmail && !isEmail(input.contactEmail)) fail('Enter a valid contact email.');
@@ -76,39 +69,34 @@ export async function createInstitution(a, input) {
       code,
       contactEmail: clean(input.contactEmail, 120),
       contactPhone: clean(input.contactPhone, 30),
-      region: clean(input.region, 40) || '',
+      region: clean(input.region, 40),
       timezone: input.timezone || '',
-      plan: input.plan || 'pilot',
-      maxCenters: Number(input.maxCenters) || 5,
-      maxCandidates: Number(input.maxCandidates) || 500,
-      deploymentModel: input.deploymentModel || 'usb-boot',
-      retentionDays: 365,
+      plan: input.plan || '',
+      maxCenters: input.maxCenters === '' || input.maxCenters == null ? 0 : Number(input.maxCenters),
+      maxCandidates: input.maxCandidates === '' || input.maxCandidates == null ? 0 : Number(input.maxCandidates),
+      deploymentModel: input.deploymentModel || '',
       domains,
     });
   } catch (err) {
     fail(err.message || 'Backend institution registration failed. Cannot create institution offline.');
   }
 
-  const instId = backendRes?.institution_id || backendRes?.id;
-  if (!instId) fail('Backend did not return an institution ID.');
+  const instId = requireBackendId(backendRes?.institution_id || backendRes?.id, 'institution');
 
-  const now = Date.now();
-  const t = {
-    id: instId, name, code, domains, contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
-    region: clean(input.region, 40) || '', timezone: input.timezone || '',
-    plan: input.plan || 'pilot', status: 'active', entityType: input.entityType || 'university',
-    registrationNumber: clean(input.registrationNumber || '', 60),
-    maxCenters: Number(input.maxCenters) || 5,
-    maxCandidates: Number(input.maxCandidates) || 500, deploymentModel: input.deploymentModel || 'usb-boot',
-    branding: { displayName: name, accent: '#2f5bea' }, notificationPrefs: { email: true, inApp: true },
-    examDefaults: { durationMin: 60, lateEntryMin: 15, attestationLevel: 'tpm' },
-    security: { requireTpm: true, requireSecureBoot: true, allowUsbStorage: false },
-    history: [{ at: now, by: a.id, action: 'Institution registered' }],
-    createdAt: now, createdBy: a.id,
+  /* Cache the record as persisted by the backend — no invented defaults. */
+  const saved = await Api.getInstitution(instId);
+  const t = saved && saved.id ? saved : {
+    id: instId, name, code: backendRes?.code || code, domains,
+    contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
+    region: clean(input.region, 40), timezone: input.timezone || '',
+    plan: input.plan || '', status: 'active',
+    maxCenters: Number(input.maxCenters) || 0,
+    maxCandidates: Number(input.maxCandidates) || 0, deploymentModel: input.deploymentModel || '',
+    createdAt: Date.now(), createdBy: a.id,
   };
   await put('tenants', t);
   await put('institutions', t).catch(() => {});
-  await log(a, 'TENANT_CREATED', `${name} (${code})`);
+  await log(a, 'TENANT_CREATED', `${name} (${t.code || code})`);
   return t;
 }
 // Backwards-compatible alias used by the original provisioning flow.
@@ -119,7 +107,6 @@ export async function updateInstitution(a, t, patch) {
   const next = { ...t };
   if (patch.name !== undefined) {
     const n = clean(patch.name, 80); if (n.length < 3) fail('Institution name needs 3+ characters.');
-    if ((await all('tenants')).some((x) => x.id !== t.id && x.name.toLowerCase() === n.toLowerCase())) fail('Another institution already uses this name.');
     next.name = n;
   }
   if (patch.domains !== undefined) {
@@ -160,13 +147,6 @@ export async function setInstitutionStatus(a, t, status, reason) {
   need(a, 'tenant.manage');
   if (!['active', 'suspended', 'archived'].includes(status)) fail('Unknown institution status.');
   const r = requireReason(reason, 8);
-  if (status === 'suspended') {
-    if ((await all('tenants')).filter((x) => x.status === 'active').length <= 1) fail('Cannot suspend the last active institution.');
-    if ((await all('exams')).some((e) => e.tenantId === t.id && e.status === 'live')) fail('Close live exams before suspending this institution.');
-  }
-  if (status === 'archived') {
-    if ((await all('exams')).some((e) => e.tenantId === t.id && ['live', 'published'].includes(e.status))) fail('Close or cancel published/live exams before archiving.');
-  }
 
   await Api.setInstitutionStatus(t.id, status, r);
 
@@ -206,7 +186,7 @@ export async function createCampus(a, { tenantId, name, code, city, address, cap
   need(a, 'campus.manage'); assertScope(a, tenantId);
   if (!tenantId) fail('Pick an institution.');
   const n = clean(name, 80); if (n.length < 3) fail('Campus name needs 3+ characters.');
-  const c = clean(code, 10).toUpperCase() || `CMP-${randomSuffix()}`;
+  const c = clean(code, 10).toUpperCase();
   const cap = Number(capacity); if (!(cap >= 1 && cap <= 5000)) fail('Capacity must be 1–5,000.');
 
   const res = await Api.createCampus({
@@ -218,15 +198,16 @@ export async function createCampus(a, { tenantId, name, code, city, address, cap
     capacity: cap,
   });
   const campusId = requireBackendId(res?.campus_id || res?.id, 'campus');
+  const savedCode = res?.code || c;
   const campusObj = {
-    id: campusId, tenantId, name: n, code: c,
+    id: campusId, tenantId, name: n, code: savedCode,
     city: clean(city, 40), address: clean(address, 160),
     capacity: cap, status: 'active', adminIds: [], createdAt: Date.now(),
   };
   await put('campuses', campusObj);
   await put('centers', campusObj).catch(() => {});
-  await log(a, 'CAMPUS_CREATED', `${tenantId} · ${c}`);
-  return `Campus ${c} created.`;
+  await log(a, 'CAMPUS_CREATED', `${tenantId} · ${savedCode}`);
+  return `Campus ${savedCode} created.`;
 }
 
 export async function updateCampus(a, c, patch) {
@@ -250,12 +231,8 @@ export async function setCampusStatus(a, c, status, reason) {
   need(a, 'campus.manage'); assertScope(a, c.tenantId);
   if (!['active', 'inactive', 'archived'].includes(status)) fail('Unknown campus status.');
   const r = requireReason(reason, 8);
-  if (status !== 'active') {
-    const centers = (await all('centers')).filter((x) => x.campusId === c.id);
-    const open = (await all('exams')).some((e) => e.centerIds.some((id) => centers.some((x) => x.id === id)) && ['published', 'live'].includes(e.status));
-    if (open) fail('An open exam uses a center in this campus.');
-  }
 
+  /* The backend enforces the open-exam guard against live data. */
   await Api.setCampusStatus(c.id, status, r);
 
   await put('campuses', { ...c, status, statusReason: r });
@@ -278,11 +255,11 @@ export const DEPT_TYPES = [
   { v: 'administrative', l: 'Corporate HQ / Administration' },
 ];
 
-export async function createDepartment(a, { tenantId, name, code, campusId, type = 'academic' }) {
+export async function createDepartment(a, { tenantId, name, code, campusId, type }) {
   need(a, 'dept.manage'); assertScope(a, tenantId);
   if (!tenantId) fail('Pick an institution.');
   const n = clean(name, 80); if (n.length < 3) fail('Department name needs 3+ characters.');
-  const c = clean(code, 12).toUpperCase() || `DEP-${randomSuffix()}`;
+  const c = clean(code, 12).toUpperCase();
   if (!DEPT_TYPES.some((t) => t.v === type)) fail('Pick a department type.');
 
   const res = await Api.createDepartment({
@@ -293,17 +270,18 @@ export async function createDepartment(a, { tenantId, name, code, campusId, type
     campusId: campusId || '',
   });
   const depId = requireBackendId(res?.department_id || res?.id, 'department');
-  const deptObj = { id: depId, tenantId, name: n, code: c, type, campusId: campusId || null, status: 'active', createdAt: Date.now() };
+  const savedCode = res?.code || c;
+  const deptObj = { id: depId, tenantId, name: n, code: savedCode, type, campusId: campusId || null, status: 'active', createdAt: Date.now() };
   await put('departments', deptObj);
-  await log(a, 'DEPARTMENT_CREATED', c);
-  return `Department ${c} created.`;
+  await log(a, 'DEPARTMENT_CREATED', savedCode);
+  return `Department ${savedCode} created.`;
 }
 
 export async function setDepartmentStatus(a, d, status, reason) {
   need(a, 'dept.manage'); assertScope(a, d.tenantId);
   const r = requireReason(reason, 8);
-  if (status === 'inactive' && (await all('users')).some((u) => u.departmentId === d.id && u.status === 'active')) fail('Reassign active staff before deactivating this department.');
 
+  /* The backend refuses deactivation while active staff are still assigned. */
   await Api.setDepartmentStatus(d.id, status, r);
 
   await put('departments', { ...d, status, statusReason: r });
@@ -315,21 +293,19 @@ export async function setDepartmentStatus(a, d, status, reason) {
 export async function assignStaff(a, { tenantId, userId, campusId = '', departmentId = '', roleTitle }) {
   need(a, 'staff.manage'); assertScope(a, tenantId);
   if (!tenantId || !userId) fail('Pick an institution and a user.');
-  const u = await get('users', userId).catch(() => null);
 
   const res = await Api.assignStaff({
     tenantId,
     userId,
-    name: u?.name || '',
-    roleTitle: clean(roleTitle, 60) || u?.title || '',
+    roleTitle: clean(roleTitle, 60),
     campusId,
     departmentId,
   });
   const staffId = requireBackendId(res?.staff_id || res?.id, 'staff');
   const rec = {
     id: staffId, tenantId, userId,
-    name: u?.name || res?.name || '',
-    roleTitle: clean(roleTitle, 60) || u?.title || '',
+    name: res?.name || '',
+    roleTitle: res?.role_title || clean(roleTitle, 60) || '',
     campusId, departmentId, status: 'active',
     createdAt: Date.now(), updatedAt: Date.now(),
   };
@@ -449,10 +425,10 @@ export async function submitInstitutionApplication(input) {
   const payload = {
     legalName: clean(input.legalName, 160),
     displayName: clean(input.displayName || input.legalName, 160),
-    entityType: input.entityType || 'university',
+    entityType: input.entityType || '',
     registrationNumber: clean(input.registrationNumber, 60),
-    country: clean(input.country || 'India', 60),
-    state: clean(input.state || 'Maharashtra', 60),
+    country: clean(input.country, 60),
+    state: clean(input.state, 60),
     address: clean(input.address, 512),
     domain: clean(input.domain, 120).toLowerCase(),
     repName: clean(input.repName, 120),
@@ -463,19 +439,26 @@ export async function submitInstitutionApplication(input) {
     coordEmail: clean(input.coordEmail, 120).toLowerCase(),
     techName: clean(input.techName, 120),
     techEmail: clean(input.techEmail, 120).toLowerCase(),
-    campusCount: Number(input.campusCount) || 1,
-    studentCount: Number(input.studentCount) || 500,
-    deviceCount: Number(input.deviceCount) || 100,
-    deploymentModel: input.deploymentModel || 'usb-boot',
-    hardwareProfile: input.hardwareProfile || 'standard-uefi',
-    plan: input.plan || 'pilot',
+    campusCount: input.campusCount === '' || input.campusCount == null ? 0 : Number(input.campusCount),
+    studentCount: input.studentCount === '' || input.studentCount == null ? 0 : Number(input.studentCount),
+    deviceCount: input.deviceCount === '' || input.deviceCount == null ? 0 : Number(input.deviceCount),
+    deploymentModel: input.deploymentModel || '',
+    hardwareProfile: input.hardwareProfile || '',
+    plan: input.plan || '',
     documents: input.documents || [],
-    declarations: input.declarations || { termsAgreed: true, privacyAgreed: true },
+    declarations: {
+      termsAgreed: !!input.termsAgreed,
+      privacyAgreed: !!input.privacyAgreed,
+    },
   };
 
-  if (!payload.legalName || !payload.registrationNumber || !payload.domain || !payload.repEmail || !payload.address) {
-    fail('Legal name, registration number, official domain, address, and representative email are required.');
+  if (!payload.legalName || !payload.entityType || !payload.registrationNumber || !payload.domain || !payload.repEmail || !payload.address) {
+    fail('Legal name, entity type, registration number, official domain, address, and representative email are required.');
   }
+  if (!(payload.campusCount >= 1)) fail('Enter the number of campuses or testing centers.');
+  if (!(payload.studentCount >= 1)) fail('Enter the annual candidate volume.');
+  if (!(payload.deviceCount >= 1)) fail('Enter the workstation fleet size.');
+  if (!payload.declarations.termsAgreed) fail('The terms declaration must be accepted before submitting.');
 
   const res = await Api.applyInstitution(payload);
   return res;
@@ -563,7 +546,7 @@ export async function pushDeployment(user, deploymentId) {
 
 export async function fetchInstitutionOnboarding(institutionId) {
   if (!institutionId || institutionId === ':id' || institutionId === 'undefined' || institutionId === 'null') {
-    return { checklist: {}, status: 'UNKNOWN', completed_steps: 0, total_steps: 8 };
+    throw new Error('Invalid institution ID — cannot load onboarding state without a valid institution.');
   }
   const res = await Api.getInstitutionOnboarding(institutionId);
   return res;

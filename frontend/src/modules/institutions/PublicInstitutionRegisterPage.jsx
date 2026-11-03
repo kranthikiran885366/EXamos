@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
-import { submitInstitutionApplication, fetchInstitutionApplications, ENTITY_TYPES, getOrgTerms, isCorporateEntity } from './service';
+import { submitInstitutionApplication, ENTITY_TYPES, getOrgTerms, isCorporateEntity } from './service';
 import { getInstitutionApplyStatus } from '../../core/api/services';
 import { Icon } from '../../core/ui/kit';
 
@@ -13,12 +13,12 @@ export default function PublicInstitutionRegisterPage() {
   const [f, setF] = useState({
     legalName: '',
     displayName: '',
-    entityType: 'enterprise',
+    entityType: 'university',
     registrationNumber: '',
-    country: 'India',
+    country: '',
     state: '',
-    region: 'India · Mumbai',
-    timezone: 'Asia/Kolkata',
+    region: '',
+    timezone: '',
     address: '',
     domain: '',
     repName: '',
@@ -27,13 +27,13 @@ export default function PublicInstitutionRegisterPage() {
     repPhone: '',
     coordName: '',
     coordEmail: '',
-    campusCount: '2',
-    studentCount: '500',
-    deviceCount: '200',
+    campusCount: '',
+    studentCount: '',
+    deviceCount: '',
     targetExamUrl: '',
     deploymentModel: 'usb-boot',
-    hardwareProfile: 'standard-uefi',
-    plan: 'pilot',
+    hardwareProfile: '',
+    plan: '',
     evidenceNotes: '',
     termsAgreed: false,
     privacyAgreed: false,
@@ -64,6 +64,9 @@ export default function PublicInstitutionRegisterPage() {
     if (!f.repEmail.trim() || !f.repEmail.includes('@')) return setErr('A valid official representative email is required.');
     if (!f.repName.trim()) return setErr('Authorized representative name is required.');
     if (!f.address.trim()) return setErr('Physical campus / administrative address is required.');
+    if (!(Number(f.campusCount) >= 1)) return setErr('Enter the number of campuses or testing centers.');
+    if (!(Number(f.studentCount) >= 1)) return setErr('Select the annual candidate volume.');
+    if (!(Number(f.deviceCount) >= 1)) return setErr('Enter the workstation fleet size.');
     if (!f.termsAgreed) return setErr('You must agree to the ExamOS High-Assurance Enclave terms.');
 
     setBusy(true);
@@ -101,53 +104,35 @@ export default function PublicInstitutionRegisterPage() {
 
     try {
       const q = trackRef.trim();
-      let found = null;
-
-      // Try API status lookup first
-      try {
-        const res = await getInstitutionApplyStatus(q);
-        if (res && res.status) found = res;
-      } catch {}
-
-      // Fallback: search local/cached applications
-      if (!found) {
-        const apps = await fetchInstitutionApplications();
-        found = apps.find(
-          (a) =>
-            a.id?.toLowerCase() === q.toLowerCase() ||
-            a.application_id?.toLowerCase() === q.toLowerCase() ||
-            a.domain?.toLowerCase() === q.toLowerCase() ||
-            a.repEmail?.toLowerCase() === q.toLowerCase() ||
-            a.legalName?.toLowerCase().includes(q.toLowerCase())
-        );
+      const res = await getInstitutionApplyStatus(q);
+      if (!res || !res.status) {
+        throw new Error('The server returned no application status for that reference.');
       }
-
-      if (found) {
-        const rawStatus = (found.status || 'SUBMITTED').toUpperCase();
-        const stageDescriptions = {
-          SUBMITTED: 'Enclave Enrollment Submitted â€” Awaiting Compliance Review',
-          UNDER_REVIEW: 'Charter & Academic Domain DNS TXT Verification',
-          VERIFICATION_PENDING: 'Signatory Authorization & Subnet Boundary Validation',
-          MORE_INFORMATION_REQUIRED: 'Applicant Action Required â€” Additional Evidence Requested',
-          APPROVED: 'Identity Certified â€” Ready for Dedicated Schema Provisioning',
-          PROVISIONED: 'Tenant Provisioned â€” Isolated Enclave & Cryptographic Roots Active',
-          REJECTED: 'Application Closed by Compliance Desk',
-        };
-        setTrackResult({
-          id: found.id || found.application_id || q,
-          legalName: found.legalName || found.displayName || found.institution_name || 'Academic Institution',
-          status: rawStatus,
-          step: stageDescriptions[rawStatus] || 'Compliance Validation in Progress',
-          notes: found.reviewNotes || found.notes || 'Your application has been received and committed to the durable compliance registry. The platform review team will evaluate your charter credentials and domain ownership.',
-          domain: found.domain || found.official_domain || '',
-          plan: (found.plan || 'pilot').toUpperCase(),
-          updatedAt: found.reviewedAt ? new Date(Number(found.reviewedAt)).toLocaleDateString() : (found.createdAt ? new Date(Number(found.createdAt)).toLocaleDateString() : new Date().toLocaleDateString()),
-        });
-      } else {
-        setTrackResult(null);
-        setTrackErr(`No active institution application was found for "${q}". Please verify your Reference ID (e.g. app_179... or APP-2026-...) or registered academic domain.`);
-      }
+      const found = res;
+      const rawStatus = found.status.toUpperCase();
+      const stageDescriptions = {
+        SUBMITTED: 'Enclave Enrollment Submitted — Awaiting Compliance Review',
+        UNDER_REVIEW: 'Charter & Academic Domain DNS TXT Verification',
+        VERIFICATION_PENDING: 'Signatory Authorization & Subnet Boundary Validation',
+        MORE_INFORMATION_REQUIRED: 'Applicant Action Required — Additional Evidence Requested',
+        APPROVED: 'Identity Certified — Ready for Dedicated Schema Provisioning',
+        PROVISIONED: 'Tenant Provisioned — Isolated Enclave & Cryptographic Roots Active',
+        REJECTED: 'Application Closed by Compliance Desk',
+      };
+      setTrackResult({
+        id: found.id || q,
+        legalName: found.legalName || found.displayName || found.institution_name || '',
+        status: rawStatus,
+        step: stageDescriptions[rawStatus] || '',
+        notes: found.reviewNotes || found.notes || '',
+        domain: found.domain || found.official_domain || '',
+        plan: (found.plan || '').toUpperCase(),
+        updatedAt: found.reviewedAt
+          ? new Date(Number(found.reviewedAt)).toLocaleDateString()
+          : (found.createdAt ? new Date(Number(found.createdAt)).toLocaleDateString() : ''),
+      });
     } catch (error) {
+      setTrackResult(null);
       setTrackErr(error?.message || 'Unable to retrieve status. Please contact platform support.');
     } finally {
       setTrackLoading(false);
@@ -358,13 +343,13 @@ export default function PublicInstitutionRegisterPage() {
               Track Accreditation &amp; Onboarding Progress
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--mut, #756F79)', margin: '0 0 24px', lineHeight: 1.5 }}>
-              Enter your Application Reference Number (e.g. <code>APP-849201</code>) or your official academic domain to check verification state.
+              Enter your Application Reference Number (e.g. <code>app_179...</code>) or your official academic domain to check verification state.
             </p>
 
             <form onSubmit={handleTrack} style={{ display: 'flex', gap: '10px', marginBottom: '24px' }}>
               <input
                 type="text"
-                placeholder="e.g. APP-849201 or registrar@university.edu.in"
+                placeholder="e.g. app_179... or registrar@university.edu.in"
                 value={trackRef}
                 onChange={(e) => setTrackRef(e.target.value)}
                 style={{
@@ -933,6 +918,7 @@ export default function PublicInstitutionRegisterPage() {
                     onChange={update('studentCount')}
                     style={{ width: '100%', boxSizing: 'border-box', background: '#FBF9F7', border: '1px solid var(--line, #DCD5D2)', borderRadius: '8px', padding: '10px 14px', color: 'var(--ink, #302337)', fontSize: '13.5px', fontWeight: 500 }}
                   >
+                    <option value="" disabled>Select annual volume</option>
                     <option value="500">Up to 500 {getOrgTerms(f.entityType).candidateLabel}</option>
                     <option value="2500">2,500 {getOrgTerms(f.entityType).candidateLabel}</option>
                     <option value="10000">10,000 {getOrgTerms(f.entityType).candidateLabel}</option>
