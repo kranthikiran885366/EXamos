@@ -17,28 +17,8 @@
 #include <time.h>
 #include <errno.h>
 
-static void db_ensure_admin_accounts(PGconn *conn);
+static void db_ensure_database_extensions(PGconn *conn);
 static pthread_once_t db_init_once = PTHREAD_ONCE_INIT;
-
-/*
- * Bootstrap seeding creates documented accounts with documented passwords.
- * That is useful on a laptop and unacceptable on an appliance, so it is
- * disabled whenever the process is configured as a production deployment and
- * can always be disabled explicitly with EXAMOS_ALLOW_DEV_SEED=0.
- */
-static int dev_bootstrap_allowed(void) {
-    const char *explicit_flag = getenv("EXAMOS_ALLOW_DEV_SEED");
-    if (explicit_flag && explicit_flag[0])
-        return strcmp(explicit_flag, "1") == 0;
-
-    const char *test_mode = getenv("EXAMOS_TEST_MODE");
-    if (test_mode && strcmp(test_mode, "production") == 0) return 0;
-
-    const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
-    if (tpm_mode && strcmp(tpm_mode, "production") == 0) return 0;
-
-    return 1;
-}
 
 db_pool_t g_db_pool;
 int g_db_pool_count = 0;
@@ -98,7 +78,7 @@ int db_init(const char *conninfo) {
         return 0; /* Don't fail startup; retry on demand */
     }
     fprintf(stderr, "[DB] Pool ready: %d/%d connections\n", ready, count);
-    db_ensure_admin_accounts(g_db_pool.conns[0].conn);
+    db_ensure_database_extensions(g_db_pool.conns[0].conn);
     return 0;
 }
 
@@ -1084,12 +1064,6 @@ static const char *migration_sql =
 "ALTER TABLE campuses ADD COLUMN IF NOT EXISTS updated_at BIGINT;"
 "ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at BIGINT;";
 
-static void db_seed_bootstrap(PGconn *conn) {
-    (void)conn;
-    /* Strict zero-fabrication: No mock institutions, fake candidates, or seed tenants.
-     * All institutions must be registered through official workflows and provisioned in real database. */
-}
-
 static void exec_sql_step(PGconn *conn, const char *sql) {
     if (!conn || !sql) return;
     PGresult *res = PQexec(conn, sql);
@@ -1101,67 +1075,10 @@ static void exec_sql_step(PGconn *conn, const char *sql) {
     }
 }
 
-static void db_ensure_admin_accounts(PGconn *conn) {
+static void db_ensure_database_extensions(PGconn *conn) {
     if (!conn) return;
 
-    /*
-     * Credential seeding is deliberately separated from schema maintenance.
-     * A production appliance must never be given a documented password, and
-     * an existing password must never be reset because the server restarted.
-     */
-    /* Purge legacy mock/seed institution T1 and associated demo records */
-    exec_sql_step(conn, "UPDATE users SET tenant_id = NULL WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM candidates WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM exams WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM campuses WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM departments WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM devices WHERE tenant_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM institution_onboarding WHERE institution_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM institution_licenses WHERE institution_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM institution_agreements WHERE institution_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM examos_institutions WHERE institution_id = 'T1';");
-    exec_sql_step(conn, "DELETE FROM tenants WHERE id = 'T1';");
-
-    if (dev_bootstrap_allowed()) {
-        /* Create the bootstrap admin without tying to fake seed tenant.
-         * Platform superadmins have tenant_id = NULL as platform-wide root operators. */
-        exec_sql_step(conn,
-            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-            "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', NULL, 'admin@examos.local', "
-            "'0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0) "
-            "ON CONFLICT (username) DO UPDATE SET "
-            "status = 'active';");
-
-        /* Create the bootstrap root without fake seed tenant */
-        exec_sql_step(conn,
-            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-            "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', NULL, 'root@examos.local', "
-            "'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0) "
-            "ON CONFLICT (username) DO UPDATE SET "
-            "status = 'active';");
-
-        /* 4. Never enrol a shared secret: a published TOTP secret is no MFA at
-         *    all. Accounts without a secret must go through enrolment. */
-        exec_sql_step(conn, "UPDATE users SET mfa_enabled = 0 WHERE username IN ('admin', 'root') AND (totp_secret IS NULL OR totp_secret = '');");
-
-        /* 5. examos_admin_users rows: create once, never overwrite the hash. */
-        exec_sql_step(conn,
-            "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
-            "VALUES ('usr_admin', 'admin', '310000:ee8e19c449b8e1e6e485c672cee05862:aae2df837f94fd673c33afc7692e0221a485fa5cd48c9206f4c4f77193e41289', "
-            "'Platform Administrator', 'admin@examos.local', 1, true, false, NULL) "
-            "ON CONFLICT (username) DO NOTHING;");
-
-        exec_sql_step(conn,
-            "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, role, active, mfa_enabled, totp_secret) "
-            "VALUES ('usr_root', 'root', '310000:2fefeaff8f5abc45d3f085c5689b7799:58c370141d7bc2e6e8a6ae05654eb801032d80c0843056e16c2f9ba9a20099d0', "
-            "'Platform Root', 'root@examos.local', 1, true, false, NULL) "
-            "ON CONFLICT (username) DO NOTHING;");
-
-        fprintf(stderr, "[DB] Development bootstrap accounts verified (EXAMOS_ALLOW_DEV_SEED).\n");
-    } else {
-        fprintf(stderr, "[DB] Production mode: bootstrap credential seeding disabled.\n");
-    }
-
+    /* Maintain schema extensions without seeding or deleting institution data. */
     /* 5b. Ensure exam_url column on exams table */
     exec_sql_step(conn, "ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_url TEXT;");
     exec_sql_step(conn, "CREATE TABLE IF NOT EXISTS examinations ("
@@ -1256,8 +1173,7 @@ int db_create_schema(void) {
     if (res && PQresultStatus(res) == PGRES_COMMAND_OK) {
         rc = 0;
         fprintf(stderr, "[DB] Schema created/verified.\n");
-        db_seed_bootstrap(conn);
-        db_ensure_admin_accounts(conn);
+        db_ensure_database_extensions(conn);
     } else {
         fprintf(stderr, "[DB] Schema creation failed: %s\n",
                 res ? PQresultErrorMessage(res) : PQerrorMessage(conn));

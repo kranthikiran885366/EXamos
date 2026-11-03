@@ -137,23 +137,6 @@ if [ -x /usr/local/bin/sppio-db-migrate ] && [ -d /opt/sppio/migrations ]; then
     }
 fi
 
-# ── 9. Seed admin user (first-boot only, database must be empty) ──────────────
-# The seed script must be idempotent — it should only run when
-# examos_admin_users is empty. The C server's admin_auth_store_create_initial_owner()
-# already enforces this via advisory lock; the SQL guard below adds a second layer.
-if command -v psql >/dev/null 2>&1 && [ -f /opt/sppio/seed_admin_users.sql ]; then
-    ADMIN_COUNT=$(psql "$EXAMOS_DATABASE_URL" -t -c \
-        "SELECT COUNT(*) FROM examos_admin_users;" 2>/dev/null | tr -d '[:space:]' || echo "1")
-    if [ "$ADMIN_COUNT" = "0" ]; then
-        echo "[SPPIO] Seeding initial admin account (empty database)..."
-        psql "$EXAMOS_DATABASE_URL" -f /opt/sppio/seed_admin_users.sql || {
-            echo "[SPPIO] WARNING: seed_admin_users.sql failed — continuing." >&2
-        }
-    else
-        echo "[SPPIO] Admin accounts exist ($ADMIN_COUNT) — skipping seed."
-    fi
-fi
-
-# ── 10. Start the server ──────────────────────────────────────────────────────
+# ── 9. Start the server ──────────────────────────────────────────────────────
 echo "[SPPIO] Handing off to sppio-server binary..."
 exec /usr/local/bin/sppio-server
