@@ -753,7 +753,6 @@ export function PlatformVerificationPage() {
               {isProvisioned ? 'Go to Tenant Operations Enclave →' : 'Proceed to Tenant Provisioning →'}
             </button>
           </div></div>
-        </div>
       )}
 
       {/* Applicant Dossier / Submitted Documents & Data Grid */}
