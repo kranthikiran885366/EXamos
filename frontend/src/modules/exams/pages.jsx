@@ -311,6 +311,7 @@ export function ExamDetailPage() {
   const { msg, setMsg, run, busy } = useFlash();
 
   const e = exams.find((x) => x.id === id);
+  const pol = policies.find((p) => p.id === e?.policyId);
   const { data: checks, loading: readinessLoading, reload: reloadReadiness } = useLoad(async () => (e ? readiness(e) : []), [e?.id, e?.version, e?.status]);
   const { data: preview } = useLoad(async () => (e ? policyPreview(e) : null), [e?.id, e?.policyId]);
 
