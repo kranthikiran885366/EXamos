@@ -478,6 +478,10 @@ export function PlatformVerificationPage() {
   const allChecked = checkedCount === 5;
 
   const handleRecordVerdict = async (verdict) => {
+    if (!id) {
+      setMsg('Error: No institution ID available. Navigate to this page from the Applications queue.');
+      return;
+    }
     await run(async () => {
       const isApproved = verdict === 'verified';
       await updateOnboardingStep(user, id, 'verification', isApproved, evidenceNotes);

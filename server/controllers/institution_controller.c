@@ -2469,6 +2469,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
+
+            /* Verify institution exists before attempting onboarding update */
+            {
+                const char *chk_v[1] = { inst_id };
+                int chk_l[1] = { (int)strlen(inst_id) };
+                PGresult *chk_r = db_simple(conn, "SELECT id FROM tenants WHERE id = $1", 1, chk_v, chk_l);
+                if (!chk_r || PQresultStatus(chk_r) != PGRES_TUPLES_OK || PQntuples(chk_r) == 0) {
+                    if (chk_r) PQclear(chk_r);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(chk_r);
+            }
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
             /* Auto-initialize onboarding record if it does not exist yet */

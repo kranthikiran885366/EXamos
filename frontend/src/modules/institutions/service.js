@@ -562,11 +562,17 @@ export async function pushDeployment(user, deploymentId) {
 }
 
 export async function fetchInstitutionOnboarding(institutionId) {
+  if (!institutionId || institutionId === ':id' || institutionId === 'undefined' || institutionId === 'null') {
+    return { checklist: {}, status: 'UNKNOWN', completed_steps: 0, total_steps: 8 };
+  }
   const res = await Api.getInstitutionOnboarding(institutionId);
   return res;
 }
 
 export async function updateOnboardingStep(user, institutionId, stepKey, completed, notes = '') {
+  if (!institutionId || institutionId === ':id' || institutionId === 'undefined' || institutionId === 'null') {
+    throw new Error('Invalid institution ID — cannot update onboarding step without a valid institution.');
+  }
   const res = await Api.updateInstitutionOnboardingStep(institutionId, stepKey, completed, notes);
   await log(user, 'ONBOARDING_STEP_UPDATED', `${institutionId}: ${stepKey}`);
   return res;
