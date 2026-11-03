@@ -3,6 +3,7 @@ import { sha256, canon } from '../../core/security/crypto';
 import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, assertScope, requireReason, pct } from '../../core/services/common';
 import { verifyChain } from '../../core/security/auditChain';
+import * as Api from '../../core/api/services';
 
 export const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 export const EVENT_TYPES = [

@@ -1,6 +1,7 @@
 import { all, get, put } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, assertScope, requireReason } from '../../core/services/common';
+import * as Api from '../../core/api/services';
 
 export const CATEGORIES = [
   { v: 'device', l: 'Device / USB problem' }, { v: 'exam', l: 'Exam delivery' },
@@ -14,6 +15,11 @@ export const PRIORITIES = [
 export const STATUSES = ['new', 'assigned', 'waiting', 'in-progress', 'resolved', 'closed', 'reopened'];
 const SLA_HOURS = { critical: 1, high: 4, normal: 24, low: 72 };
 const OPEN = ['new', 'assigned', 'waiting', 'in-progress', 'reopened'];
+
+export async function listRequests(tenantId) {
+  // Support tickets are local-only for now; backend endpoint not yet implemented.
+  return (await all('support')).filter((t) => !tenantId || t.tenantId === tenantId);
+}
 
 export async function createRequest(a, { tenantId, subject, description, category = 'other', priority = 'normal', linkedDeviceId = '', linkedExamId = '', requesterName = '', requesterEmail = '' }) {
   need(a, 'support.manage');

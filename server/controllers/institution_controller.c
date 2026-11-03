@@ -1352,7 +1352,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "'campus_hierarchy', jsonb_build_object('completed', false),"
                 "'os_deployment', jsonb_build_object('completed', false),"
                 "'production_readiness', jsonb_build_object('completed', false)"
-                "), 2, 8, $2, false, false, $3::bigint) ON CONFLICT (institution_id) DO NOTHING", 3, ov, ol);
+                "), 2, 8, $2, 0, 0, $3::bigint) ON CONFLICT (institution_id) DO NOTHING", 3, ov, ol);
             if (!obr || PQresultStatus(obr) != PGRES_COMMAND_OK) related_ok = 0;
             if (obr) PQclear(obr);
 
@@ -2476,7 +2476,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             PGresult *ires = db_simple(conn,
                 "INSERT INTO institution_onboarding (institution_id, status, checklist, completed_steps, total_steps, "
                 "first_admin_email, first_admin_invited, mfa_enforced, updated_at) "
-                "VALUES ($1, 'PENDING', '{}'::jsonb, 0, 8, $2, false, false, $3::bigint) "
+                "VALUES ($1, 'PENDING', '{}'::jsonb, 0, 8, $2, 0, 0, $3::bigint) "
                 "ON CONFLICT (institution_id) DO UPDATE SET updated_at = EXCLUDED.updated_at "
                 "RETURNING status, checklist, completed_steps, total_steps, first_admin_email, first_admin_invited, mfa_enforced, updated_at",
                 3, ov, ol);
@@ -2550,7 +2550,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 PGresult *init_res = db_simple(conn,
                     "INSERT INTO institution_onboarding (institution_id, status, checklist, completed_steps, total_steps, "
                     "first_admin_email, first_admin_invited, mfa_enforced, updated_at) "
-                    "VALUES ($1, 'PENDING', '{}'::jsonb, 0, 8, $2, false, false, $3::bigint) "
+                    "VALUES ($1, 'PENDING', '{}'::jsonb, 0, 8, $2, 0, 0, $3::bigint) "
                     "ON CONFLICT (institution_id) DO NOTHING",
                     3, ov, ol);
                 if (init_res) PQclear(init_res);

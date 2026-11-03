@@ -22,21 +22,45 @@ const EVENT_TONE = (e) => {
 
 export default function AuditPage() {
   const { user } = useAuth();
-  const rows = useCol('audit', false);
+  const localRows = useCol('audit', false);
   const flash = useFlash();
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(true);
   const [view, setView] = useState(null);
-  const [serverLedger, setServerLedger] = useState(null);
+  const [serverEvents, setServerEvents] = useState([]);
 
   useEffect(() => {
     let live = true;
     verifyChain().then((r) => { if (live) { setCheck(r); setChecking(false); } }).catch((e) => { if (live) { setCheck({ ok: false, error: e.message }); setChecking(false); } });
-    Api.getLedger().then(setServerLedger).catch(() => {});
+    Api.listAuditTrail({ limit: 500 }).then((res) => {
+      if (!live) return;
+      const evts = res?.events || res?.audit || [];
+      if (Array.isArray(evts) && evts.length) {
+        setServerEvents(evts.map((e, i) => ({
+          id: e.id || `srv-${i}`,
+          seq: e.seq ?? e.id ?? i,
+          ts: e.ts || e.created_at || new Date(e.timestamp || Date.now()).toISOString(),
+          actor: e.actor || 'server',
+          event: e.event || e.event_type,
+          detail: e.detail || e.description || '',
+          hash: e.hash || e.chain_hash || '',
+          prev: e.prev_hash || '',
+          source: 'server',
+        })));
+      }
+    }).catch(() => {});
     return () => { live = false; };
   }, []);
 
-  const sorted = useMemo(() => [...rows].sort((a, b) => b.seq - a.seq), [rows]);
+  // Merge server events with local, deduplicate by id, server takes precedence
+  const rows = useMemo(() => {
+    const map = new Map();
+    for (const r of localRows) map.set(r.id, r);
+    for (const r of serverEvents) map.set(r.id, r);
+    return [...map.values()];
+  }, [localRows, serverEvents]);
+
+  const sorted = useMemo(() => [...rows].sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0)), [rows]);
   const actors = useMemo(() => [...new Set(rows.map((e) => e.actor).filter(Boolean))].sort(), [rows]);
   const events = useMemo(() => [...new Set(rows.map((e) => e.event).filter(Boolean))].sort(), [rows]);
   const last = sorted[0];
@@ -71,7 +95,7 @@ export default function AuditPage() {
     </>}
   >
     <StatGrid cols={4}>
-      <Stat label="Audit events" value={rows.length} icon="history" tone="blue" sub="Persisted in IndexedDB" />
+      <Stat label="Audit events" value={rows.length} icon="history" tone="blue" sub={serverEvents.length ? `${serverEvents.length} from server` : 'Local chain'} />
       <Stat label="Chain state" value={checking ? 'Checking…' : check?.ok ? 'Intact' : 'Broken'} icon={check?.ok === false ? 'warn' : 'shield'} tone={checking ? 'blue' : check?.ok ? 'green' : 'red'} sub={check?.ok ? `${check.count} entries verified` : check?.at ? `First mismatch at #${check.at}` : 'Not yet verified'} />
       <Stat label="Actors" value={actors.length} icon="users" tone="violet" sub="Distinct identities" />
       <Stat label="Last event" value={last ? ago(Date.parse(last.ts)) : '—'} icon="clock" tone="amber" sub={last ? eventLabel(last.event) : 'No events recorded'} />

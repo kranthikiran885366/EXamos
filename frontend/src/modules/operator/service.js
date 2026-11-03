@@ -3,9 +3,30 @@ import { fail, log, need, requireReason, pct } from '../../core/services/common'
 import { setIdentity } from '../candidates/service';
 import { startSession, terminate } from '../submissions/service';
 import { deviceState, reachable } from '../fleet/service';
-import { listStudents } from '../../core/api/services';
+import * as Api from '../../core/api/services';
 
 export async function assignedExams(user, ctx = {}) {
+  // Try backend first for live exam data
+  try {
+    const res = await Api.listExaminations();
+    const backendExams = res?.examinations || res || [];
+    if (Array.isArray(backendExams) && backendExams.length) {
+      return backendExams.map((e) => ({
+        ...e,
+        id: e.exam_id || e.id,
+        code: e.code,
+        title: e.name || e.title,
+        status: e.status,
+        centerIds: e.center_ids || [],
+        centers: [],
+        assigned: e.registered_count || 0,
+        started: e.session_count || 0,
+        submitted: e.submitted_count || 0,
+        inProgress: e.in_progress_count || 0,
+        incidents: 0,
+      }));
+    }
+  } catch { /* fall through to local */ }
   const { exams = await all('exams'), centers = await all('centers'), candidates = await all('candidates'), sessions = await all('sessions') } = ctx;
   return exams.filter((e) => e.tenantId === user.tenantId).map((e) => {
     const cs = candidates.filter((c) => c.examId === e.id);
@@ -96,29 +117,29 @@ export function submissionStats(list) {
 export async function deskLookup(rollNo, tenantId, ctx = {}) {
   const { candidates = await all('candidates'), centers = await all('centers'), devices = await all('devices') } = ctx;
   const trimmed = String(rollNo || '').trim().toLowerCase();
-  let c = candidates.find((x) => (!tenantId || x.tenantId === tenantId) && (String(x.rollNo || '').trim().toLowerCase() === trimmed || String(x.id || '').trim().toLowerCase() === trimmed));
-  if (!c) {
-    try {
-      const live = await listStudents();
-      const match = (live?.students || live?.candidates || live || []).find(
-        (x) => (!tenantId || x.tenant_id === tenantId || x.tenantId === tenantId) &&
-               (String(x.roll_number || x.rollNo || '').trim().toLowerCase() === trimmed ||
-                String(x.id || x.candidate_id || '').trim().toLowerCase() === trimmed)
-      );
-      if (match) {
-        c = {
-          id: match.id || match.candidate_id,
-          name: match.name || match.full_name,
-          rollNo: match.roll_number || match.rollNo || match.id,
-          tenantId: match.tenant_id || match.tenantId || tenantId,
-          centerId: match.center_id || match.centerId,
-          examId: match.exam_id || match.examId,
-          seat: match.assigned_seat || match.seat,
-          identity: match.identity || 'pending',
-        };
-      }
-    } catch (_) {}
-  }
+  // Backend-first lookup
+  try {
+    const live = await Api.listStudents();
+    const match = (live?.students || live?.candidates || live || []).find(
+      (x) => (!tenantId || x.tenant_id === tenantId || x.tenantId === tenantId) &&
+             (String(x.roll_number || x.rollNo || '').trim().toLowerCase() === trimmed ||
+              String(x.id || x.candidate_id || '').trim().toLowerCase() === trimmed)
+    );
+    if (match) {
+      const c = {
+        id: match.id || match.candidate_id,
+        name: match.name || match.full_name,
+        rollNo: match.roll_number || match.rollNo || match.id,
+        tenantId: match.tenant_id || match.tenantId || tenantId,
+        centerId: match.center_id || match.centerId,
+        examId: match.exam_id || match.examId,
+        seat: match.assigned_seat || match.seat,
+        identity: match.identity || 'pending',
+      };
+      return { ...c, center: centers.find((x) => x.id === c.centerId) || null, device: devices.find((d) => (d.centerId === c.centerId && d.seat === c.seat) || (c.deviceId && d.id === c.deviceId)) || null };
+    }
+  } catch { /* fall through to local */ }
+  const c = candidates.find((x) => (!tenantId || x.tenantId === tenantId) && (String(x.rollNo || '').trim().toLowerCase() === trimmed || String(x.id || '').trim().toLowerCase() === trimmed));
   if (!c) fail('No candidate matches that roll number.');
   return { ...c, center: centers.find((x) => x.id === c.centerId) || null, device: devices.find((d) => (d.centerId === c.centerId && d.seat === c.seat) || (c.deviceId && d.id === c.deviceId)) || null };
 }

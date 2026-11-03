@@ -4,6 +4,7 @@ import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, requireReason, pct } from '../../core/services/common';
 import { verifyChain } from '../../core/security/auditChain';
 import { p95 } from '../../core/db/db';
+import * as Api from '../../core/api/services';
 
 export const SERVICE_STATUSES = ['healthy', 'degraded', 'down', 'maintenance'];
 export const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low'];
@@ -86,6 +87,24 @@ export async function testRestore(a, backup) {
   await put('backups', { ...backup, restoreTestedAt: Date.now(), restoreTestedBy: a.id });
   await log(a, 'BACKUP_RESTORE_TESTED', backup.id);
   return 'Restore test completed. Backup is readable and hash-verified.';
+}
+
+export async function fetchLiveStatus() {
+  try {
+    const [health, status, telemetry] = await Promise.allSettled([
+      Api.health(),
+      Api.status(),
+      Api.getTelemetry(),
+    ]);
+    return {
+      health: health.status === 'fulfilled' ? health.value : null,
+      status: status.status === 'fulfilled' ? status.value : null,
+      telemetry: telemetry.status === 'fulfilled' ? telemetry.value : null,
+      connected: health.status === 'fulfilled' && health.value?.status === 'ok',
+    };
+  } catch {
+    return { health: null, status: null, telemetry: null, connected: false };
+  }
 }
 
 export async function checkHealth(a) {

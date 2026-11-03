@@ -1,14 +1,9 @@
 // Student module service — backend-first, no local IndexedDB reads.
-// All data comes from the real ExamOS C server API.
 import { fail } from '../../core/services/common';
 import * as Api from '../../core/api/services';
 
 export const STUDENT_STEPS = ['Briefing', 'Device check', 'Exam session', 'Submission'];
 
-/**
- * Fetch the candidate's own profile from the backend student API.
- * Falls back to the auth context's candidateId if the API returns no match.
- */
 export async function myCandidate(user) {
   if (!user?.candidateId) fail('Your account is not linked to a candidate record. Contact your institution.');
   try {
@@ -21,22 +16,14 @@ export async function myCandidate(user) {
   }
 }
 
-/**
- * Fetch all exam assignments for the current candidate from the backend.
- * Uses the examination session list API to get live sessions, and the
- * student API to get enrollment data.
- */
 export async function assignments(user, ctx = {}) {
   const c = await myCandidate(user);
-  // Get assigned exams from the backend exam student assignments endpoint
   let examSessions = [];
   try {
-    // Try getting exam sessions for this student
     const res = await Api.getStudentExamSessions(c.id || user.candidateId);
     examSessions = Array.isArray(res?.sessions) ? res.sessions : (Array.isArray(res) ? res : []);
-  } catch { /* no sessions yet — OK */ }
+  } catch { /* no sessions yet */ }
 
-  // Build assignment list from sessions
   return examSessions.map((s) => {
     const exam = {
       id: s.examination_id || s.exam_id,
@@ -73,15 +60,11 @@ export async function assignments(user, ctx = {}) {
   }).sort((a, b) => (a.exam?.startAt || 0) - (b.exam?.startAt || 0));
 }
 
-/**
- * Fetch briefing for a specific exam from the backend.
- */
 export async function briefing(user, examId, ctx = {}) {
   const list = await assignments(user, ctx);
   const a = list.find((x) => x.exam?.id === examId);
   if (!a) fail('This exam is not assigned to you.');
   const { exam, center, device, session } = a;
-  // Fetch full exam details from backend for instructions/policy info
   let examDetail = null;
   try {
     const res = await Api.getExamination(examId);
@@ -117,16 +100,12 @@ export async function briefing(user, examId, ctx = {}) {
   };
 }
 
-/**
- * Run device checks against the backend session authorization endpoint.
- */
 export async function deviceCheck(user, examId, ctx = {}) {
   const b = await briefing(user, examId, ctx);
   const { candidate, exam, center, device, session } = b;
   const checks = [];
   const add = (key, label, status, detail) => checks.push({ key, label, status, detail });
 
-  // Try backend pre-flight authorization check
   let authResult = null;
   try {
     authResult = await Api.authorizeStudentExamSession({
@@ -134,16 +113,12 @@ export async function deviceCheck(user, examId, ctx = {}) {
       student_id: candidate.id || user.candidateId,
       device_id: device?.id || '',
     });
-  } catch { /* offline — use available data */ }
+  } catch { /* offline */ }
 
   if (authResult) {
-    if (authResult.status === 'authorized') {
-      add('authorization', 'Exam authorization', 'PASS', authResult.reason || 'Authorized');
-    } else if (authResult.status === 'pending') {
-      add('authorization', 'Exam authorization', 'WARN', authResult.reason || 'Waiting for exam window');
-    } else {
-      add('authorization', 'Exam authorization', 'FAIL', authResult.reason || 'Not authorized');
-    }
+    if (authResult.status === 'authorized') add('authorization', 'Exam authorization', 'PASS', authResult.reason || 'Authorized');
+    else if (authResult.status === 'pending') add('authorization', 'Exam authorization', 'WARN', authResult.reason || 'Waiting for exam window');
+    else add('authorization', 'Exam authorization', 'FAIL', authResult.reason || 'Not authorized');
   } else {
     add('authorization', 'Exam authorization', 'WARN', 'Unable to verify — check with invigilator');
   }
@@ -158,14 +133,10 @@ export async function deviceCheck(user, examId, ctx = {}) {
   return { ...b, checks, blocking, ready: blocking.length === 0 && ['scheduled', 'in_progress', 'published'].includes(exam?.status) };
 }
 
-/**
- * Start exam session via the backend API.
- */
 export async function startMyExam(user, examId) {
   const c = await myCandidate(user);
   const d = await deviceCheck(user, examId);
   if (!d.ready) fail(`Device check is not complete: ${d.blocking.map((b) => b.label).join(', ')}.`);
-  // Create an authorized exam session on the backend
   try {
     const res = await Api.createAuthorizedExamSession({
       examination_id: examId,
@@ -178,45 +149,24 @@ export async function startMyExam(user, examId) {
   }
 }
 
-/**
- * Save an answer via the backend exam API (candidate exam workbench endpoint).
- */
 export async function saveMyAnswer(user, sessionId, qi, choice) {
-  // The exam workbench uses POST /api/v1/exam/save_answer
-  // This is handled by the candidate-facing C server endpoints
   try {
-    const res = await fetch('/api/v1/exam/save_answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionId}` },
-      body: JSON.stringify({ q_id: qi, selected: choice }),
-    });
-    return await res.json();
-  } catch {
-    return { status: 'FAIL', error: 'Network error saving answer' };
+    return await Api.saveAnswer({ questionId: qi, selectedOption: choice, status: 'answered' });
+  } catch (err) {
+    return { status: 'FAIL', error: err.message || 'Network error saving answer' };
   }
 }
 
-/**
- * Submit the exam via the backend exam API.
- */
 export async function submitMyExam(user, sessionId) {
   try {
-    const res = await fetch('/api/v1/exam/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionId}` },
-    });
-    return await res.json();
+    return await Api.submitExam();
   } catch (err) {
     fail(err.message || 'Failed to submit exam on the server.');
   }
 }
 
-/**
- * Fetch submission receipt from the backend.
- */
 export async function receipt(user, sessionId) {
   try {
-    // Close the session to get the final receipt
     const res = await Api.closeAuthorizedExamSession(sessionId, 'student_completed');
     return {
       id: sessionId,
@@ -233,9 +183,6 @@ export async function receipt(user, sessionId) {
   }
 }
 
-/**
- * Fetch exam history for the current candidate from the backend.
- */
 export async function myHistory(user, ctx = {}) {
   const c = await myCandidate(user);
   try {
@@ -257,11 +204,7 @@ export async function myHistory(user, ctx = {}) {
   }
 }
 
-/**
- * Create a support request via the support module API.
- */
 export async function requestHelp(user, { tenantId, subject, description, category = 'exam' }) {
-  // This delegates to the support module which has its own backend integration
   const { createRequest } = await import('../support/service');
   return createRequest(user, { tenantId, subject, description, category, priority: 'high', requesterName: user.name, requesterEmail: user.email });
 }

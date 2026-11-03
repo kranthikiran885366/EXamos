@@ -1,6 +1,16 @@
 import { all, get, put } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, assertScope, requireReason } from '../../core/services/common';
+import * as Api from '../../core/api/services';
+
+export async function listCenters(tenantId) {
+  try {
+    const res = await Api.listCampuses(tenantId);
+    const rows = res?.campuses || res?.centers || res || [];
+    if (Array.isArray(rows) && rows.length) return rows;
+  } catch { /* fall through to local */ }
+  return (await all('centers')).filter((c) => !tenantId || c.tenantId === tenantId);
+}
 
 export async function createCenter(a, { tenantId, campusId = '', code, name, city, labs, seatsPerLab }) {
   need(a, 'center.manage'); assertScope(a, tenantId);
@@ -17,12 +27,25 @@ export async function createCenter(a, { tenantId, campusId = '', code, name, cit
   if (!(seatsPerLab >= 8 && seatsPerLab <= 96)) fail('Seats per lab must be 8–96.');
   if (labs * seatsPerLab > 416) fail('Capacity cannot exceed 416 seats per center.');
   if (clean(name, 80).length < 3) fail('Enter a center name.');
-  const centerObj = { id: id('ctr'), tenantId, campusId, code, name: clean(name, 80), city: clean(city, 40), labs, seatsPerLab, capacity: labs * seatsPerLab, status: 'active', createdAt: Date.now() };
+
+  let centerId;
+  try {
+    const res = await Api.createCampus({ tenantId, name: clean(name, 80), code, city: clean(city, 40), capacity: labs * seatsPerLab });
+    centerId = res?.campus_id || res?.id;
+  } catch (err) {
+    fail(err.message || 'Backend center creation failed.');
+  }
+
+  const centerObj = {
+    id: centerId || id('ctr'), tenantId, campusId, code, name: clean(name, 80),
+    city: clean(city, 40), labs, seatsPerLab, capacity: labs * seatsPerLab,
+    status: 'active', createdAt: Date.now(),
+  };
   await put('centers', centerObj);
-  await put('campuses', centerObj).catch(() => {});
   await log(a, 'CENTER_CREATED', code);
   return `Center ${code} created with ${labs * seatsPerLab} seats.`;
 }
+
 export async function updateCenter(a, c, patch) {
   need(a, 'center.manage'); assertScope(a, c.tenantId);
   const next = { ...c };
@@ -36,19 +59,39 @@ export async function updateCenter(a, c, patch) {
     next.labs = labs; next.seatsPerLab = seats; next.capacity = labs * seats;
   }
   if (patch.campusId !== undefined) next.campusId = patch.campusId || '';
-  await put('centers', next); await log(a, 'CENTER_UPDATED', c.code);
+
+  try {
+    await Api.updateCampus(c.id, { name: next.name, city: next.city, capacity: next.capacity });
+  } catch (err) {
+    fail(err.message || 'Backend center update failed.');
+  }
+
+  await put('centers', next);
+  await log(a, 'CENTER_UPDATED', c.code);
   return 'Center updated.';
 }
+
 export async function setCenterStatus(a, c, status, reason) {
   need(a, 'center.manage'); assertScope(a, c.tenantId);
   const r = requireReason(reason, 8);
-  if (status === 'inactive' && (await all('exams')).some((e) => e.centerIds.includes(c.id) && !['closed', 'cancelled'].includes(e.status))) fail('An open exam uses this center. Close or cancel it first.');
-  await put('centers', { ...c, status, statusReason: r }); await log(a, 'CENTER_' + status.toUpperCase(), `${c.code}: ${r}`);
+  if (status === 'inactive' && (await all('exams')).some((e) => e.centerIds.includes(c.id) && !['closed', 'cancelled'].includes(e.status)))
+    fail('An open exam uses this center. Close or cancel it first.');
+
+  try {
+    await Api.setCampusStatus(c.id, status, r);
+  } catch (err) {
+    fail(err.message || 'Backend center status update failed.');
+  }
+
+  await put('centers', { ...c, status, statusReason: r });
+  await log(a, 'CENTER_' + status.toUpperCase(), `${c.code}: ${r}`);
   return `${c.code} is now ${status}.`;
 }
+
 export async function assignCenterCampus(a, c, campusId) {
   need(a, 'center.manage'); assertScope(a, c.tenantId);
   if (campusId) { const cp = await get('campuses', campusId); if (!cp || cp.tenantId !== c.tenantId) fail('Pick a campus in this institution.'); }
-  await put('centers', { ...c, campusId }); await log(a, 'CENTER_CAMPUS_ASSIGNED', `${c.code} -> ${campusId || 'none'}`);
+  await put('centers', { ...c, campusId });
+  await log(a, 'CENTER_CAMPUS_ASSIGNED', `${c.code} -> ${campusId || 'none'}`);
   return 'Center linked to campus.';
 }

@@ -4,6 +4,7 @@ import { id, need, fail, log, cmpVer, seatLabel, assertScope, requireReason } fr
 import { latestPublished } from '../policies/service';
 import { create as requestApproval } from '../../core/services/approvals';
 import { clean } from '../../core/security/sanitize';
+import * as Api from '../../core/api/services';
 
 export const reachable = (d, t = Date.now()) => t - (d.lastSeen || 0) < 40000;
 export function compliant(d, policies, releases, t = Date.now()) {
@@ -52,6 +53,15 @@ const checkStatus = (key, profile, device) => {
   if (typeof v === 'boolean') return v ? { status: 'PASS', reason: 'Supported and enabled' } : { status: 'FAIL', reason: 'Not supported or disabled' };
   return { status: 'PASS', reason: String(v) };
 };
+
+export async function listDevices(tenantId) {
+  try {
+    const res = await Api.listRegisteredDevices();
+    const rows = res?.devices || res || [];
+    if (Array.isArray(rows) && rows.length) return rows;
+  } catch { /* fall through to local */ }
+  return (await all('devices')).filter((d) => !tenantId || d.tenantId === tenantId);
+}
 
 export async function enrollDevices(a, { tenantId, centerId, count = 1 }) {
   need(a, 'device.manage'); assertScope(a, tenantId);
@@ -105,6 +115,11 @@ export async function setDeviceStatus(a, d, status, reason) {
   if (!['enrolled', 'suspended', 'revoked', 'rejected'].includes(status)) fail('Unknown device status.');
   if (d.status === 'revoked' && status === 'enrolled' && !['superadmin', 'ops_admin'].includes(a.role)) fail('Reauthorising a revoked device needs a platform approval.');
   if ((await all('sessions')).some((s) => s.deviceId === d.id && s.status === 'in_progress')) fail('End the active exam session on this device first.');
+  try {
+    if (status === 'suspended') await Api.suspendDevice(d.id, r);
+    else if (status === 'revoked') await Api.revokeDeviceIdentity(d.id, r);
+    else if (status === 'enrolled') await Api.approveDeviceRegistration(d.id);
+  } catch (err) { fail(err.message || 'Backend device status update failed.'); }
   const next = { ...d, status, statusReason: r, statusAt: Date.now(), trust: status === 'enrolled' ? 'unknown' : d.trust, history: [...(d.history || []), { at: Date.now(), by: a.id, action: `Status → ${status}`, reason: r }] };
   await put('devices', next); await log(a, 'DEVICE_' + status.toUpperCase(), `${d.hostname}: ${r}`);
   return `${d.hostname} is now ${status}.`;

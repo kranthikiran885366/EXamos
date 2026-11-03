@@ -519,8 +519,9 @@ export function PlatformVerificationPage() {
   const id = targetId;
   const { msg, setMsg, run, busy } = useFlash();
 
-  // If application is already approved, pre-check all for immediate visibility
-  const isAlreadyApproved = inst?.status === 'approved';
+  // One-time verification: detect if already approved or provisioned
+  const isAlreadyApproved = inst?.status === 'approved' || inst?.status === 'provisioned';
+  const isProvisioned = inst?.status === 'provisioned' || !!inst?.institutionId;
   const [checklist, setChecklist] = useState({
     identity: isAlreadyApproved,
     domain: isAlreadyApproved,
@@ -656,26 +657,60 @@ export function PlatformVerificationPage() {
       {!isApp && <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />}
       <OnboardingWorkflowBar currentStage={1} />
 
-      {/* Prominent Next Action Banner when Already Approved */}
+      {/* â”€â”€ ONE-TIME VERIFICATION MILESTONE â”€â”€ */}
       {isAlreadyApproved && (
-        <div style={{ background: '#EEF4FF', border: '1px solid #BFDBFE', borderRadius: '10px', padding: '16px 20px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', boxShadow: 'var(--shadow)' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-              <span style={{ fontSize: '18px' }}>✅</span>
-              <b style={{ color: '#1E40AF', fontSize: '14.5px' }}>Application Verified &amp; Approved</b>
-              <Badge value="APPROVED" tone="green" />
+        <div style={{ background: 'linear-gradient(135deg, #F0FDF4 0%, #ECFDF5 50%, #F0F9FF 100%)', border: '2px solid #86EFAC', borderRadius: '12px', padding: '24px', marginBottom: '20px', boxShadow: '0 4px 16px rgba(34,197,94,0.12)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+            <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#22C55E', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <span style={{ color: '#FFFFFF', fontSize: '22px', fontWeight: 800 }}>âœ“</span>
             </div>
-            <p style={{ margin: 0, fontSize: '13px', color: '#3B82F6' }}>
-              This institution has passed identity verification. Next step: execute <b>Tenant Provisioning</b> to initialize their isolated database, cryptographic keys, and active license.
-            </p>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <b style={{ color: '#15803D', fontSize: '16px' }}>Official Verification Complete</b>
+                <Badge value={isProvisioned ? 'PROVISIONED' : 'APPROVED'} tone="green" />
+                <span style={{ fontSize: '11.5px', color: '#6B7280', background: '#F3F4F6', padding: '2px 8px', borderRadius: '4px' }}>ONE-TIME MILESTONE â€” LOCKED</span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#166534', lineHeight: 1.5 }}>
+                <b>{inst.name}</b> has passed all identity verification challenges. This decision is permanently recorded in the immutable audit ledger and cannot be reversed or re-evaluated.
+              </p>
+            </div>
           </div>
-          <button
-            className="btn primary"
-            onClick={() => nav(`/platform/institutions/${id}/provisioning`)}
-            style={{ flexShrink: 0, padding: '10px 18px', fontWeight: 700 }}
-          >
-            Proceed to Tenant Provisioning →
-          </button>
+
+          {/* Locked verification evidence summary */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px', marginBottom: '16px' }}>
+            {[
+              { label: 'Educational Charter & Registration', icon: 'ðŸ›ï¸' },
+              { label: 'Academic Domain Ownership', icon: 'ðŸŒ' },
+              { label: 'Accreditation & Letterhead', icon: 'ðŸ“œ' },
+              { label: 'Authorized Signatory', icon: 'ðŸ‘¤' },
+              { label: 'Fleet & Deployment Scope', icon: 'ðŸ–¥ï¸' },
+            ].map((item, idx) => (
+              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', background: '#DCFCE7', borderRadius: '6px', border: '1px solid #BBF7D0' }}>
+                <span style={{ fontSize: '14px' }}>{item.icon}</span>
+                <span style={{ fontSize: '12px', color: '#15803D', fontWeight: 600 }}>âœ“ {item.label}</span>
+              </div>
+            ))}
+          </div>
+
+          {inst.reviewNotes && (
+            <div style={{ padding: '10px 14px', background: '#FFFFFF', borderRadius: '8px', border: '1px solid #D1FAE5', marginBottom: '16px', fontSize: '12.5px' }}>
+              <span style={{ fontWeight: 700, color: '#166534' }}>Auditor Notes: </span>
+              <span style={{ color: '#374151' }}>{inst.reviewNotes}</span>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', paddingTop: '12px', borderTop: '1px solid #BBF7D0' }}>
+            <span style={{ fontSize: '12px', color: '#6B7280' }}>
+              Verified {inst.createdAt ? `on ${new Date(inst.createdAt).toLocaleDateString()}` : ''} Â· Audit ledger entry committed
+            </span>
+            <button
+              className="btn primary"
+              onClick={() => nav(`/platform/institutions/${id}/provisioning`)}
+              style={{ padding: '10px 20px', fontWeight: 700, fontSize: '13.5px' }}
+            >
+              {isProvisioned ? 'Go to Tenant Operations Enclave â†’' : 'Proceed to Tenant Provisioning â†’'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -782,6 +817,7 @@ export function PlatformVerificationPage() {
         </div>
       </div>
 
+      {!isAlreadyApproved && (<>
       {/* Checklist Progress */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', marginBottom: '16px', boxShadow: 'var(--shadow)' }}>
         <div style={{ flex: 1 }}>
@@ -904,6 +940,7 @@ export function PlatformVerificationPage() {
         </div>
       </Card>
 
+      </>)}
       {/* Success Alert / Next Step Modal */}
       {successAlert && (
         <Modal

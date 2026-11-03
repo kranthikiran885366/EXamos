@@ -2,9 +2,22 @@ import { all, put } from '../../core/db/db';
 import { sha256 } from '../../core/security/crypto';
 import { id, need, log } from '../../core/services/common';
 import { compliant } from '../fleet/service';
+import * as Api from '../../core/api/services';
 
 export const TYPES = { attendance: 'Attendance by exam', results: 'Exam results', attestation: 'Attestation outcomes', fleet: 'Fleet compliance by center', incidents: 'Incident register' };
 const d = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0, 19) : '');
+export async function buildFromBackend(type, tenantId) {
+  try {
+    const res = await Api.listAuditTrail({ limit: 500 });
+    if (type === 'audit-summary' && res?.events) {
+      const counts = {};
+      for (const e of res.events) { const k = e.event; counts[k] = (counts[k] || 0) + 1; }
+      return { cols: ['Event', 'Count'], rows: Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n]) };
+    }
+  } catch { /* fall through to local */ }
+  return null;
+}
+
 export async function build(type, tenantId) {
   const f = (r) => !tenantId || r.tenantId === tenantId;
   const [exams, cands, sess, devs, atts, incs, pols, rels, ctrs] = await Promise.all(['exams', 'candidates', 'sessions', 'devices', 'attestations', 'incidents', 'policies', 'releases', 'centers'].map(all));

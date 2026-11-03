@@ -126,7 +126,12 @@ export async function createProfile(a, { tenantId, name, releaseId, lockdown, bl
   need(a, 'kiosk.manage');
   name = clean(name, 60);
   if (name.length < 3) fail('Give the profile a name.');
-  const rel = await get('releases', releaseId);
+  // Validate release from backend first
+  let rel;
+  try {
+    const res = await Api.getOsReleaseDetails(releaseId);
+    rel = res?.release || res;
+  } catch { rel = await get('releases', releaseId); }
   if (!rel || !['approved', 'rolling', 'stable'].includes(rel.status)) {
     fail('Pick an approved, rolling or stable release.');
   }
@@ -134,16 +139,9 @@ export async function createProfile(a, { tenantId, name, releaseId, lockdown, bl
     fail('This profile already exists for that release.');
   }
   await put('kiosks', {
-    id: id('kio'),
-    tenantId,
-    name,
-    releaseId,
-    lockdown,
-    blockClipboard: !!blockClipboard,
-    blockCapture: !!blockCapture,
-    status: 'canary',
-    createdBy: a.id,
-    createdAt: Date.now(),
+    id: id('kio'), tenantId, name, releaseId, lockdown,
+    blockClipboard: !!blockClipboard, blockCapture: !!blockCapture,
+    status: 'canary', createdBy: a.id, createdAt: Date.now(),
   });
   await log(a, 'KIOSK_PROFILE_CREATED', `${name} -> ${rel.version}`);
   return `Profile ${name} created as canary.`;
