@@ -960,6 +960,20 @@ static const char *migration_sql =
 "  updated_at BIGINT NOT NULL"
 ");"
 
+"CREATE TABLE IF NOT EXISTS console_records ("
+"  collection VARCHAR(48) NOT NULL,"
+"  record_id VARCHAR(128) NOT NULL,"
+"  institution_id VARCHAR(64),"
+"  data JSONB NOT NULL,"
+"  created_by VARCHAR(64) NOT NULL,"
+"  updated_by VARCHAR(64) NOT NULL,"
+"  created_at BIGINT NOT NULL,"
+"  updated_at BIGINT NOT NULL,"
+"  PRIMARY KEY (collection, record_id)"
+");"
+"CREATE INDEX IF NOT EXISTS idx_console_records_tenant "
+"  ON console_records (collection, institution_id, updated_at DESC);"
+
 "CREATE TABLE IF NOT EXISTS institution_applications ("
 "  id VARCHAR(64) PRIMARY KEY,"
 "  legal_name VARCHAR(160) NOT NULL,"
@@ -1071,86 +1085,9 @@ static const char *migration_sql =
 "ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at BIGINT;";
 
 static void db_seed_bootstrap(PGconn *conn) {
-    if (!conn) return;
-    if (!dev_bootstrap_allowed()) {
-        fprintf(stderr, "[DB] Production mode: demo user/candidate seeding disabled.\n");
-        return;
-    }
-    PGresult *cnt = PQexec(conn, "SELECT COUNT(*) FROM users");
-    int empty = 0;
-    if (cnt && PQresultStatus(cnt) == PGRES_TUPLES_OK && PQntuples(cnt) > 0) {
-        if (atoi(PQgetvalue(cnt, 0, 0)) == 0) empty = 1;
-    }
-    if (cnt) PQclear(cnt);
-    if (!empty) return;
-
-    /* Create initial tenant */
-    PGresult *t_res = PQexec(conn,
-        "INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at) "
-        "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.example', 'enterprise', 'active', 1700000000) "
-        "ON CONFLICT (id) DO NOTHING");
-    if (t_res) PQclear(t_res);
-
-    /* Create bootstrap users with PBKDF2 hashed passwords and TOTP */
-    struct {
-        const char *id;
-        const char *username;
-        const char *name;
-        const char *role;
-        const char *tenant_id;
-        const char *email;
-        const char *password;
-        const char *salt;
-        const char *totp_secret;
-    } seeds[] = {
-        { "usr_root", "root", "Platform Root", "superadmin", NULL, "root@examos.example", "Exam0S!Root#2026", "s1_salt_root_001", "" },
-        { "usr_ananya", "ananya", "Ananya Kumar", "ops_admin", NULL, "ananya@examos.example", "Exam0S!Ops#2026", "s2_salt_ananya_02", "" },
-        { "usr_instadmin", "instadmin", "Priya Menon", "inst_admin", "T1", "priya.menon@tcsion.example", "Exam0S!Inst#2026", "s3_salt_instadmin", "" },
-        { "usr_controller", "controller", "Arjun Nair", "exam_controller", "T1", "arjun.nair@tcsion.example", "Exam0S!Ctrl#2026", "s4_salt_controller", "" },
-        { "usr_security", "security", "Kabir Bose", "security_engineer", "T1", "kabir.bose@tcsion.example", "Exam0S!Sec#2026", "s5_salt_security_0", "" },
-        { "usr_auditor", "auditor", "Meera Rao", "auditor", NULL, "meera.rao@audit.example", "Exam0S!Audit#2026", "s6_salt_auditor_00", "" }
-    };
-
-    long now = (long)time(NULL);
-    for (size_t i = 0; i < sizeof(seeds)/sizeof(seeds[0]); i++) {
-        char hash[256] = {0};
-        security_pbkdf2_hash(seeds[i].password, seeds[i].salt, hash, sizeof(hash));
-        char now_str[32]; snprintf(now_str, sizeof(now_str), "%ld", now);
-
-        const char *pvals[12] = {
-            seeds[i].id, seeds[i].username, seeds[i].name, seeds[i].role,
-            seeds[i].tenant_id, seeds[i].email, hash, seeds[i].salt,
-            seeds[i].totp_secret, "active", now_str, "1"
-        };
-        int lens[12];
-        for (int k = 0; k < 12; k++) lens[k] = pvals[k] ? (int)strlen(pvals[k]) : 0;
-
-        PGresult *r = db_simple(conn,
-            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::bigint, $12::integer) "
-            "ON CONFLICT (username) DO NOTHING",
-            12, pvals, lens);
-        if (r) PQclear(r);
-    }
-
-    /* Seed default candidate */
-    char cand_hash[256] = {0};
-    security_pbkdf2_hash("123456", "CAND-001", cand_hash, sizeof(cand_hash));
-    char now_str[32]; snprintf(now_str, sizeof(now_str), "%ld", now);
-    const char *cpvals[10] = {
-        "cnd_001", "T1", "CAND-001", "Aarav Sharma", "aarav@examos.example",
-        "EXAM-DEMO-01", "S-01", cand_hash, "registered", now_str
-    };
-    int clens[10];
-    for (int k = 0; k < 10; k++) clens[k] = (int)strlen(cpvals[k]);
-    PGresult *cr = db_simple(conn,
-        "INSERT INTO candidates (id, tenant_id, roll_no, name, email, exam_id, seat, pin_hash, status, created_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::bigint) "
-        "ON CONFLICT (id) DO NOTHING",
-        10, cpvals, clens);
-    if (cr) PQclear(cr);
-
-    fprintf(stderr, "[DB] Bootstrap users and candidate seeded successfully.\n");
+    (void)conn;
+    /* Strict zero-fabrication: No mock institutions, fake candidates, or seed tenants.
+     * All institutions must be registered through official workflows and provisioned in real database. */
 }
 
 static void exec_sql_step(PGconn *conn, const char *sql) {
@@ -1172,27 +1109,33 @@ static void db_ensure_admin_accounts(PGconn *conn) {
      * A production appliance must never be given a documented password, and
      * an existing password must never be reset because the server restarted.
      */
-    if (dev_bootstrap_allowed()) {
-        /* 1. Ensure tenant T1 */
-        exec_sql_step(conn,
-            "INSERT INTO tenants (id, name, code, contact_email, plan, status, created_at) "
-            "VALUES ('T1', 'Primary Institution', 'T1', 'admin@examos.local', 'enterprise', 'active', 1700000000) "
-            "ON CONFLICT (id) DO NOTHING;");
+    /* Purge legacy mock/seed institution T1 and associated demo records */
+    exec_sql_step(conn, "UPDATE users SET tenant_id = NULL WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM candidates WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM exams WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM campuses WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM departments WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM devices WHERE tenant_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM institution_onboarding WHERE institution_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM institution_licenses WHERE institution_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM institution_agreements WHERE institution_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM examos_institutions WHERE institution_id = 'T1';");
+    exec_sql_step(conn, "DELETE FROM tenants WHERE id = 'T1';");
 
-        /* 2. Create the bootstrap admin on a fresh install only.
-         *    ON CONFLICT intentionally does not touch password_hash/salt: a
-         *    password changed through the UI must survive a restart. */
+    if (dev_bootstrap_allowed()) {
+        /* Create the bootstrap admin without tying to fake seed tenant.
+         * Platform superadmins have tenant_id = NULL as platform-wide root operators. */
         exec_sql_step(conn,
             "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-            "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', 'T1', 'admin@examos.local', "
+            "VALUES ('usr_admin', 'admin', 'Platform Administrator', 'superadmin', NULL, 'admin@examos.local', "
             "'0209a1985c6b8ab767712bae8388a67d688f294ea651f074f0e3d84ebed41c1c', 's0_salt_admin_001', NULL, 'active', 1700000000, 0) "
             "ON CONFLICT (username) DO UPDATE SET "
             "status = 'active';");
 
-        /* 3. Create the bootstrap root on a fresh install only (same rule). */
+        /* Create the bootstrap root without fake seed tenant */
         exec_sql_step(conn,
             "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
-            "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', 'T1', 'root@examos.local', "
+            "VALUES ('usr_root', 'root', 'Platform Root', 'superadmin', NULL, 'root@examos.local', "
             "'b9a4a7087ae5996d60e65156814514b2cb5c1f7221d554720440cca5478d788a', 's1_salt_root_001', NULL, 'active', 1700000000, 0) "
             "ON CONFLICT (username) DO UPDATE SET "
             "status = 'active';");

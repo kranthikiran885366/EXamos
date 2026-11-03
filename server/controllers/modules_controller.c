@@ -31,6 +31,191 @@ static int mod_authorize(const char *auth_header, uint32_t perm,
     return ctrl_authorize(auth_header, perm, out) == 0;
 }
 
+static int console_collection_allowed(const char *collection) {
+    static const char *allowed[] = {
+        "tenants", "campuses", "departments", "staff", "centers",
+        "users", "invitations", "roles", "exams", "candidates", "sessions",
+        "devices", "attestations", "compat", "usbs", "custody", "policies",
+        "approvals", "rules", "kiosks", "incidents", "securityEvents",
+        "vulnerabilities", "evidence", "releases", "releaseEvidence", "rollouts",
+        "support", "notifications", "reports", "plans", "subscriptions", "invoices",
+        "privacy", "retention", "features", "configs", "integrations", "services",
+        "alerts", "jobs", "backups", "audit", "meta", NULL
+    };
+    for (size_t i = 0; allowed[i]; i++) {
+        if (strcmp(collection, allowed[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static uint32_t console_write_permission(const char *collection) {
+    if (strcmp(collection, "users") == 0 || strcmp(collection, "invitations") == 0 ||
+        strcmp(collection, "roles") == 0) return AUTH_PERM_USER_MANAGEMENT;
+    if (strcmp(collection, "incidents") == 0) return AUTH_PERM_INCIDENT_MUTATION;
+    if (strcmp(collection, "devices") == 0 || strcmp(collection, "attestations") == 0 ||
+        strcmp(collection, "usbs") == 0 || strcmp(collection, "kiosks") == 0 ||
+        strcmp(collection, "releases") == 0 || strcmp(collection, "rules") == 0)
+        return AUTH_PERM_FLEET_MUTATION;
+    if (strcmp(collection, "exams") == 0 || strcmp(collection, "candidates") == 0 ||
+        strcmp(collection, "sessions") == 0) return AUTH_PERM_EXAM_MUTATION;
+    if (strcmp(collection, "audit") == 0) return AUTH_PERM_READ;
+    return AUTH_PERM_INSTITUTION_ADMIN;
+}
+
+static int safe_record_id(const char *value) {
+    if (!value || !value[0] || strlen(value) > 128) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '.' ))
+            return 0;
+    }
+    return 1;
+}
+
+static void console_data_routes(int fd, const char *method, const char *path,
+                                const char *body, const char *auth_header,
+                                const char *origin, char *extra, size_t extra_len) {
+    static const char prefix[] = "/api/v1/console/data/";
+    const char *parts = path + sizeof(prefix) - 1;
+    char collection[49] = {0}, record_id[129] = {0};
+    const char *slash = strchr(parts, '/');
+    size_t collection_len = slash ? (size_t)(slash - parts) : strlen(parts);
+    if (!collection_len || collection_len >= sizeof(collection)) {
+        mod_send_json(fd, 400, "{\"error\":\"Invalid collection\"}", origin, extra, extra_len);
+        return;
+    }
+    memcpy(collection, parts, collection_len);
+    if (!console_collection_allowed(collection)) {
+        mod_send_json(fd, 404, "{\"error\":\"Unknown collection\"}", origin, extra, extra_len);
+        return;
+    }
+    if (slash) {
+        if (strchr(slash + 1, '/') || !safe_record_id(slash + 1)) {
+            mod_send_json(fd, 400, "{\"error\":\"Invalid record id\"}", origin, extra, extra_len);
+            return;
+        }
+        snprintf(record_id, sizeof(record_id), "%s", slash + 1);
+    }
+
+    auth_session_t sess;
+    uint32_t permission = strcmp(method, "GET") == 0
+        ? AUTH_PERM_READ : console_write_permission(collection);
+    if (!mod_authorize(auth_header, permission, &sess)) {
+        mod_send_json(fd, 403, "{\"error\":\"Insufficient permission for this collection\"}",
+                      origin, extra, extra_len);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        const char *sql = record_id[0]
+            ? "SELECT data::text FROM console_records WHERE collection=$1 AND record_id=$2 "
+              "AND ($4::boolean OR institution_id=$3)"
+            : "SELECT COALESCE(jsonb_agg(data ORDER BY updated_at DESC),'[]'::jsonb)::text "
+              "FROM console_records WHERE collection=$1 AND ($3::boolean OR institution_id=$2 OR record_id=$2)";
+        PGresult *res;
+        char response[131072];
+        if (record_id[0]) {
+            const char *by_id_params[4] = { collection, record_id, sess.institution_id,
+                sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
+            res = db_query(sql, 4, by_id_params);
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+                snprintf(response, sizeof(response), "%s", PQgetvalue(res, 0, 0));
+                PQclear(res);
+                mod_send_json(fd, 200, response, origin, extra, extra_len);
+                return;
+            }
+        } else {
+            const char *list_params[3] = { collection, sess.institution_id,
+                sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
+            res = db_query(sql, 3, list_params);
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+                snprintf(response, sizeof(response), "%s", PQgetvalue(res, 0, 0));
+                PQclear(res);
+                mod_send_json(fd, 200, response, origin, extra, extra_len);
+                return;
+            }
+        }
+        if (res) PQclear(res);
+        mod_send_json(fd, 500, "{\"error\":\"Database read failed\"}", origin, extra, extra_len);
+        return;
+    }
+
+    if (strcmp(method, "PUT") == 0) {
+        if (!record_id[0] || !body || body[0] != '{') {
+            mod_send_json(fd, 400, "{\"error\":\"A record id and JSON object are required\"}",
+                          origin, extra, extra_len);
+            return;
+        }
+        char body_id[129] = {0}, institution_id[65] = {0};
+        ctrl_json_string(body, "id", body_id, sizeof(body_id));
+        if (!body_id[0] || strcmp(body_id, record_id) != 0) {
+            mod_send_json(fd, 400, "{\"error\":\"Record id must match the URL\"}",
+                          origin, extra, extra_len);
+            return;
+        }
+        if (!ctrl_json_string(body, "tenantId", institution_id, sizeof(institution_id)) &&
+            !ctrl_json_string(body, "tenant_id", institution_id, sizeof(institution_id)) &&
+            !ctrl_json_string(body, "institutionId", institution_id, sizeof(institution_id))) {
+            ctrl_json_string(body, "institution_id", institution_id, sizeof(institution_id));
+        }
+        if (sess.role != ROLE_PLATFORM_OWNER && !institution_id[0] &&
+            strcmp(collection, "audit") == 0) {
+            snprintf(institution_id, sizeof(institution_id), "%s", sess.institution_id);
+        }
+        if (sess.role != ROLE_PLATFORM_OWNER &&
+            (!sess.institution_id[0] || !institution_id[0] ||
+             strcmp(sess.institution_id, institution_id) != 0)) {
+            mod_send_json(fd, 403, "{\"error\":\"Record must belong to your institution\"}",
+                          origin, extra, extra_len);
+            return;
+        }
+        const char *params[6] = { collection, record_id, institution_id, body,
+                                  sess.user_id, sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
+        PGresult *res = db_query(
+            "INSERT INTO console_records (collection,record_id,institution_id,data,created_by,updated_by,created_at,updated_at) "
+            "VALUES ($1,$2,NULLIF($3,''),$4::jsonb,$5,$5,(extract(epoch from clock_timestamp())*1000)::bigint,"
+            "(extract(epoch from clock_timestamp())*1000)::bigint) "
+            "ON CONFLICT (collection,record_id) DO UPDATE SET institution_id=EXCLUDED.institution_id,"
+            "data=EXCLUDED.data,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at "
+            "WHERE $6::boolean OR console_records.institution_id=EXCLUDED.institution_id "
+            "RETURNING data::text", 6, params);
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+            char response[131072];
+            snprintf(response, sizeof(response), "%s", PQgetvalue(res, 0, 0));
+            PQclear(res);
+            audit_log(sess.user_id, "CONSOLE_RECORD_UPSERTED", collection);
+            mod_send_json(fd, 200, response, origin, extra, extra_len);
+            return;
+        }
+        if (res) PQclear(res);
+        mod_send_json(fd, 409, "{\"error\":\"Record could not be saved\"}", origin, extra, extra_len);
+        return;
+    }
+
+    if (strcmp(method, "DELETE") == 0) {
+        if (!record_id[0] || strcmp(collection, "audit") == 0) {
+            mod_send_json(fd, 400, "{\"error\":\"A record id is required; audit records are immutable\"}",
+                          origin, extra, extra_len);
+            return;
+        }
+        PGresult *res = db_query(
+            "DELETE FROM console_records WHERE collection=$1 AND record_id=$2 "
+            "AND ($4::boolean OR institution_id=$3) RETURNING record_id",
+            4, (const char *[]){ collection, record_id, sess.institution_id,
+                sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" });
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+            PQclear(res);
+            audit_log(sess.user_id, "CONSOLE_RECORD_DELETED", collection);
+            mod_send_json(fd, 200, "{\"status\":\"deleted\"}", origin, extra, extra_len);
+            return;
+        }
+        if (res) PQclear(res);
+        mod_send_json(fd, 404, "{\"error\":\"Record not found\"}", origin, extra, extra_len);
+        return;
+    }
+    mod_send_json(fd, 405, "{\"error\":\"Method not allowed\"}", origin, extra, extra_len);
+}
+
 /* =========================================================================
  * Security events / vulnerabilities / evidence / boot integrity
  * ========================================================================= */
@@ -276,6 +461,11 @@ static void ledger_routes(int fd, const char *method, const char *path,
 void modules_handle(int client_fd, const char *method, const char *path,
                     const char *body, const char *auth_header,
                     const char *origin, char *extra_headers, size_t extra_len) {
+    if (strncmp(path, "/api/v1/console/data/", 21) == 0) {
+        console_data_routes(client_fd, method, path, body, auth_header, origin,
+                            extra_headers, extra_len);
+        return;
+    }
     /* Route by path prefix */
     if (strncmp(path, "/api/v1/security", 16) == 0) {
         security_routes(client_fd, method, path, body, auth_header, origin, extra_headers, extra_len);

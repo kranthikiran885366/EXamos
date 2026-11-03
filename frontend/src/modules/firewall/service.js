@@ -21,11 +21,6 @@ async function guardPolicies(tenantId, nextRules) {
 const tenantRules = async (tenantId) => (await all('rules')).filter((r) => r.tenantId === tenantId);
 
 export async function listRules(tenantId) {
-  try {
-    const res = await Api.listPolicies({ examId: '' });
-    const backendRules = res?.rules || res?.firewall_rules || [];
-    if (Array.isArray(backendRules) && backendRules.length) return backendRules;
-  } catch { /* fall through to local */ }
   return tenantRules(tenantId);
 }
 

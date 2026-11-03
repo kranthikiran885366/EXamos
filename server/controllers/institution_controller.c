@@ -2199,8 +2199,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
                 /* 3j. List Institution Admins: GET /api/v1/admin/institutions/:id/admins */
         if (strcmp(method, "GET") == 0 && strcmp(sub, "admins") == 0) {
-            const char *pvals[1] = { inst_id };
-            int lens[1] = { (int)strlen(inst_id) };
+            char target_inst_id[64];
+            strncpy(target_inst_id, inst_id, sizeof(target_inst_id) - 1);
+            target_inst_id[sizeof(target_inst_id) - 1] = '\0';
+            if (strncmp(inst_id, "app_", 4) == 0) {
+                const char *apv[1] = { inst_id };
+                int apl[1] = { (int)strlen(inst_id) };
+                PGresult *apr = db_simple(conn, "SELECT institution_id FROM institution_applications WHERE id = $1 AND institution_id IS NOT NULL", 1, apv, apl);
+                if (apr && PQresultStatus(apr) == PGRES_TUPLES_OK && PQntuples(apr) > 0 && PQgetvalue(apr, 0, 0)[0]) {
+                    strncpy(target_inst_id, PQgetvalue(apr, 0, 0), sizeof(target_inst_id) - 1);
+                    target_inst_id[sizeof(target_inst_id) - 1] = '\0';
+                }
+                if (apr) PQclear(apr);
+            }
+            const char *pvals[1] = { target_inst_id };
+            int lens[1] = { (int)strlen(target_inst_id) };
             PGresult *res = db_simple(conn,
                 "SELECT id, username, name, role, email, status, mfa_enabled, "
                 "       created_at, last_login, COALESCE(title, '') "
@@ -2311,6 +2324,34 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
+            char effective_inst_id[64];
+            strncpy(effective_inst_id, inst_id, sizeof(effective_inst_id) - 1);
+            effective_inst_id[sizeof(effective_inst_id) - 1] = '\0';
+            if (strncmp(inst_id, "app_", 4) == 0) {
+                const char *apv[1] = { inst_id };
+                int apl[1] = { (int)strlen(inst_id) };
+                PGresult *apr = db_simple(conn, "SELECT institution_id FROM institution_applications WHERE id = $1 AND institution_id IS NOT NULL", 1, apv, apl);
+                if (apr && PQresultStatus(apr) == PGRES_TUPLES_OK && PQntuples(apr) > 0 && PQgetvalue(apr, 0, 0)[0]) {
+                    strncpy(effective_inst_id, PQgetvalue(apr, 0, 0), sizeof(effective_inst_id) - 1);
+                    effective_inst_id[sizeof(effective_inst_id) - 1] = '\0';
+                }
+                if (apr) PQclear(apr);
+            }
+
+            /* Verify that effective_inst_id exists in tenants table */
+            {
+                const char *tpv[1] = { effective_inst_id };
+                int tpl[1] = { (int)strlen(effective_inst_id) };
+                PGresult *tchk = db_simple(conn, "SELECT id FROM tenants WHERE id = $1", 1, tpv, tpl);
+                if (!tchk || PQresultStatus(tchk) != PGRES_TUPLES_OK || PQntuples(tchk) == 0) {
+                    if (tchk) PQclear(tchk);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Cannot create administrator: institution tenant has not been provisioned yet. Run tenant provisioning first.", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(tchk);
+            }
+
             if (!username[0]) {
                 const char *at = strchr(email, '@');
                 size_t prefix_len = at ? (size_t)(at - email) : strlen(email);
@@ -2371,7 +2412,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             const char *pvals[9] = {
                 user_id, username, name, role[0] ? role : "inst_admin",
-                inst_id, email, hash, salt, now_str
+                effective_inst_id, email, hash, salt, now_str
             };
             int lens[9];
             for (int k = 0; k < 9; k++) lens[k] = (int)strlen(pvals[k]);
@@ -2383,9 +2424,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "RETURNING id, username", 9, pvals, lens);
 
             if (!ins || PQresultStatus(ins) != PGRES_TUPLES_OK) {
-                if (ins) PQclear(ins);
+                char err_detail[512] = {0};
+                if (ins) {
+                    snprintf(err_detail, sizeof(err_detail), "%s", PQresultErrorMessage(ins));
+                    PQclear(ins);
+                }
                 db_release(conn, 0);
-                inst_send_error(client_fd, 500, "Failed to create administrator account in database", origin, extra_headers, extra_len);
+                char client_err[1024];
+                snprintf(client_err, sizeof(client_err), "Failed to create administrator account in database: %s", err_detail[0] ? err_detail : "Database error");
+                inst_send_error(client_fd, 500, client_err, origin, extra_headers, extra_len);
                 return;
             }
             if (PQntuples(ins) == 0) {
@@ -2404,7 +2451,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (campus_id[0]) {
                 char staff_id[64];
                 inst_generate_id("stf", staff_id, sizeof(staff_id));
-                const char *s_vals[6] = { staff_id, inst_id, ret_id, name, role, campus_id };
+                const char *s_vals[6] = { staff_id, effective_inst_id, ret_id, name, role, campus_id };
                 int s_lens[6];
                 for (int s = 0; s < 6; s++) s_lens[s] = (int)strlen(s_vals[s]);
                 PGresult *stf = db_simple(conn,
@@ -2414,7 +2461,22 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 if (stf) PQclear(stf);
             }
 
-            audit_and_ledger(sess.user_id, "INSTITUTION_ADMIN_INVITED", inst_id, email);
+            /* Update institution_onboarding: record first admin invitation and advance admin_mfa step */
+            {
+                const char *onb_v[3] = { effective_inst_id, email, now_str };
+                int onb_l[3] = { (int)strlen(effective_inst_id), (int)strlen(email), (int)strlen(now_str) };
+                PGresult *onb_upd = db_simple(conn,
+                    "UPDATE institution_onboarding SET "
+                    "checklist = jsonb_set(checklist, '{admin_mfa}', jsonb_build_object('completed', true, 'admin', $2::text, 'at', $3::bigint)), "
+                    "first_admin_invited = 1, "
+                    "first_admin_email = $2, "
+                    "completed_steps = (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true'), "
+                    "updated_at = $3::bigint WHERE institution_id = $1",
+                    3, onb_v, onb_l);
+                if (onb_upd) PQclear(onb_upd);
+            }
+
+            audit_and_ledger(sess.user_id, "INSTITUTION_ADMIN_INVITED", effective_inst_id, email);
             db_release(conn, 0);
 
             char resp[1024];
@@ -2422,7 +2484,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "{\"status\":\"created\",\"user_id\":\"%s\",\"id\":\"%s\","
                 "\"username\":\"%s\",\"name\":\"%s\",\"email\":\"%s\","
                 "\"role\":\"%s\",\"tenant_id\":\"%s\",\"tempPassword\":\"%s\",\"mfa_enabled\":false}",
-                ret_id, ret_id, ret_user, name, email, role, inst_id, temp_pwd);
+                ret_id, ret_id, ret_user, name, email, role, effective_inst_id, temp_pwd);
             inst_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
             return;
         }

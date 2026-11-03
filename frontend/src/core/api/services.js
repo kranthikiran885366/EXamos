@@ -1346,6 +1346,11 @@ export const listAuditTrail = wrap(async ({ examId = '', limit = 200 } = {}) => 
   return res.data;
 });
 
+export const getLedger = wrap(async () => {
+  const res = await api.get(ENDPOINTS.ledger, { actor: ACTOR });
+  return res.data;
+});
+
 // ---------------------------------------------------------------------------
 // Admin actions
 // ---------------------------------------------------------------------------

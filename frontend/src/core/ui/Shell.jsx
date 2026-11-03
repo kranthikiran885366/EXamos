@@ -4,7 +4,6 @@ import { useAuth } from '../auth/AuthContext';
 import { TenantProvider, useTenant, useCol } from '../db/tenant';
 import { useSessionGuard } from '../security/sessionGuard';
 import { can } from '../security/rbac';
-import { startEngine, stopEngine } from '../../modules/ops/engine';
 import { Icon } from './kit';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
@@ -19,14 +18,24 @@ function Inner() {
   const rawPlatform = meta.find((m) => m.id === 'platform');
   const platform = rawPlatform?.value || rawPlatform || {};
   const [drawer, setDrawer] = useState(false);
+  const [dataError, setDataError] = useState('');
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem('examos.sidebar') === '1'; } catch { return false; } });
   const loc = useLocation();
   const warning = useSessionGuard({
     active: !!user && !locked, idleMs: 10 * 60e3, maxMs: 8 * 3600e3, warnMs: 60e3,
     onIdle: lock, onExpire: () => logout('SESSION_EXPIRED'),
   });
-  useEffect(() => { startEngine(); return stopEngine; }, []);
   useEffect(() => { setDrawer(false); }, [loc.pathname]);
+  useEffect(() => {
+    const onError = (event) => setDataError(event.detail || 'Backend data request failed.');
+    const onOnline = () => setDataError('');
+    window.addEventListener('examos:backend-error', onError);
+    window.addEventListener('examos:backend-online', onOnline);
+    return () => {
+      window.removeEventListener('examos:backend-error', onError);
+      window.removeEventListener('examos:backend-online', onOnline);
+    };
+  }, []);
   useEffect(() => { try { localStorage.setItem('examos.sidebar', collapsed ? '1' : '0'); } catch { /* storage may be blocked */ } }, [collapsed]);
   useEffect(() => { if (user) touchSession(); }, [user, loc.pathname, touchSession]);
 
@@ -41,6 +50,7 @@ function Inner() {
       {drawer && <button className="scrim-nav" aria-label="Close navigation" onClick={() => setDrawer(false)} />}
       <div className="main">
         <Topbar onMenu={() => setDrawer(true)} collapsed={collapsed} onCollapse={() => setCollapsed(!collapsed)} backend={{ mode: backendMode, online: backendOnline }} />
+        {dataError && <div className="maintenance" role="alert"><Icon name="warn" size={15} /><b>Backend data unavailable</b><span>{dataError}</span></div>}
         {platform.maintenance?.enabled && <div className="maintenance" role="status"><Icon name="warn" size={15} /><b>Maintenance mode</b><span>{platform.maintenance.message || 'Some actions are temporarily read-only.'}</span></div>}
         {warning > 0 && !locked && <div className="session-warn" role="status"><Icon name="clock" size={15} /><span>Your session locks in {Math.ceil(warning / 1000)}s due to inactivity.</span><button className="mini" onClick={() => { touchSession(); }}>Stay signed in</button></div>}
         <main className="content" id="main">{locked ? <LockScreen /> : <Outlet />}</main>

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { all, onChange } from './db';
+import { all, del, putMany, onChange, watchCollection } from './db';
 import { useAuth } from '../auth/AuthContext';
 import { isGlobal } from '../security/rbac';
 
@@ -30,18 +30,60 @@ export function TenantProvider({ children }) {
     } catch {}
   };
 
+  // Purge legacy mock/seed institution T1 on startup
+  useEffect(() => {
+    del('tenants', 'T1').catch(() => {});
+    try {
+      if (localStorage.getItem(TENANT_STORAGE_KEY) === 'T1') {
+        localStorage.removeItem(TENANT_STORAGE_KEY);
+        setTenantIdState(null);
+      }
+    } catch {}
+  }, []);
+
   const allowed = useMemo(() => {
     if (!user) return [];
-    if (isGlobal(user.role)) return tenants;
-    return tenants.filter((t) => t.id === user.tenantId);
+    // Strict zero-fabrication: Never include fake seed institution T1
+    const realTenants = tenants.filter((t) => t.id !== 'T1');
+    if (isGlobal(user.role)) return realTenants;
+    return realTenants.filter((t) => t.id === user.tenantId);
   }, [tenants, user]);
 
   useEffect(() => {
+    if (!user) {
+      setTenants([]);
+      return undefined;
+    }
+    let active = true;
     const load = async () => {
-      const t = await all('tenants'); setTenants(t);
+      try {
+        const t = await all('tenants');
+        const clean = (t || []).filter((x) => x.id !== 'T1');
+        if (active) setTenants(clean);
+        // Synchronize genuine provisioned institutions from backend
+        import('../api/services').then(({ listInstitutions }) => {
+          listInstitutions()
+            .then(async (remote) => {
+              if (Array.isArray(remote) && remote.length > 0) {
+                const genuine = remote.filter((r) => r.id !== 'T1');
+                await putMany('tenants', genuine);
+                if (active) setTenants(genuine);
+              }
+            })
+            .catch(() => {});
+        }).catch(() => {});
+      } catch (error) {
+        console.error('Failed to load institutions from the backend.', error);
+      }
     };
-    load(); return onChange((c) => c === 'tenants' && load());
-  }, []);
+    load();
+    const off = onChange((c) => c === 'tenants' && load());
+    const unwatch = watchCollection('tenants', (rows, error) => {
+      if (error) console.error('Failed to refresh institutions from the backend.', error);
+      else if (active) setTenants(rows);
+    });
+    return () => { active = false; off(); unwatch(); };
+  }, [user]);
 
   // Synchronize across browser tabs when user changes institution in another tab
   useEffect(() => {
@@ -94,9 +136,26 @@ export function useCol(name, scoped = true) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let live = true;
-    const load = async () => { const r = await all(name); if (live) { setRows(r); setLoaded(true); } };
-    load(); const off = onChange((c) => c === name && load());
-    return () => { live = false; off(); };
+    const load = async () => {
+      try {
+        const r = await all(name);
+        if (live) { setRows(r); setLoaded(true); }
+      } catch (error) {
+        if (live) {
+          setRows([]);
+          setLoaded(true);
+          console.error(`Failed to load ${name} from the backend.`, error);
+        }
+      }
+    };
+    load();
+    const off = onChange((c) => c === name && load());
+    const unwatch = watchCollection(name, (records, error) => {
+      if (error) {
+        if (live) { setRows([]); console.error(`Failed to refresh ${name} from the backend.`, error); }
+      } else if (live) setRows(records);
+    });
+    return () => { live = false; off(); unwatch(); };
   }, [name]);
   const data = useMemo(() => (scoped ? rows.filter((r) => r.tenantId === tenantId) : rows), [rows, scoped, tenantId]);
   return data;
@@ -107,12 +166,23 @@ export function useColLoaded(name, scoped = true) {
   const [state, setState] = useState({ rows: [], loaded: false });
   useEffect(() => {
     let live = true;
-    const load = async () => { const r = await all(name); if (live) setState({ rows: r, loaded: true }); };
-    load(); const off = onChange((c) => c === name && load());
-    return () => { live = false; off(); };
+    const load = async () => {
+      try {
+        const r = await all(name);
+        if (live) setState({ rows: r, loaded: true, error: null });
+      } catch (error) {
+        if (live) setState({ rows: [], loaded: true, error });
+      }
+    };
+    load();
+    const off = onChange((c) => c === name && load());
+    const unwatch = watchCollection(name, (records, error) => {
+      if (live) setState({ rows: error ? [] : records, loaded: true, error: error || null });
+    });
+    return () => { live = false; off(); unwatch(); };
   }, [name]);
   const rows = useMemo(() => (scoped ? state.rows.filter((r) => r.tenantId === tenantId) : state.rows), [state.rows, scoped, tenantId]);
-  return { rows, loaded: state.loaded };
+  return { rows, loaded: state.loaded, error: state.error };
 }
 
 export function useAsync(fn, deps = [], initial = null) {

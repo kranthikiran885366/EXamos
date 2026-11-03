@@ -3,6 +3,8 @@
 // Audit events are sent exclusively to the ExamOS C server ledger endpoint.
 // Nothing is written to IndexedDB, localStorage, or sessionStorage.
 // The server is the single source of truth for all audit records.
+import { api } from '../api/client';
+import { ENDPOINTS } from '../../config/api';
 
 export class AuditClient {
   constructor() {
@@ -35,16 +37,9 @@ export class AuditClient {
     this.sending   = true;
     const batch    = this.queue.splice(0);
     try {
-      const res = await fetch('/api/v1/audit/batch', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'X-ExamOS-Console': '1' },
-        body:    JSON.stringify({ events: batch }),
-        // credentials:'include' sends the HttpOnly admin_session cookie so the
-        // server can attribute audit entries to the right session.
-        credentials: 'include',
-      });
+      const res = await api.post(ENDPOINTS.auditBatch, { events: batch }, { actor: 'console', sign: false });
       // On server-side error just drop — we never fall back to local storage.
-      if (!res.ok) console.warn('[AuditClient] server returned', res.status);
+      if (res.status < 200 || res.status >= 300) console.warn('[AuditClient] server returned', res.status);
     } catch {
       // Network failure — entries are dropped. The server-side audit trail
       // (produced by the C backend on every API call) remains intact.

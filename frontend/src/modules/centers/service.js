@@ -4,11 +4,6 @@ import { id, need, fail, log, assertScope, requireReason } from '../../core/serv
 import * as Api from '../../core/api/services';
 
 export async function listCenters(tenantId) {
-  try {
-    const res = await Api.listCampuses(tenantId);
-    const rows = res?.campuses || res?.centers || res || [];
-    if (Array.isArray(rows) && rows.length) return rows;
-  } catch { /* fall through to local */ }
   return (await all('centers')).filter((c) => !tenantId || c.tenantId === tenantId);
 }
 

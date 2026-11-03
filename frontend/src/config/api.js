@@ -55,6 +55,7 @@ export const ENDPOINTS = {
   institutionAdminInvite: (id) => `/api/v1/admin/institutions/${id}/admins/invite`,
   institutionAdminRemove: (id, userId) => `/api/v1/admin/institutions/${id}/admins/${userId}`,
   auditTrail: '/api/v1/admin/audit',
+  auditBatch: '/api/v1/admin/audit/batch',
   institutionAgreements: (id) => `/api/v1/admin/institutions/${id}/agreements`,
   signAgreement: (id) => `/api/v1/admin/agreements/${id}/sign`,
   institutionLicense: (id) => `/api/v1/admin/institutions/${id}/license`,
@@ -87,6 +88,7 @@ export const ENDPOINTS = {
   incidents: '/api/v1/admin/incidents',
   policies: '/api/v1/admin/policies',
   policiesCatalog: '/api/v1/admin/policies/catalog',
+  consoleData: '/api/v1/console/data',
 
   // Module 9: Examination Management REST endpoints
   examinations: '/api/v1/examinations',

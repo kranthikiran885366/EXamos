@@ -21,7 +21,6 @@ import { roleLabel } from '../security/rbac';
 import { pwIssues } from '../../modules/users/service';
 import { authService } from './authService';
 import { ApiError, clearTokens } from '../api/client';
-import { syncAll } from '../api/sync';
 
 const Ctx = createContext(null);
 export const useAuth = () => useContext(Ctx);
@@ -123,7 +122,6 @@ export function AuthProvider({ children }) {
                 mfaEnabled:   profile.mfa_enabled !== false,
               }));
               setBackendMode('admin');
-              try { syncAll({ force: false }); } catch {}
             }
           }).catch(() => {});
         }
@@ -169,7 +167,6 @@ export function AuthProvider({ children }) {
         tenantId: profile.institution_id || null,
         email:    profile.email || '',
       });
-      try { await syncAll({ force: false }); } catch {}
       return { ok: true, profile };
     } catch (e) {
       failAttempt(pendingCredentials?.username || pending, 'MFA_FAILED');
@@ -220,7 +217,6 @@ export function AuthProvider({ children }) {
         tenantId: profile.institution_id || null,
         email:    profile.email || '',
       });
-      try { await syncAll({ force: false }); } catch {}
       return { ok: true, profile };
     } catch (e) {
       setPendingCredentials(null);

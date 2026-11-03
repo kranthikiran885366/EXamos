@@ -520,8 +520,15 @@ export function PlatformVerificationPage() {
   const { msg, setMsg, run, busy } = useFlash();
 
   // One-time verification: detect if already approved or provisioned
-  const isAlreadyApproved = inst?.status === 'approved' || inst?.status === 'provisioned';
+  const [unlockedForEdit, setUnlockedForEdit] = useState(false);
+  const isSuperAdmin = user?.role === 'superadmin' || user?.role === 'platform_owner';
+  const isAlreadyApproved = (!unlockedForEdit) && (inst?.status === 'approved' || inst?.status === 'provisioned');
   const isProvisioned = inst?.status === 'provisioned' || !!inst?.institutionId;
+  const [overrideModal, setOverrideModal] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [elevationModal, setElevationModal] = useState(false);
+  const [elevationData, setElevationData] = useState({ reason: '', severity: 'standard', refNumber: '' });
+  const [elevationPending, setElevationPending] = useState(null);
   const [checklist, setChecklist] = useState({
     identity: isAlreadyApproved,
     domain: isAlreadyApproved,
@@ -699,18 +706,53 @@ export function PlatformVerificationPage() {
             </div>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', paddingTop: '12px', borderTop: '1px solid #BBF7D0' }}>
-            <span style={{ fontSize: '12px', color: '#6B7280' }}>
-              Verified {inst.createdAt ? `on ${new Date(inst.createdAt).toLocaleDateString()}` : ''} Â· Audit ledger entry committed
-            </span>
+                    {/* Elevation Request Pending Banner (if reviewer requested higher role approval) */}
+          {elevationPending && (
+            <div style={{ padding: '12px 16px', background: '#FEF3C7', border: '1px solid #F59E0B', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#92400E' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
+                <span>⏳ Elevation Request Pending Super-Admin Approval</span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: '12px' }}>
+                A formal request to unlock and re-evaluate this verified institution was submitted by <b>{elevationPending.requester}</b>. Reason: "{elevationPending.reason}". Awaiting Platform Super-Admin review.
+              </p>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', paddingTop: '14px', borderTop: '1px solid #BBF7D0', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', color: '#6B7280' }}>
+                Verified {inst.createdAt ? `on ${new Date(inst.createdAt).toLocaleDateString()}` : ''} · Audit ledger entry committed
+              </span>
+              {/* Role-based action: Super-admin can unlock; other roles must request elevation */}
+              {isSuperAdmin ? (
+                <button
+                  className="btn small"
+                  onClick={() => setOverrideModal(true)}
+                  style={{ fontSize: '12px', background: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}
+                  title="Unlock institution verification for re-evaluation (Super-Admin only)"
+                >
+                  <Icon name="shield" size={12} /> Unlock for Re-Evaluation (Super-Admin)
+                </button>
+              ) : (
+                <button
+                  className="btn small"
+                  onClick={() => setElevationModal(true)}
+                  disabled={!!elevationPending}
+                  style={{ fontSize: '12px', background: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D' }}
+                  title="Submit a request to higher authority (Super-Admin) to re-evaluate"
+                >
+                  <Icon name="alert" size={12} /> {elevationPending ? 'Elevation Request Submitted' : 'Request Re-Evaluation from Super-Admin'}
+                </button>
+              )}
+            </div>
             <button
               className="btn primary"
               onClick={() => nav(`/platform/institutions/${id}/provisioning`)}
               style={{ padding: '10px 20px', fontWeight: 700, fontSize: '13.5px' }}
             >
-              {isProvisioned ? 'Go to Tenant Operations Enclave â†’' : 'Proceed to Tenant Provisioning â†’'}
+              {isProvisioned ? 'Go to Tenant Operations Enclave →' : 'Proceed to Tenant Provisioning →'}
             </button>
-          </div>
+          </div></div>
         </div>
       )}
 
@@ -941,6 +983,113 @@ export function PlatformVerificationPage() {
       </Card>
 
       </>)}
+            {/* Modal 1: Super-Admin Administrative Override / Unlock */}
+      {overrideModal && (
+        <Modal
+          title="Super-Admin Administrative Override"
+          desc="Authorize re-evaluation of statutory verification for this institution. This decision is permanently recorded in the immutable audit ledger."
+          onClose={() => setOverrideModal(false)}
+        >
+          <div style={{ padding: '10px 0' }}>
+            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B' }}>
+              <b>Governance Notice:</b> As Platform Super-Admin, unlocking this institution permits re-evaluating identity, domain, and statutory compliance checks. A verifiable compliance rationale is required.
+            </div>
+            <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, marginBottom: '6px' }}>
+              Compliance &amp; Re-Evaluation Justification (Required)
+            </label>
+            <Textarea
+              rows={3}
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              placeholder="e.g. Statutory regulatory authority issued revision notice, official registrar domain changed, or charter verification challenge re-requested..."
+            />
+          </div>
+          <div className="row end" style={{ gap: '10px', marginTop: '16px' }}>
+            <button className="btn" onClick={() => setOverrideModal(false)}>Cancel</button>
+            <button
+              className="btn danger"
+              disabled={!overrideReason.trim() || busy}
+              onClick={async () => {
+                await run(async () => {
+                  if (isApp) {
+                    await reviewApplication(user, id, 'UNDER_REVIEW', `Re-opened for re-evaluation by Super-Admin ${user.name}: ${overrideReason}`);
+                    setAppData((prev) => prev ? { ...prev, status: 'UNDER_REVIEW', reviewNotes: overrideReason } : null);
+                  }
+                  setUnlockedForEdit(true);
+                  setOverrideModal(false);
+                  return 'Verification milestone unlocked by Super-Admin. Review checklist is now editable.';
+                }, 'Re-evaluation unlocked.');
+              }}
+            >
+              Confirm &amp; Unlock for Re-Evaluation
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal 2: Request Re-Evaluation from Higher Authority (Standard Reviewer Role) */}
+      {elevationModal && (
+        <Modal
+          title="Request Re-Evaluation from Higher Authority"
+          desc="Standard reviewers cannot modify an accredited milestone. Submit a formal elevation request to the Platform Super-Admin / Compliance Committee."
+          onClose={() => setElevationModal(false)}
+        >
+          <div style={{ padding: '10px 0' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px', fontSize: '12.5px' }}>
+              <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', border: '1px solid #E5E7EB' }}>
+                <span className="muted">Requesting Reviewer:</span><br />
+                <b>{user?.name || 'Reviewer'}</b> ({user?.role || 'reviewer'})
+              </div>
+              <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', border: '1px solid #E5E7EB' }}>
+                <span className="muted">Required Authority:</span><br />
+                <Badge value="SUPER_ADMIN / ROOT" tone="purple" />
+              </div>
+            </div>
+            <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, marginBottom: '6px' }}>
+              Reason for Re-Evaluation (Required)
+            </label>
+            <Textarea
+              rows={3}
+              value={elevationData.reason}
+              onChange={(e) => setElevationData({ ...elevationData, reason: e.target.value })}
+              placeholder="Describe the discrepancy, new statutory information, or reason why the approved verification needs to be re-audited..."
+            />
+            <div style={{ marginTop: '12px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+                Audit Ticket / Regulatory Reference Number (Optional)
+              </label>
+              <Input
+                value={elevationData.refNumber}
+                onChange={(e) => setElevationData({ ...elevationData, refNumber: e.target.value })}
+                placeholder="e.g. AUDIT-2026-9921 or UGC-NOTICE-44"
+              />
+            </div>
+          </div>
+          <div className="row end" style={{ gap: '10px', marginTop: '16px' }}>
+            <button className="btn" onClick={() => setElevationModal(false)}>Cancel</button>
+            <button
+              className="btn primary"
+              disabled={!elevationData.reason.trim() || busy}
+              onClick={async () => {
+                await run(async () => {
+                  setElevationPending({
+                    requester: user?.name || 'Reviewer',
+                    role: user?.role || 'reviewer',
+                    reason: elevationData.reason,
+                    refNumber: elevationData.refNumber,
+                    date: Date.now(),
+                  });
+                  setElevationModal(false);
+                  return 'Elevation request submitted to Platform Super-Admin for compliance review.';
+                }, 'Elevation request submitted.');
+              }}
+            >
+              Submit Elevation Request
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* Success Alert / Next Step Modal */}
       {successAlert && (
         <Modal
@@ -1194,6 +1343,7 @@ export function PlatformProvisioningPage() {
               repEmail: app.repEmail,
               repName: app.repName,
               entityType: app.entityType || 'enterprise',
+              institutionId: app.institutionId || '',
             });
             if (app.repEmail) {
               setAdminData((d) => ({
@@ -1280,13 +1430,18 @@ export function PlatformProvisioningPage() {
 
   const handleCreateAdmin = async () => {
     if (!adminData.email || !adminData.name) return;
+    const targetTenantId = provisioningResult?.institution_id || instLive?.institutionId || inst?.institutionId || (id.startsWith('ins_') ? id : null);
+    if (!targetTenantId) {
+      setMsg('Error: Tenant has not been provisioned yet. Please click "Execute Tenant Provisioning" first.');
+      return;
+    }
     await run(async () => {
       const { inviteInstitutionAdmin: inviteAdmin } = await import('../institutions/service');
-      const result = await inviteAdmin(user, provisioningResult?.institution_id || id, adminData);
+      const result = await inviteAdmin(user, targetTenantId, adminData);
       setAdminCreated(result);
       setAdminModal(false);
-      await updateOnboardingStep(user, provisioningResult?.institution_id || id, 'admin_mfa', false, `Admin account created: ${adminData.email}`);
-      return `Administrator account created for ${adminData.name}. They can now sign in and enroll MFA.`;
+      await updateOnboardingStep(user, targetTenantId, 'admin_mfa', true, `Admin account created: ${adminData.email}`);
+      return `Administrator account created for ${adminData.name}. Temporary credentials generated.`;
     }, 'Administrator created.');
   };
 

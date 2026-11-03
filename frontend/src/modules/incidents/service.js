@@ -8,29 +8,16 @@ const OPEN = ['open', 'investigating', 'contained'];
 export const FLOW = { open: ['investigating'], investigating: ['contained', 'resolved'], contained: ['resolved'], resolved: ['closed', 'investigating'], closed: [], false_positive: [] };
 
 export async function listIncidents(tenantId) {
-  try {
-    const res = await Api.listIncidents();
-    const rows = res?.incidents || res || [];
-    if (Array.isArray(rows) && rows.length) return rows;
-  } catch { /* fall through to local */ }
   return (await all('incidents')).filter((i) => !tenantId || i.tenantId === tenantId);
 }
 
 export async function raise({ tenantId, key, title, severity = 'medium', source, deviceId = null }) {
   const list = await all('incidents');
   const ex = list.find((i) => i.key === key && OPEN.includes(i.status)); if (ex) return ex;
-  let inc;
-  try {
-    const res = await Api.createIncident({ title, institutionId: tenantId, deviceId, summary: title, severity });
-    inc = {
-      id: res?.incident_id || res?.id || id('inc'),
-      no: res?.incident_number || (2000 + list.length + 1),
-      tenantId, key, title, severity, source, deviceId, kind: 'alert', status: 'open',
-      owner: null, notes: [], createdAt: Date.now(),
-    };
-  } catch {
-    inc = { id: id('inc'), no: 2000 + list.length + 1, tenantId, key, title, severity, source, deviceId, kind: 'alert', status: 'open', owner: null, notes: [], createdAt: Date.now() };
-  }
+  const inc = {
+    id: id('inc'), tenantId, key, title, severity, source, deviceId, kind: 'alert', status: 'open',
+    owner: null, notes: [], createdAt: Date.now(),
+  };
   await put('incidents', inc);
   await record('system', 'INCIDENT_RAISED', `INC-${inc.no} ${title}`);
   return inc;
