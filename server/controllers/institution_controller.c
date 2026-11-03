@@ -988,7 +988,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "'campus_hierarchy', jsonb_build_object('completed', false),"
                 "'os_deployment', jsonb_build_object('completed', false),"
                 "'production_readiness', jsonb_build_object('completed', false)"
-                "), 3, 8, $2, false, false, $3::bigint)",
+                "), 3, 8, $2, 0, 1, $3::bigint)",
                 4, onb_vals, onb_lens);
 
             /* No default campus or OS deployment is fabricated here. The
@@ -1036,10 +1036,33 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 inst_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
                 return;
             } else {
+                char err_detail[512] = {0};
+                if (!t_ins || PQresultStatus(t_ins) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "tenants: %s", t_ins ? PQresultErrorMessage(t_ins) : "null");
+                else if (!s_ins || PQresultStatus(s_ins) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "examos_institutions: %s", s_ins ? PQresultErrorMessage(s_ins) : "null");
+                else if (!agr_ins || PQresultStatus(agr_ins) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "agreements: %s", agr_ins ? PQresultErrorMessage(agr_ins) : "null");
+                else if (!lic_ins || PQresultStatus(lic_ins) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "licenses: %s", lic_ins ? PQresultErrorMessage(lic_ins) : "null");
+                else if (!onb_ins || PQresultStatus(onb_ins) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "onboarding: %s", onb_ins ? PQresultErrorMessage(onb_ins) : "null");
+                else if (!app_u_res || PQresultStatus(app_u_res) != PGRES_COMMAND_OK)
+                    snprintf(err_detail, sizeof(err_detail), "application link: %s", app_u_res ? PQresultErrorMessage(app_u_res) : "null");
+                else
+                    snprintf(err_detail, sizeof(err_detail), "db: %s", PQerrorMessage(conn));
+
+                for (size_t ei = 0; err_detail[ei]; ei++) {
+                    if (err_detail[ei] == '\r' || err_detail[ei] == '\n') err_detail[ei] = ' ';
+                }
+
                 PQexec(conn, "ROLLBACK");
-                fprintf(stderr, "[INST PROVISION TRANSACTION FAILED] %s\n", PQerrorMessage(conn));
+                fprintf(stderr, "[INST PROVISION TRANSACTION FAILED] %s\n", err_detail);
                 db_release(conn, 0);
-                inst_send_error(client_fd, 500, "Transaction failed while provisioning institution", origin, extra_headers, extra_len);
+
+                char full_err[600];
+                snprintf(full_err, sizeof(full_err), "Transaction failed while provisioning institution: %s", err_detail);
+                inst_send_error(client_fd, 500, full_err, origin, extra_headers, extra_len);
                 return;
             }
         }
