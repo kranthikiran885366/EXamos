@@ -1144,22 +1144,51 @@ export function PlatformProvisioningPage() {
   // Load real provisioning / onboarding state from API
   useEffect(() => {
     if (!id) return;
-    fetchInstitutionOnboarding(id)
-      .then((ob) => {
-        setOnboarding(ob);
-        const done = ob?.status === 'provisioned' || ob?.status === 'admin_setup'
-          || ob?.status === 'active' || (ob?.completedSteps ?? 0) >= 4;
-        if (done) setProvisionDone(true);
-        if (ob?.contactEmail || ob?.repEmail) {
-          setAdminData((d) => ({
-            ...d,
-            email: d.email || ob.contactEmail || ob.repEmail || '',
-            name: d.name || ob.repName || '',
-          }));
-        }
-        if (ob?.institution) setInstLive(ob.institution);
-      })
-      .catch(() => {});
+    if (id.startsWith('app_')) {
+      fetchInstitutionApplication(id)
+        .then((app) => {
+          if (app) {
+            setInstLive({
+              id: app.id,
+              name: app.legalName || app.displayName || app.id,
+              code: app.displayName || app.id,
+              status: app.status?.toLowerCase(),
+              contactEmail: app.repEmail,
+              repEmail: app.repEmail,
+              repName: app.repName,
+              entityType: app.entityType || 'enterprise',
+            });
+            if (app.repEmail) {
+              setAdminData((d) => ({
+                ...d,
+                email: d.email || app.repEmail || '',
+                name: d.name || app.repName || '',
+              }));
+            }
+            if (app.status === 'PROVISIONED' || app.institutionId) {
+              setProvisionDone(true);
+            }
+          }
+        })
+        .catch(() => {});
+    } else {
+      fetchInstitutionOnboarding(id)
+        .then((ob) => {
+          setOnboarding(ob);
+          const done = ob?.status === 'provisioned' || ob?.status === 'admin_setup'
+            || ob?.status === 'active' || (ob?.completedSteps ?? 0) >= 4;
+          if (done) setProvisionDone(true);
+          if (ob?.contactEmail || ob?.repEmail) {
+            setAdminData((d) => ({
+              ...d,
+              email: d.email || ob.contactEmail || ob.repEmail || '',
+              name: d.name || ob.repName || '',
+            }));
+          }
+          if (ob?.institution) setInstLive(ob.institution);
+        })
+        .catch(() => {});
+    }
   }, [id]);
 
   // Derive real provisioning steps from onboarding data
