@@ -55,6 +55,8 @@ int admin_auth_store_revoke(const char *token);
 int admin_auth_store_create_initial_owner(const user_account_t *user);
 int admin_auth_store_create_user(const user_account_t *user, const char *actor_user_id);
 int admin_auth_store_list_users_json(char *out_buf, size_t max_len);
+int admin_auth_store_list_users_json_for_institution(char *out_buf, size_t max_len,
+                                                     const char *institution_id);
 
 /* MFA Enrollment & Confirmation */
 int admin_auth_store_mfa_enroll(const char *username, char out_secret[TOTP_BASE32_LEN + 1],

@@ -1079,17 +1079,24 @@ const char *admin_role_to_string(user_role_t role) {
     }
 }
 
-int admin_auth_store_list_users_json(char *out_buf, size_t max_len) {
+int admin_auth_store_list_users_json_for_institution(char *out_buf, size_t max_len,
+                                                     const char *institution_id) {
     if (!out_buf || max_len < 64) return -1;
 
     PGconn *conn = acquire_connection();
     if (!conn) return -1;
 
-    PGresult *result = PQexec(conn,
+    const char *params[1] = {
+        institution_id && institution_id[0] ? institution_id : NULL
+    };
+    PGresult *result = PQexecParams(conn,
         "SELECT user_id, username, full_name, email, COALESCE(institution_id, ''), "
         "role, mfa_enabled, active, EXTRACT(EPOCH FROM created_at)::bigint, "
         "COALESCE(EXTRACT(EPOCH FROM last_login_at)::bigint, 0) "
-        "FROM examos_admin_users ORDER BY created_at ASC");
+        "FROM examos_admin_users "
+        "WHERE $1::text IS NULL OR institution_id = $1 "
+        "ORDER BY created_at ASC",
+        1, NULL, params, NULL, NULL, 0);
 
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
         if (result) PQclear(result);
@@ -1123,6 +1130,10 @@ int admin_auth_store_list_users_json(char *out_buf, size_t max_len) {
     PQclear(result);
     release_connection(conn, 0);
     return 0;
+}
+
+int admin_auth_store_list_users_json(char *out_buf, size_t max_len) {
+    return admin_auth_store_list_users_json_for_institution(out_buf, max_len, NULL);
 }
 
 /* -----------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant, useCol } from '../../core/db/tenant';
@@ -146,55 +146,96 @@ export function AccountSecurityPage() {
 
 /* ------------------------------------------------------------------ sessions */
 export function AccountSessionsPage() {
-  const { user, revokeSession, revokeOthers } = useAuth();
-  const sessions = useCol('authSessions', false);
+  const { user, revokeSession, revokeOthers, listSessions } = useAuth();
   const [act, setAct] = useState(null);
   const [tab, setTab] = useState('active');
   const flash = useFlash();
 
-  const rows = sessions.filter((s) => s.userId === user.id).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  // Load sessions from backend — not local IndexedDB.
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState(null);
+
+  const loadSessions = async () => {
+    setSessionsLoading(true);
+    setSessionsError(null);
+    try {
+      const data = await listSessions();
+      // Normalize backend session shape to what this page expects.
+      const normalized = Array.isArray(data) ? data : (data?.sessions || []);
+      setSessions(normalized.map((s) => ({
+        id: s.id || s.session_id || s.token_hash,
+        userId: s.user_id || user.id,
+        userAgent: s.user_agent || s.userAgent || 'Unknown',
+        ip: s.ip_address || s.ip || '—',
+        createdAt: s.created_at || s.createdAt || 0,
+        lastSeen: s.last_seen_at || s.lastSeen || s.created_at || 0,
+        status: s.status || (s.revoked_at ? 'revoked' : s.expires_at && s.expires_at < Date.now() ? 'expired' : 'active'),
+        current: s.current || false,
+        reason: s.revocation_reason || s.reason || '',
+        endedAt: s.revoked_at || s.ended_at || null,
+        expiresAt: s.expires_at || null,
+      })));
+    } catch (err) {
+      setSessionsError(err.message || 'Failed to load sessions from server.');
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadSessions(); }, []);
+
+  const rows = sessions.filter((s) => s.userId === user.id || true /* backend already scoped */).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   const active = rows.filter((s) => s.status === 'active');
   const ended = rows.filter((s) => s.status !== 'active');
   const shown = tab === 'active' ? active : ended;
+  const currentSession = active.find((s) => s.current);
 
   return (
     <Page title="Sessions" desc="Active sessions and devices signed into your account."
       breadcrumb={<div className="crumbs-inline"><Link to="/account">Account</Link><Icon name="arrow" size={12} /><span>Sessions</span></div>}
-      actions={active.length > 1 ? <button className="btn danger" onClick={() => setAct({ type: 'others' })}>Sign out other sessions</button> : null}>
+      actions={active.filter((s) => !s.current).length > 0 ? <button className="btn danger" onClick={() => setAct({ type: 'others' })}>Sign out other sessions</button> : null}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {sessionsError && <Alert tone="danger" title="Could not load sessions">{sessionsError} <button className="btn small" onClick={loadSessions}>Retry</button></Alert>}
       <StatGrid cols={3}>
-        <Stat label="Active" value={active.length} icon="lock" tone="green" />
-        <Stat label="Ended / revoked" value={ended.length} icon="history" />
-        <Stat label="This session" value={active.find((s) => s.current) ? 'Current' : '—'} icon="check" />
+        <Stat label="Active" value={sessionsLoading ? '…' : active.length} icon="lock" tone="green" />
+        <Stat label="Ended / revoked" value={sessionsLoading ? '…' : ended.length} icon="history" />
+        <Stat label="This session" value={currentSession ? 'Identified' : sessionsLoading ? '…' : 'Not identified'} icon="check" tone={currentSession ? 'green' : 'amber'} />
       </StatGrid>
+      {!sessionsLoading && !sessionsError && active.length === 0 && tab === 'active' && (
+        <Alert tone="warn" title="No active sessions returned">The server returned no active sessions. Your current session may not be reflected — try refreshing. <button className="btn small" onClick={loadSessions}>Refresh</button></Alert>
+      )}
       <Tabs value={tab} onChange={setTab} tabs={[{ key: 'active', label: 'Active', count: active.length }, { key: 'ended', label: 'History', count: ended.length }]} />
       <DataTable
         title="Sessions" desc="Sessions are revoked automatically when your password or role changes."
-        rows={shown}
+        rows={sessionsLoading ? [] : shown}
+        loading={sessionsLoading}
         columns={[
-          { key: 'id', label: 'Session', render: (s) => <span className="mono sm">{s.id}</span> },
+          { key: 'id', label: 'Session', render: (s) => <span className="mono sm">{String(s.id || '').slice(0, 16)}…</span> },
           { key: 'userAgent', label: 'Device', render: (s) => <span className="muted sm">{s.userAgent || 'Unknown'}</span> },
           { key: 'ip', label: 'IP', render: (s) => s.ip || '—' },
-          { key: 'createdAt', label: 'Started', sortable: true, render: (s) => fmt(s.createdAt) },
+          { key: 'createdAt', label: 'Started', sortable: true, render: (s) => s.createdAt ? fmt(s.createdAt) : '—' },
           { key: 'lastSeen', label: 'Last used', sortable: true, render: (s) => (s.lastSeen ? ago(s.lastSeen) : '—') },
-          { key: 'current', label: 'Current', render: (s) => (s.current && s.status === 'active' ? <Badge value="current" /> : '—') },
+          { key: 'current', label: 'Current', render: (s) => (s.current && s.status === 'active' ? <Badge value="current session" tone="green" /> : '—') },
           { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} /> },
           { key: 'reason', label: 'Ended because', render: (s) => s.reason || (s.endedAt ? fmt(s.endedAt) : '—') },
         ]}
         actions={(s) => (s.status === 'active' && !s.current ? [
           { label: 'Revoke', danger: true, onClick: () => setAct({ type: 'one', row: s }) },
         ] : [])}
-        empty={<Empty icon="lock" title={tab === 'active' ? 'No active sessions' : 'No session history'} />}
+        empty={<Empty icon="lock" title={sessionsLoading ? 'Loading sessions…' : tab === 'active' ? 'No active sessions' : 'No session history'} />}
       />
+      <div className="row end"><button className="btn" onClick={loadSessions}><Icon name="refresh" size={14} /> Refresh</button></div>
       {act?.type === 'one' && (
         <ActionDialog title="Revoke session" desc="That device will need to sign in again." danger confirmLabel="Revoke" requireReason={false}
           onClose={() => setAct(null)}
-          onConfirm={() => flash.run(async () => { const r = await revokeSession(act.row.id); if (r.error) throw new Error(r.error); return 'Session revoked.'; })} />
+          onConfirm={() => flash.run(async () => { const r = await revokeSession(act.row.id); if (r.error) throw new Error(r.error); await loadSessions(); return 'Session revoked.'; })} />
       )}
       {act?.type === 'others' && (
         <ActionDialog title="Sign out other sessions" desc="Every other active session is revoked. This session stays signed in." danger confirmLabel="Sign out others" requireReason={false}
           onClose={() => setAct(null)}
-          onConfirm={() => flash.run(async () => { const r = await revokeOthers(); if (r.error) throw new Error(r.error); return `${r.count} session(s) revoked.`; })} />
+          onConfirm={() => flash.run(async () => { const r = await revokeOthers(); if (r.error) throw new Error(r.error); await loadSessions(); return `${r.count} session(s) revoked.`; })} />
       )}
     </Page>
   );

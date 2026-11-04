@@ -131,7 +131,10 @@ export function OperatorExamsPage() {
             { key: 'title', label: 'Title', sortable: true },
             { key: 'status', label: 'Status', render: (e) => <Badge value={e.status} /> },
             { key: 'startAt', label: 'Starts', sortable: true, render: (e) => fmt(e.startAt) },
-            { key: 'durationMin', label: 'Duration', render: (e) => `${e.durationMin} min` },
+            { key: 'durationMin', label: 'Duration', render: (e) => {
+              const dur = e.durationMin || e.duration_minutes || e.durationMin;
+              return dur ? `${dur} min` : <span className="muted">Duration unavailable</span>;
+            } },
             { key: 'assigned', label: 'Candidates', render: (e) => e.assigned },
             { key: 'inProgress', label: 'In progress', render: (e) => <Badge value={String(e.inProgress)} /> },
             { key: 'submitted', label: 'Submitted', render: (e) => e.submitted },

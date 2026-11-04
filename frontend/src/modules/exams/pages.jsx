@@ -336,7 +336,13 @@ export function ExamDetailPage() {
       actions={<>
         {may('exam.manage') && !['live', 'closed'].includes(e.status) && <button className="btn" onClick={() => setEdit(true)}>Edit</button>}
         {may('exam.manage') && ['review', 'approved', 'published'].includes(e.status) && <button className="btn" onClick={() => setPostpone({ startAt: local(e.startAt + 864e5) })}>Postpone</button>}
-        {nextSteps(e.status).filter((to) => may(STEP_PERM[to] || 'exam.manage')).map((to) => (
+        {/* Deduplicate: 'pending_approval' and 'review' both map to the same label.
+            Show only unique visible transitions. */}
+        {[...new Map(
+          nextSteps(e.status)
+            .filter((to) => may(STEP_PERM[to] || 'exam.manage'))
+            .map((to) => [STEP_LABEL[to], to])
+        ).values()].map((to) => (
           <button key={to} className={'btn ' + (to === 'cancelled' ? 'danger' : to === 'published' || to === 'live' ? 'primary' : '')} disabled={busy} onClick={() => {
             if (REASON.has(to)) setPending({ to });
             else run(() => transition(user, e, to), 'Lifecycle updated.');
@@ -584,7 +590,13 @@ export function ExamCandidatesPage() {
       breadcrumb={<div className="crumbs-inline"><Link to="/college/exams">Exams</Link><Icon name="arrow" size={12} /><Link to={`/college/exams/${e.id}`}>{e.code}</Link><Icon name="arrow" size={12} /><span>Candidates</span></div>}
       actions={<>
         <button className="btn" disabled={busy} onClick={() => { reloadRules(); reloadSessions(); }}>Refresh</button>
-        <button className="btn primary" disabled={busy || !may('exam.manage')} onClick={handlePublishRoster}>Publish official roster</button>
+        {/* Fix: gate the roster publish button — require seated candidates. */}
+        {rows.length > 0
+          ? <button className="btn primary" disabled={busy || !may('exam.manage')} onClick={handlePublishRoster}>Publish official roster</button>
+          : <span title="Seat at least one candidate before publishing the roster" style={{ display: 'inline-block' }}>
+              <button className="btn primary" disabled title="No candidates seated — assign candidates before publishing">Publish official roster</button>
+            </span>
+        }
         <Link className="btn" to={`/college/exams/${e.id}`}>Back to exam</Link>
       </>}
     >
@@ -595,6 +607,12 @@ export function ExamCandidatesPage() {
         <Stat label="Eligibility rules" value={(rules?.rules || rules || []).length} icon="policy" tone="blue" />
         <Stat label="Live sessions" value={(liveSessions?.sessions || liveSessions || []).length} icon="pulse" tone="violet" />
       </StatGrid>
+      {rows.length === 0 && (
+        <Alert tone="info" title="No candidates seated">
+          Assign candidates from the seating tab before publishing the official roster.
+          The roster publish action is disabled until at least one candidate is seated.
+        </Alert>
+      )}
 
       <Tabs
         value={activeTab}

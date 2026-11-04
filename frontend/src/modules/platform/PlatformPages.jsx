@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useCol, useTenant } from '../../core/db/tenant';
+import * as Api from '../../core/api/services';
 import { can } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
 import {
@@ -10,8 +11,7 @@ import {
   Icon, Field, Input, Select, Textarea, Checkbox
 } from '../../core/ui/kit';
 import {
-  OnboardingWorkflowBar, StatusMatrix, NextActionCallout,
-  getInstitutionStage, ONBOARDING_STAGES
+  OnboardingWorkflowBar
 } from '../institutions/onboardingWorkflow';
 import {
   createInstitution, setInstitutionStatus,
@@ -38,39 +38,87 @@ function InstitutionSwitcher({ inst, institutions, onSelect }) {
         ))}
       </select>
       <span className="badge sm" style={{ marginLeft: 'auto' }}>
-        Status: <b>{inst?.status?.toUpperCase() || 'ACTIVE'}</b>
+        Status: <b>{inst?.status?.toUpperCase() || 'UNKNOWN'}</b>
       </span>
     </div>
   );
+}
+
+function useInstitutionStats(institutions) {
+  const [statsByInstitution, setStatsByInstitution] = useState({});
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [statsError, setStatsError] = useState('');
+  const institutionIds = institutions.map((institution) => institution.id).filter(Boolean).join(',');
+
+  useEffect(() => {
+    const ids = institutionIds ? institutionIds.split(',') : [];
+    if (!ids.length) {
+      setStatsByInstitution({});
+      setStatsError('');
+      setLoadingStats(false);
+      return undefined;
+    }
+
+    let active = true;
+    setLoadingStats(true);
+    setStatsError('');
+    Promise.all(ids.map(async (id) => {
+      const stats = await Api.getInstitutionStats(id);
+      const countFields = ['campuses', 'users', 'devices', 'exams', 'openIncidents'];
+      if (!stats || countFields.some((field) => typeof stats[field] !== 'number')) {
+        throw new Error(`The backend returned invalid institution metrics for ${id}.`);
+      }
+      return [id, stats];
+    }))
+      .then((entries) => {
+        if (active) setStatsByInstitution(Object.fromEntries(entries));
+      })
+      .catch((error) => {
+        if (active) {
+          setStatsByInstitution({});
+          setStatsError(error?.message || 'Failed to load institution metrics from the backend.');
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingStats(false);
+      });
+
+    return () => { active = false; };
+  }, [institutionIds]);
+
+  return { statsByInstitution, loadingStats, statsError };
 }
 
 /* =====================================================================
    PAGE 1 — Institution Overview (/platform/institutions)
 ===================================================================== */
 export function PlatformInstitutionsOverviewPage() {
-  const { user } = useAuth();
   const nav = useNavigate();
-  const institutions = useCol('tenants', false);
-  const users = useCol('users', false);
-  const devices = useCol('devices', false);
-  const exams = useCol('exams', false);
-  const incidents = useCol('incidents', false);
+  const { tenants: institutions, loading: institutionsLoading, error: institutionsError } = useTenant();
+  const { statsByInstitution, loadingStats, statsError } = useInstitutionStats(institutions);
   const [apps, setApps] = useState([]);
   const [loadingApps, setLoadingApps] = useState(true);
+  const [appsError, setAppsError] = useState('');
 
   useEffect(() => {
     fetchInstitutionApplications()
-      .then((data) => setApps(Array.isArray(data) ? data : []))
-      .catch(() => setApps([]))
+      .then((data) => {
+        if (!Array.isArray(data)) throw new Error('The backend returned an unexpected applications response.');
+        setApps(data);
+      })
+      .catch((error) => {
+        setApps([]);
+        setAppsError(error?.message || 'Failed to load institution applications.');
+      })
       .finally(() => setLoadingApps(false));
   }, []);
 
-  const pendingApps = apps.filter((a) => a.status === 'pending' || a.status === 'submitted');
-  const awaitingVerification = apps.filter((a) => a.status === 'under_review' || a.status === 'pending');
-  const activeCount = institutions.filter((i) => i.status === 'active').length;
-  const pilotCount = institutions.filter((i) => i.status === 'pilot' || i.plan === 'pilot').length;
-  const suspendedCount = institutions.filter((i) => i.status === 'suspended').length;
-  const openAlerts = incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length;
+  const pendingApps = apps.filter((a) => ['pending', 'submitted'].includes(a.status?.toLowerCase()));
+  const awaitingVerification = apps.filter((a) => ['under_review', 'pending'].includes(a.status?.toLowerCase()));
+  const activeCount = institutions.filter((i) => i.status?.toLowerCase() === 'active').length;
+  const pilotCount = institutions.filter((i) => i.status?.toLowerCase() === 'pilot' || i.plan?.toLowerCase() === 'pilot').length;
+  const suspendedCount = institutions.filter((i) => i.status?.toLowerCase() === 'suspended').length;
+  const openAlerts = Object.values(statsByInstitution).reduce((total, stats) => total + stats.openIncidents, 0);
 
   return (
     <Page
@@ -80,7 +128,7 @@ export function PlatformInstitutionsOverviewPage() {
       actions={
         <div style={{ display: 'flex', gap: '8px' }}>
           <Link to="/platform/institutions/applications" className="btn">
-            <Icon name="checklist" size={15} /> Applications Queue ({pendingApps.length})
+            <Icon name="checklist" size={15} /> Applications Queue ({appsError ? 'Unavailable' : pendingApps.length})
           </Link>
           <Link to="/platform/institutions/directory" className="btn primary">
             <Icon name="building" size={15} /> Institution Directory
@@ -90,16 +138,18 @@ export function PlatformInstitutionsOverviewPage() {
     >
       <StatGrid cols={4}>
         <Stat label="Total Institutions" value={institutions.length} icon="building" sub={`${activeCount} Active · ${pilotCount} In Pilot`} />
-        <Stat label="Pending Applications" value={pendingApps.length} tone={pendingApps.length ? 'amber' : 'green'} icon="checklist" sub="Awaiting Review" to="/platform/institutions/applications" />
-        <Stat label="Awaiting Verification" value={awaitingVerification.length} tone="blue" icon="shield" sub="Identity & Domain Checks" />
-        <Stat label="Operational Alerts" value={openAlerts} tone={openAlerts ? 'red' : 'green'} icon="alert" sub="Incidents / Drift" />
+        <Stat label="Pending Applications" value={loadingApps ? '…' : appsError ? 'Unavailable' : pendingApps.length} tone={pendingApps.length ? 'amber' : 'green'} icon="checklist" sub="Awaiting Review" to="/platform/institutions/applications" />
+        <Stat label="Awaiting Verification" value={loadingApps ? '…' : appsError ? 'Unavailable' : awaitingVerification.length} tone="blue" icon="shield" sub="Identity & Domain Checks" />
+        <Stat label="Operational Alerts" value={loadingStats ? '…' : statsError ? 'Unavailable' : openAlerts} tone={openAlerts ? 'red' : 'green'} icon="alert" sub="Open incidents reported by institution APIs" />
       </StatGrid>
+      {(institutionsError || statsError || appsError) && <Alert tone="danger" title="Platform data unavailable">{institutionsError || statsError || appsError}</Alert>}
+      {institutionsLoading && <Loading label="Loading institutions from backend..." />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', margin: '20px 0' }}>
         <Card title="Quick Onboarding Actions" desc="Launch institution governance workflows">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             <Link to="/platform/institutions/applications" className="btn" style={{ justifyContent: 'flex-start' }}>
-              <Icon name="checklist" size={16} /> Process Onboarding Applications ({pendingApps.length} pending)
+              <Icon name="checklist" size={16} /> Process Onboarding Applications ({appsError ? 'count unavailable' : `${pendingApps.length} pending`})
             </Link>
             <Link to="/platform/institutions/directory" className="btn" style={{ justifyContent: 'flex-start' }}>
               <Icon name="building" size={16} /> Search &amp; Audit Institutions Directory
@@ -126,7 +176,7 @@ export function PlatformInstitutionsOverviewPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0' }}>
               <span>Registered Exam Devices</span>
-              <b>{devices.length} workstations</b>
+              <b>{loadingStats ? '…' : statsError ? 'Unavailable' : Object.values(statsByInstitution).reduce((total, stats) => total + stats.devices, 0)}</b>
             </div>
           </div>
         </Card>
@@ -149,14 +199,6 @@ export function PlatformInstitutionsOverviewPage() {
             },
             { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan || 'ENTERPRISE'} /> },
             { key: 'status', label: 'Status', badge: true },
-            {
-              key: 'stage',
-              label: 'Onboarding Stage',
-              render: (t) => {
-                const st = getInstitutionStage(t);
-                return <span className="mono sm">{ONBOARDING_STAGES[st]?.label}</span>;
-              }
-            },
             { key: 'createdAt', label: 'Registered', render: (t) => fmt(t.createdAt) },
           ]}
           actions={(t) => [
@@ -177,10 +219,8 @@ export function PlatformInstitutionsOverviewPage() {
 ===================================================================== */
 export function PlatformInstitutionsDirectoryPage() {
   const nav = useNavigate();
-  const institutions = useCol('tenants', false);
-  const users = useCol('users', false);
-  const devices = useCol('devices', false);
-  const exams = useCol('exams', false);
+  const { tenants: institutions, loading: institutionsLoading, error: institutionsError } = useTenant();
+  const { statsByInstitution, loadingStats, statsError } = useInstitutionStats(institutions);
 
   return (
     <Page
@@ -188,6 +228,8 @@ export function PlatformInstitutionsDirectoryPage() {
       desc="Search, filter, and inspect verified institutions, operational states, and onboarding records."
       breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><span>Directory</span></div>}
     >
+      {(institutionsError || statsError) && <Alert tone="danger" title="Directory data unavailable">{institutionsError || statsError}</Alert>}
+      {institutionsLoading && <Loading label="Loading institutions from backend..." />}
       <DataTable
         rows={institutions}
         search={['name', 'code', 'region']}
@@ -212,17 +254,9 @@ export function PlatformInstitutionsDirectoryPage() {
           },
           { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan || 'enterprise'} /> },
           { key: 'status', label: 'Status', badge: true },
-          {
-            key: 'onboardingStage',
-            label: 'Onboarding Milestone',
-            render: (t) => {
-              const st = getInstitutionStage(t);
-              return <Badge value={ONBOARDING_STAGES[st]?.label} tone={st >= 7 ? 'green' : 'amber'} />;
-            }
-          },
-          { key: 'users', label: 'Admins / Staff', render: (t) => users.filter((u) => u.tenantId === t.id).length },
-          { key: 'devices', label: 'Devices', render: (t) => devices.filter((d) => d.tenantId === t.id).length },
-          { key: 'exams', label: 'Exams', render: (t) => exams.filter((e) => e.tenantId === t.id).length },
+          { key: 'users', label: 'Users', render: (t) => loadingStats ? '…' : statsByInstitution[t.id]?.users ?? '—' },
+          { key: 'devices', label: 'Devices', render: (t) => loadingStats ? '…' : statsByInstitution[t.id]?.devices ?? '—' },
+          { key: 'exams', label: 'Exams', render: (t) => loadingStats ? '…' : statsByInstitution[t.id]?.exams ?? '—' },
           { key: 'createdAt', label: 'Enrolled', render: (t) => fmt(t.createdAt) },
         ]}
         actions={(t) => [
@@ -248,16 +282,21 @@ export function PlatformApplicationsPage() {
   const { msg, setMsg, run, busy } = useFlash();
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [appsError, setAppsError] = useState('');
   const [selectedApp, setSelectedApp] = useState(null);
   const [decisionNotes, setDecisionNotes] = useState('');
   const [decisionResult, setDecisionResult] = useState(null); // { action, app }
 
   const loadApps = async () => {
+    setLoading(true);
+    setAppsError('');
     try {
       const data = await fetchInstitutionApplications();
-      setApps(Array.isArray(data) ? data : []);
-    } catch {
+      if (!Array.isArray(data)) throw new Error('The backend returned an unexpected applications response.');
+      setApps(data);
+    } catch (error) {
       setApps([]);
+      setAppsError(error?.message || 'Failed to load institution applications.');
     } finally {
       setLoading(false);
     }
@@ -267,8 +306,12 @@ export function PlatformApplicationsPage() {
 
   const handleDecision = async (action) => {
     if (!selectedApp) return;
+    if (decisionNotes.trim().length < 8) {
+      setMsg('Add at least 8 characters of reviewer notes or an evidence reference.');
+      return;
+    }
     await run(async () => {
-      await reviewApplication(user, selectedApp.id, action, decisionNotes);
+      await reviewApplication(user, selectedApp.id, action, decisionNotes.trim());
       const appSnapshot = { ...selectedApp };
       setSelectedApp(null);
       setDecisionNotes('');
@@ -285,15 +328,16 @@ export function PlatformApplicationsPage() {
       breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><span>Applications</span></div>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {appsError && <Alert tone="danger" title="Unable to load applications">{appsError}</Alert>}
       <StatGrid cols={4}>
-        <Stat label="Total Applications" value={apps.length} icon="checklist" />
-        <Stat label="Under Review" value={apps.filter((a) => ['SUBMITTED', 'UNDER_REVIEW', 'pending', 'under_review'].includes(a.status)).length} tone="amber" icon="pulse" />
-        <Stat label="Approved / Provisioned" value={apps.filter((a) => ['APPROVED', 'PROVISIONED', 'approved', 'provisioned'].includes(a.status)).length} tone="green" icon="check" />
-        <Stat label="Action Required" value={apps.filter((a) => ['MORE_INFORMATION_REQUIRED', 'corrections_requested'].includes(a.status)).length} tone="blue" icon="alert" />
+        <Stat label="Total Applications" value={loading ? '…' : appsError ? 'Unavailable' : apps.length} icon="checklist" />
+        <Stat label="Under Review" value={loading ? '…' : appsError ? 'Unavailable' : apps.filter((a) => ['SUBMITTED', 'UNDER_REVIEW', 'pending', 'under_review'].includes(a.status)).length} tone="amber" icon="pulse" />
+        <Stat label="Approved / Provisioned" value={loading ? '…' : appsError ? 'Unavailable' : apps.filter((a) => ['APPROVED', 'PROVISIONED', 'approved', 'provisioned'].includes(a.status)).length} tone="green" icon="check" />
+        <Stat label="Action Required" value={loading ? '…' : appsError ? 'Unavailable' : apps.filter((a) => ['MORE_INFORMATION_REQUIRED', 'corrections_requested'].includes(a.status)).length} tone="blue" icon="alert" />
       </StatGrid>
 
       <Card title="Applications Queue" desc="Review institutional submissions and record compliance verdicts">
-        {loading ? <Loading label="Loading applications..." /> : (
+        {loading ? <Loading label="Loading applications..." /> : appsError ? <Empty title="Applications unavailable" desc={appsError} /> : (
           <DataTable
             rows={apps}
             search={['legalName', 'displayName', 'domain', 'repEmail', 'registrationNumber', 'institution_name']}
@@ -313,7 +357,7 @@ export function PlatformApplicationsPage() {
                 )
               },
               { key: 'representative', label: 'Representative', render: (a) => <>{a.repName || a.representative_name || 'Signatory'}<br /><small className="muted">{a.repEmail || a.representative_email}</small></> },
-              { key: 'country', label: 'Region / Tier', render: (a) => `${a.country || 'India'} (${(a.plan || 'pilot').toUpperCase()})` },
+              { key: 'country', label: 'Region / Tier', render: (a) => `${a.country || '—'} (${(a.plan || '—').toUpperCase()})` },
               { key: 'status', label: 'Status', render: (a) => <Badge value={a.status} tone={['APPROVED', 'PROVISIONED', 'approved'].includes(a.status) ? 'green' : (a.status === 'REJECTED' ? 'red' : 'amber')} /> },
               { key: 'created_at', label: 'Submitted', render: (a) => fmt(a.createdAt || a.created_at) },
             ]}
@@ -327,7 +371,7 @@ export function PlatformApplicationsPage() {
               }
               return acts;
             }}
-            empty={<Empty icon="checklist" title="No onboarding applications pending" desc="Public submissions via /register-institution will appear here in real-time." />}
+            empty={<Empty icon="checklist" title="No institution applications found" />}
           />
         )}
       </Card>
@@ -369,7 +413,7 @@ export function PlatformApplicationsPage() {
                 <div style={{ fontSize: '36px', marginBottom: '8px' }}>🎉</div>
                 <h3 style={{ color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Application Approved!</h3>
                 <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  <b>{decisionResult.app?.legalName}</b> has been approved. The next step is <b>Tenant Provisioning</b> to create their isolated database, cryptographic keys, and license.
+                  <b>{decisionResult.app?.legalName || decisionResult.app?.displayName || 'This application'}</b> was approved by the reviewer. Tenant provisioning is a separate backend action.
                 </p>
               </div>
             )}
@@ -378,7 +422,7 @@ export function PlatformApplicationsPage() {
                 <div style={{ fontSize: '36px', marginBottom: '8px' }}>✗</div>
                 <h3 style={{ color: 'var(--r, #c0392b)', margin: '0 0 8px', fontSize: '16px' }}>Application Rejected</h3>
                 <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  The application for <b>{decisionResult.app?.legalName}</b> has been rejected. The rejection reason has been recorded in the tamper-evident audit ledger.
+                  The application status was updated to rejected by the backend.
                 </p>
               </div>
             )}
@@ -387,7 +431,7 @@ export function PlatformApplicationsPage() {
                 <div style={{ fontSize: '36px', marginBottom: '8px' }}>📋</div>
                 <h3 style={{ color: '#2563EB', margin: '0 0 8px', fontSize: '16px' }}>Corrections Requested</h3>
                 <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  <b>{decisionResult.app?.legalName}</b> has been notified that additional information is required. They can update their application via the tracking portal.
+                  The backend status was updated to request additional information. Notification delivery is not confirmed here.
                 </p>
               </div>
             )}
@@ -398,8 +442,8 @@ export function PlatformApplicationsPage() {
                 {decisionResult.action === 'APPROVED' && (
                   <>
                     <li>Go to <b>Tenant Provisioning</b> for this institution to complete setup</li>
-                    <li>After provisioning, send the admin invitation email to the representative</li>
-                    <li>The institution admin will set up their account and MFA</li>
+                    <li>Invite an institution administrator after provisioning</li>
+                    <li>Verify MFA enrollment separately; an invitation does not complete MFA setup</li>
                   </>
                 )}
                 {decisionResult.action === 'REJECTED' && (
@@ -440,40 +484,45 @@ export function PlatformVerificationPage() {
   const { id: paramId } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const { tenantId, setTenantId } = useTenant();
-  const institutions = useCol('tenants', false);
+  const { tenantId, tenants: institutions, setTenantId } = useTenant();
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
   const isApp = Boolean(targetId?.startsWith('app_'));
-  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
 
   const [appData, setAppData] = useState(null);
-  const [appLoading, setAppLoading] = useState(isApp);
+  const [institutionData, setInstitutionData] = useState(null);
+  const [appLoading, setAppLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [dnsProbe, setDnsProbe] = useState(null);
 
-  // Load application details if targetId is an application
+  // Load the application or institution directly from its backend endpoint.
   useEffect(() => {
-    if (!targetId) return;
-    if (isApp) {
-      setAppLoading(true);
-      fetchInstitutionApplication(targetId)
-        .then((data) => {
-          if (data && data.id) {
-            setAppData(data);
-          } else {
-            throw new Error('Application payload empty');
-          }
-        })
-        .catch(() => {
-          // Fallback to fetchInstitutionApplications list
-          fetchInstitutionApplications()
-            .then((apps) => {
-              const found = apps.find((a) => a.id === targetId);
-              if (found) setAppData(found);
-            })
-            .catch(() => {});
-        })
-        .finally(() => setAppLoading(false));
+    let active = true;
+    setAppLoading(true);
+    setLoadError('');
+    setAppData(null);
+    setInstitutionData(null);
+    if (!targetId) {
+      setAppLoading(false);
+      setLoadError('Institution or application ID is unavailable.');
+      return () => { active = false; };
     }
+
+    const request = isApp ? fetchInstitutionApplication(targetId) : Api.getInstitution(targetId);
+    request
+      .then((data) => {
+        if (!data || !data.id) throw new Error(`The ${isApp ? 'application' : 'institution'} was not found.`);
+        if (!active) return;
+        if (isApp) setAppData(data);
+        else setInstitutionData(data);
+      })
+      .catch((error) => {
+        if (active) setLoadError(error?.message || `Failed to load the ${isApp ? 'application' : 'institution'} from the backend.`);
+      })
+      .finally(() => {
+        if (active) setAppLoading(false);
+      });
+
+    return () => { active = false; };
   }, [targetId, isApp]);
 
   // Unified institution/applicant profile
@@ -495,26 +544,26 @@ export function PlatformVerificationPage() {
           repRole: appData.repRole || '',
           repPhone: appData.repPhone || '',
           address: appData.address || '',
-          country: appData.country || 'India',
+          country: appData.country || '',
           state: appData.state || '',
-          campusCount: appData.campusCount || 1,
-          studentCount: appData.studentCount || 0,
-          deviceCount: appData.deviceCount || 0,
-          deploymentModel: appData.deploymentModel || 'usb-boot',
-          hardwareProfile: appData.hardwareProfile || 'standard-uefi',
-          plan: appData.plan || 'pilot',
-          status: (appData.status || 'submitted').toLowerCase(),
-          entityType: appData.entityType || 'university',
+          campusCount: appData.campusCount ?? null,
+          studentCount: appData.studentCount ?? null,
+          deviceCount: appData.deviceCount ?? null,
+          deploymentModel: appData.deploymentModel || '',
+          hardwareProfile: appData.hardwareProfile || '',
+          plan: appData.plan || '',
+          status: (appData.status || '').toLowerCase(),
+          entityType: appData.entityType || '',
           institutionId: appData.institutionId || '',
           reviewNotes: appData.reviewNotes || '',
           createdAt: appData.createdAt,
           isApplication: true,
         };
       }
-      return { id: targetId, name: 'Loading application dossier...', status: 'under_review', isApplication: true };
+      return null;
     }
-    return instFromCache || (targetId ? { id: targetId, name: 'Loading institution...', status: 'under_review' } : null);
-  }, [isApp, appData, instFromCache, targetId]);
+    return institutionData || institutions.find((institution) => institution.id === targetId) || null;
+  }, [isApp, appData, institutionData, institutions, targetId]);
 
   const id = targetId;
   const { msg, setMsg, run, busy } = useFlash();
@@ -522,26 +571,17 @@ export function PlatformVerificationPage() {
   // One-time verification: detect if already approved or provisioned
   const [unlockedForEdit, setUnlockedForEdit] = useState(false);
   const isSuperAdmin = user?.role === 'superadmin' || user?.role === 'platform_owner';
-  const isAlreadyApproved = (!unlockedForEdit) && (inst?.status === 'approved' || inst?.status === 'provisioned');
-  const isProvisioned = inst?.status === 'provisioned' || !!inst?.institutionId;
+  const isAlreadyApproved = (!unlockedForEdit) && ['approved', 'provisioned'].includes(inst?.status?.toLowerCase());
+  const isProvisioned = inst?.status?.toLowerCase() === 'provisioned' || !!inst?.institutionId;
   const [overrideModal, setOverrideModal] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
-  const [elevationModal, setElevationModal] = useState(false);
-  const [elevationData, setElevationData] = useState({ reason: '', severity: 'standard', refNumber: '' });
-  const [elevationPending, setElevationPending] = useState(null);
   const [checklist, setChecklist] = useState({
-    identity: isAlreadyApproved,
-    domain: isAlreadyApproved,
-    accreditation: isAlreadyApproved,
-    representative: isAlreadyApproved,
-    datacenter: isAlreadyApproved,
+    identity: false,
+    domain: false,
+    accreditation: false,
+    representative: false,
+    datacenter: false,
   });
-
-  useEffect(() => {
-    if (isAlreadyApproved) {
-      setChecklist({ identity: true, domain: true, accreditation: true, representative: true, datacenter: true });
-    }
-  }, [isAlreadyApproved]);
 
   const [evidenceNotes, setEvidenceNotes] = useState(inst?.reviewNotes || '');
   const [successAlert, setSuccessAlert] = useState(null);
@@ -553,7 +593,9 @@ export function PlatformVerificationPage() {
   // Domain security analysis
   const repDomain = (inst?.repEmail || '').split('@')[1] || '';
   const isWebmail = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(repDomain.toLowerCase());
-  const isMatchingDomain = inst?.domain && repDomain && inst.domain.toLowerCase().includes(repDomain.toLowerCase());
+  const isMatchingDomain = Boolean(inst?.domain && repDomain
+    && (repDomain.toLowerCase() === inst.domain.toLowerCase()
+      || repDomain.toLowerCase().endsWith(`.${inst.domain.toLowerCase()}`)));
 
   // Live DNS TXT Challenge Probe
   const handleRunDnsProbe = async () => {
@@ -564,8 +606,10 @@ export function PlatformVerificationPage() {
       const resp = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(probeHost)}&type=TXT`, {
         headers: { Accept: 'application/dns-json' },
       });
+      if (!resp.ok) throw new Error(`DNS query returned HTTP ${resp.status}.`);
       const data = await resp.json();
-      const answers = data?.Answer || [];
+      if (data?.Status !== 0) throw new Error(`DNS lookup returned status ${data?.Status ?? 'unknown'}.`);
+      const answers = Array.isArray(data.Answer) ? data.Answer : [];
       const expectedToken = `examos-verify=${id}`;
       const hasMatch = answers.some((a) => a.data && a.data.includes(expectedToken));
       if (hasMatch) {
@@ -594,6 +638,10 @@ export function PlatformVerificationPage() {
       setMsg('Error: No institution reference available.');
       return;
     }
+    if (typeof evidenceNotes !== 'string' || evidenceNotes.trim().length < 8) {
+      setMsg('Error: Add at least 8 characters of verification notes or an evidence reference.');
+      return;
+    }
     await run(async () => {
       const isApproved = verdict === 'verified';
       const action = isApproved ? 'APPROVED' : (verdict === 'corrections_requested' ? 'MORE_INFORMATION_REQUIRED' : 'REJECTED');
@@ -601,18 +649,18 @@ export function PlatformVerificationPage() {
       if (isApp) {
         // APPLICATION WORKFLOW: Record review verdict on institution_applications table.
         // NEVER call updateOnboardingStep because tenant is not provisioned yet!
-        await reviewApplication(user, id, action, evidenceNotes || 'Statutory charter and identity challenges verified by platform admin');
+        await reviewApplication(user, id, action, evidenceNotes.trim());
         setAppData((prev) => prev ? { ...prev, status: action, reviewNotes: evidenceNotes } : null);
       } else {
         // PROVISIONED TENANT WORKFLOW: Update onboarding step for existing tenant.
-        await updateOnboardingStep(user, id, 'verification', isApproved, evidenceNotes);
+        await updateOnboardingStep(user, id, 'identity_verification', isApproved, evidenceNotes.trim());
       }
 
       if (verdict === 'verified') {
         setSuccessAlert({
           verdict: 'verified',
-          title: 'Verification Complete & Approved!',
-          msg: `${inst.name} has been verified and approved. The next step is Tenant Provisioning to set up their isolated database enclave, cryptographic keys, and license.`,
+          title: 'Review Decision Recorded',
+          msg: `${inst.name} was approved by the platform reviewer. This decision records the submitted review notes; it does not independently prove each verification item.`,
           nextLabel: 'Proceed to Tenant Provisioning →',
           nextPath: `/platform/institutions/${id}/provisioning`,
         });
@@ -620,7 +668,7 @@ export function PlatformVerificationPage() {
         setSuccessAlert({
           verdict: 'corrections',
           title: 'Corrections Requested',
-          msg: 'The applicant has been notified that additional verification evidence is required. Status updated to MORE_INFORMATION_REQUIRED.',
+          msg: 'The backend status was updated to MORE_INFORMATION_REQUIRED. Applicant notification delivery is not confirmed here.',
           nextLabel: 'Back to Applications Queue',
           nextPath: '/platform/institutions/applications',
         });
@@ -628,7 +676,7 @@ export function PlatformVerificationPage() {
         setSuccessAlert({
           verdict: 'rejected',
           title: 'Application Rejected',
-          msg: 'The application has been rejected and recorded in the audit ledger.',
+          msg: 'The backend application status was updated to REJECTED.',
           nextLabel: 'Back to Applications Queue',
           nextPath: '/platform/institutions/applications',
         });
@@ -646,6 +694,18 @@ export function PlatformVerificationPage() {
     }
   };
 
+  if (appLoading) {
+    return <Page title="Loading Verification Record"><Loading label="Loading the verification record from backend..." /></Page>;
+  }
+  if (loadError || !inst) {
+    return (
+      <Page title="Verification Record Unavailable">
+        <Alert tone="danger" title="Unable to load verification record">{loadError || 'No institution or application record was returned.'}</Alert>
+        <Link to="/platform/institutions/applications" className="btn">Back to Applications</Link>
+      </Page>
+    );
+  }
+
   return (
     <Page
       title={`Identity Verification · ${inst.name}`}
@@ -662,9 +722,8 @@ export function PlatformVerificationPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       {!isApp && <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />}
-      <OnboardingWorkflowBar currentStage={1} />
 
-      {/* â”€â”€ ONE-TIME VERIFICATION MILESTONE â”€â”€ */}
+      {/* Backend status is a recorded decision, not proof of each evidence item. */}
       {isAlreadyApproved && (
         <div style={{ background: 'linear-gradient(135deg, #F0FDF4 0%, #ECFDF5 50%, #F0F9FF 100%)', border: '2px solid #86EFAC', borderRadius: '12px', padding: '24px', marginBottom: '20px', boxShadow: '0 4px 16px rgba(34,197,94,0.12)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
@@ -673,30 +732,14 @@ export function PlatformVerificationPage() {
             </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                <b style={{ color: '#15803D', fontSize: '16px' }}>Official Verification Complete</b>
+                <b style={{ color: '#15803D', fontSize: '16px' }}>Backend Review Decision</b>
                 <Badge value={isProvisioned ? 'PROVISIONED' : 'APPROVED'} tone="green" />
-                <span style={{ fontSize: '11.5px', color: '#6B7280', background: '#F3F4F6', padding: '2px 8px', borderRadius: '4px' }}>ONE-TIME MILESTONE â€” LOCKED</span>
+                <span style={{ fontSize: '11.5px', color: '#6B7280', background: '#F3F4F6', padding: '2px 8px', borderRadius: '4px' }}>STATUS FROM BACKEND</span>
               </div>
               <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#166534', lineHeight: 1.5 }}>
-                <b>{inst.name}</b> has passed all identity verification challenges. This decision is permanently recorded in the immutable audit ledger and cannot be reversed or re-evaluated.
+                The backend reports this record as {inst.status}. This status alone does not establish that each verification evidence item was independently validated.
               </p>
             </div>
-          </div>
-
-          {/* Locked verification evidence summary */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px', marginBottom: '16px' }}>
-            {[
-              { label: 'Educational Charter & Registration', icon: 'ðŸ›ï¸' },
-              { label: 'Academic Domain Ownership', icon: 'ðŸŒ' },
-              { label: 'Accreditation & Letterhead', icon: 'ðŸ“œ' },
-              { label: 'Authorized Signatory', icon: 'ðŸ‘¤' },
-              { label: 'Fleet & Deployment Scope', icon: 'ðŸ–¥ï¸' },
-            ].map((item, idx) => (
-              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', background: '#DCFCE7', borderRadius: '6px', border: '1px solid #BBF7D0' }}>
-                <span style={{ fontSize: '14px' }}>{item.icon}</span>
-                <span style={{ fontSize: '12px', color: '#15803D', fontWeight: 600 }}>âœ“ {item.label}</span>
-              </div>
-            ))}
           </div>
 
           {inst.reviewNotes && (
@@ -706,24 +749,11 @@ export function PlatformVerificationPage() {
             </div>
           )}
 
-                    {/* Elevation Request Pending Banner (if reviewer requested higher role approval) */}
-          {elevationPending && (
-            <div style={{ padding: '12px 16px', background: '#FEF3C7', border: '1px solid #F59E0B', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#92400E' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
-                <span>⏳ Elevation Request Pending Super-Admin Approval</span>
-              </div>
-              <p style={{ margin: '4px 0 0', fontSize: '12px' }}>
-                A formal request to unlock and re-evaluate this verified institution was submitted by <b>{elevationPending.requester}</b>. Reason: "{elevationPending.reason}". Awaiting Platform Super-Admin review.
-              </p>
-            </div>
-          )}
-
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', paddingTop: '14px', borderTop: '1px solid #BBF7D0', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                Verified {inst.createdAt ? `on ${new Date(inst.createdAt).toLocaleDateString()}` : ''} · Audit ledger entry committed
+                Review status was returned by the backend.
               </span>
-              {/* Role-based action: Super-admin can unlock; other roles must request elevation */}
               {isSuperAdmin ? (
                 <button
                   className="btn small"
@@ -734,15 +764,7 @@ export function PlatformVerificationPage() {
                   <Icon name="shield" size={12} /> Unlock for Re-Evaluation (Super-Admin)
                 </button>
               ) : (
-                <button
-                  className="btn small"
-                  onClick={() => setElevationModal(true)}
-                  disabled={!!elevationPending}
-                  style={{ fontSize: '12px', background: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D' }}
-                  title="Submit a request to higher authority (Super-Admin) to re-evaluate"
-                >
-                  <Icon name="alert" size={12} /> {elevationPending ? 'Elevation Request Submitted' : 'Request Re-Evaluation from Super-Admin'}
-                </button>
+                <span className="muted sm">Re-evaluation requires a platform owner; no request queue is available here.</span>
               )}
             </div>
             <button
@@ -765,14 +787,14 @@ export function PlatformVerificationPage() {
           </div>
           <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div><span className="muted">Legal Name:</span> <b>{inst.legalName || inst.name}</b></div>
-            <div><span className="muted">Entity Type:</span> <Badge value={(inst.entityType || 'university').toUpperCase()} tone="purple" /></div>
+            <div><span className="muted">Entity Type:</span> <Badge value={inst.entityType ? inst.entityType.toUpperCase() : 'Not provided'} tone="purple" /></div>
             <div>
               <span className="muted">Registration / Charter #:</span>{' '}
               <code style={{ background: '#F4EFEA', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, color: '#B54F34' }}>
-                {inst.registrationNumber || 'Pending Submission'}
+                {inst.registrationNumber || 'Not supplied'}
               </code>
             </div>
-            <div><span className="muted">Registered Address:</span> {inst.address ? `${inst.address}, ` : ''}{inst.state ? `${inst.state}, ` : ''}{inst.country || 'India'}</div>
+            <div><span className="muted">Registered Address:</span> {[inst.address, inst.state, inst.country].filter(Boolean).join(', ') || 'Not supplied'}</div>
             <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px solid #F0ECE6' }}>
               <small className="muted">Statutory Verification: Confirm against UGC, AICTE, NAAC, NBA, or statutory portal.</small>
             </div>
@@ -795,7 +817,7 @@ export function PlatformVerificationPage() {
               ) : <b>Not provided</b>}
             </div>
             <div>
-              <span className="muted">Required DNS Host:</span> <code>_examosverify.{inst.domain || 'domain'}</code>
+              <span className="muted">Required DNS Host:</span> <code>{inst.domain ? `_examosverify.${inst.domain}` : 'Unavailable without an institution domain'}</code>
             </div>
             <div>
               <span className="muted">Required TXT Value:</span> <code>examos-verify={id}</code>
@@ -831,11 +853,11 @@ export function PlatformVerificationPage() {
             <div><span className="muted">Contact Phone:</span> {inst.repPhone || 'Not provided'}</div>
             <div style={{ marginTop: '4px' }}>
               {isMatchingDomain ? (
-                <span className="badge sm" style={{ background: 'var(--gbg, #edf7f1)', color: 'var(--g, #1b7a4b)' }}>✓ Matches Academic Domain</span>
+                <span className="badge sm" style={{ background: 'var(--gbg, #edf7f1)', color: 'var(--g, #1b7a4b)' }}>Email domain matches supplied institution domain</span>
               ) : isWebmail ? (
                 <span className="badge sm" style={{ background: '#FEF3C7', color: '#92400E' }}>⚠ Webmail Domain — Verify Official Letterhead</span>
               ) : (
-                <span className="badge sm">External Email Domain</span>
+                <span className="badge sm">Email domain does not match supplied institution domain</span>
               )}
             </div>
           </div>
@@ -848,12 +870,12 @@ export function PlatformVerificationPage() {
             <b style={{ fontSize: '13.5px', color: 'var(--aubergine, #302337)' }}>Fleet &amp; Examination Scope</b>
           </div>
           <div style={{ fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div><span className="muted">Testing Campuses / Centers:</span> <b>{inst.campusCount}</b></div>
-            <div><span className="muted">Workstations Fleet:</span> <b>{inst.deviceCount} bare-metal kiosks</b></div>
-            <div><span className="muted">Annual Candidate Volume:</span> <b>{inst.studentCount}</b> candidates/yr</div>
-            <div><span className="muted">Deployment Model:</span> <Badge value={inst.deploymentModel?.toUpperCase()} tone="amber" /></div>
-            <div><span className="muted">Hardware Profile:</span> <code>{inst.hardwareProfile}</code></div>
-            <div><span className="muted">Enclave Tier:</span> <b>{inst.plan?.toUpperCase()}</b></div>
+            <div><span className="muted">Testing Campuses / Centers:</span> <b>{inst.campusCount ?? 'Not supplied'}</b></div>
+            <div><span className="muted">Workstation Fleet:</span> <b>{inst.deviceCount ?? 'Not supplied'}</b></div>
+            <div><span className="muted">Annual Candidate Volume:</span> <b>{inst.studentCount ?? 'Not supplied'}</b></div>
+            <div><span className="muted">Deployment Model:</span> <Badge value={inst.deploymentModel?.toUpperCase() || 'Not supplied'} tone="amber" /></div>
+            <div><span className="muted">Hardware Profile:</span> <code>{inst.hardwareProfile || 'Not supplied'}</code></div>
+            <div><span className="muted">Enclave Tier:</span> <b>{inst.plan?.toUpperCase() || 'Not assigned'}</b></div>
           </div>
         </div>
       </div>
@@ -1011,8 +1033,10 @@ export function PlatformVerificationPage() {
               onClick={async () => {
                 await run(async () => {
                   if (isApp) {
-                    await reviewApplication(user, id, 'UNDER_REVIEW', `Re-opened for re-evaluation by Super-Admin ${user.name}: ${overrideReason}`);
+                    await reviewApplication(user, id, 'UNDER_REVIEW', `Re-opened for re-evaluation by Platform Owner ${user.name}: ${overrideReason}`);
                     setAppData((prev) => prev ? { ...prev, status: 'UNDER_REVIEW', reviewNotes: overrideReason } : null);
+                  } else {
+                    await updateOnboardingStep(user, id, 'identity_verification', false, overrideReason);
                   }
                   setUnlockedForEdit(true);
                   setOverrideModal(false);
@@ -1026,75 +1050,12 @@ export function PlatformVerificationPage() {
         </Modal>
       )}
 
-      {/* Modal 2: Request Re-Evaluation from Higher Authority (Standard Reviewer Role) */}
-      {elevationModal && (
-        <Modal
-          title="Request Re-Evaluation from Higher Authority"
-          desc="Standard reviewers cannot modify an accredited milestone. Submit a formal elevation request to the Platform Super-Admin / Compliance Committee."
-          onClose={() => setElevationModal(false)}
-        >
-          <div style={{ padding: '10px 0' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px', fontSize: '12.5px' }}>
-              <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', border: '1px solid #E5E7EB' }}>
-                <span className="muted">Requesting Reviewer:</span><br />
-                <b>{user?.name || 'Reviewer'}</b> ({user?.role || 'reviewer'})
-              </div>
-              <div style={{ background: '#F9FAFB', padding: '10px 12px', borderRadius: '6px', border: '1px solid #E5E7EB' }}>
-                <span className="muted">Required Authority:</span><br />
-                <Badge value="SUPER_ADMIN / ROOT" tone="purple" />
-              </div>
-            </div>
-            <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, marginBottom: '6px' }}>
-              Reason for Re-Evaluation (Required)
-            </label>
-            <Textarea
-              rows={3}
-              value={elevationData.reason}
-              onChange={(e) => setElevationData({ ...elevationData, reason: e.target.value })}
-              placeholder="Describe the discrepancy, new statutory information, or reason why the approved verification needs to be re-audited..."
-            />
-            <div style={{ marginTop: '12px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Audit Ticket / Regulatory Reference Number (Optional)
-              </label>
-              <Input
-                value={elevationData.refNumber}
-                onChange={(e) => setElevationData({ ...elevationData, refNumber: e.target.value })}
-                placeholder="e.g. AUDIT-2026-9921 or UGC-NOTICE-44"
-              />
-            </div>
-          </div>
-          <div className="row end" style={{ gap: '10px', marginTop: '16px' }}>
-            <button className="btn" onClick={() => setElevationModal(false)}>Cancel</button>
-            <button
-              className="btn primary"
-              disabled={!elevationData.reason.trim() || busy}
-              onClick={async () => {
-                await run(async () => {
-                  setElevationPending({
-                    requester: user?.name || 'Reviewer',
-                    role: user?.role || 'reviewer',
-                    reason: elevationData.reason,
-                    refNumber: elevationData.refNumber,
-                    date: Date.now(),
-                  });
-                  setElevationModal(false);
-                  return 'Elevation request submitted to Platform Super-Admin for compliance review.';
-                }, 'Elevation request submitted.');
-              }}
-            >
-              Submit Elevation Request
-            </button>
-          </div>
-        </Modal>
-      )}
-
       {/* Success Alert / Next Step Modal */}
       {successAlert && (
         <Modal
           title={
             successAlert.verdict === 'verified'
-              ? '✅ Verification Complete & Approved'
+              ? 'Review Decision Recorded'
               : successAlert.verdict === 'corrections'
               ? '📋 Corrections Requested'
               : '❌ Application Rejected'
@@ -1160,49 +1121,88 @@ export function PlatformInstitutionDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const institutions = useCol('tenants', false);
-  const campuses = useCol('campuses', false);
-  const departments = useCol('departments', false);
-  const devices = useCol('devices', false);
-  const exams = useCol('exams', false);
-  const users = useCol('users', false);
-  const inst = institutions.find((x) => x.id === id);
+  const [inst, setInst] = useState(null);
+  const [instCampuses, setInstCampuses] = useState([]);
+  const [instDepts, setInstDepts] = useState([]);
+  const [instAdmins, setInstAdmins] = useState([]);
+  const [institutionStats, setInstitutionStats] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(true);
+  const [detailsError, setDetailsError] = useState('');
   const { msg, setMsg, run, busy } = useFlash();
 
   const [confirmApproval, setConfirmApproval] = useState(false);
   const [reason, setReason] = useState('');
   const [deployments, setDeployments] = useState([]);
-  const [admins, setAdmins] = useState([]);
 
-  // Load real deployments and admins for this institution
   useEffect(() => {
-    if (!id) return;
-    fetchInstitutionDeployments(id).then((d) => setDeployments(Array.isArray(d) ? d : [])).catch(() => {});
-    // Load admins from API via service function
-    import('../institutions/service').then(({ listInstitutionAdmins }) => {
-      listInstitutionAdmins(id).then((a) => setAdmins(Array.isArray(a) ? a : [])).catch(() => {});
-    }).catch(() => {});
+    let active = true;
+    setLoadingDetails(true);
+    setDetailsError('');
+    setInst(null);
+    setInstCampuses([]);
+    setInstDepts([]);
+    setInstAdmins([]);
+    setInstitutionStats(null);
+    setDeployments([]);
+    if (!id) {
+      setLoadingDetails(false);
+      setDetailsError('Institution ID is unavailable.');
+      return () => { active = false; };
+    }
+
+    Promise.all([
+      Api.getInstitution(id),
+      Api.getInstitutionStats(id),
+      Api.listCampuses(id),
+      Api.listDepartments(id),
+      Api.listInstitutionAdmins(id),
+      fetchInstitutionDeployments(id),
+    ])
+      .then(([institution, stats, campusResponse, departmentResponse, institutionAdmins, institutionDeployments]) => {
+        const campusRows = campusResponse?.campuses || campusResponse;
+        const departmentRows = departmentResponse?.departments || departmentResponse;
+        if (!institution || !stats || ['campuses', 'departments', 'users', 'devices', 'exams'].some((field) => typeof stats[field] !== 'number')
+          || !Array.isArray(campusRows) || !Array.isArray(departmentRows)
+          || !Array.isArray(institutionAdmins) || !Array.isArray(institutionDeployments)) {
+          throw new Error('The backend returned an unexpected institution detail response.');
+        }
+        if (!active) return;
+        setInst(institution);
+        setInstitutionStats(stats);
+        setInstCampuses(campusRows);
+        setInstDepts(departmentRows);
+        setInstAdmins(institutionAdmins);
+        setDeployments(institutionDeployments);
+      })
+      .catch((error) => {
+        if (active) setDetailsError(error?.message || 'Failed to load institution details from the backend.');
+      })
+      .finally(() => {
+        if (active) setLoadingDetails(false);
+      });
+    return () => { active = false; };
   }, [id]);
 
-  if (!inst) {
+  if (loadingDetails) {
+    return <Page title="Loading Institution"><Loading label="Loading institution details from backend..." /></Page>;
+  }
+
+  if (detailsError || !inst) {
     return (
       <Page title="Institution Not Found">
-        <Empty icon="building" title="Institution Record Not Found" action={<Link to="/platform/institutions/directory" className="btn">Back to Directory</Link>} />
+        {detailsError && <Alert tone="danger" title="Unable to load institution details">{detailsError}</Alert>}
+        {!detailsError && <Empty icon="building" title="Institution Record Not Found" />}
+        <Link to="/platform/institutions/directory" className="btn">Back to Directory</Link>
       </Page>
     );
   }
 
-  const stage = getInstitutionStage(inst);
-  const instCampuses = campuses.filter((c) => c.tenantId === id);
-  const instDepts = departments.filter((d) => d.tenantId === id);
-  const instDevices = devices.filter((d) => d.tenantId === id || d.institutionId === id);
-  const instExams = exams.filter((e) => e.tenantId === id || e.institutionId === id);
-  const instAdmins = admins.length > 0 ? admins : users.filter((u) => u.tenantId === id);
   const latestDeployment = deployments[0];
 
   const handleApprove = async () => {
     await run(async () => {
       await setInstitutionStatus(user, inst, 'approved', reason || 'Platform Admin approved');
+      setInst((current) => ({ ...current, status: 'approved' }));
       setConfirmApproval(false);
       return 'Institution approved. Ready for Tenant Provisioning.';
     }, 'Approval recorded.');
@@ -1226,9 +1226,6 @@ export function PlatformInstitutionDetailPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
-      <OnboardingWorkflowBar currentStage={stage} />
-      <StatusMatrix inst={inst} />
-      <NextActionCallout inst={inst} targetArea="platform" />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px' }}>
         <Card title="Official Institutional Profile">
@@ -1237,9 +1234,9 @@ export function PlatformInstitutionDetailPage() {
             <div><small className="muted">Identifier Code</small><br /><code>{inst.code}</code></div>
             <div><small className="muted">Official Domain(s)</small><br /><span>{(inst.domains || []).join(', ') || '—'}</span></div>
             <div><small className="muted">Contact Email</small><br /><span>{inst.contactEmail || '—'}</span></div>
-            <div><small className="muted">Jurisdiction / Region</small><br /><span>{inst.region || 'India (Default Enclave)'}</span></div>
-            <div><small className="muted">Subscription Tier</small><br /><Badge value={inst.plan || 'pilot'} /></div>
-            <div><small className="muted">Status</small><br /><Badge value={inst.status || 'applied'} tone={inst.status === 'active' ? 'green' : 'amber'} /></div>
+            <div><small className="muted">Jurisdiction / Region</small><br /><span>{inst.region || 'Not provided'}</span></div>
+            <div><small className="muted">Subscription Tier</small><br /><Badge value={inst.plan || 'Not assigned'} /></div>
+            <div><small className="muted">Status</small><br /><Badge value={inst.status || 'Unknown'} tone={inst.status === 'active' ? 'green' : 'amber'} /></div>
             <div><small className="muted">Enrolled Timestamp</small><br /><span>{fmt(inst.createdAt)}</span></div>
           </div>
         </Card>
@@ -1249,9 +1246,9 @@ export function PlatformInstitutionDetailPage() {
             <div><small className="muted">Registered Sites</small><br /><b>{instCampuses.length} {instCampuses.length === 1 ? 'Campus' : 'Campuses'}</b></div>
             <div><small className="muted">Academic Departments</small><br /><b>{instDepts.length} {instDepts.length === 1 ? 'Department' : 'Departments'}</b></div>
             <div><small className="muted">Administrators</small><br /><b>{instAdmins.length} Account{instAdmins.length !== 1 ? 's' : ''}</b></div>
-            <div><small className="muted">Enrolled Devices</small><br /><b>{instDevices.length} Workstation{instDevices.length !== 1 ? 's' : ''}</b></div>
-            <div><small className="muted">Total Exams</small><br /><b>{instExams.length} Exam{instExams.length !== 1 ? 's' : ''}</b></div>
-            <div><small className="muted">Dedicated Tenant Boundary</small><br /><code>tenant_{inst.code.toLowerCase().replace(/[^a-z0-9]/g, '_')}</code></div>
+            <div><small className="muted">Enrolled Devices</small><br /><b>{institutionStats.devices} Workstation{institutionStats.devices !== 1 ? 's' : ''}</b></div>
+            <div><small className="muted">Total Exams</small><br /><b>{institutionStats.exams} Exam{institutionStats.exams !== 1 ? 's' : ''}</b></div>
+            <div><small className="muted">Tenant Boundary</small><br /><code>{inst.schemaName || inst.schema_name || 'Not exposed by institution API'}</code></div>
             <div>
               <small className="muted">Assigned ExamOS Release</small><br />
               {latestDeployment
@@ -1283,18 +1280,14 @@ export function PlatformProvisioningPage() {
   const { id: paramId } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const { tenantId, setTenantId } = useTenant();
-  const institutions = useCol('tenants', false);
+  const { tenantId, tenants: institutions, setTenantId } = useTenant();
 
   // CRITICAL: always use the URL param ID; never fall back to institutions[0]
   // which could be a different already-provisioned institution
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
 
-  // Only match by targetId
-  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
   const [instLive, setInstLive] = useState(null);
-  const inst = instLive || instFromCache
-    || (targetId ? { id: targetId, name: 'Loading...', status: 'approved', entityType: 'enterprise' } : null);
+  const inst = instLive || institutions.find((x) => x.id === targetId) || null;
   const id = targetId;
 
   const { msg, setMsg, run, busy } = useFlash();
@@ -1305,65 +1298,98 @@ export function PlatformProvisioningPage() {
   const [adminData, setAdminData] = useState({ name: '', email: '', role: 'inst_admin' });
   const [adminCreated, setAdminCreated] = useState(null);
   const [onboarding, setOnboarding] = useState(null);
+  const [recordError, setRecordError] = useState('');
+  const [recordLoading, setRecordLoading] = useState(true);
   const [existingAdmins, setExistingAdmins] = useState([]);
   const [loadingAdmins, setLoadingAdmins] = useState(true);
+  const [adminLoadError, setAdminLoadError] = useState('');
+  const [adminReload, setAdminReload] = useState(0);
 
   // Load existing admins to detect conflicts / prevent duplicate creation
+  const adminTenantId = provisioningResult?.institution_id
+    || instLive?.institutionId
+    || (id?.startsWith('ins_') ? id : null);
   useEffect(() => {
-    if (!id) return;
-    setLoadingAdmins(true);
-    import('../institutions/service').then(({ listInstitutionAdmins: listAdmins }) =>
-      listAdmins(id)
-        .then((a) => { setExistingAdmins(Array.isArray(a) ? a : []); setLoadingAdmins(false); })
-        .catch(() => { setExistingAdmins([]); setLoadingAdmins(false); })
-    );
-  }, [id]);
-
-  // Sync provisionDone from cache as early signal
-  useEffect(() => {
-    if (instFromCache?.status && ['active', 'provisioned', 'pilot'].includes(instFromCache.status)) {
-      setProvisionDone(true);
+    if (!adminTenantId) {
+      setLoadingAdmins(false);
+      setAdminLoadError('');
+      setExistingAdmins([]);
+      return undefined;
     }
-  }, [instFromCache?.status]);
+    let active = true;
+    setLoadingAdmins(true);
+    setAdminLoadError('');
+    setExistingAdmins([]);
+    import('../institutions/service')
+      .then(({ listInstitutionAdmins: listAdmins }) => listAdmins(adminTenantId))
+      .then((admins) => {
+        if (active) setExistingAdmins(Array.isArray(admins) ? admins : []);
+      })
+      .catch((error) => {
+        if (active) {
+          setAdminLoadError(error?.message || 'Failed to load institution administrators.');
+          setExistingAdmins([]);
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingAdmins(false);
+      });
+    return () => { active = false; };
+  }, [adminTenantId, adminReload]);
 
-  // Load real provisioning / onboarding state from API
+  // Load institution/application and onboarding state from the backend.
   useEffect(() => {
-    if (!id) return;
-    if (id.startsWith('app_')) {
-      fetchInstitutionApplication(id)
-        .then((app) => {
-          if (app) {
-            setInstLive({
-              id: app.id,
-              name: app.legalName || app.displayName || app.id,
-              code: app.displayName || app.id,
-              status: app.status?.toLowerCase(),
-              contactEmail: app.repEmail,
-              repEmail: app.repEmail,
-              repName: app.repName,
-              entityType: app.entityType || 'enterprise',
-              institutionId: app.institutionId || '',
-            });
-            if (app.repEmail) {
-              setAdminData((d) => ({
-                ...d,
-                email: d.email || app.repEmail || '',
-                name: d.name || app.repName || '',
-              }));
-            }
-            if (app.status === 'PROVISIONED' || app.institutionId) {
-              setProvisionDone(true);
-            }
+    let active = true;
+    setRecordLoading(true);
+    setRecordError('');
+    setInstLive(null);
+    setOnboarding(null);
+    setProvisionDone(false);
+    if (!id) {
+      setRecordLoading(false);
+      setRecordError('Institution ID is unavailable.');
+      return () => { active = false; };
+    }
+
+    const load = async () => {
+      try {
+        if (id.startsWith('app_')) {
+          const app = await fetchInstitutionApplication(id);
+          if (!active) return;
+          if (!app) throw new Error('The application was not found.');
+          setInstLive({
+            id: app.id,
+            name: app.legalName || app.displayName || app.id,
+            code: app.displayName || app.id,
+            status: app.status?.toLowerCase(),
+            contactEmail: app.repEmail,
+            repEmail: app.repEmail,
+            repName: app.repName,
+            entityType: app.entityType || '',
+            institutionId: app.institutionId || '',
+          });
+          if (app.repEmail) {
+            setAdminData((d) => ({
+              ...d,
+              email: d.email || app.repEmail || '',
+              name: d.name || app.repName || '',
+            }));
           }
-        })
-        .catch(() => {});
-    } else {
-      fetchInstitutionOnboarding(id)
-        .then((ob) => {
+          setProvisionDone(app.status === 'PROVISIONED' || Boolean(app.institutionId));
+          if (app.institutionId) {
+            const ob = await fetchInstitutionOnboarding(app.institutionId);
+            if (!active) return;
+            setOnboarding(ob);
+          }
+        } else {
+          const [institution, ob] = await Promise.all([
+            Api.getInstitution(id),
+            fetchInstitutionOnboarding(id),
+          ]);
+          if (!active) return;
+          if (!institution) throw new Error('The institution was not found.');
+          setInstLive(institution);
           setOnboarding(ob);
-          const done = ob?.status === 'provisioned' || ob?.status === 'admin_setup'
-            || ob?.status === 'active' || (ob?.completedSteps ?? 0) >= 4;
-          if (done) setProvisionDone(true);
           if (ob?.contactEmail || ob?.repEmail) {
             setAdminData((d) => ({
               ...d,
@@ -1371,59 +1397,80 @@ export function PlatformProvisioningPage() {
               name: d.name || ob.repName || '',
             }));
           }
-          if (ob?.institution) setInstLive(ob.institution);
-        })
-        .catch(() => {});
-    }
+          setProvisionDone(true);
+        }
+      } catch (error) {
+        if (active) setRecordError(error?.message || 'Failed to load provisioning state from the backend.');
+      } finally {
+        if (active) setRecordLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
   }, [id]);
 
-  // Derive real provisioning steps from onboarding data
+  const isApplication = Boolean(id?.startsWith('app_'));
+
+  /* Removed fabricated provisioning progress. This page only reports states
+     represented by persisted institution/application and onboarding records. */
   const steps = [
     {
-      name: 'PostgreSQL Isolated Schema Allocation',
-      status: (onboarding?.checklist?.registration?.completed || provisionDone) ? 'COMPLETE' : 'PENDING',
-      detail: provisionDone ? 'Dedicated schema created and indexed' : 'Awaiting provisioning trigger',
+      name: 'Institution record',
+      status: inst?.id && !isApplication ? 'AVAILABLE' : (provisionDone ? 'CREATED' : 'PENDING'),
+      detail: isApplication
+        ? (provisionDone ? `Provisioned institution: ${inst?.institutionId || 'recorded by backend'}` : 'Application has not been provisioned.')
+        : (inst?.id || 'No institution record loaded'),
     },
     {
-      name: 'Tenant Cryptographic Master Key Generation (AES-256-GCM)',
-      status: provisionDone ? 'COMPLETE' : 'PENDING',
-      detail: provisionDone ? 'AES-256-GCM root anchor committed to key store' : 'Pending',
+      name: 'Primary administrator',
+      status: loadingAdmins ? 'CHECKING' : adminLoadError ? 'UNAVAILABLE' : existingAdmins.length ? 'CONFIGURED' : (adminCreated ? 'INVITED' : 'NOT CONFIGURED'),
+      detail: loadingAdmins ? 'Checking institution-scoped administrator records.'
+        : adminLoadError ? 'Administrator state could not be verified.'
+          : existingAdmins.length ? `${existingAdmins.length} institution administrator record(s) found.`
+            : adminCreated ? `Invitation created for ${adminCreated.email}. MFA enrollment is not verified.`
+              : 'No institution administrator records found.',
     },
     {
-      name: 'Immutable Audit Ledger Chain Root Anchor',
-      status: provisionDone ? 'COMPLETE' : 'PENDING',
-      detail: provisionDone ? 'HMAC-SHA256 genesis block written' : 'Pending',
-    },
-    {
-      name: 'Default Security Policy & Kiosk Bounds Initialization',
-      status: provisionDone ? 'COMPLETE' : 'PENDING',
-      detail: provisionDone ? 'Default policies applied from platform catalog' : 'Pending',
-    },
-    {
-      name: 'Primary Institution Administrator Account',
-      status: (adminCreated || onboarding?.checklist?.admin_mfa?.completed) ? 'COMPLETE' : (provisionDone ? 'READY' : 'PENDING'),
-      detail: adminCreated
-        ? `Account created: ${adminCreated.email}`
-        : (onboarding?.checklist?.admin_mfa?.completed ? 'Administrator enrolled and MFA active' : 'Provision complete — invite admin to create account and enroll MFA'),
+      name: 'MFA enrollment',
+      status: onboarding?.checklist?.admin_mfa?.completed ? 'ATTESTED' : 'NOT VERIFIED',
+      detail: onboarding?.checklist?.admin_mfa?.completed
+        ? 'Platform onboarding record contains an MFA verification attestation.'
+        : 'An administrator invitation does not verify MFA enrollment.',
     },
   ];
 
+  /*
+   * Legacy local collection hydration and inferred provisioning status were
+   * intentionally removed: neither is authoritative evidence of provisioning.
+   */
+
   const handleRunProvisioning = async () => {
+    if (!isApplication || provisionDone) {
+      setMsg('Tenant provisioning can only be executed for an unprovisioned application.');
+      return;
+    }
     await run(async () => {
       const result = await provisionApplication(user, id);
       setProvisioningResult(result);
       setProvisionDone(true);
+      if (result.institution_id) {
+        fetchInstitutionOnboarding(result.institution_id)
+          .then(setOnboarding)
+          .catch((error) => setRecordError(error?.message || 'Institution was provisioned, but onboarding state could not be loaded.'));
+      }
+      setInstLive((current) => ({
+        ...current,
+        id: result.institution_id,
+        institutionId: result.institution_id,
+        status: 'provisioned',
+      }));
       // Pre-fill admin data from institution contact info
       setAdminData((d) => ({
         ...d,
         email: d.email || inst?.contactEmail || inst?.repEmail || '',
         name: d.name || inst?.repName || '',
       }));
-      // Refresh existing admins list after provisioning
-      import('../institutions/service').then(({ listInstitutionAdmins: la }) =>
-        la(id).then((a) => setExistingAdmins(Array.isArray(a) ? a : [])).catch(() => {})
-      );
-      return 'Tenant provisioned — database schema, cryptographic keys, and license created. Now invite the primary administrator.';
+      return 'The backend provisioned the institution. Verify each associated resource before proceeding.';
     }, 'Provisioning complete.');
   };
 
@@ -1439,8 +1486,8 @@ export function PlatformProvisioningPage() {
       const result = await inviteAdmin(user, targetTenantId, adminData);
       setAdminCreated(result);
       setAdminModal(false);
-      await updateOnboardingStep(user, targetTenantId, 'admin_mfa', true, `Admin account created: ${adminData.email}`);
-      return `Administrator account created for ${adminData.name}. Temporary credentials generated.`;
+      setAdminReload((n) => n + 1);
+      return `Administrator invitation created for ${adminData.name}. MFA enrollment must be verified separately.`;
     }, 'Administrator created.');
   };
 
@@ -1454,36 +1501,38 @@ export function PlatformProvisioningPage() {
 
   return (
     <Page
-      title={`Tenant Provisioning · ${inst.name}`}
-      desc="Automated infrastructure provisioning: database schema, cryptographic roots, license keys, and admin credentials."
-      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst.name}</Link><Icon name="arrow" size={12} /><span>Provisioning</span></div>}
+      title={`Tenant Provisioning · ${inst?.name || (recordLoading ? 'Loading...' : 'Institution unavailable')}`}
+      desc="Review backend-persisted provisioning, administrator, and MFA verification state."
+      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst?.name || id || 'Institution'}</Link><Icon name="arrow" size={12} /><span>Provisioning</span></div>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
-      <OnboardingWorkflowBar currentStage={provisionDone ? 4 : 3} />
-      <StatusMatrix inst={{ ...inst, provisioningStatus: provisionDone ? 'provisioned' : 'not_started' }} />
+      {recordError && <Alert tone="danger" title="Unable to load provisioning state">{recordError}</Alert>}
+      {recordLoading && <Loading />}
 
-      <Card title="Provisioning Pipeline" desc="Hardware-rooted tenant separation pipeline — real-time status from server">
+      <Card title="Provisioning state" desc="Status is limited to persisted backend records; unverified infrastructure claims are not inferred.">
         <DataTable
           rows={steps}
           columns={[
             { key: 'name', label: 'Provisioning Step', render: (s) => <b>{s.name}</b> },
-            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={s.status === 'COMPLETE' ? 'green' : s.status === 'READY' ? 'blue' : 'amber'} /> },
+            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={['AVAILABLE', 'CREATED', 'CONFIGURED', 'ATTESTED'].includes(s.status) ? 'green' : s.status === 'INVITED' ? 'blue' : 'amber'} /> },
             { key: 'detail', label: 'Details', render: (s) => <span className="muted sm">{s.detail}</span> },
           ]}
         />
 
         <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
-          {!provisionDone ? (
-            <button className="btn primary" onClick={handleRunProvisioning} disabled={busy}>
+          {isApplication && !provisionDone ? (
+            <button className="btn primary" onClick={handleRunProvisioning} disabled={busy || recordLoading || Boolean(recordError) || !['APPROVED', 'APPROVED_FOR_PROVISIONING'].includes(inst?.status?.toUpperCase())}>
               <Icon name="refresh" size={14} /> Execute Tenant Provisioning
             </button>
-          ) : (
-            <span className="badge g" style={{ padding: '8px 16px' }}>✓ Tenant Provisioned</span>
-          )}
-          {provisionDone && !adminCreated && !onboarding?.checklist?.admin_mfa?.completed && (
+          ) : null}
+          {provisionDone && !onboarding?.checklist?.admin_mfa?.completed && (
             loadingAdmins ? (
               <span className="muted sm">Checking for existing administrators...</span>
+            ) : adminLoadError ? (
+              <button className="btn" onClick={() => setAdminReload((n) => n + 1)}>
+                <Icon name="refresh" size={14} /> Retry administrator check
+              </button>
             ) : existingAdmins.length > 0 ? (
               <span className="badge g" style={{ padding: '8px 16px' }}>
                 ✓ {existingAdmins.length} Admin{existingAdmins.length > 1 ? 's' : ''} Already Configured
@@ -1494,13 +1543,22 @@ export function PlatformProvisioningPage() {
               </button>
             )
           )}
-          {(adminCreated || onboarding?.checklist?.admin_mfa?.completed) && (
+          {adminCreated && !onboarding?.checklist?.admin_mfa?.completed && (
+            <span className="muted sm">Administrator invited; MFA enrollment is not yet verified.</span>
+          )}
+          {onboarding?.checklist?.admin_mfa?.completed && (
             <button className="btn" onClick={() => nav(`/platform/institutions/${provisioningResult?.institution_id || id}/readiness`)}>
               Next: Pilot &amp; Readiness →
             </button>
           )}
         </div>
       </Card>
+
+      {adminLoadError && (
+        <Alert tone="danger" title="Unable to verify institution administrators">
+          {adminLoadError} Retry the check before creating another administrator.
+        </Alert>
+      )}
 
       {provisioningResult && !adminCreated && (
         <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '16px 20px', marginTop: '16px' }}>
@@ -1619,13 +1677,11 @@ export function PlatformReadinessPage() {
   const { id: paramId } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const { tenantId, setTenantId } = useTenant();
-  const institutions = useCol('tenants', false);
+  const { tenantId, tenants: institutions, setTenantId } = useTenant();
 
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
-  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
   const [instLive, setInstLive] = useState(null);
-  const inst = instLive || instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'pilot' } : null);
+  const inst = instLive || institutions.find((x) => x.id === targetId) || null;
   const id = targetId;
 
   const { msg, setMsg, run, busy } = useFlash();
@@ -1633,22 +1689,44 @@ export function PlatformReadinessPage() {
   // All readiness data comes exclusively from the backend
   const [readiness, setReadiness] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [readinessError, setReadinessError] = useState('');
   const [lastRefresh, setLastRefresh] = useState(null);
 
   const fetchReadiness = async () => {
-    if (!id) return;
+    if (!id) {
+      setLoading(false);
+      setReadinessError('Institution ID is unavailable.');
+      return;
+    }
     setLoading(true);
+    setReadinessError('');
     try {
       const data = await fetchInstitutionPilotReadiness(id);
-      if (data) {
-        setReadiness(data);
-        if (data.institutionName) {
-          setInstLive((prev) => prev || { id, name: data.institutionName, status: data.institutionStatus, plan: data.institutionPlan });
-        }
-        setLastRefresh(new Date());
+      if (!data || !Array.isArray(data.gates) || typeof data.allPassed !== 'boolean'
+        || !data.gates.every((gate) => typeof gate.pass === 'boolean' && typeof gate.check === 'string')
+        || !Array.isArray(data.examUrls)
+        || !data.devices || typeof data.devices.total !== 'number'
+        || typeof data.devices.attested !== 'number' || typeof data.devices.enrolled !== 'number'
+        || !data.auditChain || typeof data.auditChain.total !== 'number'
+        || typeof data.auditChain.linked !== 'number' || typeof data.auditChain.ok !== 'boolean'
+        || !data.onboarding || typeof data.onboarding.status !== 'string'
+        || typeof data.onboarding.completedSteps !== 'number' || typeof data.onboarding.totalSteps !== 'number') {
+        throw new Error('The backend returned an unexpected readiness response.');
       }
+      setReadiness(data);
+      if (data.institutionName) {
+        setInstLive((prev) => ({
+          ...(prev || {}),
+          id,
+          name: data.institutionName,
+          status: data.institutionStatus || prev?.status,
+          plan: data.institutionPlan || prev?.plan,
+        }));
+      }
+      setLastRefresh(new Date());
     } catch (err) {
-      console.warn('Readiness fetch failed:', err);
+      setReadiness(null);
+      setReadinessError(err?.message || 'Failed to load readiness data from the backend.');
     } finally {
       setLoading(false);
     }
@@ -1672,17 +1750,19 @@ export function PlatformReadinessPage() {
   }, [readiness]);
 
   const allPassed = readiness?.allPassed === true;
-  const devices = readiness?.devices || {};
+  const devices = readiness?.devices;
   const examUrls = readiness?.examUrls || [];
-  const auditChain = readiness?.auditChain || {};
-  const onboarding = readiness?.onboarding || {};
+  const auditChain = readiness?.auditChain;
+  const onboarding = readiness?.onboarding;
 
   const handleGrantOperational = async () => {
     await run(async () => {
-      await setInstitutionStatus(user, inst, 'active', 'Operational approval certified after pilot validation.');
+      if (!inst) throw new Error('Institution profile is unavailable; status cannot be changed.');
+      await setInstitutionStatus(user, inst, 'active', 'Platform owner changed status after reviewing stored readiness markers.');
+      setInst((current) => current ? { ...current, status: 'active' } : current);
       await fetchReadiness();
-      return 'Operational approval certified! The institution is active for production examinations.';
-    }, 'Operational approval certified.');
+      return 'Institution status was changed to active.';
+    }, 'Institution status updated.');
   };
 
   const handleSwitch = (newId) => {
@@ -1696,7 +1776,7 @@ export function PlatformReadinessPage() {
   return (
     <Page
       title={`Pilot & Readiness Approval · ${inst?.name || 'Loading...'}`}
-      desc="Evaluate pilot execution, TPM hardware attestation results, and grant final operational authorization."
+      desc="Review stored device, URL, and audit-reference markers. This view does not independently verify TPM quotes, URL reachability, policy enforcement, or cryptographic audit integrity."
       breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst?.name}</Link><Icon name="arrow" size={12} /><span>Readiness</span></div>}
       actions={
         <button className="btn" onClick={fetchReadiness} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1706,39 +1786,38 @@ export function PlatformReadinessPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
-      <OnboardingWorkflowBar currentStage={7} />
-      <StatusMatrix inst={{ ...inst, readinessStatus: allPassed ? 'passed' : 'pending', operationalApproval: inst?.status === 'active' ? 'fully_authorized' : 'pilot_authorized' }} />
+      {readinessError && <Alert tone="danger" title="Unable to load readiness data">{readinessError}</Alert>}
 
       {/* Live stats from backend */}
       {readiness && (
         <StatGrid cols={4} style={{ marginBottom: '16px' }}>
           <Stat
-            label="Enrolled Workstations"
-            value={devices.total || 0}
+            label="Device Records"
+            value={devices.total}
             tone={devices.total > 0 ? 'green' : 'red'}
             icon="device"
-            sub={`${devices.enrolled || 0} enrolled · ${devices.attested || 0} attested`}
+            sub={`${devices.enrolled} enrollment records · ${devices.attested} attestation markers`}
           />
           <Stat
-            label="TPM Attested"
-            value={`${devices.attested || 0}/${devices.total || 0}`}
+            label="Attestation Markers"
+            value={`${devices.attested}/${devices.total}`}
             tone={devices.total > 0 && devices.attested === devices.total ? 'green' : 'amber'}
             icon="shield"
-            sub="PCR[0,2,4,7] cryptographic root"
+            sub="Stored device state; cryptographic quote verification is not performed by this view"
           />
           <Stat
-            label="Assessment Portals"
+            label="Configured Exam URLs"
             value={examUrls.length}
             tone={examUrls.length > 0 ? 'green' : 'red'}
             icon="link"
-            sub={examUrls.length > 0 ? examUrls[0] : 'No exam URLs configured'}
+            sub={examUrls.length > 0 ? 'URL values are configured; reachability is not checked' : 'No exam URLs configured'}
           />
           <Stat
-            label="Audit Chain Blocks"
-            value={auditChain.total || 0}
+            label="Audit Event Records"
+            value={auditChain.total}
             tone={auditChain.ok ? 'green' : 'amber'}
             icon="lock"
-            sub={auditChain.ok ? 'HMAC-SHA256 chain verified' : (auditChain.total === 0 ? 'No audit events yet' : 'Chain verification pending')}
+            sub={auditChain.ok ? 'Predecessor-reference count meets the stored-record threshold' : (auditChain.total === 0 ? 'No audit events recorded' : 'Predecessor-reference count is incomplete')}
           />
         </StatGrid>
       )}
@@ -1754,6 +1833,8 @@ export function PlatformReadinessPage() {
       >
         {loading && !readiness ? (
           <Loading label="Fetching live readiness data from backend..." />
+        ) : readinessError ? (
+          <Empty title="Readiness data unavailable" desc={readinessError} />
         ) : (
           <>
             <DataTable
@@ -1779,14 +1860,15 @@ export function PlatformReadinessPage() {
 
             <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ fontSize: '12px', color: 'var(--mut, #756F79)' }}>
-                Onboarding: <b>{onboarding.status || '—'}</b> · {onboarding.completedSteps || 0}/{onboarding.totalSteps || 8} steps complete
+                Onboarding: <b>{onboarding.status}</b>
+                {onboarding.totalSteps > 0 && <> · {onboarding.completedSteps}/{onboarding.totalSteps} recorded steps</>}
               </div>
               <button
                 className="btn primary"
                 onClick={handleGrantOperational}
-                disabled={busy || !allPassed || inst?.status === 'active'}
+                disabled={busy || !inst || !allPassed || inst?.status?.toLowerCase() === 'active'}
               >
-                <Icon name="check" size={15} /> {inst?.status === 'active' ? 'Operational Certified' : 'Certify & Authorize Live Operation'}
+                <Icon name="check" size={15} /> {inst?.status?.toLowerCase() === 'active' ? 'Institution Active' : 'Set Institution Status to Active'}
               </button>
             </div>
           </>
@@ -1803,22 +1885,53 @@ export function PlatformOperationsPage() {
   const { id: paramId } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const { tenantId, setTenantId } = useTenant();
-  const institutions = useCol('tenants', false);
+  const { tenantId, tenants: institutions, setTenantId } = useTenant();
   const targetId = (paramId && paramId !== ':id') ? paramId : tenantId;
-  const instFromCache = targetId ? institutions.find((x) => x.id === targetId) : null;
-  const inst = instFromCache || (targetId ? { id: targetId, name: 'Loading...', status: 'active' } : null);
+  const [inst, setInst] = useState(null);
   const id = targetId;
-  const incidents = useCol('incidents', false);
   const { msg, setMsg, run, busy } = useFlash();
 
   const [confirmStatus, setConfirmStatus] = useState(null);
+  const [instIncidents, setInstIncidents] = useState([]);
+  const [loadingOperations, setLoadingOperations] = useState(true);
+  const [operationsError, setOperationsError] = useState('');
 
-  const instIncidents = incidents.filter((i) => i.tenantId === id);
+  useEffect(() => {
+    let active = true;
+    setLoadingOperations(true);
+    setOperationsError('');
+    setInst(null);
+    setInstIncidents([]);
+    if (!id) {
+      setLoadingOperations(false);
+      setOperationsError('Institution ID is unavailable.');
+      return () => { active = false; };
+    }
+
+    Promise.all([Api.getInstitution(id), Api.listIncidents()])
+      .then(([institution, incidentResponse]) => {
+        const rows = incidentResponse?.incidents || incidentResponse;
+        if (!institution || !Array.isArray(rows)) {
+          throw new Error('The backend returned an unexpected operations response.');
+        }
+        if (!active) return;
+        setInst(institution);
+        setInstIncidents(rows.filter((incident) => incident.tenantId === id || incident.institutionId === id));
+      })
+      .catch((error) => {
+        if (active) setOperationsError(error?.message || 'Failed to load institution operations from the backend.');
+      })
+      .finally(() => {
+        if (active) setLoadingOperations(false);
+      });
+
+    return () => { active = false; };
+  }, [id]);
 
   const handleStatusChange = async (targetStatus, reason) => {
     await run(async () => {
       await setInstitutionStatus(user, inst, targetStatus, reason);
+      setInst((current) => current ? { ...current, status: targetStatus } : current);
       setConfirmStatus(null);
       return `Institution status updated to: ${targetStatus.toUpperCase()}`;
     }, 'Status updated.');
@@ -1840,34 +1953,31 @@ export function PlatformOperationsPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
-      <OnboardingWorkflowBar currentStage={8} />
-      <StatusMatrix inst={inst} />
+      {operationsError && <Alert tone="danger" title="Unable to load institution operations">{operationsError}</Alert>}
+      {loadingOperations && <Loading label="Loading institution operations from backend..." />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
         <Card title="Operational Controls" desc="Administrative suspension, reactivation, and offboarding">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <p className="muted sm">
-              Suspension immediately halts all active exam sessions and blocks new candidate logins across all institutional sites.
+              Status changes are sent to the institution backend. Verify their operational impact before applying them.
             </p>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              {inst.status === 'active' ? (
+              {inst?.status?.toLowerCase() === 'active' ? (
                 <button className="btn danger" onClick={() => setConfirmStatus('suspended')}>
                   <Icon name="alert" size={14} /> Suspend Institution
                 </button>
-              ) : (
+              ) : inst ? (
                 <button className="btn primary" onClick={() => setConfirmStatus('active')}>
                   <Icon name="check" size={14} /> Reactivate Institution
                 </button>
-              )}
-              <button className="btn danger" onClick={() => setConfirmStatus('offboarded')}>
-                Offboard Tenant
-              </button>
+              ) : null}
             </div>
           </div>
         </Card>
 
         <Card title="Security & Compliance Incidents" desc="Hardware tamper, peripheral violations, or network anomalies">
-          {instIncidents.length ? (
+          {loadingOperations ? <Loading label="Loading incidents from backend..." /> : instIncidents.length ? (
             <DataTable
               rows={instIncidents}
               columns={[
@@ -1879,7 +1989,7 @@ export function PlatformOperationsPage() {
             />
           ) : (
             <div className="pad muted" style={{ textAlign: 'center' }}>
-              No operational security incidents recorded for this institution.
+              No incidents were returned for this institution.
             </div>
           )}
         </Card>
@@ -1888,7 +1998,7 @@ export function PlatformOperationsPage() {
       {confirmStatus && (
         <ActionDialog
           title={`Confirm Action: ${confirmStatus.toUpperCase()}`}
-          desc={`Are you sure you want to transition ${inst.name} to ${confirmStatus}? An immutable entry will be written to the ledger.`}
+          desc={`Are you sure you want to transition ${inst?.name} to ${confirmStatus}?`}
           confirmLabel={`Set to ${confirmStatus}`}
           danger={confirmStatus !== 'active'}
           onClose={() => setConfirmStatus(null)}

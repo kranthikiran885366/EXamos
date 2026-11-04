@@ -258,12 +258,40 @@ export async function readiness(ex, ctx = {}) {
   const checks = [];
   const cands = candidates.filter((c) => c.examId === ex.id);
   const pol = policies.find((p) => p.id === ex.policyId);
-  checks.push({ ...checksFor('examUrl', 'Assessment URL'), status: ex.examUrl?.trim() ? 'PASS' : 'FAIL', detail: ex.examUrl ? ex.examUrl.slice(0, 45) : 'No URL assigned' });
+
+  // 1. URL format — is a URL present at all?
+  const urlPresent = !!ex.examUrl?.trim();
+  checks.push({ ...checksFor('examUrl', 'Assessment URL present'), status: urlPresent ? 'PASS' : 'FAIL', detail: urlPresent ? ex.examUrl.slice(0, 45) : 'No URL assigned — required before publication' });
+
+  // 2. URL vs policy — QA-E2E-001: a URL that passes format check can still be
+  //    blocked by the kiosk firewall default-deny rule if the policy does not list
+  //    the origin explicitly. Check both here so readiness and policy agree.
+  if (urlPresent && pol) {
+    let urlOriginPermitted = false;
+    try {
+      const urlObj = new URL(ex.examUrl);
+      const urlOrigin = urlObj.origin; // e.g. https://exam.university.edu
+      const policyOrigins = pol.config?.origins || [];
+      urlOriginPermitted = policyOrigins.some((o) => {
+        try { return new URL(o).origin === urlOrigin; } catch { return o === urlOrigin; }
+      });
+    } catch { /* malformed URL */ }
+    checks.push({
+      ...checksFor('urlOriginPolicy', 'Assessment URL permitted by policy'),
+      status: urlOriginPermitted ? 'PASS' : 'FAIL',
+      detail: urlOriginPermitted
+        ? 'Origin is listed in the policy allowed-origins — kiosk will permit navigation'
+        : `Origin is NOT in policy allowed-origins — the kiosk firewall will block this URL. Add ${ex.examUrl ? (() => { try { return new URL(ex.examUrl).origin; } catch { return ex.examUrl; } })() : '(URL)'} to the policy.`,
+    });
+  } else if (urlPresent && !pol) {
+    checks.push({ ...checksFor('urlOriginPolicy', 'Assessment URL permitted by policy'), status: 'FAIL', detail: 'No policy selected — cannot verify kiosk firewall permission for this URL' });
+  }
+
   checks.push({ ...checksFor('centers', 'Exam centres'), status: ex.centerIds.length && ex.centerIds.every((cid) => centers.find((c) => c.id === cid)?.status === 'active') ? 'PASS' : 'FAIL', detail: `${ex.centerIds.length} centre(s)` });
   checks.push({ ...checksFor('candidates', 'Candidate list'), status: cands.length ? 'PASS' : 'FAIL', detail: `${cands.length} assigned` });
   checks.push({ ...checksFor('identity', 'Identity verification'), status: cands.length && cands.every((c) => c.identity === 'verified') ? 'PASS' : cands.some((c) => c.identity === 'verified') ? 'WARN' : 'NOT_RUN', detail: `${cands.filter((c) => c.identity === 'verified').length}/${cands.length} verified` });
-  checks.push({ ...checksFor('policy', 'Published policy'), status: pol && pol.status === 'published' && (await verifyPolicy(pol)) ? 'PASS' : 'FAIL', detail: pol ? `${pol.name} v${pol.version}` : 'No policy selected' });
-  checks.push({ ...checksFor('instructions', 'Candidate instructions'), status: ex.instructions?.trim() ? 'PASS' : 'WARN', detail: ex.instructions?.trim() ? 'Provided' : 'Not written' });
+  checks.push({ ...checksFor('policy', 'Published policy'), status: pol && pol.status === 'published' && (await verifyPolicy(pol)) ? 'PASS' : 'FAIL', detail: pol ? `${pol.name} v${pol.version} (${pol.status})` : 'No policy selected' });
+  checks.push({ ...checksFor('instructions', 'Candidate instructions'), status: ex.instructions?.trim() ? 'PASS' : 'WARN', detail: ex.instructions?.trim() ? 'Provided' : 'Not written — required before publication' });
   checks.push({ ...checksFor('schedule', 'Schedule conflict'), status: conflicts(exams, ex) ? 'FAIL' : 'PASS', detail: conflicts(exams, ex) ? `Conflicts with ${conflicts(exams, ex).code}` : 'No conflict' });
   checks.push({ ...checksFor('devices', 'Device readiness'), status: devices.length ? 'PASS' : 'NOT_RUN', detail: `${devices.filter((d) => ex.centerIds.includes(d.centerId)).length} devices in scope` });
   // Live session monitoring from backend if available

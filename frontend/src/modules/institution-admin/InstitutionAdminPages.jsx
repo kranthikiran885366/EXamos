@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import * as Api from '../../core/api/services';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useTenant, useCol } from '../../core/db/tenant';
+import { useTenant } from '../../core/db/tenant';
 import { can, roleLabel } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
 import {
@@ -11,14 +11,11 @@ import {
   Icon, Field, Input, Select, Textarea, Checkbox
 } from '../../core/ui/kit';
 import {
-  OnboardingWorkflowBar, StatusMatrix, NextActionCallout,
-  getInstitutionStage, ONBOARDING_STAGES
-} from '../institutions/onboardingWorkflow';
-import {
   createCampus, createDepartment, assignStaff, removeStaff,
   saveSecuritySettings, saveExamDefaults,
   listInstitutionAdmins, inviteInstitutionAdmin, removeInstitutionAdmin,
-  getOrgTerms, isCorporateEntity,
+  getOrgTerms, isCorporateEntity, institutionStats,
+  fetchInstitutionOnboarding,
 } from '../institutions/service';
 
 /* =====================================================================
@@ -26,18 +23,39 @@ import {
 ===================================================================== */
 export function InstitutionDashboardPage() {
   const { user } = useAuth();
-  const { tenant } = useTenant();
-  const campuses = useCol('campuses');
-  const departments = useCol('departments');
-  const centers = useCol('centers');
-  const devices = useCol('devices');
-  const candidates = useCol('candidates');
-  const exams = useCol('exams');
-  const incidents = useCol('incidents');
+  const { tenant, tenantId } = useTenant();
+  const [stats, setStats] = useState(null);
+  const [onboarding, setOnboarding] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
-  const stage = getInstitutionStage(tenant || {});
-  const attestedDevices = devices.filter((d) => d.trust === 'attested').length;
-  const verifiedCandidates = candidates.filter((c) => c.identity === 'verified').length;
+  useEffect(() => {
+    let active = true;
+    setStats(null);
+    setOnboarding(null);
+    setLoading(true);
+    setLoadError('');
+    if (!tenantId) {
+      setLoadError('Select an institution to load its dashboard.');
+      setLoading(false);
+      return () => { active = false; };
+    }
+    Promise.allSettled([
+      institutionStats(tenantId),
+      fetchInstitutionOnboarding(tenantId),
+    ]).then(([statsResult, onboardingResult]) => {
+      if (!active) return;
+      const errors = [];
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
+      else errors.push(`Statistics: ${statsResult.reason?.message || 'request failed'}`);
+      if (onboardingResult.status === 'fulfilled') setOnboarding(onboardingResult.value);
+      else errors.push(`Onboarding: ${onboardingResult.reason?.message || 'request failed'}`);
+      setLoadError(errors.join('; '));
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [tenantId]);
 
   return (
     <Page
@@ -55,39 +73,29 @@ export function InstitutionDashboardPage() {
         </div>
       }
     >
-      <OnboardingWorkflowBar currentStage={stage} />
-      <StatusMatrix inst={tenant || {}} />
-      <NextActionCallout inst={tenant || {}} targetArea="institution" />
+      {loadError && <Alert tone="danger">{loadError}</Alert>}
 
       <StatGrid cols={4}>
-        <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} & Centres`} value={`${campuses.length} / ${centers.length}`} icon="building" sub="Active Exam Locations" />
-        <Stat label="Registered Devices" value={devices.length} tone={attestedDevices === devices.length && devices.length > 0 ? 'green' : 'amber'} icon="device" sub={`${attestedDevices} Hardware Attested`} to="/institution/deployment" />
-        <Stat label={`${getOrgTerms(tenant?.entityType).candidateLabel} Roster`} value={candidates.length} icon="candidate" sub={`${verifiedCandidates} Verified`} />
-        <Stat label="Exams Live / Scheduled" value={`${exams.filter((e) => e.status === 'live').length} / ${exams.length}`} icon="exam" sub="Target Portals Active" to="/college/exams" />
+        <Stat label="Campuses" value={stats?.campuses ?? (loading ? '…' : '—')} icon="building" />
+        <Stat label="Centres" value={stats?.centers ?? (loading ? '…' : '—')} icon="building" />
+        <Stat label="Enrolled devices" value={stats?.enrolledDevices ?? (loading ? '…' : '—')} icon="device" to="/institution/deployment" />
+        <Stat label="Candidates" value={stats?.candidates ?? (loading ? '…' : '—')} icon="candidate" />
+        <Stat label="Live / Total exams" value={stats ? `${stats.liveExams} / ${stats.exams}` : (loading ? '…' : '—')} icon="exam" to="/college/exams" />
+        <Stat label="Open incidents" value={stats?.openIncidents ?? (loading ? '…' : '—')} icon="alert" to="/operator/incidents" />
       </StatGrid>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', margin: '20px 0' }}>
-        <Card title="Onboarding Milestones & Next Steps" desc="Current operational setup checklist">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>1. Official Profile &amp; Domains</span>
-              <span className={`badge ${tenant?.name && tenant?.code ? 'g' : 'a'}`}>{tenant?.name && tenant?.code ? 'Configured' : 'Setup Required'}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>{`2. Organization & ${getOrgTerms(tenant?.entityType).campusLabel}`}</span>
-              <span className={`badge ${campuses.length ? 'g' : 'a'}`}>{campuses.length ? 'Configured' : 'Setup Required'}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>3. Workstation Hardware Enrollment</span>
-              <span className={`badge ${devices.length ? 'g' : 'a'}`}>{devices.length ? `${devices.length} Workstations` : 'Enroll USB/Kiosk'}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0' }}>
-              <span>4. Target Exam URL Assessment</span>
-              <span className={`badge ${exams.some((e) => e.targetUrl || e.examUrl || e.url) ? 'g' : 'a'}`}>
-                {exams.some((e) => e.targetUrl || e.examUrl || e.url) ? 'Configured' : 'Not Configured'}
-              </span>
-            </div>
-          </div>
+        <Card title="Backend onboarding state" desc="Current persisted onboarding checklist status">
+          {onboarding ? (
+            <KeyValue items={[
+              ['Status', onboarding.status || '—'],
+              ['Completed steps', onboarding.completedSteps ?? '—'],
+              ['Total steps', onboarding.totalSteps ?? '—'],
+              ['Updated', onboarding.updatedAt ? fmt(onboarding.updatedAt) : '—'],
+            ]} />
+          ) : (
+            <p className="muted">{loading ? 'Loading onboarding state…' : 'Onboarding state is unavailable.'}</p>
+          )}
         </Card>
 
         <Card title="Quick Institutional Links" desc="Direct access to operational workflows">
@@ -174,34 +182,62 @@ export function InstitutionProfilePage() {
 export function InstitutionOrganizationPage() {
   const { user } = useAuth();
   const { tenant } = useTenant();
-  const cachedCampuses = useCol('campuses');
-  const cachedDepartments = useCol('departments');
   const [liveCampuses, setLiveCampuses] = useState(null);
   const [liveDepartments, setLiveDepartments] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const { msg, setMsg, run, busy } = useFlash();
 
   const loadOrg = async () => {
-    if (!tenant?.id) return;
-    try {
-      const [cr, dr] = await Promise.allSettled([
-        Api.listCampuses(tenant.id),
-        Api.listDepartments(tenant.id),
-      ]);
-      if (cr.status === 'fulfilled') {
-        const cl = cr.value?.campuses || cr.value || [];
-        if (Array.isArray(cl)) setLiveCampuses(cl.map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })));
+    if (!tenant?.id) {
+      setLiveCampuses(null);
+      setLiveDepartments(null);
+      setLoadError('Select an institution to load its organization structure.');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLoadError('');
+    setLiveCampuses(null);
+    setLiveDepartments(null);
+    const [campusResult, departmentResult] = await Promise.allSettled([
+      Api.listCampuses(tenant.id),
+      Api.listDepartments(tenant.id),
+    ]);
+    const errors = [];
+    const readRows = (result, key, label) => {
+      if (result.status === 'rejected') {
+        errors.push(`${label}: ${result.reason?.message || 'request failed'}`);
+        return null;
       }
-      if (dr.status === 'fulfilled') {
-        const dl = dr.value?.departments || dr.value || [];
-        if (Array.isArray(dl)) setLiveDepartments(dl.map(d => ({ ...d, id: d.id || d.department_id, tenantId: d.tenantId || d.tenant_id })));
+      const rows = result.value?.[key] || result.value;
+      if (!Array.isArray(rows)) {
+        errors.push(`${label}: backend returned an unexpected response.`);
+        return null;
       }
-    } catch {}
+      return rows;
+    };
+    const campuses = readRows(campusResult, 'campuses', 'Campuses');
+    const departments = readRows(departmentResult, 'departments', 'Departments');
+    if (campuses) setLiveCampuses(campuses.map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })));
+    if (departments) setLiveDepartments(departments.map(d => ({ ...d, id: d.id || d.department_id, tenantId: d.tenantId || d.tenant_id })));
+    setLoadError(errors.join('; '));
+    setLoading(false);
   };
 
-  useEffect(() => { loadOrg(); }, [tenant?.id]);
+  useEffect(() => {
+    let active = true;
+    loadOrg().catch((error) => {
+      if (active) {
+        setLoadError(error.message || 'Unable to load organization structure.');
+        setLoading(false);
+      }
+    });
+    return () => { active = false; };
+  }, [tenant?.id]);
 
-  const campuses = liveCampuses || cachedCampuses;
-  const departments = liveDepartments || cachedDepartments;
+  const campuses = liveCampuses || [];
+  const departments = liveDepartments || [];
 
   const [newCampusModal, setNewCampusModal] = useState(false);
   const [newCampus, setNewCampus] = useState({ name: '', code: '', city: '', address: '', capacity: '' });
@@ -234,20 +270,25 @@ export function InstitutionOrganizationPage() {
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Organization</span></div>}
       actions={
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="btn" onClick={() => setNewDeptModal(true)}>
-            <Icon name="plus" size={14} /> New Department
-          </button>
-          <button className="btn primary" onClick={() => setNewCampusModal(true)}>
-            <Icon name="pin" size={14} /> Add Campus
-          </button>
+          {can(user.role, 'dept.manage') && (
+            <button className="btn" onClick={() => setNewDeptModal(true)}>
+              <Icon name="plus" size={14} /> New Department
+            </button>
+          )}
+          {can(user.role, 'campus.manage') && (
+            <button className="btn primary" onClick={() => setNewCampusModal(true)}>
+              <Icon name="pin" size={14} /> Add Campus
+            </button>
+          )}
         </div>
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Alert tone="danger">{loadError}</Alert>}
       <StatGrid cols={3}>
-        <Stat label={getOrgTerms(tenant?.entityType).campusLabel} value={campuses.length} icon="pin" sub="Physical Testing Sites" />
-        <Stat label={getOrgTerms(tenant?.entityType).departmentLabel} value={departments.length} icon="layers" sub="Organizational Divisions" />
-        <Stat label="Total Testing Seats" value={campuses.reduce((acc, c) => acc + (Number(c.capacity) || 0), 0)} icon="users" sub="Capacity" />
+        <Stat label={getOrgTerms(tenant?.entityType).campusLabel} value={liveCampuses ? campuses.length : loading ? '…' : '—'} icon="pin" sub="Physical Testing Sites" />
+        <Stat label={getOrgTerms(tenant?.entityType).departmentLabel} value={liveDepartments ? departments.length : loading ? '…' : '—'} icon="layers" sub="Organizational Divisions" />
+        <Stat label="Total Testing Seats" value={liveCampuses ? campuses.reduce((acc, c) => acc + (Number(c.capacity) || 0), 0) : loading ? '…' : '—'} icon="users" sub="Capacity" />
       </StatGrid>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginTop: '16px' }}>
@@ -316,10 +357,11 @@ export function InstitutionOrganizationPage() {
 export function InstitutionAccessPage() {
   const { user } = useAuth();
   const { tenant, tenantId } = useTenant();
-  const campuses = useCol('campuses');
   const { msg, setMsg, run, busy } = useFlash();
 
   const [admins, setAdmins] = useState([]);
+  const [campuses, setCampuses] = useState([]);
+  const [campusError, setCampusError] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [inviteModal, setInviteModal] = useState(false);
@@ -345,6 +387,21 @@ export function InstitutionAccessPage() {
   };
 
   useEffect(() => { loadAdmins(); }, [tenantId]);
+
+  useEffect(() => {
+    let active = true;
+    setCampuses([]);
+    setCampusError('');
+    if (!tenantId) return () => { active = false; };
+    Api.listCampuses(tenantId).then((response) => {
+      const rows = response?.campuses || response;
+      if (!Array.isArray(rows)) throw new Error('Backend returned an unexpected campus response.');
+      if (active) setCampuses(rows.map(c => ({ ...c, id: c.id || c.campus_id })));
+    }).catch((error) => {
+      if (active) setCampusError(error.message || 'Unable to load campuses from the backend.');
+    });
+    return () => { active = false; };
+  }, [tenantId]);
 
   const handleInvite = async () => {
     if (!inviteData.email || !inviteData.name) return;
@@ -391,6 +448,7 @@ export function InstitutionAccessPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
+      {campusError && <Flash msg={{ tone: 'danger', text: campusError }} onClose={() => setCampusError('')} />}
 
       <StatGrid cols={4}>
         <Stat label="Total Administrators" value={admins.length} icon="users" />
@@ -440,9 +498,11 @@ export function InstitutionAccessPage() {
               {
                 key: 'mfa',
                 label: '2FA / TOTP',
-                render: (u) => u.mfaEnabled
+                render: (u) => u.mfaEnabled === true
                   ? <span className="badge g">RFC 6238 Active</span>
-                  : <span className="badge amber">Not Enrolled</span>,
+                  : u.mfaEnabled === false
+                    ? <span className="badge amber">Not Enrolled</span>
+                    : '—',
               },
               { key: 'status', label: 'Status', badge: true },
               {
@@ -606,7 +666,7 @@ export function InstitutionAccessPage() {
 ===================================================================== */
 export function InstitutionSecurityPage() {
   const { user } = useAuth();
-  const { tenant } = useTenant();
+  const { tenant, loading: tenantLoading } = useTenant();
   const { msg, setMsg, run, busy } = useFlash();
 
   const [settings, setSettings] = useState(() => ({
@@ -616,6 +676,17 @@ export function InstitutionSecurityPage() {
     secondCameraAllowed: tenant?.security?.secondCameraAllowed ?? false,
     allowedOrigins: tenant?.security?.allowedOrigins || '',
   }));
+
+  useEffect(() => {
+    if (!tenant) return;
+    setSettings({
+      requireTpm: tenant.security?.requireTpm ?? false,
+      blockUsb: !(tenant.security?.allowUsbStorage ?? false),
+      kioskFullscreen: tenant.security?.kioskFullscreen ?? false,
+      secondCameraAllowed: tenant.security?.secondCameraAllowed ?? false,
+      allowedOrigins: tenant.security?.allowedOrigins || '',
+    });
+  }, [tenant]);
 
   const handleSave = async () => {
     await run(async () => {
@@ -636,12 +707,13 @@ export function InstitutionSecurityPage() {
       desc="Approved ExamOS release, TPM 2.0 hardware attestation parameters, and target Exam URL allowed origins."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Security Settings</span></div>}
       actions={
-        <button className="btn primary" onClick={handleSave} disabled={busy}>
+        <button className="btn primary" onClick={handleSave} disabled={busy || tenantLoading || !tenant}>
           <Icon name="check" size={14} /> Save Security Configuration
         </button>
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {!tenant && <Alert tone={tenantLoading ? 'info' : 'danger'}>{tenantLoading ? 'Loading institution settings…' : 'Institution settings are unavailable.'}</Alert>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
         <Card title="Hardware Attestation & Kiosk Bounds">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', margin: '8px 0' }}>
@@ -669,29 +741,70 @@ export function InstitutionSecurityPage() {
    PAGE 14 — Deployment Readiness (/institution/deployment)
 ===================================================================== */
 export function InstitutionDeploymentReadinessPage() {
-  const cachedDevices = useCol('devices');
-  const cachedCampuses = useCol('campuses');
   const { tenant } = useTenant();
   const [liveDevices, setLiveDevices] = useState(null);
   const [liveCampuses, setLiveCampuses] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (tenant?.id) {
-      Api.listCampuses(tenant.id).then(r => {
-        const cl = r?.campuses || r || [];
-        if (Array.isArray(cl)) setLiveCampuses(cl);
-      }).catch(() => {});
+    if (!tenant?.id) {
+      setLiveDevices(null);
+      setLiveCampuses(null);
+      setLoadError('Select an institution to load deployment readiness.');
+      setLoading(false);
+      return;
     }
-    Api.listRegisteredDevices().then(r => {
-      const dl = r?.devices || r || [];
-      if (Array.isArray(dl)) setLiveDevices(dl);
-    }).catch(() => {});
+
+    let active = true;
+    setLoading(true);
+    setLoadError('');
+    setLiveDevices(null);
+    setLiveCampuses(null);
+    Promise.allSettled([Api.listCampuses(tenant.id), Api.listRegisteredDevices()])
+      .then(([campusResult, deviceResult]) => {
+        if (!active) return;
+        const errors = [];
+        if (campusResult.status === 'fulfilled') {
+          const rows = campusResult.value?.campuses || campusResult.value || [];
+          if (Array.isArray(rows)) {
+            setLiveCampuses(rows.filter(c => (c.tenantId || c.tenant_id || c.institution_id) === tenant.id));
+          } else {
+            errors.push('Campus response had an unexpected format.');
+          }
+        } else {
+          errors.push(`Campuses: ${campusResult.reason?.message || 'request failed'}`);
+        }
+        if (deviceResult.status === 'fulfilled') {
+          const rows = deviceResult.value?.devices || deviceResult.value || [];
+          if (Array.isArray(rows)) {
+            setLiveDevices(rows
+              .filter(d => (d.tenantId || d.tenant_id || d.institution_id) === tenant.id)
+              .map(d => ({
+                ...d,
+                centerId: d.centerId || d.center_id,
+                trust: d.trust || d.trust_status,
+                lastSeen: d.lastSeen || d.last_seen,
+              })));
+          } else {
+            errors.push('Device response had an unexpected format.');
+          }
+        } else {
+          errors.push(`Devices: ${deviceResult.reason?.message || 'request failed'}`);
+        }
+        setLoadError(errors.join('; '));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
   }, [tenant?.id]);
 
-  const devices = liveDevices || cachedDevices;
-  const campuses = liveCampuses || cachedCampuses;
+  const devices = liveDevices || [];
+  const campuses = liveCampuses || [];
   const attested = devices.filter((d) => d.trust === 'attested' || d.trust_status === 'trusted' || d.tpm_enrolled);
-  const readiness = devices.length === 0 ? 'NOT ENROLLED' : (attested.length === devices.length ? 'READY' : 'PENDING');
+  const readiness = loading ? 'LOADING' : liveDevices === null ? 'UNKNOWN' :
+    (devices.length === 0 ? 'NOT ENROLLED' : (attested.length === devices.length ? 'READY' : 'PENDING'));
 
   return (
     <Page
@@ -699,10 +812,11 @@ export function InstitutionDeploymentReadinessPage() {
       desc="Registered testing workstations, TPM attestation status, and examination preflight diagnostics."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Deployment</span></div>}
     >
+      {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
-        <Stat label="Total Workstations" value={devices.length} icon="device" />
-        <Stat label="Hardware Attested" value={attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="TPM Validated" />
-        <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} Scoped`} value={campuses.length} icon="pin" />
+        <Stat label="Total Workstations" value={liveDevices === null ? '—' : devices.length} icon="device" />
+        <Stat label="Hardware Attested" value={liveDevices === null ? '—' : attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="TPM Validated" />
+        <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} Scoped`} value={liveCampuses === null ? '—' : campuses.length} icon="pin" />
         <Stat label="Readiness State" value={readiness} tone={readiness === 'READY' ? 'green' : 'amber'} icon="checklist" />
       </StatGrid>
 
@@ -716,7 +830,7 @@ export function InstitutionDeploymentReadinessPage() {
             { key: 'status', label: 'Status', badge: true },
             { key: 'lastSeen', label: 'Last Heartbeat', render: (d) => d.lastSeen ? ago(d.lastSeen) : '—' },
           ]}
-          empty={<Empty icon="device" title="No workstations enrolled yet">Enroll testing devices via ExamOS bootable USB.</Empty>}
+          empty={<Empty icon="device" title={loading ? 'Loading workstations…' : loadError ? 'Workstations unavailable' : 'No workstations enrolled yet'}>{loadError ? 'Resolve the backend request error before treating readiness as confirmed.' : 'Enroll testing devices via the approved device enrollment workflow.'}</Empty>}
         />
       </Card>
     </Page>

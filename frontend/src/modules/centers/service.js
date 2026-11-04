@@ -1,92 +1,47 @@
-import { all, get, put } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
-import { id, need, fail, log, assertScope, requireReason } from '../../core/services/common';
 import * as Api from '../../core/api/services';
 
 export async function listCenters(tenantId) {
-  return (await all('centers')).filter((c) => !tenantId || c.tenantId === tenantId);
+  const response = await Api.listCenters();
+  if (!Array.isArray(response?.centers)) {
+    throw new Error('The backend returned an invalid centers response.');
+  }
+  const centers = response.centers.map((center) => ({
+    ...center,
+    id: center.id || center.center_id,
+    tenantId: center.tenantId || center.tenant_id,
+    campusId: center.campusId || center.campus_id || '',
+    seatsPerLab: center.seatsPerLab ?? center.seats_per_lab,
+  }));
+  return tenantId ? centers.filter((center) => center.tenantId === tenantId) : centers;
 }
 
-export async function createCenter(a, { tenantId, campusId = '', code, name, city, labs, seatsPerLab }) {
-  need(a, 'center.manage'); assertScope(a, tenantId);
-  const t = await get('tenants', tenantId);
-  if (!t || t.status !== 'active') fail('The institution is not active.');
-  code = clean(code, 10).toUpperCase();
-  if (!/^[A-Z]{3}-\d{1,3}$/.test(code)) fail('Center code looks like BLR-87.');
-  const cs = (await all('centers')).filter((c) => c.tenantId === tenantId);
-  if (cs.some((c) => c.code === code)) fail('Center code is already used.');
-  if (cs.length >= t.maxCenters) fail(`Plan limit reached: ${t.maxCenters} centers.`);
-  if (campusId) { const cp = await get('campuses', campusId); if (!cp || cp.tenantId !== tenantId) fail('Pick a campus in this institution.'); }
-  labs = Number(labs); seatsPerLab = Number(seatsPerLab);
-  if (!(labs >= 1 && labs <= 12)) fail('Labs must be 1–12.');
-  if (!(seatsPerLab >= 8 && seatsPerLab <= 96)) fail('Seats per lab must be 8–96.');
-  if (labs * seatsPerLab > 416) fail('Capacity cannot exceed 416 seats per center.');
-  if (clean(name, 80).length < 3) fail('Enter a center name.');
+export async function createCenter({ tenantId, campusId = '', code, name, city, labs, seatsPerLab }) {
+  if (!tenantId) throw new Error('Select an institution before creating a center.');
+  const normalizedCode = clean(code, 10).toUpperCase();
+  const normalizedName = clean(name, 80);
+  const normalizedCity = clean(city, 40);
+  const labCount = Number(labs);
+  const seats = Number(seatsPerLab);
+  if (!/^[A-Z]{3}-\d{1,3}$/.test(normalizedCode)) throw new Error('Center code must look like BLR-87.');
+  if (normalizedName.length < 3) throw new Error('Enter a center name of at least 3 characters.');
+  if (!Number.isInteger(labCount) || labCount < 1 || labCount > 12) throw new Error('Labs must be 1–12.');
+  if (!Number.isInteger(seats) || seats < 8 || seats > 96) throw new Error('Seats per lab must be 8–96.');
+  if (labCount * seats > 416) throw new Error('Capacity cannot exceed 416 seats per center.');
 
-  let centerId;
-  try {
-    const res = await Api.createCampus({ tenantId, name: clean(name, 80), code, city: clean(city, 40), capacity: labs * seatsPerLab });
-    centerId = res?.campus_id || res?.id;
-  } catch (err) {
-    fail(err.message || 'Backend center creation failed.');
-  }
-
-  const centerObj = {
-    id: centerId || id('ctr'), tenantId, campusId, code, name: clean(name, 80),
-    city: clean(city, 40), labs, seatsPerLab, capacity: labs * seatsPerLab,
-    status: 'active', createdAt: Date.now(),
-  };
-  await put('centers', centerObj);
-  await log(a, 'CENTER_CREATED', code);
-  return `Center ${code} created with ${labs * seatsPerLab} seats.`;
+  const response = await Api.createCenter({
+    tenantId,
+    campusId,
+    code: normalizedCode,
+    name: normalizedName,
+    city: normalizedCity,
+    labs: labCount,
+    seatsPerLab: seats,
+  });
+  return response?.message || `Center ${normalizedCode} created.`;
 }
 
-export async function updateCenter(a, c, patch) {
-  need(a, 'center.manage'); assertScope(a, c.tenantId);
-  const next = { ...c };
-  if (patch.name !== undefined) next.name = clean(patch.name, 80);
-  if (patch.city !== undefined) next.city = clean(patch.city, 40);
-  if (patch.labs !== undefined || patch.seatsPerLab !== undefined) {
-    const labs = Number(patch.labs ?? c.labs), seats = Number(patch.seatsPerLab ?? c.seatsPerLab);
-    if (!(labs >= 1 && labs <= 12)) fail('Labs must be 1–12.');
-    if (!(seats >= 8 && seats <= 96)) fail('Seats per lab must be 8–96.');
-    if (labs * seats > 416) fail('Capacity cannot exceed 416 seats per center.');
-    next.labs = labs; next.seatsPerLab = seats; next.capacity = labs * seats;
-  }
-  if (patch.campusId !== undefined) next.campusId = patch.campusId || '';
-
-  try {
-    await Api.updateCampus(c.id, { name: next.name, city: next.city, capacity: next.capacity });
-  } catch (err) {
-    fail(err.message || 'Backend center update failed.');
-  }
-
-  await put('centers', next);
-  await log(a, 'CENTER_UPDATED', c.code);
-  return 'Center updated.';
-}
-
-export async function setCenterStatus(a, c, status, reason) {
-  need(a, 'center.manage'); assertScope(a, c.tenantId);
-  const r = requireReason(reason, 8);
-  if (status === 'inactive' && (await all('exams')).some((e) => e.centerIds.includes(c.id) && !['closed', 'cancelled'].includes(e.status)))
-    fail('An open exam uses this center. Close or cancel it first.');
-
-  try {
-    await Api.setCampusStatus(c.id, status, r);
-  } catch (err) {
-    fail(err.message || 'Backend center status update failed.');
-  }
-
-  await put('centers', { ...c, status, statusReason: r });
-  await log(a, 'CENTER_' + status.toUpperCase(), `${c.code}: ${r}`);
-  return `${c.code} is now ${status}.`;
-}
-
-export async function assignCenterCampus(a, c, campusId) {
-  need(a, 'center.manage'); assertScope(a, c.tenantId);
-  if (campusId) { const cp = await get('campuses', campusId); if (!cp || cp.tenantId !== c.tenantId) fail('Pick a campus in this institution.'); }
-  await put('centers', { ...c, campusId });
-  await log(a, 'CENTER_CAMPUS_ASSIGNED', `${c.code} -> ${campusId || 'none'}`);
-  return 'Center linked to campus.';
+export async function setCenterStatus(center, status, reason) {
+  const response = await Api.setCenterStatus(center.id, status, reason);
+  return response?.message || `${center.code} is now ${status}.`;
 }

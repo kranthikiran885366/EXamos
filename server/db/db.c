@@ -236,13 +236,13 @@ static const char *migration_sql =
 "  domains JSONB NOT NULL DEFAULT '[]'::jsonb,"
 "  contact_email VARCHAR(120),"
 "  contact_phone VARCHAR(30),"
-"  region VARCHAR(40) DEFAULT 'India · Mumbai',"
-"  timezone VARCHAR(40) DEFAULT 'Asia/Kolkata',"
-"  plan VARCHAR(40) DEFAULT 'pilot',"
+"  region VARCHAR(40),"
+"  timezone VARCHAR(40),"
+"  plan VARCHAR(40),"
 "  status VARCHAR(20) DEFAULT 'active',"
-"  max_centers INTEGER DEFAULT 5,"
-"  max_candidates INTEGER DEFAULT 500,"
-"  deployment_model VARCHAR(20) DEFAULT 'usb-boot',"
+"  max_centers INTEGER,"
+"  max_candidates INTEGER,"
+"  deployment_model VARCHAR(20),"
 "  branding JSONB NOT NULL DEFAULT '{}'::jsonb,"
 "  notification_prefs JSONB NOT NULL DEFAULT '{}'::jsonb,"
 "  exam_defaults JSONB NOT NULL DEFAULT '{}'::jsonb,"
@@ -271,7 +271,7 @@ static const char *migration_sql =
 "  tenant_id VARCHAR(64) NOT NULL,"
 "  name VARCHAR(80) NOT NULL,"
 "  code VARCHAR(12) NOT NULL,"
-"  type VARCHAR(20) DEFAULT 'academic',"
+"  type VARCHAR(20),"
 "  campus_id VARCHAR(64),"
 "  status VARCHAR(20) DEFAULT 'active',"
 "  created_at BIGINT NOT NULL,"
@@ -958,10 +958,10 @@ static const char *migration_sql =
 "  id VARCHAR(64) PRIMARY KEY,"
 "  legal_name VARCHAR(160) NOT NULL,"
 "  display_name VARCHAR(160) NOT NULL,"
-"  entity_type VARCHAR(40) NOT NULL DEFAULT 'university',"
+"  entity_type VARCHAR(40) NOT NULL,"
 "  registration_number VARCHAR(60) NOT NULL,"
-"  country VARCHAR(60) NOT NULL DEFAULT 'India',"
-"  state VARCHAR(60) NOT NULL DEFAULT 'Maharashtra',"
+"  country VARCHAR(60) NOT NULL,"
+"  state VARCHAR(60) NOT NULL,"
 "  address TEXT NOT NULL,"
 "  domain VARCHAR(120) NOT NULL,"
 "  rep_name VARCHAR(120) NOT NULL,"
@@ -972,12 +972,12 @@ static const char *migration_sql =
 "  coord_email VARCHAR(120),"
 "  tech_name VARCHAR(120),"
 "  tech_email VARCHAR(120),"
-"  campus_count INTEGER DEFAULT 1,"
-"  student_count INTEGER DEFAULT 500,"
-"  device_count INTEGER DEFAULT 100,"
-"  deployment_model VARCHAR(40) DEFAULT 'usb-boot',"
-"  hardware_profile VARCHAR(60) DEFAULT 'standard-uefi',"
-"  plan VARCHAR(40) DEFAULT 'pilot',"
+"  campus_count INTEGER,"
+"  student_count INTEGER,"
+"  device_count INTEGER,"
+"  deployment_model VARCHAR(40),"
+"  hardware_profile VARCHAR(60),"
+"  plan VARCHAR(40),"
 "  status VARCHAR(40) NOT NULL DEFAULT 'SUBMITTED',"
 "  review_notes TEXT,"
 "  reviewed_by VARCHAR(64),"
@@ -1013,18 +1013,18 @@ static const char *migration_sql =
 "  id VARCHAR(64) PRIMARY KEY,"
 "  institution_id VARCHAR(64) NOT NULL UNIQUE,"
 "  agreement_id VARCHAR(64),"
-"  plan VARCHAR(40) NOT NULL DEFAULT 'pilot',"
+"  plan VARCHAR(40) NOT NULL,"
 "  plan_version VARCHAR(20) NOT NULL DEFAULT '2026.1',"
 "  status VARCHAR(40) NOT NULL DEFAULT 'ACTIVE',"
 "  valid_from BIGINT NOT NULL,"
 "  valid_until BIGINT NOT NULL,"
-"  grace_period_days INTEGER DEFAULT 14,"
-"  max_campuses INTEGER DEFAULT 5,"
-"  max_devices INTEGER DEFAULT 250,"
-"  max_candidates INTEGER DEFAULT 2000,"
-"  max_exams INTEGER DEFAULT 50,"
-"  allowed_channels JSONB NOT NULL DEFAULT '[\"stable\",\"pilot\"]'::jsonb,"
-"  enabled_modules JSONB NOT NULL DEFAULT '[\"exams\",\"kiosk\",\"tpm\",\"firewall\"]'::jsonb,"
+"  grace_period_days INTEGER DEFAULT 0,"
+"  max_campuses INTEGER,"
+"  max_devices INTEGER,"
+"  max_candidates INTEGER,"
+"  max_exams INTEGER,"
+"  allowed_channels JSONB NOT NULL DEFAULT '[]'::jsonb,"
+"  enabled_modules JSONB NOT NULL DEFAULT '[]'::jsonb,"
 "  usage_current JSONB NOT NULL DEFAULT '{\"campuses\":0,\"devices\":0,\"candidates\":0,\"exams\":0}'::jsonb,"
 "  created_at BIGINT NOT NULL,"
 "  updated_at BIGINT NOT NULL,"
@@ -1036,9 +1036,9 @@ static const char *migration_sql =
 "  institution_id VARCHAR(64) NOT NULL,"
 "  campus_id VARCHAR(64),"
 "  release_id VARCHAR(64) NOT NULL,"
-"  channel VARCHAR(40) NOT NULL DEFAULT 'stable',"
-"  hardware_profile VARCHAR(60) NOT NULL DEFAULT 'standard-uefi',"
-"  security_profile VARCHAR(60) NOT NULL DEFAULT 'high-assurance',"
+"  channel VARCHAR(40) NOT NULL,"
+"  hardware_profile VARCHAR(60) NOT NULL,"
+"  security_profile VARCHAR(60) NOT NULL,"
 "  status VARCHAR(40) NOT NULL DEFAULT 'ACTIVE',"
 "  policy_hash TEXT,"
 "  devices_targeted INTEGER DEFAULT 0,"
@@ -1150,6 +1150,38 @@ static void db_ensure_database_extensions(PGconn *conn) {
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;");
+
+    /* 5d. Remove legacy fabricated defaults. A missing value must stay missing
+     *     instead of silently becoming "India", "pilot", "usb-boot", 500
+     *     candidates, 250 devices, etc. */
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN region DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN timezone DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN plan DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN max_centers DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN max_candidates DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN deployment_model DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE tenants ALTER COLUMN entity_type DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN entity_type DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN country DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN state DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN campus_count DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN student_count DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN device_count DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN deployment_model DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN hardware_profile DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ALTER COLUMN plan DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN plan DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN grace_period_days DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN max_campuses DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN max_devices DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN max_candidates DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN max_exams DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN allowed_channels DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_licenses ALTER COLUMN enabled_modules DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_os_deployments ALTER COLUMN channel DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_os_deployments ALTER COLUMN hardware_profile DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE institution_os_deployments ALTER COLUMN security_profile DROP DEFAULT;");
+    exec_sql_step(conn, "ALTER TABLE departments ALTER COLUMN type DROP DEFAULT;");
 
     /* 6. Login throttle table ensure. Existing lockouts are deliberately kept:
      *    clearing them on every restart would hand an attacker an unlimited

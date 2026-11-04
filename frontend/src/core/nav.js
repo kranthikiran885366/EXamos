@@ -67,6 +67,7 @@ export const ROUTE_DEFS = [
   // Institution
   D('/college/overview', 'Institution overview', 'inst.view', page(() => import('../modules/institutions/pages'), 'CollegeOverviewPage'), 'Institution', { icon: 'home' }),
   D('/college/campuses', 'Campuses', 'inst.view', page(() => import('../modules/institutions/pages'), 'CampusesPage'), 'Institution', { icon: 'pin' }),
+  D('/college/centers', 'Centers', 'inst.view', page(() => import('../modules/centers/CentersPage'), 'default'), 'Institution', { icon: 'building' }),
   D('/college/departments', 'Departments', 'inst.view', page(() => import('../modules/institutions/pages'), 'DepartmentsPage'), 'Institution', { icon: 'layers' }),
   D('/college/staff', 'Staff', 'staff.manage', page(() => import('../modules/institutions/pages'), 'StaffPage'), 'Institution', { icon: 'badge' }),
   D('/college/settings', 'Institution settings', 'settings.inst', page(() => import('../modules/institutions/pages'), 'CollegeSettingsPage'), 'Institution', { icon: 'settings' }),
@@ -260,7 +261,7 @@ export const LEGACY = {
   '/releases': '/admin/releases',
   '/audit': '/admin/audit',
   '/candidates': '/college/candidates',
-  '/centers': '/college/campuses',
+  '/centers': '/college/centers',
   '/policies': '/security/policies',
   '/reports/legacy': '/reports',
 };

@@ -68,6 +68,7 @@ export default function PublicInstitutionRegisterPage() {
     if (!(Number(f.studentCount) >= 1)) return setErr('Select the annual candidate volume.');
     if (!(Number(f.deviceCount) >= 1)) return setErr('Enter the workstation fleet size.');
     if (!f.termsAgreed) return setErr('You must agree to the ExamOS High-Assurance Enclave terms.');
+    if (!f.privacyAgreed) return setErr('You must agree to the privacy declaration.');
 
     setBusy(true);
     try {
@@ -79,14 +80,9 @@ export default function PublicInstitutionRegisterPage() {
       setReceipt({
         id: appId,
         name: f.legalName,
-        code: f.displayName || f.legalName.slice(0, 4).toUpperCase(),
         domain: f.domain,
         repName: f.repName,
         repEmail: f.repEmail,
-        createdAt: new Date().toISOString(),
-        status: 'SUBMITTED',
-        plan: f.plan,
-        deploymentModel: f.deploymentModel,
       });
     } catch (error) {
       setErr(error?.message || 'Failed to submit registration. Please verify connection to ExamOS core.');
@@ -97,7 +93,7 @@ export default function PublicInstitutionRegisterPage() {
 
   const handleTrack = async (e) => {
     e.preventDefault();
-    if (!trackRef.trim()) return setTrackErr('Please enter your Application Reference ID or Domain.');
+    if (!trackRef.trim()) return setTrackErr('Please enter your Application Reference Number.');
     setTrackLoading(true);
     setTrackErr('');
     setTrackResult(null);
@@ -111,20 +107,19 @@ export default function PublicInstitutionRegisterPage() {
       const found = res;
       const rawStatus = found.status.toUpperCase();
       const stageDescriptions = {
-        SUBMITTED: 'Enclave Enrollment Submitted — Awaiting Compliance Review',
-        UNDER_REVIEW: 'Charter & Academic Domain DNS TXT Verification',
-        VERIFICATION_PENDING: 'Signatory Authorization & Subnet Boundary Validation',
-        MORE_INFORMATION_REQUIRED: 'Applicant Action Required — Additional Evidence Requested',
-        APPROVED: 'Identity Certified — Ready for Dedicated Schema Provisioning',
-        PROVISIONED: 'Tenant Provisioned — Isolated Enclave & Cryptographic Roots Active',
-        REJECTED: 'Application Closed by Compliance Desk',
+        SUBMITTED: 'Submitted',
+        UNDER_REVIEW: 'Under review',
+        VERIFICATION_PENDING: 'Verification pending',
+        MORE_INFORMATION_REQUIRED: 'Additional information requested',
+        APPROVED: 'Approved',
+        PROVISIONED: 'Provisioned',
+        REJECTED: 'Rejected',
       };
       setTrackResult({
         id: found.id || q,
         legalName: found.legalName || found.displayName || found.institution_name || '',
         status: rawStatus,
         step: stageDescriptions[rawStatus] || '',
-        notes: found.reviewNotes || found.notes || '',
         domain: found.domain || found.official_domain || '',
         plan: (found.plan || '').toUpperCase(),
         updatedAt: found.reviewedAt
@@ -343,13 +338,13 @@ export default function PublicInstitutionRegisterPage() {
               Track Accreditation &amp; Onboarding Progress
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--mut, #756F79)', margin: '0 0 24px', lineHeight: 1.5 }}>
-              Enter your Application Reference Number (e.g. <code>app_179...</code>) or your official academic domain to check verification state.
+              Enter the Application Reference Number returned after submitting your application.
             </p>
 
             <form onSubmit={handleTrack} style={{ display: 'flex', gap: '10px', marginBottom: '24px' }}>
               <input
                 type="text"
-                placeholder="e.g. app_179... or registrar@university.edu.in"
+                placeholder="Application Reference Number"
                 value={trackRef}
                 onChange={(e) => setTrackRef(e.target.value)}
                 style={{
@@ -398,7 +393,6 @@ export default function PublicInstitutionRegisterPage() {
                     'Your application is in the compliance queue and will be reviewed by the ExamOS platform team.',
                     'Ensure your domain\'s DNS TXT records are accessible for verification.',
                     'Keep the authorized representative available for any clarification calls.',
-                    'Expected review time: 2–5 business days.',
                   ],
                 },
                 UNDER_REVIEW: {
@@ -409,7 +403,6 @@ export default function PublicInstitutionRegisterPage() {
                     'A platform reviewer is actively verifying your charter, domain, and signatory credentials.',
                     'Publish the DNS TXT verification record on your domain if not already done.',
                     'Have accreditation certificates (NAAC/NBA/UGC/AICTE) ready if requested.',
-                    'You will be notified of the decision via the email provided.',
                   ],
                 },
                 VERIFICATION_PENDING: {
@@ -417,10 +410,7 @@ export default function PublicInstitutionRegisterPage() {
                   title: 'Verification in Progress',
                   nextAction: 'Action required from your institution:',
                   nextItems: [
-                    'Add the DNS TXT record: _examosverify.[yourdomain] with the value provided by the reviewer.',
-                    'Confirm the DNS change has propagated (use dig or nslookup to verify).',
-                    'Ensure the authorized signatory has signed the provided authorization form.',
-                    'Contact support@examos.in if you have not received specific instructions.',
+                    'Check the application status for the latest information.',
                   ],
                 },
                 MORE_INFORMATION_REQUIRED: {
@@ -440,9 +430,7 @@ export default function PublicInstitutionRegisterPage() {
                   nextAction: 'What happens next:',
                   nextItems: [
                     'Your institution has been approved! The platform team is setting up your isolated tenant environment.',
-                    'A dedicated database schema, cryptographic keys, and license entitlements are being created.',
-                    'You will receive an invitation email to the representative address to set up the admin account.',
-                    'Once you receive the invitation, create your account and set up MFA (Google Authenticator).',
+                    'Check the application status for the latest provisioning information.',
                   ],
                 },
                 PROVISIONED: {
@@ -451,9 +439,7 @@ export default function PublicInstitutionRegisterPage() {
                   nextAction: 'Your institution is live! Next steps:',
                   nextItems: [
                     'Your institution\'s secure testing environment is fully provisioned and active.',
-                    'Check your representative email for the admin account invitation link.',
-                    'Set up your ExamOS administrator account and configure MFA.',
-                    'Once logged in, configure campuses, departments, and exam schedules.',
+                    'Contact your platform administrator for account setup and next steps.',
                   ],
                 },
                 REJECTED: {
@@ -461,14 +447,16 @@ export default function PublicInstitutionRegisterPage() {
                   title: 'Application Rejected',
                   nextAction: 'What you can do:',
                   nextItems: [
-                    'Review the rejection reason in the compliance notes below.',
-                    'You may reapply after addressing the issues indicated.',
-                    'Common reasons: unverifiable registration number, invalid domain, or missing signatory authorization.',
-                    'Contact support@examos.in if you believe this decision was made in error.',
+                    'Contact your platform administrator if you need more information.',
                   ],
                 },
               };
-              const meta = statusMeta[trackResult.status] || statusMeta.SUBMITTED;
+              const meta = statusMeta[trackResult.status] || {
+                icon: 'ℹ️', color: '#475569', bg: '#F8FAFC', border: '#CBD5E1',
+                title: 'Application status',
+                nextAction: 'Status information:',
+                nextItems: ['The backend returned a status not recognized by this page.'],
+              };
               return (
                 <div>
                   {/* Status Header Card */}
@@ -493,11 +481,11 @@ export default function PublicInstitutionRegisterPage() {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '13.5px' }}>
                       <div>
                         <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Institution Legal Name</div>
-                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.legalName || 'Academic Institution'}</div>
+                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.legalName || '—'}</div>
                       </div>
                       <div>
                         <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Current Compliance Stage</div>
-                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.step || 'Charter & DNS Verification'}</div>
+                        <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>{trackResult.step || '—'}</div>
                       </div>
                       {trackResult.plan && (
                         <div>
@@ -509,14 +497,6 @@ export default function PublicInstitutionRegisterPage() {
                         <div>
                           <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Last Updated</div>
                           <div style={{ fontWeight: 700, marginTop: '3px' }}>{trackResult.updatedAt}</div>
-                        </div>
-                      )}
-                      {trackResult.notes && (
-                        <div style={{ gridColumn: 'span 2' }}>
-                          <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>Reviewer &amp; Compliance Notes</div>
-                          <div style={{ color: 'var(--ink2, #48394F)', lineHeight: 1.55, background: '#FFFFFF', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--line, #DCD5D2)', fontSize: '13px' }}>
-                            {trackResult.notes}
-                          </div>
                         </div>
                       )}
                     </div>
@@ -578,7 +558,7 @@ export default function PublicInstitutionRegisterPage() {
               Application Successfully Registered
             </h2>
             <p style={{ color: 'var(--mut, #756F79)', fontSize: '14.5px', margin: '0 auto 28px', maxWidth: '540px', lineHeight: 1.6 }}>
-              Your institutional accreditation application has been committed to the review ledger. Please save your application reference number to track progress.
+              Your application was submitted. Save the reference number to check the status later.
             </p>
 
             <div
@@ -651,10 +631,7 @@ export default function PublicInstitutionRegisterPage() {
               </div>
               {[
                 { step: '1', status: 'Now', label: 'Application Submitted', desc: 'Your application is in the compliance queue.', done: true },
-                { step: '2', status: '2–5 days', label: 'Identity & Domain Verification', desc: 'Platform team verifies charter, DNS TXT record, and signatory.', done: false },
-                { step: '3', status: 'After verify', label: 'Platform Approval', desc: 'Admin approves the application and provisions your tenant.', done: false },
-                { step: '4', status: 'Upon approval', label: 'Admin Invitation Email', desc: `Invitation link sent to ${receipt?.repEmail || 'your representative email'}.`, done: false },
-                { step: '5', status: 'After invite', label: 'Go Live!', desc: 'Configure campuses, schedule exams, and start secure examinations.', done: false },
+                { step: '2', status: 'Pending', label: 'Application Review', desc: 'The application status will update when the platform team records a decision.', done: false },
               ].map((item) => (
                 <div key={item.step} style={{ display: 'flex', gap: '12px', marginBottom: '10px', alignItems: 'flex-start' }}>
                   <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: item.done ? 'var(--copper, #B54F34)' : '#E5E0F0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 800, color: item.done ? '#FFF' : '#8B7FA0', flexShrink: 0 }}>

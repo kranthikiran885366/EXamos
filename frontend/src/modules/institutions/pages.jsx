@@ -2,8 +2,7 @@ import { getOrgTerms, isCorporateEntity } from './service';
 import { useMemo, useState, useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useTenant, useCol } from '../../core/db/tenant';
-import { put } from '../../core/db/db';
+import { useTenant } from '../../core/db/tenant';
 import { can } from '../../core/security/rbac';
 import * as Api from '../../core/api/services';
 import { Page, Card, Stat, StatGrid, Badge, DataTable, Modal, Field, Input, Select, Textarea, Checkbox, ActionDialog, Flash, useFlash, KeyValue, Tabs, Empty, Icon, CopyField } from '../../core/ui/kit';
@@ -47,8 +46,8 @@ const SECURITY_PROFILES = [
 function InstitutionForm({ value = {}, onSubmit, onClose, busy }) {
   const [f, setF] = useState({
     name: '', code: '', contactEmail: '', contactPhone: '',
-    region: 'India · Mumbai', timezone: 'Asia/Kolkata', plan: 'pilot',
-    maxCenters: 5, maxCandidates: 500, deploymentModel: 'usb-boot',
+    region: '', timezone: '', plan: '',
+    maxCenters: '', maxCandidates: '', deploymentModel: '',
     ...value,
     domains: Array.isArray(value.domains) ? value.domains.join(' ') : value.domains || ''
   });
@@ -61,11 +60,11 @@ function InstitutionForm({ value = {}, onSubmit, onClose, busy }) {
       <Field label="Contact email"><Input type="email" value={f.contactEmail} onChange={set('contactEmail')} maxLength={120} /></Field>
       <Field label="Contact phone"><Input value={f.contactPhone} onChange={set('contactPhone')} maxLength={30} /></Field>
       <Field label="Region"><Input value={f.region} onChange={set('region')} maxLength={40} /></Field>
-      <Field label="Timezone"><Select value={f.timezone} onChange={set('timezone')} options={TIMEZONES} placeholder={false} /></Field>
-      <Field label="Plan"><Select value={f.plan} onChange={set('plan')} options={PLAN_OPTIONS} placeholder={false} /></Field>
+      <Field label="Timezone"><Select value={f.timezone} onChange={set('timezone')} options={TIMEZONES} placeholder="Select timezone" /></Field>
+      <Field label="Plan"><Select value={f.plan} onChange={set('plan')} options={PLAN_OPTIONS} placeholder="Select plan" /></Field>
       <Field label="Max centres"><Input type="number" min="1" max="200" value={f.maxCenters} onChange={set('maxCenters')} /></Field>
       <Field label="Max candidates"><Input type="number" min="10" max="100000" value={f.maxCandidates} onChange={set('maxCandidates')} /></Field>
-      <Field label="Deployment model" className="span2"><Select value={f.deploymentModel} onChange={set('deploymentModel')} options={DEPLOYMENT_MODELS} placeholder={false} /></Field>
+      <Field label="Deployment model" className="span2"><Select value={f.deploymentModel} onChange={set('deploymentModel')} options={DEPLOYMENT_MODELS} placeholder="Select deployment model" /></Field>
       <div className="form-actions span2">
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={busy}>Save institution</button>
@@ -79,16 +78,16 @@ export function InstitutionsPage() {
   const nav = useNavigate();
   const [tenants, setTenants] = useState([]);
   const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const { msg, run, busy, setMsg } = useFlash();
   const [create, setCreate] = useState(false);
   const [action, setAction] = useState(null);
   const canCreate = can(user.role, 'tenant.manage');
 
-  // The backend is the source of truth. The local cache is refreshed only
-  // after a successful API response, never used as a substitute for it.
   useEffect(() => {
     let cancelled = false;
     const fetchBackend = async () => {
+      setLoading(true);
       try {
         const res = await Api.listInstitutions();
         const backendList = res?.institutions || res || [];
@@ -97,26 +96,25 @@ export function InstitutionsPage() {
           id: t.id || t.institution_id,
           name: t.name,
           code: t.code,
-          status: t.status || 'active',
-          plan: t.plan || '',
+          /* Normalize status — backend may return 'active', 'ACTIVE', 'provisioned', etc. */
+          status: (t.status || '').toLowerCase().replace('provisioned', 'active').replace('verified', 'active') || 'active',
+          plan: (t.plan || '').toLowerCase() || 'pilot',
           region: t.region || '', timezone: t.timezone || '',
-          maxCenters: t.maxCenters ?? 0, maxCandidates: t.maxCandidates ?? 0,
+          maxCenters: t.maxCenters ?? null, maxCandidates: t.maxCandidates ?? null,
           deploymentModel: t.deploymentModel || '',
           contactEmail: t.contactEmail || '', contactPhone: t.contactPhone || '',
           domains: t.domains || [], examDefaults: t.examDefaults || null,
           security: t.security || null, notificationPrefs: t.notificationPrefs || null,
           createdAt: t.createdAt || null,
-        })).filter((t) => t.id);
+        })).filter((t) => t.id && t.name);
         if (!cancelled) {
           setTenants(mapped);
           setLoadError('');
         }
-        for (const t of mapped) {
-          await put('tenants', t).catch(() => {});
-          await put('institutions', t).catch(() => {});
-        }
       } catch (err) {
         if (!cancelled) setLoadError(err.message || 'Unable to load institutions from the backend.');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
     fetchBackend();
@@ -125,14 +123,21 @@ export function InstitutionsPage() {
 
   // Live per-institution stats fetched from backend
   const [statsMap, setStatsMap] = useState({});
+  const [statsErrors, setStatsErrors] = useState({});
   useEffect(() => {
-    if (!tenants.length) return;
-    tenants.forEach((t) => {
-      institutionStats(t.id).then((s) => {
-        if (s) setStatsMap((prev) => ({ ...prev, [t.id]: s }));
-      }).catch(() => {});
-    });
-  }, [tenants.length]);
+    let active = true;
+    setStatsMap({});
+    setStatsErrors({});
+    Promise.all(tenants.map(async (t) => {
+      try {
+        const stats = await institutionStats(t.id);
+        if (active) setStatsMap((prev) => ({ ...prev, [t.id]: stats }));
+      } catch (error) {
+        if (active) setStatsErrors((prev) => ({ ...prev, [t.id]: error.message || 'Statistics unavailable.' }));
+      }
+    }));
+    return () => { active = false; };
+  }, [tenants]);
 
   return (
     <Page
@@ -152,12 +157,26 @@ export function InstitutionsPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Alert tone="danger" title="Failed to load institutions">{loadError}</Alert>}
       <StatGrid cols={4}>
-        <Stat label="Institutions" value={tenants.length} icon="building" />
-        <Stat label="Active" value={tenants.filter((t) => t.status === 'active').length} tone="green" icon="check" />
-        <Stat label="Suspended" value={tenants.filter((t) => t.status === 'suspended').length} tone="amber" icon="warn" />
-        <Stat label="Accounts" value={Object.values(statsMap).reduce((s, x) => s + (x.users || 0), 0)} tone="violet" icon="users" />
+        <Stat label="Institutions" value={loading ? '…' : tenants.length} icon="building" />
+        <Stat label="Active" value={loading ? '…' : tenants.filter((t) => t.status === 'active').length} tone="green" icon="check" />
+        <Stat label="Suspended" value={loading ? '…' : tenants.filter((t) => t.status === 'suspended').length} tone="amber" icon="warn" />
+        <Stat
+          label="Accounts"
+          value={loading ? '…' : Object.keys(statsMap).length === tenants.length
+            ? Object.values(statsMap).reduce((s, x) => s + x.users, 0)
+            : '—'}
+          tone="violet"
+          icon="users"
+        />
       </StatGrid>
+      {Object.keys(statsErrors).length > 0 && (
+        <Flash
+          msg={{ tone: 'warning', text: `Live statistics are unavailable for ${Object.keys(statsErrors).length} institution(s).` }}
+          onClose={() => setStatsErrors({})}
+        />
+      )}
 
       <DataTable
         rows={tenants}
@@ -190,7 +209,7 @@ export function InstitutionsPage() {
         ]}
         actions={(t) => [
           { label: 'Manage', onClick: () => nav(`/admin/institutions/${t.id}`) },
-          ...(canCreate ? [{
+          ...(canCreate && ['active', 'suspended'].includes(t.status) ? [{
             label: t.status === 'active' ? 'Suspend' : 'Activate',
             danger: t.status === 'active',
             onClick: () => setAction({ t, status: t.status === 'active' ? 'suspended' : 'active' })
@@ -254,14 +273,6 @@ export function InstitutionDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
-  const campuses = useCol('campuses', false);
-  const departments = useCol('departments', false);
-  const centers = useCol('centers', false);
-  const users = useCol('users', false);
-  const exams = useCol('exams', false);
-  const devices = useCol('devices', false);
-  const candidates = useCol('candidates', false);
-  const incidents = useCol('incidents', false);
   const { msg, run, busy, setMsg } = useFlash();
 
   const [tab, setTab] = useState('onboarding');
@@ -269,11 +280,10 @@ export function InstitutionDetailPage() {
   const [signModal, setSignModal] = useState(null);
   const [draftModal, setDraftModal] = useState(false);
   const [deployModal, setDeployModal] = useState(false);
+  const [onboardingAction, setOnboardingAction] = useState(null);
   const [entitlementCheckResult, setEntitlementCheckResult] = useState(null);
 
-  // Backend is the source of truth for the institution record and all of its
-  // lifecycle sub-resources. Local collections are only a cache populated by
-  // a successful sync; they never stand in for a failed backend call.
+  // The backend is the source of truth for institution records and metrics.
   const [tenant, setTenant] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -283,6 +293,9 @@ export function InstitutionDetailPage() {
   const [onboarding, setOnboarding] = useState(null);
   const [liveStats, setLiveStats] = useState(null);
   const [liveCampuses, setLiveCampuses] = useState([]);
+  const [liveCenters, setLiveCenters] = useState([]);
+  const [liveDevices, setLiveDevices] = useState([]);
+  const [subErrors, setSubErrors] = useState([]);
   const { msg: flashMsg, setMsg: setFlashMsg } = useFlash();
 
   const flash = (tone, text) => setFlashMsg({ tone, text });
@@ -293,6 +306,15 @@ export function InstitutionDetailPage() {
     if (!id) return;
     setLoading(true);
     setLoadError('');
+    setSubErrors([]);
+    setAgreements([]);
+    setLicense(null);
+    setDeployments([]);
+    setOnboarding(null);
+    setLiveStats(null);
+    setLiveCampuses([]);
+    setLiveCenters([]);
+    setLiveDevices([]);
     try {
       const inst = await Api.getInstitution(id);
       if (!inst || !(inst.id || inst.institution_id)) {
@@ -300,23 +322,56 @@ export function InstitutionDetailPage() {
       }
       const mapped = mapInstitution(inst);
       setTenant(mapped);
-      await put('tenants', mapped).catch(() => {});
 
-      const [agRes, licRes, depRes, onbRes, statsRes, campRes] = await Promise.all([
-        fetchInstitutionAgreements(id).catch(() => []),
-        fetchInstitutionLicense(id).catch(() => null),
-        fetchInstitutionDeployments(id).catch(() => []),
-        fetchInstitutionOnboarding(id).catch(() => null),
-        institutionStats(id).catch(() => null),
-        Api.listCampuses(id).catch(() => []),
+      const results = await Promise.allSettled([
+        fetchInstitutionAgreements(id),
+        fetchInstitutionLicense(id),
+        fetchInstitutionDeployments(id),
+        fetchInstitutionOnboarding(id),
+        institutionStats(id),
+        Api.listCampuses(id),
+        Api.listCenters(id),
+        Api.listRegisteredDevices(),
       ]);
-      setAgreements(Array.isArray(agRes) ? agRes : []);
-      setLicense(licRes || null);
-      setDeployments(Array.isArray(depRes) ? depRes : []);
-      setOnboarding(onbRes || null);
-      setLiveStats(statsRes || null);
-      const campList = campRes?.campuses || campRes || [];
-      if (Array.isArray(campList)) setLiveCampuses(campList.map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })));
+      const [agRes, licRes, depRes, onbRes, statsRes, campRes, centerRes, deviceRes] = results;
+      const errors = [];
+      const take = (r, label) => {
+        if (r.status === 'fulfilled') return r.value;
+        errors.push(`${label}: ${r.reason?.message || 'request failed'}`);
+        return null;
+      };
+      const ag = take(agRes, 'Agreements');
+      const lic = take(licRes, 'License');
+      const dep = take(depRes, 'Deployments');
+      const onb = take(onbRes, 'Onboarding');
+      const st = take(statsRes, 'Statistics');
+      const cp = take(campRes, 'Campuses');
+      const ct = take(centerRes, 'Centres');
+      const dv = take(deviceRes, 'Devices');
+      setAgreements(Array.isArray(ag) ? ag : []);
+      setLicense(lic || null);
+      setDeployments(Array.isArray(dep) ? dep : []);
+      setOnboarding(onb || null);
+      setLiveStats(st || null);
+      const campList = cp?.campuses || cp || [];
+      if (Array.isArray(campList)) setLiveCampuses(campList
+        .filter(c => (c.tenantId || c.tenant_id || c.institution_id) === id)
+        .map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id || c.institution_id })));
+      const centerList = ct?.centers || ct || [];
+      if (Array.isArray(centerList)) setLiveCenters(centerList
+        .filter(c => (c.tenantId || c.tenant_id || c.institution_id) === id)
+        .map(c => ({ ...c, id: c.id || c.center_id, tenantId: c.tenantId || c.tenant_id || c.institution_id })));
+      const deviceList = dv?.devices || dv || [];
+      if (Array.isArray(deviceList)) {
+        setLiveDevices(deviceList
+          .filter(d => (d.tenantId || d.tenant_id || d.institution_id) === id)
+          .map(d => ({
+            ...d,
+            tenantId: d.tenantId || d.tenant_id || d.institution_id,
+            centerId: d.centerId || d.center_id,
+          })));
+      }
+      setSubErrors(errors);
     } catch (e) {
       setLoadError(e.message || 'Unable to load institution from the backend.');
     } finally {
@@ -332,14 +387,14 @@ export function InstitutionDetailPage() {
   }, [id]);
 
   const stats = useMemo(() => ({
-    campuses:    liveStats?.campuses    ?? 0,
-    departments: liveStats?.departments ?? 0,
-    centers:     liveStats?.centers     ?? 0,
-    users:       liveStats?.users       ?? 0,
-    devices:     liveStats?.devices     ?? 0,
-    exams:       liveStats?.exams       ?? 0,
-    candidates:  liveStats?.candidates  ?? 0,
-    incidents:   liveStats?.openIncidents ?? 0,
+    campuses:    liveStats?.campuses    ?? '—',
+    departments: liveStats?.departments ?? '—',
+    centers:     liveStats?.centers     ?? '—',
+    users:       liveStats?.users       ?? '—',
+    devices:     liveStats?.devices     ?? '—',
+    exams:       liveStats?.exams       ?? '—',
+    candidates:  liveStats?.candidates  ?? '—',
+    incidents:   liveStats?.openIncidents ?? '—',
   }), [liveStats]);
 
   if (loading) {
@@ -391,12 +446,18 @@ export function InstitutionDetailPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {subErrors.length > 0 && (
+        <Flash
+          msg={{ tone: 'danger', text: `Some institution data could not be loaded from the backend: ${subErrors.join('; ')}` }}
+          onClose={() => setSubErrors([])}
+        />
+      )}
       <StatGrid cols={4}>
         <Stat label="Campuses" value={stats.campuses} icon="pin" />
         <Stat label="Centres" value={stats.centers} icon="building" />
         <Stat label="Devices" value={stats.devices} icon="device" />
         <Stat label="Accounts" value={stats.users} icon="users" />
-        <Stat label="Live / Total Exams" value={`${exams.filter((e) => e.tenantId === id && e.status === 'live').length} / ${stats.exams}`} icon="exam" />
+        <Stat label="Live / Total Exams" value={`${liveStats?.liveExams ?? '—'} / ${stats.exams}`} icon="exam" />
         <Stat label="Candidates" value={stats.candidates} icon="candidate" />
         <Stat label="License Status" value={license?.status || '—'} tone={license?.status === 'ACTIVE' ? 'green' : 'amber'} icon="shield" />
         <Stat label="Open Incidents" value={stats.incidents} tone={stats.incidents ? 'amber' : 'green'} icon="alert" />
@@ -407,14 +468,14 @@ export function InstitutionDetailPage() {
       {/* 1. Onboarding Lifecycle Tab */}
       {tab === 'onboarding' && (
         <div className="two">
-          <Card title="Institutional Onboarding State Machine" desc="Step-by-step verification, agreements, and live deployment gate.">
+          <Card title="Platform onboarding attestations" desc="Steps are operator-attested records, not automatic evidence of operational readiness.">
             <div style={{ marginBottom: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <b>Lifecycle Stage: <Badge value={onboarding?.status || '—'} tone={onboarding?.status ? 'green' : 'amber'} /></b>
-                <span><b>{onboarding?.completedSteps ?? 0}</b> of 8 steps completed</span>
+                <span><b>{onboarding?.completedSteps ?? '—'}</b> of {onboarding?.totalSteps ?? '—'} steps completed</span>
               </div>
               <div style={{ height: '8px', background: 'var(--border, #e2e8f0)', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: `${((onboarding?.completedSteps ?? 0) / 8) * 100}%`, height: '100%', background: 'var(--primary, #2f5bea)' }} />
+                <div style={{ width: `${onboarding?.totalSteps ? Math.min(100, (onboarding.completedSteps / onboarding.totalSteps) * 100) : 0}%`, height: '100%', background: 'var(--primary, #2f5bea)' }} />
               </div>
             </div>
 
@@ -437,24 +498,20 @@ export function InstitutionDetailPage() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Icon name={isDone ? 'check' : 'circle'} size={16} />
                         <b>{step.title}</b>
-                        {isDone ? <Badge value="Completed" tone="green" /> : <Badge value="Pending" tone="amber" />}
+                        {isDone ? <Badge value="Attested" tone="green" /> : <Badge value="Not attested" tone="amber" />}
                       </div>
                       <small className="muted" style={{ display: 'block', marginLeft: '24px', marginTop: '4px' }}>
                         {step.desc}
-                        {stepMeta?.digest && <><br /><b>Digest:</b> <code>{stepMeta.digest.slice(0, 16)}...</code></>}
+                        {stepMeta?.notes && <><br /><b>Operator notes:</b> {stepMeta.notes}</>}
                       </small>
                     </div>
-                    {can(user.role, 'tenant.manage') && (
+                    {user.role === 'superadmin' && (
                       <button
                         className="btn small"
                         disabled={busy}
-                        onClick={() => run(async () => {
-                          await updateOnboardingStep(user, id, step.k, !isDone, isDone ? 'Marked pending' : 'Manual verification');
-                          await loadDetails();
-                          return `Step ${step.title} updated.`;
-                        })}
+                        onClick={() => setOnboardingAction({ step, completed: !isDone })}
                       >
-                        {isDone ? 'Mark Pending' : 'Mark Complete'}
+                        {isDone ? 'Revoke attestation' : 'Record attestation'}
                       </button>
                     )}
                   </li>
@@ -467,9 +524,9 @@ export function InstitutionDetailPage() {
             <Card title="Tenant Isolation & Trust Posture" desc="Cryptographic isolation properties for this institutional boundary.">
               <KeyValue items={[
                 ['Tenant Identifier', id],
-                ['Database Scope', 'Strict tenant_id foreign-key isolation'],
-                ['Tamper-Evident Ledger', 'Intact & cryptographically chained'],
-                ['MFA Policy', 'Enforced for all institution administrators'],
+                ['Database Scope', 'Institution-scoped backend records'],
+                ['Tamper-Evident Ledger', 'See the institution audit page for current status'],
+                ['MFA Policy', onboarding?.mfaEnforced ? 'Enforced' : 'Not confirmed'],
                 ['Assigned Release', deployments[0]?.releaseId || '—'],
                 ['Release Channel', deployments[0]?.channel?.toUpperCase() || '—'],
                 ['Hardware Profile', deployments[0]?.hardwareProfile || '—'],
@@ -719,13 +776,13 @@ export function InstitutionDetailPage() {
 
       {tab === 'campuses' && (
         <DataTable
-          rows={liveCampuses.length > 0 ? liveCampuses : campuses.filter((c) => c.tenantId === id)}
+          rows={liveCampuses}
           search={['name', 'code', 'city']}
           columns={[
             { key: 'name', label: 'Campus', render: (c) => <><b>{c.name}</b><br /><small className="muted">{c.code}</small></> },
             { key: 'city', label: 'City' },
             { key: 'capacity', label: 'Capacity' },
-            { key: 'centers', label: 'Centres', render: (c) => centers.filter((x) => x.campusId === c.id).length },
+            { key: 'centers', label: 'Centres', render: (c) => liveCenters.filter((x) => (x.campusId || x.campus_id) === c.id).length },
             { key: 'status', label: 'Status', badge: true }
           ]}
           actions={(c) => [{ label: 'Open campuses', onClick: () => nav(`/admin/institutions/${id}?tab=campuses`) }]}
@@ -734,14 +791,14 @@ export function InstitutionDetailPage() {
 
       {tab === 'centres' && (
         <DataTable
-          rows={centers.filter((c) => c.tenantId === id)}
+          rows={liveCenters}
           search={['name', 'code', 'city']}
           columns={[
             { key: 'code', label: 'Code' },
             { key: 'name', label: 'Centre' },
             { key: 'city', label: 'City' },
             { key: 'capacity', label: 'Seats' },
-            { key: 'devices', label: 'Devices', render: (c) => devices.filter((d) => d.centerId === c.id).length },
+            { key: 'devices', label: 'Devices', render: (c) => liveDevices.filter((d) => d.centerId === c.id).length },
             { key: 'status', label: 'Status', badge: true }
           ]}
         />
@@ -774,6 +831,40 @@ export function InstitutionDetailPage() {
           />
         </Modal>
       )}
+      {onboardingAction && (
+        <Modal
+          title={`${onboardingAction.completed ? 'Attest' : 'Revoke attestation'}: ${onboardingAction.step.title}`}
+          desc="Record the evidence checked and the basis for this platform decision. This note is stored with the backend checklist event."
+          onClose={() => setOnboardingAction(null)}
+          footer={(
+            <>
+              <button className="btn" onClick={() => setOnboardingAction(null)}>Cancel</button>
+              <button className="btn primary" form="onboarding-attestation-form" disabled={busy}>
+                {onboardingAction.completed ? 'Save attestation' : 'Save revocation'}
+              </button>
+            </>
+          )}
+        >
+          <form
+            id="onboarding-attestation-form"
+            className="formgrid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const notes = event.currentTarget.elements.notes.value;
+              run(async () => {
+                await updateOnboardingStep(user, id, onboardingAction.step.k, onboardingAction.completed, notes);
+                setOnboardingAction(null);
+                await loadDetails();
+                return 'Onboarding attestation updated on the backend.';
+              });
+            }}
+          >
+            <Field label="Evidence checked / reason" required className="span2">
+              <Textarea name="notes" rows={4} minLength={8} maxLength={240} required placeholder="Describe the evidence reviewed or why the attestation is being revoked." />
+            </Field>
+          </form>
+        </Modal>
+      )}
     </Page>
   );
 }
@@ -784,16 +875,21 @@ export function InstitutionApplicationsPage() {
   const { msg, run, busy, setMsg } = useFlash();
 
   const [apps, setApps] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [reviewModal, setReviewModal] = useState(null);
   const [loadError, setLoadError] = useState('');
 
   const reloadApps = async () => {
+    setLoading(true);
     try {
       const list = await fetchInstitutionApplications();
-      setApps(Array.isArray(list) ? list : []);
+      setApps(list);
       setLoadError('');
     } catch (e) {
+      setApps([]);
       setLoadError(e.message || 'Unable to load institution applications from the backend.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -816,10 +912,10 @@ export function InstitutionApplicationsPage() {
       <Flash msg={msg} onClose={() => setMsg(null)} />
       {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
-        <Stat label="Total Applications" value={apps.length} icon="building" />
-        <Stat label="Submitted" value={apps.filter((a) => a.status === 'SUBMITTED').length} tone="blue" icon="inbox" />
-        <Stat label="Under Review" value={apps.filter((a) => a.status === 'UNDER_REVIEW' || a.status === 'VERIFICATION_PENDING').length} tone="amber" icon="pulse" />
-        <Stat label="Approved / Provisioned" value={apps.filter((a) => a.status === 'APPROVED' || a.status === 'PROVISIONED').length} tone="green" icon="check" />
+        <Stat label="Total Applications" value={loading ? '…' : loadError ? '—' : apps.length} icon="building" />
+        <Stat label="Submitted" value={loading ? '…' : loadError ? '—' : apps.filter((a) => a.status === 'SUBMITTED').length} tone="blue" icon="inbox" />
+        <Stat label="Under Review" value={loading ? '…' : loadError ? '—' : apps.filter((a) => a.status === 'UNDER_REVIEW' || a.status === 'VERIFICATION_PENDING').length} tone="amber" icon="pulse" />
+        <Stat label="Approved / Provisioned" value={loading ? '…' : loadError ? '—' : apps.filter((a) => a.status === 'APPROVED' || a.status === 'PROVISIONED').length} tone="green" icon="check" />
       </StatGrid>
 
       <DataTable
@@ -880,6 +976,7 @@ export function InstitutionApplicationsPage() {
             }] : [])
           ] : [])
         ]}
+        empty={<Empty icon="building" title={loading ? 'Loading applications…' : loadError ? 'Application data unavailable' : 'No institution applications'} />}
       />
 
       {reviewModal && (
@@ -937,16 +1034,26 @@ export function InstitutionApplicationDetailPage() {
   const { user } = useAuth();
   const { msg, run, busy, setMsg } = useFlash();
   const [app, setApp] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
   const loadApp = async () => {
-    if (!id) return;
+    if (!id) {
+      setLoadError('Application ID is missing.');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const data = await fetchInstitutionApplication(id);
+      if (!data || !data.id) throw new Error('Backend returned an unexpected institution application.');
       setApp(data);
       setLoadError('');
     } catch (e) {
+      setApp(null);
       setLoadError(e.message || 'Unable to load this application from the backend.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -957,10 +1064,10 @@ export function InstitutionApplicationDetailPage() {
   if (!app) {
     return (
       <Page title="Application Details">
-        {loadError
-          ? <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />
-          : <Empty icon="building" title="Loading application details..." />}
-        <Empty icon="building" title="Application unavailable" action={<Link className="btn" to="/admin/institution-applications">Back to applications</Link>} />
+        {loading
+          ? <Empty icon="building" title="Loading application details…" />
+          : <Flash msg={{ tone: 'danger', text: loadError || 'Application is unavailable.' }} onClose={() => setLoadError('')} />}
+        {!loading && <Link className="btn" to="/admin/institution-applications">Back to applications</Link>}
       </Page>
     );
   }
@@ -1066,33 +1173,59 @@ export function InstitutionApplicationDetailPage() {
 export function CollegeOverviewPage() {
   const { user } = useAuth();
   const { tenant, tenantId } = useTenant();
-  const exams = useCol('exams');
-  const centers = useCol('centers');
-  const campuses = useCol('campuses');
-  const departments = useCol('departments');
-  const devices = useCol('devices');
-  const candidates = useCol('candidates');
-  const usbs = useCol('usbs');
-  const incidents = useCol('incidents');
-  const users = useCol('users', false);
-  const live = exams.filter((e) => e.status === 'live');
-
+  const [exams, setExams] = useState([]);
   const [liveStats, setLiveStats] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (tenantId) {
-      institutionStats(tenantId).then(setLiveStats).catch(() => {});
+    if (!tenantId) {
+      setExams([]);
+      setLiveStats(null);
+      setLoadError('Select an institution to load its overview.');
+      setLoading(false);
+      return;
     }
+
+    let active = true;
+    setLoading(true);
+    setLoadError('');
+    setExams([]);
+    setLiveStats(null);
+    Promise.allSettled([
+      institutionStats(tenantId),
+      Api.listExaminations(),
+    ]).then(([statsResult, examsResult]) => {
+      if (!active) return;
+      const errors = [];
+      if (statsResult.status === 'fulfilled') setLiveStats(statsResult.value);
+      else errors.push(`Institution statistics: ${statsResult.reason?.message || 'request failed'}`);
+
+      if (examsResult.status === 'fulfilled') {
+        const rows = examsResult.value?.exams || examsResult.value || [];
+        if (Array.isArray(rows)) {
+          setExams(rows
+            .filter(e => (e.tenantId || e.tenant_id || e.institution_id) === tenantId)
+            .map(e => ({
+              ...e,
+              id: e.id || e.exam_id,
+              code: e.code || e.exam_code,
+              status: String(e.status || '').toLowerCase(),
+              startAt: e.startAt || e.start_at,
+            })));
+        } else errors.push('Exams: backend returned an unexpected response.');
+      } else errors.push(`Exams: ${examsResult.reason?.message || 'request failed'}`);
+
+      setLoadError(errors.join('; '));
+    }).catch(error => {
+      if (active) setLoadError(error?.message || 'Unable to load institution overview.');
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
   }, [tenantId]);
 
-  const stats = useMemo(() => ({
-    campuses: liveStats?.campuses ?? campuses.length,
-    departments: liveStats?.departments ?? departments.length,
-    centers: liveStats?.centers ?? centers.length,
-    devices: liveStats?.devices ?? devices.length,
-    candidates: liveStats?.candidates ?? candidates.length,
-    openIncidents: liveStats?.openIncidents ?? incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length,
-  }), [liveStats, campuses.length, departments.length, centers.length, devices.length, candidates.length, incidents]);
+  const examRows = exams.filter(e => ['live', 'published', 'approved'].includes(e.status));
 
   return (
     <Page
@@ -1105,38 +1238,39 @@ export function CollegeOverviewPage() {
         </>
       }
     >
+      {loadError && <Flash msg={{ tone: 'danger', text: `Some overview data could not be loaded from the backend: ${loadError}` }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
-        <Stat label="Live exams" value={live.length} icon="exam" to="/college/exams" />
-        <Stat label="Centres" value={stats.centers} icon="building" to="/college/campuses" />
-        <Stat label="Devices" value={stats.devices} icon="device" to="/devices" sub={`${devices.filter((d) => d.trust === 'attested').length} attested`} />
-        <Stat label="Candidates" value={stats.candidates} icon="candidate" to="/college/candidates" />
-        <Stat label="Campuses" value={stats.campuses} icon="pin" to="/college/campuses" />
-        <Stat label="Departments" value={stats.departments} icon="layers" to="/college/departments" />
-        <Stat label="USBs" value={usbs.length} icon="usb" to="/usb-inventory" sub={`${usbs.filter((u) => u.status === 'issued').length} issued`} />
-        <Stat label="Open incidents" value={stats.openIncidents} icon="alert" tone="amber" to="/operator/incidents" />
+        <Stat label="Live exams" value={liveStats?.liveExams ?? '—'} icon="exam" to="/college/exams" />
+        <Stat label="Centres" value={liveStats?.centers ?? '—'} icon="building" to="/college/campuses" />
+        <Stat label="Devices" value={liveStats?.devices ?? '—'} icon="device" to="/devices" />
+        <Stat label="Candidates" value={liveStats?.candidates ?? '—'} icon="candidate" to="/college/candidates" />
+        <Stat label="Campuses" value={liveStats?.campuses ?? '—'} icon="pin" to="/college/campuses" />
+        <Stat label="Departments" value={liveStats?.departments ?? '—'} icon="layers" to="/college/departments" />
+        <Stat label="USB inventory" value="—" icon="usb" to="/usb-inventory" sub="Backend metric unavailable" />
+        <Stat label="Open incidents" value={liveStats?.openIncidents ?? '—'} icon="alert" tone="amber" to="/operator/incidents" />
       </StatGrid>
       <div className="two">
         <Card title="Exam readiness" desc="Live and published windows">
           <DataTable
-            rows={exams.filter((e) => ['live', 'published', 'approved'].includes(e.status))}
+            rows={examRows}
             dense
             pageSize={5}
             columns={[
-              { key: 'code', label: 'Exam', render: (e) => <Link to={`/college/exams/${e.id}`}><b>{e.code}</b></Link> },
+              { key: 'code', label: 'Exam', render: (e) => <Link to={`/college/exams/${e.id}`}><b>{e.code || e.name || e.title || '—'}</b></Link> },
               { key: 'status', label: 'Status', badge: true },
-              { key: 'startAt', label: 'Window', render: (e) => fmt(e.startAt) },
-              { key: 'assigned', label: 'Assigned', render: (e) => candidates.filter((c) => c.examId === e.id).length }
+              { key: 'startAt', label: 'Window', render: (e) => e.startAt ? fmt(e.startAt) : '—' },
             ]}
+            empty={<Empty icon="exam" title={loading ? 'Loading exams…' : loadError ? 'Exam data unavailable' : 'No live or published exams'} />}
           />
         </Card>
         <Card title="Staff & access" desc="Accounts linked to this institution">
           <KeyValue items={[
-            ['Active accounts', users.filter((u) => u.tenantId === tenantId && u.status === 'active').length],
-            ['Students', users.filter((u) => u.tenantId === tenantId && u.role === 'student').length],
-            ['Exam controllers', users.filter((u) => u.tenantId === tenantId && u.role === 'exam_controller').length],
-            ['Invigilators', users.filter((u) => u.tenantId === tenantId && u.role === 'invigilator').length],
-            ['IT admins', users.filter((u) => u.tenantId === tenantId && u.role === 'it_admin').length],
-            ['Support engineers', users.filter((u) => u.tenantId === tenantId && u.role === 'support').length]
+            ['Active accounts', liveStats?.users ?? (loading ? '…' : '—')],
+            ['Students', '—'],
+            ['Exam controllers', '—'],
+            ['Invigilators', '—'],
+            ['IT admins', '—'],
+            ['Support engineers', '—']
           ]} />
           <div className="quicklinks compact">
             {can(user.role, 'user.manage') && <Link to="/admin/users"><Icon name="users" size={16} /><span>Users</span></Link>}
@@ -1152,9 +1286,11 @@ export function CollegeOverviewPage() {
 export function CampusesPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const [campuses, setCampuses] = useState([]);
-  const [centers, setCenters] = useState([]);
-  const [devices, setDevices] = useState([]);
+  const [campuses, setCampuses] = useState(null);
+  const [centers, setCenters] = useState(null);
+  const [devices, setDevices] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const { msg, run, busy, setMsg } = useFlash();
   const [modal, setModal] = useState(null);
   const [action, setAction] = useState(null);
@@ -1163,11 +1299,39 @@ export function CampusesPage() {
   const canManage = can(user.role, 'campus.manage');
 
   const loadCampuses = async () => {
-    try {
-      const res = await Api.listCampuses(tenantId);
-      const list = res?.campuses || res || [];
-      setCampuses(Array.isArray(list) ? list.map((c) => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id })) : []);
-    } catch {}
+    setLoading(true);
+    setLoadError('');
+    setCampuses(null);
+    setCenters(null);
+    setDevices(null);
+    const results = await Promise.allSettled([
+      Api.listCampuses(tenantId),
+      Api.listCenters(tenantId),
+      Api.listRegisteredDevices(),
+    ]);
+    const errors = [];
+    const readList = (result, key, label) => {
+      if (result.status === 'rejected') {
+        errors.push(`${label}: ${result.reason?.message || 'request failed'}`);
+        return null;
+      }
+      const list = result.value?.[key] || result.value || [];
+      return Array.isArray(list) ? list : [];
+    };
+    const campusRows = readList(results[0], 'campuses', 'Campuses');
+    const centerRows = readList(results[1], 'centers', 'Centres');
+    const deviceRows = readList(results[2], 'devices', 'Devices');
+    if (campusRows) setCampuses(campusRows
+      .filter(c => (c.tenantId || c.tenant_id || c.institution_id) === tenantId)
+      .map(c => ({ ...c, id: c.id || c.campus_id, tenantId: c.tenantId || c.tenant_id || c.institution_id })));
+    if (centerRows) setCenters(centerRows
+      .filter(c => (c.tenantId || c.tenant_id || c.institution_id) === tenantId)
+      .map(c => ({ ...c, id: c.id || c.center_id, campusId: c.campusId || c.campus_id })));
+    if (deviceRows) setDevices(deviceRows
+      .filter(d => (d.tenantId || d.tenant_id || d.institution_id) === tenantId)
+      .map(d => ({ ...d, centerId: d.centerId || d.center_id })));
+    setLoadError(errors.join('; '));
+    setLoading(false);
   };
 
   useEffect(() => { loadCampuses(); }, [tenantId]);
@@ -1185,13 +1349,14 @@ export function CampusesPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Flash msg={{ tone: 'danger', text: `Could not load all campus data: ${loadError}` }} onClose={() => setLoadError('')} />}
       <StatGrid cols={3}>
-        <Stat label="Campuses" value={campuses.length} icon="pin" />
-        <Stat label="Centres" value={centers.length} icon="building" />
-        <Stat label="Devices" value={devices.length} icon="device" />
+        <Stat label="Campuses" value={loading && campuses === null ? '…' : campuses?.length ?? '—'} icon="pin" />
+        <Stat label="Centres" value={loading && centers === null ? '…' : centers?.length ?? '—'} icon="building" />
+        <Stat label="Devices" value={loading && devices === null ? '…' : devices?.length ?? '—'} icon="device" />
       </StatGrid>
       <DataTable
-        rows={campuses}
+        rows={campuses || []}
         search={['name', 'code', 'city', 'address']}
         title="Campus list"
         filters={[{ key: 'status', label: 'Status', options: ['active', 'inactive', 'archived'] }]}
@@ -1199,8 +1364,8 @@ export function CampusesPage() {
           { key: 'name', label: 'Campus', sortable: true, render: (c) => <><b>{c.name}</b><br /><small className="muted">{c.code} · {c.address || '—'}</small></> },
           { key: 'city', label: 'City' },
           { key: 'capacity', label: 'Capacity' },
-          { key: 'centers', label: 'Centres', render: (c) => centers.filter((x) => x.campusId === c.id).length },
-          { key: 'devices', label: 'Devices', render: (c) => devices.filter((d) => centers.some((x) => x.id === d.centerId && x.campusId === c.id)).length },
+          { key: 'centers', label: 'Centres', render: (c) => centers ? centers.filter((x) => x.campusId === c.id).length : '—' },
+          { key: 'devices', label: 'Devices', render: (c) => centers && devices ? devices.filter((d) => centers.some((x) => x.id === d.centerId && x.campusId === c.id)).length : '—' },
           { key: 'status', label: 'Status', badge: true },
         ]}
         actions={(c) => canManage ? [
@@ -1241,14 +1406,35 @@ export function DepartmentsPage() {
   const { tenantId } = useTenant();
   const [departments, setDepartments] = useState([]);
   const [campuses, setCampuses] = useState([]);
-  const users = useCol('users', false);
+  const [staff, setStaff] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   const loadDepts = async () => {
-    try {
-      const [dr, cr] = await Promise.allSettled([Api.listDepartments(tenantId), Api.listCampuses(tenantId)]);
-      if (dr.status === 'fulfilled') { const l = dr.value?.departments || dr.value || []; setDepartments(Array.isArray(l) ? l : []); }
-      if (cr.status === 'fulfilled') { const l = cr.value?.campuses || cr.value || []; setCampuses(Array.isArray(l) ? l : []); }
-    } catch {}
+    setLoadError('');
+    setDepartments([]);
+    setCampuses([]);
+    setStaff(null);
+    const results = await Promise.allSettled([
+      Api.listDepartments(tenantId),
+      Api.listCampuses(tenantId),
+      Api.listStaff(tenantId),
+    ]);
+    const errors = [];
+    const readList = (result, key, label) => {
+      if (result.status === 'rejected') {
+        errors.push(`${label}: ${result.reason?.message || 'request failed'}`);
+        return null;
+      }
+      const list = result.value?.[key] || result.value || [];
+      return Array.isArray(list) ? list : [];
+    };
+    const deptRows = readList(results[0], 'departments', 'Departments');
+    const campusRows = readList(results[1], 'campuses', 'Campuses');
+    const staffRows = readList(results[2], 'staff', 'Staff');
+    if (deptRows) setDepartments(deptRows);
+    if (campusRows) setCampuses(campusRows.map(c => ({ ...c, id: c.id || c.campus_id })));
+    if (staffRows) setStaff(staffRows);
+    setLoadError(errors.join('; '));
   };
 
   useEffect(() => { loadDepts(); }, [tenantId]);
@@ -1272,6 +1458,7 @@ export function DepartmentsPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Flash msg={{ tone: 'danger', text: `Could not load all department data: ${loadError}` }} onClose={() => setLoadError('')} />}
       <DataTable
         rows={departments}
         search={['name', 'code']}
@@ -1281,7 +1468,7 @@ export function DepartmentsPage() {
           { key: 'name', label: 'Department', render: (d) => <><b>{d.name}</b><br /><small className="muted">{d.code}</small></> },
           { key: 'type', label: 'Type', badge: true },
           { key: 'campus', label: 'Campus', render: (d) => campuses.find((c) => c.id === d.campusId)?.name || '—' },
-          { key: 'staff', label: 'Staff', render: (d) => users.filter((u) => u.departmentId === d.id).length },
+          { key: 'staff', label: 'Staff', render: (d) => staff ? staff.filter((s) => (s.departmentId || s.department_id) === d.id).length : '—' },
           { key: 'status', label: 'Status', badge: true }
         ]}
         actions={(d) => can(user.role, 'dept.manage') ? [{ label: d.status === 'active' ? 'Deactivate' : 'Activate', danger: d.status === 'active', onClick: () => setAction({ d, status: d.status === 'active' ? 'inactive' : 'active' }) }] : []}
@@ -1315,17 +1502,49 @@ export function StaffPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const [staff, setStaff] = useState([]);
-  const users = useCol('users', false);
+  const [users, setUsers] = useState([]);
   const [campuses, setCampuses] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [loadError, setLoadError] = useState('');
 
   const loadStaff = async () => {
-    try {
-      const [sr, cr, dr] = await Promise.allSettled([Api.listStaff(tenantId), Api.listCampuses(tenantId), Api.listDepartments(tenantId)]);
-      if (sr.status === 'fulfilled') { const l = sr.value?.staff || sr.value || []; setStaff(Array.isArray(l) ? l : []); }
-      if (cr.status === 'fulfilled') { const l = cr.value?.campuses || cr.value || []; setCampuses(Array.isArray(l) ? l : []); }
-      if (dr.status === 'fulfilled') { const l = dr.value?.departments || dr.value || []; setDepartments(Array.isArray(l) ? l : []); }
-    } catch {}
+    setLoadError('');
+    setStaff([]);
+    setUsers([]);
+    setCampuses([]);
+    setDepartments([]);
+    const results = await Promise.allSettled([
+      Api.listStaff(tenantId),
+      Api.listCampuses(tenantId),
+      Api.listDepartments(tenantId),
+      Api.listInstitutionUsers(tenantId),
+    ]);
+    const errors = [];
+    const readList = (result, key, label) => {
+      if (result.status === 'rejected') {
+        errors.push(`${label}: ${result.reason?.message || 'request failed'}`);
+        return null;
+      }
+      const list = result.value?.[key] || result.value || [];
+      return Array.isArray(list) ? list : [];
+    };
+    const staffRows = readList(results[0], 'staff', 'Staff');
+    const campusRows = readList(results[1], 'campuses', 'Campuses');
+    const deptRows = readList(results[2], 'departments', 'Departments');
+    const userRows = readList(results[3], 'users', 'User accounts');
+    if (staffRows) setStaff(staffRows);
+    if (campusRows) setCampuses(campusRows.map(c => ({ ...c, id: c.id || c.campus_id })));
+    if (deptRows) setDepartments(deptRows.map(d => ({ ...d, id: d.id || d.department_id })));
+    if (userRows) setUsers(userRows
+      .filter(u => (u.tenantId || u.tenant_id || u.institution_id) === tenantId)
+      .map(u => ({
+        ...u,
+        id: u.id || u.user_id,
+        name: u.name || u.full_name || u.username,
+        role: u.role_name || u.role,
+        status: u.status || (u.active === true || u.active === 1 ? 'active' : 'unknown'),
+      })));
+    setLoadError(errors.join('; '));
   };
 
   useEffect(() => { loadStaff(); }, [tenantId]);
@@ -1350,6 +1569,7 @@ export function StaffPage() {
       }
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {loadError && <Flash msg={{ tone: 'danger', text: `Could not load all staff data: ${loadError}` }} onClose={() => setLoadError('')} />}
       <DataTable
         rows={staff}
         search={['name', 'userId', 'roleTitle']}
@@ -1395,7 +1615,7 @@ export function StaffPage() {
 
 export function CollegeSettingsPage() {
   const { user } = useAuth();
-  const { tenant, tenantId } = useTenant();
+  const { tenant, tenantId, loading: tenantLoading, error: tenantError } = useTenant();
   const { msg, run, busy, setMsg } = useFlash();
   const [f, setF] = useState(() => ({
     name: tenant?.name || '', contactEmail: tenant?.contactEmail || '', contactPhone: tenant?.contactPhone || '',
@@ -1405,12 +1625,25 @@ export function CollegeSettingsPage() {
     durationMin: tenant?.examDefaults?.durationMin ?? '', lateEntryMin: tenant?.examDefaults?.lateEntryMin ?? '', attestationLevel: tenant?.examDefaults?.attestationLevel || '',
     email: tenant?.notificationPrefs?.email ?? false, inApp: tenant?.notificationPrefs?.inApp ?? false,
   }));
+  useEffect(() => {
+    if (!tenant) return;
+    setF({
+      name: tenant.name || '', contactEmail: tenant.contactEmail || '', contactPhone: tenant.contactPhone || '',
+      region: tenant.region || '', timezone: tenant.timezone || '', deploymentModel: tenant.deploymentModel || '',
+      maxCandidates: tenant.maxCandidates ?? '', domains: (tenant.domains || []).join(' '),
+      requireTpm: tenant.security?.requireTpm ?? false, requireSecureBoot: tenant.security?.requireSecureBoot ?? false, allowUsbStorage: tenant.security?.allowUsbStorage ?? false,
+      durationMin: tenant.examDefaults?.durationMin ?? '', lateEntryMin: tenant.examDefaults?.lateEntryMin ?? '', attestationLevel: tenant.examDefaults?.attestationLevel || '',
+      email: tenant.notificationPrefs?.email ?? false, inApp: tenant.notificationPrefs?.inApp ?? false,
+    });
+  }, [tenant]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
 
   if (!tenant) {
     return (
       <Page title="Institution settings">
-        <Empty icon="settings" title="No institution selected">Choose an institution in the top bar.</Empty>
+        {tenantError
+          ? <Flash msg={{ tone: 'danger', text: tenantError }} onClose={() => {}} />
+          : <Empty icon="settings" title={tenantLoading ? 'Loading institution settings…' : 'No institution selected'}>Choose an institution in the top bar.</Empty>}
       </Page>
     );
   }

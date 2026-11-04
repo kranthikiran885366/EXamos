@@ -19,7 +19,7 @@ export async function raise({ tenantId, key, title, severity = 'medium', source,
     owner: null, notes: [], createdAt: Date.now(),
   };
   await put('incidents', inc);
-  await record('system', 'INCIDENT_RAISED', `INC-${inc.no} ${title}`);
+  await record('system', 'INCIDENT_RAISED', `${inc.id} ${title}`);
   return inc;
 }
 

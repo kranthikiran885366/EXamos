@@ -1383,7 +1383,7 @@ static void* handle_client(void *arg) {
         ctrl_send_json(client_fd, 200, ok_body, extra);
         goto client_done;
     }
-    /* Enterprise Institution, Applications, Agreements, Licenses, Deployments, Campuses, Departments, and Staff Management */
+    /* Enterprise Institution, Applications, Agreements, Licenses, Deployments, Campuses, Centers, Departments, and Staff Management */
     else if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
              strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||
              strncmp(route_path, "/api/v1/institutions/apply", 26) == 0 ||
@@ -1391,6 +1391,7 @@ static void* handle_client(void *arg) {
              strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
              strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||
              strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
+             strncmp(route_path, "/api/v1/admin/centers", 21) == 0 ||
              strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
              strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
         institution_handle(client_fd, method, route_path, req_body,
@@ -2610,11 +2611,17 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 403, "application/json",
                                "{\"error\":\"User management permission required\"}");
         } else {
+            char institution_id[128] = {0};
+            if (sess.role != ROLE_PLATFORM_OWNER) {
+                snprintf(institution_id, sizeof(institution_id), "%s", sess.institution_id);
+            } else {
+                parse_query_id(path, "institution_id", institution_id, sizeof(institution_id));
+            }
             char *users_buf = malloc(65536);
             if (!users_buf) {
                 send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
             } else {
-                if (admin_auth_store_list_users_json(users_buf, 65536) == 0)
+                if (admin_auth_store_list_users_json_for_institution(users_buf, 65536, institution_id) == 0)
                     send_http_response(client_fd, 200, "application/json", users_buf);
                 else
                     send_http_response(client_fd, 503, "application/json",
@@ -4446,6 +4453,7 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
                 strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||
                 strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
+                strncmp(route_path, "/api/v1/admin/centers", 21) == 0 ||
                 strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
                 strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
                 institution_handle(client_fd, method, route_path, req_body,
@@ -4553,7 +4561,7 @@ p5_score_done:
                 goto client_done;
             }
 
-            /* Campus routes */
+            /* Campus, center, and organization routes */
             if (strncmp(route_path, "/api/v1/admin/campuses", 22) == 0 ||
                 strncmp(route_path, "/api/v1/admin/campus-approvals", 33) == 0 ||
                 strncmp(route_path, "/api/v1/admin/campus-user-assignments", 38) == 0 ||

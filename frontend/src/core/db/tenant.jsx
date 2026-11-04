@@ -1,16 +1,19 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { all, del, putMany, onChange, watchCollection } from './db';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { all, onChange, watchCollection } from './db';
 import { useAuth } from '../auth/AuthContext';
 import { isGlobal } from '../security/rbac';
+import { listInstitutions } from '../api/services';
 
 const TENANT_STORAGE_KEY = 'examos_selected_tenant_id';
 
-const T = createContext({ tenantId: null, tenant: null, tenants: [], setTenantId() {} });
+const T = createContext({ tenantId: null, tenant: null, tenants: [], loading: false, error: '', setTenantId() {} });
 export const useTenant = () => useContext(T);
 
 export function TenantProvider({ children }) {
   const { user } = useAuth();
   const [tenants, setTenants] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [tenantId, setTenantIdState] = useState(() => {
     try {
       return localStorage.getItem(TENANT_STORAGE_KEY) || null;
@@ -30,60 +33,68 @@ export function TenantProvider({ children }) {
     } catch {}
   };
 
-  // Purge legacy mock/seed institution T1 on startup
-  useEffect(() => {
-    del('tenants', 'T1').catch(() => {});
+  const refreshTenants = useCallback(async () => {
+    if (!user) {
+      setTenants([]);
+      setLoading(false);
+      setError('');
+      return;
+    }
+    setLoading(true);
+    setError('');
     try {
-      if (localStorage.getItem(TENANT_STORAGE_KEY) === 'T1') {
-        localStorage.removeItem(TENANT_STORAGE_KEY);
-        setTenantIdState(null);
-      }
-    } catch {}
-  }, []);
+      const response = await listInstitutions();
+      const rows = response?.institutions || response;
+      if (!Array.isArray(rows)) throw new Error('The institution endpoint returned an unexpected response.');
+      const records = rows.map((row) => ({
+        ...row,
+        id: row.id || row.institution_id,
+        tenantId: row.id || row.institution_id,
+        entityType: row.entityType || row.entity_type || '',
+        maxCenters: row.maxCenters ?? row.max_centers ?? null,
+        maxCandidates: row.maxCandidates ?? row.max_candidates ?? null,
+        contactEmail: row.contactEmail || row.contact_email || '',
+        contactPhone: row.contactPhone || row.contact_phone || '',
+        createdAt: row.createdAt || row.created_at || null,
+      })).filter((row) => row.id);
+      setTenants(records);
+    } catch (loadError) {
+      setTenants([]);
+      setError(loadError.message || 'Failed to load institutions from the backend.');
+      throw loadError;
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
   const allowed = useMemo(() => {
     if (!user) return [];
-    // Strict zero-fabrication: Never include fake seed institution T1
-    const realTenants = tenants.filter((t) => t.id !== 'T1');
-    if (isGlobal(user.role)) return realTenants;
-    return realTenants.filter((t) => t.id === user.tenantId);
+    if (isGlobal(user.role)) return tenants;
+    return tenants.filter((t) => t.id === user.tenantId);
   }, [tenants, user]);
 
   useEffect(() => {
     if (!user) {
       setTenants([]);
+      setLoading(false);
+      setError('');
       return undefined;
     }
-    let active = true;
-    const load = async () => {
-      try {
-        const t = await all('tenants');
-        const clean = (t || []).filter((x) => x.id !== 'T1');
-        if (active) setTenants(clean);
-        // Synchronize genuine provisioned institutions from backend
-        import('../api/services').then(({ listInstitutions }) => {
-          listInstitutions()
-            .then(async (remote) => {
-              if (Array.isArray(remote) && remote.length > 0) {
-                const genuine = remote.filter((r) => r.id !== 'T1');
-                await putMany('tenants', genuine);
-                if (active) setTenants(genuine);
-              }
-            })
-            .catch(() => {});
-        }).catch(() => {});
-      } catch (error) {
-        console.error('Failed to load institutions from the backend.', error);
-      }
-    };
-    load();
-    const off = onChange((c) => c === 'tenants' && load());
-    const unwatch = watchCollection('tenants', (rows, error) => {
-      if (error) console.error('Failed to refresh institutions from the backend.', error);
-      else if (active) setTenants(rows);
+    refreshTenants().catch((loadError) => {
+      console.error('Failed to load institutions from the backend.', loadError);
     });
-    return () => { active = false; off(); unwatch(); };
-  }, [user]);
+    return undefined;
+  }, [user, refreshTenants]);
+
+  useEffect(() => {
+    const refresh = () => {
+      refreshTenants().catch((loadError) => {
+        console.error('Failed to refresh institutions from the backend.', loadError);
+      });
+    };
+    window.addEventListener('examos:institution-change', refresh);
+    return () => window.removeEventListener('examos:institution-change', refresh);
+  }, [refreshTenants]);
 
   // Synchronize across browser tabs when user changes institution in another tab
   useEffect(() => {
@@ -97,7 +108,12 @@ export function TenantProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (!user || allowed.length === 0) return;
+    if (!user || loading || error) return;
+    if (allowed.length === 0) {
+      setTenantIdState(null);
+      try { localStorage.removeItem(TENANT_STORAGE_KEY); } catch {}
+      return;
+    }
     setTenantIdState((cur) => {
       // 1. If currently selected institution is valid in allowed list, keep it!
       if (cur && allowed.some((x) => x.id === cur)) {
@@ -123,10 +139,10 @@ export function TenantProvider({ children }) {
       }
       return fallback;
     });
-  }, [allowed, user]);
+  }, [allowed, user, loading, error]);
 
-  const tenant = tenants.find((t) => t.id === tenantId) || null;
-  return <T.Provider value={{ tenantId, tenant, tenants: allowed, allTenants: tenants, setTenantId }}>{children}</T.Provider>;
+  const tenant = allowed.find((t) => t.id === tenantId) || null;
+  return <T.Provider value={{ tenantId, tenant, tenants: allowed, allTenants: tenants, loading, error, setTenantId, refreshTenants }}>{children}</T.Provider>;
 }
 
 // Live collection hook: re-reads when any tab/service writes the collection. Tenant-scoped by default.

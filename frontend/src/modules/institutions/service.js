@@ -1,4 +1,3 @@
-import { get, put } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
 import { need, fail, log, assertScope, requireReason, isEmail } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
@@ -49,6 +48,9 @@ const requireBackendId = (value, what) => {
   if (!value) fail(`The backend did not return a ${what} identifier. The operation was not saved.`);
   return value;
 };
+const notifyInstitutionChange = () => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('examos:institution-change'));
+};
 
 export async function createInstitution(a, input) {
   need(a, 'tenant.manage');
@@ -83,21 +85,13 @@ export async function createInstitution(a, input) {
 
   const instId = requireBackendId(backendRes?.institution_id || backendRes?.id, 'institution');
 
-  /* Cache the record as persisted by the backend — no invented defaults. */
   const saved = await Api.getInstitution(instId);
-  const t = saved && saved.id ? saved : {
-    id: instId, name, code: backendRes?.code || code, domains,
-    contactEmail: clean(input.contactEmail, 120), contactPhone: clean(input.contactPhone, 30),
-    region: clean(input.region, 40), timezone: input.timezone || '',
-    plan: input.plan || '', status: 'active',
-    maxCenters: Number(input.maxCenters) || 0,
-    maxCandidates: Number(input.maxCandidates) || 0, deploymentModel: input.deploymentModel || '',
-    createdAt: Date.now(), createdBy: a.id,
-  };
-  await put('tenants', t);
-  await put('institutions', t).catch(() => {});
-  await log(a, 'TENANT_CREATED', `${name} (${t.code || code})`);
-  return t;
+  if (!saved || !(saved.id || saved.institution_id)) {
+    fail('Institution was created, but the backend did not return its persisted record.');
+  }
+  notifyInstitutionChange();
+  await log(a, 'TENANT_CREATED', `${name} (${saved.code || code})`);
+  return saved;
 }
 // Backwards-compatible alias used by the original provisioning flow.
 export const createTenant = createInstitution;
@@ -122,8 +116,6 @@ export async function updateInstitution(a, t, patch) {
   if (patch.security) next.security = { ...next.security, ...patch.security };
   if (patch.notificationPrefs) next.notificationPrefs = { ...next.notificationPrefs, ...patch.notificationPrefs };
   if (patch.branding) next.branding = { ...next.branding, ...patch.branding };
-  next.history = [...(t.history || []), { at: Date.now(), by: a.id, action: 'Institution settings updated' }];
-
   await Api.updateInstitution(t.id, {
     name: next.name,
     contactEmail: next.contactEmail,
@@ -137,8 +129,7 @@ export async function updateInstitution(a, t, patch) {
     domains: next.domains,
   });
 
-  await put('tenants', next);
-  await put('institutions', next).catch(() => {});
+  notifyInstitutionChange();
   await log(a, 'TENANT_UPDATED', next.name);
   return 'Institution updated.';
 }
@@ -150,33 +141,23 @@ export async function setInstitutionStatus(a, t, status, reason) {
 
   await Api.setInstitutionStatus(t.id, status, r);
 
-  const next = { ...t, status, statusReason: r, statusAt: Date.now(), history: [...(t.history || []), { at: Date.now(), by: a.id, action: `Status → ${status}`, reason: r }] };
-  await put('tenants', next);
-  await put('institutions', next).catch(() => {});
+  notifyInstitutionChange();
   await log(a, 'TENANT_' + status.toUpperCase(), `${t.name}: ${r}`);
   return `${t.name} is now ${status}.`;
 }
 
 export async function saveExamDefaults(a, t, defaults) {
   need(a, 'settings.inst'); assertScope(a, t.id);
-  const next = { ...t, examDefaults: { ...t.examDefaults, ...defaults }, history: [...(t.history || []), { at: Date.now(), by: a.id, action: 'Exam defaults updated' }] };
-
   await Api.saveInstitutionExamDefaults(t.id, defaults);
-
-  await put('tenants', next);
-  await put('institutions', next).catch(() => {});
+  notifyInstitutionChange();
   await log(a, 'TENANT_EXAM_DEFAULTS', t.name);
   return 'Exam defaults saved.';
 }
 
 export async function saveSecuritySettings(a, t, security) {
   need(a, 'settings.inst'); assertScope(a, t.id);
-  const next = { ...t, security: { ...t.security, ...security }, history: [...(t.history || []), { at: Date.now(), by: a.id, action: 'Security defaults updated' }] };
-
   await Api.saveInstitutionSecurity(t.id, security);
-
-  await put('tenants', next);
-  await put('institutions', next).catch(() => {});
+  notifyInstitutionChange();
   await log(a, 'TENANT_SECURITY_UPDATED', t.name);
   return 'Security defaults saved.';
 }
@@ -197,15 +178,8 @@ export async function createCampus(a, { tenantId, name, code, city, address, cap
     address: clean(address, 160),
     capacity: cap,
   });
-  const campusId = requireBackendId(res?.campus_id || res?.id, 'campus');
+  requireBackendId(res?.campus_id || res?.id, 'campus');
   const savedCode = res?.code || c;
-  const campusObj = {
-    id: campusId, tenantId, name: n, code: savedCode,
-    city: clean(city, 40), address: clean(address, 160),
-    capacity: cap, status: 'active', adminIds: [], createdAt: Date.now(),
-  };
-  await put('campuses', campusObj);
-  await put('centers', campusObj).catch(() => {});
   await log(a, 'CAMPUS_CREATED', `${tenantId} · ${savedCode}`);
   return `Campus ${savedCode} created.`;
 }
@@ -222,7 +196,6 @@ export async function updateCampus(a, c, patch) {
     capacity: next.capacity,
   });
 
-  await put('campuses', next);
   await log(a, 'CAMPUS_UPDATED', c.code);
   return 'Campus updated.';
 }
@@ -235,7 +208,6 @@ export async function setCampusStatus(a, c, status, reason) {
   /* The backend enforces the open-exam guard against live data. */
   await Api.setCampusStatus(c.id, status, r);
 
-  await put('campuses', { ...c, status, statusReason: r });
   await log(a, 'CAMPUS_' + status.toUpperCase(), `${c.code}: ${r}`);
   return `${c.code} is now ${status}.`;
 }
@@ -269,10 +241,8 @@ export async function createDepartment(a, { tenantId, name, code, campusId, type
     type,
     campusId: campusId || '',
   });
-  const depId = requireBackendId(res?.department_id || res?.id, 'department');
+  requireBackendId(res?.department_id || res?.id, 'department');
   const savedCode = res?.code || c;
-  const deptObj = { id: depId, tenantId, name: n, code: savedCode, type, campusId: campusId || null, status: 'active', createdAt: Date.now() };
-  await put('departments', deptObj);
   await log(a, 'DEPARTMENT_CREATED', savedCode);
   return `Department ${savedCode} created.`;
 }
@@ -284,7 +254,6 @@ export async function setDepartmentStatus(a, d, status, reason) {
   /* The backend refuses deactivation while active staff are still assigned. */
   await Api.setDepartmentStatus(d.id, status, r);
 
-  await put('departments', { ...d, status, statusReason: r });
   await log(a, 'DEPARTMENT_' + status.toUpperCase(), `${d.code}: ${r}`);
   return `${d.code} is now ${status}.`;
 }
@@ -301,15 +270,7 @@ export async function assignStaff(a, { tenantId, userId, campusId = '', departme
     campusId,
     departmentId,
   });
-  const staffId = requireBackendId(res?.staff_id || res?.id, 'staff');
-  const rec = {
-    id: staffId, tenantId, userId,
-    name: res?.name || '',
-    roleTitle: res?.role_title || clean(roleTitle, 60) || '',
-    campusId, departmentId, status: 'active',
-    createdAt: Date.now(), updatedAt: Date.now(),
-  };
-  await put('staff', rec);
+  requireBackendId(res?.staff_id || res?.id, 'staff');
   await log(a, 'STAFF_ASSIGNED', `${userId} ${campusId || 'all campuses'}`);
   return 'Staff assignment saved.';
 }
@@ -320,7 +281,6 @@ export async function removeStaff(a, s, reason) {
 
   await Api.removeStaff(s.id, r);
 
-  await put('staff', { ...s, status: 'inactive', statusReason: r, updatedAt: Date.now() });
   await log(a, 'STAFF_REMOVED', `${s.userId}: ${r}`);
   return 'Staff assignment removed.';
 }
@@ -334,34 +294,21 @@ export async function removeStaff(a, s, reason) {
  */
 export async function listInstitutionAdmins(institutionId) {
   const apiAdmins = await Api.listInstitutionAdmins(institutionId);
-  const rows = Array.isArray(apiAdmins) ? apiAdmins : [];
-  for (const u of rows) {
-    const local = {
-      id: u.id || u.user_id || u.username,
-      username: u.username,
-      name: u.full_name || u.name || u.username,
+  return apiAdmins.map((u) => {
+    if (!u.id) fail('The backend returned an administrator without an identifier.');
+    return {
+      id: u.id,
+      username: u.username || '',
+      name: u.full_name || u.name || u.username || '',
       email: u.email || '',
-      role: u.role || 'inst_admin',
+      role: u.role || 'unknown',
       tenantId: institutionId,
-      status: u.status || (u.active === 0 ? 'suspended' : 'active'),
-      mfaEnabled: !!u.mfa_enabled,
+      status: u.status || 'unknown',
+      mfaEnabled: typeof u.mfa_enabled === 'boolean' ? u.mfa_enabled : null,
       lastLogin: u.last_login || null,
       createdAt: u.created_at || null,
     };
-    await put('users', local).catch(() => {});
-  }
-  return rows.map((u) => ({
-    id: u.id || u.user_id || u.username,
-    username: u.username,
-    name: u.full_name || u.name || u.username,
-    email: u.email || '',
-    role: u.role || 'inst_admin',
-    tenantId: institutionId,
-    status: u.status || (u.active === 0 ? 'suspended' : 'active'),
-    mfaEnabled: !!u.mfa_enabled,
-    lastLogin: u.last_login || null,
-    createdAt: u.created_at || null,
-  }));
+  });
 }
 
 /**
@@ -390,21 +337,18 @@ export async function inviteInstitutionAdmin(actor, institutionId, { name, email
     invitedBy: actor.id,
     tempPassword: result?.tempPassword || null,
   };
-  await put('users', newUser);
   await log(actor, 'INSTITUTION_ADMIN_INVITED', `${email} as ${role} for ${institutionId}`);
   return newUser;
 }
 
 /**
  * Remove an administrator from an institution — the backend suspends the
- * account and records the reason; the local cache is updated from the result.
+ * account and records the reason.
  */
 export async function removeInstitutionAdmin(actor, institutionId, userId, reason) {
   need(actor, 'user.manage');
   const r = requireReason(reason, 8);
   await Api.removeInstitutionAdmin(institutionId, userId, r);
-  const u = await get('users', userId).catch(() => null);
-  if (u) await put('users', { ...u, status: 'suspended', statusReason: r, statusAt: Date.now(), statusBy: actor.id });
   await log(actor, 'INSTITUTION_ADMIN_REMOVED', `${userId} from ${institutionId}: ${r}`);
   return 'Administrator access removed.';
 }
@@ -459,6 +403,7 @@ export async function submitInstitutionApplication(input) {
   if (!(payload.studentCount >= 1)) fail('Enter the annual candidate volume.');
   if (!(payload.deviceCount >= 1)) fail('Enter the workstation fleet size.');
   if (!payload.declarations.termsAgreed) fail('The terms declaration must be accepted before submitting.');
+  if (!payload.declarations.privacyAgreed) fail('The privacy declaration must be accepted before submitting.');
 
   const res = await Api.applyInstitution(payload);
   return res;
@@ -466,7 +411,8 @@ export async function submitInstitutionApplication(input) {
 
 export async function fetchInstitutionApplications() {
   const res = await Api.listInstitutionApplications();
-  return res?.applications || [];
+  if (!Array.isArray(res?.applications)) fail('The backend returned an unexpected institution-application response.');
+  return res.applications;
 }
 
 export async function fetchInstitutionApplication(id) {
@@ -484,6 +430,7 @@ export async function reviewApplication(user, id, action, reviewNotes) {
 export async function provisionApplication(user, id) {
   need(user, 'tenant.manage');
   const res = await Api.provisionInstitutionApplication(id);
+  notifyInstitutionChange();
   /* The backend creates the real tenant/license/agreement records atomically.
    * Do not fabricate a local tenant stub; the dashboard re-fetches from the API. */
   await log(user, 'INSTITUTION_PROVISIONED', `${res?.institution_id || id}`);
@@ -492,7 +439,8 @@ export async function provisionApplication(user, id) {
 
 export async function fetchInstitutionAgreements(institutionId) {
   const res = await Api.listInstitutionAgreements(institutionId);
-  return res?.agreements || [];
+  if (!Array.isArray(res?.agreements)) fail('The backend returned an unexpected institution-agreements response.');
+  return res.agreements;
 }
 
 export async function createAgreementDraft(user, institutionId, data) {
@@ -527,7 +475,8 @@ export async function checkEntitlements(institutionId, resource) {
 
 export async function fetchInstitutionDeployments(institutionId) {
   const res = await Api.listInstitutionDeployments(institutionId);
-  return res?.deployments || [];
+  if (!Array.isArray(res?.deployments)) fail('The backend returned an unexpected institution-deployments response.');
+  return res.deployments;
 }
 
 export async function assignDeployment(user, institutionId, data) {
@@ -553,8 +502,12 @@ export async function fetchInstitutionOnboarding(institutionId) {
 }
 
 export async function updateOnboardingStep(user, institutionId, stepKey, completed, notes = '') {
+  need(user, 'tenant.manage');
   if (!institutionId || institutionId === ':id' || institutionId === 'undefined' || institutionId === 'null') {
     throw new Error('Invalid institution ID — cannot update onboarding step without a valid institution.');
+  }
+  if (typeof notes !== 'string' || notes.trim().length < 8) {
+    fail('Add at least 8 characters of verification notes or evidence reference.');
   }
   const res = await Api.updateInstitutionOnboardingStep(institutionId, stepKey, completed, notes);
   await log(user, 'ONBOARDING_STEP_UPDATED', `${institutionId}: ${stepKey}`);

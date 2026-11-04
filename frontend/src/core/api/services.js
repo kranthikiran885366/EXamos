@@ -1,7 +1,6 @@
 // ExamOS Console — Backend API service layer.
-// Every function calls the real ExamOS C server (server/main.c) over HTTP.
-// Responses are validated and shaped for the console UI. IndexedDB remains
-// as an offline cache / fallback when the backend is unreachable.
+// Service functions call the ExamOS C server (server/main.c) over HTTP.
+// Application records are server-backed; IndexedDB is reserved for signing keys.
 
 import { api, setAdminToken, getAdminToken, setCandidateToken, getCandidateToken, clearTokens, ApiError } from './client';
 import { ENDPOINTS, AUTH_TOKEN_KEY, CANDIDATE_TOKEN_KEY, CANDIDATE_ID_KEY } from '../../config/api';
@@ -237,7 +236,15 @@ export const listInstitutionApplications = wrap(async () => {
 export const listInstitutionAdmins = wrap(async (institutionId) => {
   const res = await api.get(ENDPOINTS.institutionAdmins(institutionId), { actor: ACTOR });
   const admins = res?.data?.admins;
-  return Array.isArray(admins) ? admins : [];
+  if (!Array.isArray(admins)) throw new Error('The institution-admin endpoint returned an unexpected response.');
+  return admins;
+});
+
+export const listInstitutionUsers = wrap(async (institutionId) => {
+  const res = await api.get(ENDPOINTS.institutionUsers(institutionId), { actor: ACTOR });
+  const users = res?.data?.users;
+  if (!Array.isArray(users)) throw new Error('The institution-user endpoint returned an unexpected response.');
+  return users;
 });
 
 export const inviteInstitutionAdmin = wrap(async (institutionId, { name, email, role, campusId }) => {
@@ -368,6 +375,27 @@ export const setCampusStatus = wrap(async (id, status, reason) => {
   return res.data;
 });
 
+export const listCenters = wrap(async (institutionId) => {
+  const url = institutionId ? `${ENDPOINTS.centers}?institution_id=${encodeURIComponent(institutionId)}` : ENDPOINTS.centers;
+  const res = await api.get(url, { actor: ACTOR });
+  return res.data;
+});
+
+export const createCenter = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.centers, data, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const updateCenter = wrap(async (id, patch) => {
+  const res = await api.put(ENDPOINTS.centerById(id), patch, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const setCenterStatus = wrap(async (id, status, reason) => {
+  const res = await api.post(ENDPOINTS.centerStatus(id), { status, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
 export const listDepartments = wrap(async (institutionId) => {
   const url = institutionId ? `${ENDPOINTS.departments}?institution_id=${encodeURIComponent(institutionId)}` : ENDPOINTS.departments;
   const res = await api.get(url, { actor: ACTOR });
@@ -416,17 +444,19 @@ const BACKEND_ROLE_TO_INT = {
   support: 9, support_engineer: 9, 9: 9,
 };
 
-export const listUsers = wrap(async () => {
-  const res = await api.get(ENDPOINTS.users, { actor: ACTOR });
+export const listUsers = wrap(async (institutionId) => {
+  const query = institutionId ? `?institution_id=${encodeURIComponent(institutionId)}` : '';
+  const res = await api.get(`${ENDPOINTS.users}${query}`, { actor: ACTOR });
   return res.data;
 });
 
 export const createUser = wrap(async ({ username, fullName, email, password, institutionId, role }) => {
-  const roleInt = typeof role === 'number' ? role : (BACKEND_ROLE_TO_INT[String(role).toLowerCase()] || 2);
+  const roleInt = typeof role === 'number' ? role : BACKEND_ROLE_TO_INT[String(role).toLowerCase()];
+  if (!roleInt) throw new Error('A valid management role is required.');
   const res = await api.post(ENDPOINTS.users, {
     username,
     full_name: fullName || username,
-    email: email || `${username}@examos.local`,
+    email: email || '',
     password,
     institution_id: institutionId || '',
     role: roleInt,

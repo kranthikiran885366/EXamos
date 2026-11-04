@@ -17,6 +17,8 @@ export async function assignedExams(user, ctx = {}) {
         code: e.code,
         title: e.name || e.title,
         status: e.status,
+        /* Fix: normalize duration from backend snake_case to frontend camelCase */
+        durationMin: e.duration_minutes || e.durationMin || null,
         centerIds: e.center_ids || [],
         centers: [],
         assigned: e.registered_count || 0,

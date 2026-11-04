@@ -13,7 +13,7 @@ export const APP_VERSION = '3.0.0';
 
 function Inner() {
   const { user, locked, lock, logout, touchSession, backendMode, backendReady } = useAuth();
-  const { tenant } = useTenant();
+  const { tenant, error: tenantError } = useTenant();
   const meta = useCol('meta', false);
   const rawPlatform = meta.find((m) => m.id === 'platform');
   const platform = rawPlatform?.value || rawPlatform || {};
@@ -50,7 +50,7 @@ function Inner() {
       {drawer && <button className="scrim-nav" aria-label="Close navigation" onClick={() => setDrawer(false)} />}
       <div className="main">
         <Topbar onMenu={() => setDrawer(true)} collapsed={collapsed} onCollapse={() => setCollapsed(!collapsed)} backend={{ mode: backendMode, online: backendOnline }} />
-        {dataError && <div className="maintenance" role="alert"><Icon name="warn" size={15} /><b>Backend data unavailable</b><span>{dataError}</span></div>}
+        {(dataError || tenantError) && <div className="maintenance" role="alert"><Icon name="warn" size={15} /><b>Backend data unavailable</b><span>{dataError || tenantError}</span></div>}
         {platform.maintenance?.enabled && <div className="maintenance" role="status"><Icon name="warn" size={15} /><b>Maintenance mode</b><span>{platform.maintenance.message || 'Some actions are temporarily read-only.'}</span></div>}
         {warning > 0 && !locked && <div className="session-warn" role="status"><Icon name="clock" size={15} /><span>Your session locks in {Math.ceil(warning / 1000)}s due to inactivity.</span><button className="mini" onClick={() => { touchSession(); }}>Stay signed in</button></div>}
         <main className="content" id="main">{locked ? <LockScreen /> : <Outlet />}</main>

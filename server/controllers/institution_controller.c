@@ -265,6 +265,29 @@ static int extract_sub_id_and_action(const char *path, const char *prefix,
     return 1;
 }
 
+/* Extract a query-string parameter (e.g. ?institution_id=ins_...) without
+ * requiring a request body. GET requests carry their filters in the URL. */
+static void inst_query_param(const char *path, const char *key, char *out, size_t out_len) {
+    out[0] = '\0';
+    size_t klen = strlen(key);
+    const char *p = strchr(path, '?');
+    if (!p) return;
+    p++;
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            const char *v = p + klen + 1;
+            size_t n = strcspn(v, "&#");
+            if (n >= out_len) n = out_len - 1;
+            memcpy(out, v, n);
+            out[n] = '\0';
+            return;
+        }
+        p = strchr(p, '&');
+        if (!p) return;
+        p++;
+    }
+}
+
 /* =========================================================================
  * Institution Main Dispatcher
  * ========================================================================= */
@@ -351,6 +374,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (!ctrl_json_raw(body, "declarations", decl_raw, sizeof(decl_raw))) {
             snprintf(decl_raw, sizeof(decl_raw), "{}");
         }
+        int terms_agreed = 0, privacy_agreed = 0;
+        if (!ctrl_json_bool(decl_raw, "termsAgreed", &terms_agreed) || !terms_agreed ||
+            !ctrl_json_bool(decl_raw, "privacyAgreed", &privacy_agreed) || !privacy_agreed) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 400, "Terms and privacy declarations must be accepted", origin, extra_headers, extra_len);
+            return;
+        }
 
         /* Corporate / Recruitment-specific fields (migration 025) */
         char company_size[30] = {0}, industry_sector[80] = {0}, tech_stack[512] = {0};
@@ -396,6 +426,40 @@ void institution_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
+        /* Validate the declared identity and scale before persisting it. */
+        {
+            static const char *valid_entity_types[] = {
+                "enterprise", "technology", "university", "college",
+                "certification_body", "government", "testing_agency"
+            };
+            int entity_ok = 0;
+            for (size_t ei = 0; ei < sizeof(valid_entity_types) / sizeof(valid_entity_types[0]); ei++) {
+                if (strcmp(entity_type, valid_entity_types[ei]) == 0) { entity_ok = 1; break; }
+            }
+            if (!entity_ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid entity type is required", origin, extra_headers, extra_len);
+                return;
+            }
+            if (campus_count < 1 || campus_count > 10000 ||
+                student_count < 1 || student_count > 10000000 ||
+                device_count < 1 || device_count > 1000000) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "Campus, candidate, and device counts must be positive and within supported limits", origin, extra_headers, extra_len);
+                return;
+            }
+            if (!strchr(rep_email, '@') || strchr(rep_email, ' ') || strchr(rep_email, '\n')) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid representative email address is required", origin, extra_headers, extra_len);
+                return;
+            }
+            if (!strchr(domain, '.') || strchr(domain, ' ') || strchr(domain, '/') || strchr(domain, '\n')) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid official domain is required", origin, extra_headers, extra_len);
+                return;
+            }
+        }
+
         /* Duplicate detection: check registration number and domain */
         const char *chk_vals[3] = { reg_num, domain, rep_email };
         int chk_lens[3] = { (int)strlen(reg_num), (int)strlen(domain), (int)strlen(rep_email) };
@@ -417,14 +481,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
         char app_id[64];
         {
-            unsigned char rnd[6];
+            unsigned char rnd[16];
             if (RAND_bytes(rnd, sizeof(rnd)) != 1) {
                 db_release(conn, 0);
                 inst_send_error(client_fd, 503, "Secure ID generation unavailable", origin, extra_headers, extra_len);
                 return;
             }
-            snprintf(app_id, sizeof(app_id), "app_%ld_%02x%02x%02x",
-                     (long)time(NULL), rnd[0], rnd[1], rnd[2]);
+            snprintf(app_id, sizeof(app_id),
+                     "app_%ld_%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+                     (long)time(NULL), rnd[0], rnd[1], rnd[2], rnd[3],
+                     rnd[4], rnd[5], rnd[6], rnd[7], rnd[8], rnd[9],
+                     rnd[10], rnd[11], rnd[12], rnd[13], rnd[14], rnd[15]);
         }
         char now[32];
         snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
@@ -567,7 +634,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         /* reference_number is the application_id itself — no fabricated random number */
         snprintf(resp, sizeof(resp),
             "{\"status\":\"submitted\",\"application_id\":\"%s\",\"reference_number\":\"%s\","
-            "\"message\":\"Institution application submitted successfully and queued for verification.\"}",
+            "\"message\":\"Institution application submitted successfully.\"}",
             app_id, app_id);
         inst_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
         return;
@@ -582,29 +649,28 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int plens[1] = { (int)strlen(app_id) };
             PGresult *res = db_simple(conn,
                 "SELECT id, legal_name, display_name, entity_type, status, created_at, reviewed_at, "
-                "       COALESCE(review_notes, ''), domain, plan, deployment_model "
-                "FROM institution_applications WHERE id = $1 OR domain = $1 OR registration_number = $1", 1, pvals, plens);
+                "       domain, plan, deployment_model "
+                "FROM institution_applications WHERE id = $1", 1, pvals, plens);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-                char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0}, notes_esc[512] = {0};
+                char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0};
                 char dom_esc[128] = {0}, plan_esc[64] = {0}, mod_esc[64] = {0};
                 escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
                 escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
                 escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
                 escape_json_str(PQgetvalue(res, 0, 4), st, sizeof(st));
-                escape_json_str(PQgetvalue(res, 0, 7), notes_esc, sizeof(notes_esc));
-                escape_json_str(PQgetvalue(res, 0, 8), dom_esc, sizeof(dom_esc));
-                escape_json_str(PQgetvalue(res, 0, 9), plan_esc, sizeof(plan_esc));
-                escape_json_str(PQgetvalue(res, 0, 10), mod_esc, sizeof(mod_esc));
+                escape_json_str(PQgetvalue(res, 0, 7), dom_esc, sizeof(dom_esc));
+                escape_json_str(PQgetvalue(res, 0, 8), plan_esc, sizeof(plan_esc));
+                escape_json_str(PQgetvalue(res, 0, 9), mod_esc, sizeof(mod_esc));
 
                 char resp[1024];
                 snprintf(resp, sizeof(resp),
                     "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
-                    "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,\"reviewNotes\":\"%s\","
+                    "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,"
                     "\"domain\":\"%s\",\"plan\":\"%s\",\"deploymentModel\":\"%s\"}",
                     id_esc, l_name, d_name, PQgetvalue(res, 0, 3), st,
                     PQgetvalue(res, 0, 5)[0] ? PQgetvalue(res, 0, 5) : "0",
                     PQgetvalue(res, 0, 6)[0] ? PQgetvalue(res, 0, 6) : "null",
-                    notes_esc, dom_esc, plan_esc, mod_esc);
+                    dom_esc, plan_esc, mod_esc);
                 PQclear(res);
                 db_release(conn, 0);
                 inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
@@ -633,10 +699,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
             "       review_notes, reviewed_by, reviewed_at, institution_id, created_at, updated_at "
             "FROM institution_applications ORDER BY created_at DESC");
 
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 500, "Failed to load institution applications", origin, extra_headers, extra_len);
+            return;
+        }
+
         char json[65536] = {0};
         size_t pos = 0;
         pos += snprintf(json + pos, sizeof(json) - pos, "{\"applications\":[");
-        int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+        int n = PQntuples(res);
         for (int i = 0; i < n; i++) {
             if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
             char id_esc[64] = {0}, l_name[256] = {0}, d_name[256] = {0}, reg[64] = {0};
@@ -778,10 +851,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "reviewed_by = $3, reviewed_at = $4::bigint, updated_at = $4::bigint "
                 "WHERE id = $5", 5, u_vals, u_lens);
             int ok = u_res && PQresultStatus(u_res) == PGRES_COMMAND_OK;
+            int u_rows = ok ? atoi(PQcmdTuples(u_res)) : 0;
             if (u_res) PQclear(u_res);
             if (!ok) { /* H3 fix: check UPDATE result, fail on error. */
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Failed to update application review status", origin, extra_headers, extra_len);
+                return;
+            }
+            if (u_rows == 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Application not found", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -988,7 +1067,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "'campus_hierarchy', jsonb_build_object('completed', false),"
                 "'os_deployment', jsonb_build_object('completed', false),"
                 "'production_readiness', jsonb_build_object('completed', false)"
-                "), 3, 8, $2, 0, 1, $3::bigint)",
+                "), 3, 8, $2, 0, 0, $3::bigint)",
                 4, onb_vals, onb_lens);
 
             /* No default campus or OS deployment is fabricated here. The
@@ -1156,11 +1235,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
 
         char json[65536] = {0};
-        if (res && PQresultStatus(res) == PGRES_TUPLES_OK)
-            inst_list_json(res, json, sizeof(json));
-        else
-            snprintf(json, sizeof(json), "{\"institutions\":[]}");
-        if (res) PQclear(res);
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 500, "Failed to load institutions", origin, extra_headers, extra_len);
+            return;
+        }
+        inst_list_json(res, json, sizeof(json));
+        PQclear(res);
         db_release(conn, 0);
         inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
         return;
@@ -1282,6 +1364,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         int plens[14];
         for (int i = 0; i < 14; i++) plens[i] = pvals[i] ? (int)strlen(pvals[i]) : 0;
 
+        PQexec(conn, "BEGIN");
         PGresult *ins = db_simple(conn,
             "INSERT INTO tenants (id, name, code, contact_email, contact_phone, "
             "region, timezone, plan, status, max_centers, max_candidates, "
@@ -1361,11 +1444,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
 
         if (!ok || !related_ok) {
+            PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             inst_send_error(client_fd, 503, "Failed to persist the complete institution record", origin, extra_headers, extra_len);
             return;
         }
 
+        PQexec(conn, "COMMIT");
         audit_and_ledger(sess.user_id, "TENANT_CREATED", id, name);
         char resp[320];
         snprintf(resp, sizeof(resp), "{\"status\":\"created\",\"institution_id\":\"%s\",\"code\":\"%s\"}", id, code);
@@ -1383,6 +1468,53 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (!is_owner && strcmp(sess.institution_id, inst_id) != 0) {
             db_release(conn, 0);
             inst_send_error(client_fd, 403, "Access denied: institution boundary violation", origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* GET institution-user accounts with tenant scope and no credential fields. */
+        if (strcmp(method, "GET") == 0 && strcmp(sub, "users") == 0) {
+            if (sess.role != ROLE_PLATFORM_OWNER && sess.role != ROLE_INSTITUTION_ADMIN) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 403, "User management permission required", origin, extra_headers, extra_len);
+                return;
+            }
+            const char *pvals[1] = { inst_id };
+            int lens[1] = { (int)strlen(inst_id) };
+            PGresult *res = db_simple(conn,
+                "SELECT id, username, name, role, COALESCE(email, ''), status, mfa_enabled, created_at "
+                "FROM users WHERE tenant_id = $1 ORDER BY name, username",
+                1, pvals, lens);
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load institution users", origin, extra_headers, extra_len);
+                return;
+            }
+            char json[32768] = {0};
+            size_t pos = 0;
+            pos += snprintf(json + pos, sizeof(json) - pos, "{\"users\":[");
+            for (int i = 0; i < PQntuples(res); i++) {
+                char id[128] = {0}, username[128] = {0}, name[256] = {0};
+                char role[80] = {0}, email[256] = {0}, status[48] = {0};
+                escape_json_str(PQgetvalue(res, i, 0), id, sizeof(id));
+                escape_json_str(PQgetvalue(res, i, 1), username, sizeof(username));
+                escape_json_str(PQgetvalue(res, i, 2), name, sizeof(name));
+                escape_json_str(PQgetvalue(res, i, 3), role, sizeof(role));
+                escape_json_str(PQgetvalue(res, i, 4), email, sizeof(email));
+                escape_json_str(PQgetvalue(res, i, 5), status, sizeof(status));
+                if (i > 0) pos += snprintf(json + pos, sizeof(json) - pos, ",");
+                pos += snprintf(json + pos, sizeof(json) - pos,
+                    "{\"id\":\"%s\",\"username\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
+                    "\"email\":\"%s\",\"tenantId\":\"%s\",\"status\":\"%s\","
+                    "\"mfaEnabled\":%s,\"createdAt\":%s}",
+                    id, username, name, role, email, inst_id, status,
+                    atoi(PQgetvalue(res, i, 6)) ? "true" : "false",
+                    PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "null");
+            }
+            snprintf(json + pos, sizeof(json) - pos, "]}");
+            PQclear(res);
+            db_release(conn, 0);
+            inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
             return;
         }
 
@@ -1405,22 +1537,23 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  (SELECT COUNT(*) FROM incidents WHERE tenant_id = $1 AND status IN ('open','investigating','contained')) AS open_incidents",
                 1, pvals, lens);
 
-            char resp[1024] = {0};
-            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-                snprintf(resp, sizeof(resp),
-                    "{\"campuses\":%s,\"departments\":%s,\"centers\":%s,\"users\":%s,\"devices\":%s,"
-                    "\"enrolledDevices\":%s,\"candidates\":%s,\"exams\":%s,\"liveExams\":%s,"
-                    "\"publishedExams\":%s,\"openIncidents\":%s}",
-                    PQgetvalue(res, 0, 0), PQgetvalue(res, 0, 1), PQgetvalue(res, 0, 2),
-                    PQgetvalue(res, 0, 3), PQgetvalue(res, 0, 4), PQgetvalue(res, 0, 5),
-                    PQgetvalue(res, 0, 6), PQgetvalue(res, 0, 7), PQgetvalue(res, 0, 8),
-                    PQgetvalue(res, 0, 9), PQgetvalue(res, 0, 10));
-            } else {
-                snprintf(resp, sizeof(resp),
-                    "{\"campuses\":0,\"departments\":0,\"centers\":0,\"users\":0,\"devices\":0,"
-                    "\"enrolledDevices\":0,\"candidates\":0,\"exams\":0,\"liveExams\":0,\"publishedExams\":0,\"openIncidents\":0}");
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load institution statistics", origin, extra_headers, extra_len);
+                return;
             }
-            if (res) PQclear(res);
+
+            char resp[1024];
+            snprintf(resp, sizeof(resp),
+                "{\"campuses\":%s,\"departments\":%s,\"centers\":%s,\"users\":%s,\"devices\":%s,"
+                "\"enrolledDevices\":%s,\"candidates\":%s,\"exams\":%s,\"liveExams\":%s,"
+                "\"publishedExams\":%s,\"openIncidents\":%s}",
+                PQgetvalue(res, 0, 0), PQgetvalue(res, 0, 1), PQgetvalue(res, 0, 2),
+                PQgetvalue(res, 0, 3), PQgetvalue(res, 0, 4), PQgetvalue(res, 0, 5),
+                PQgetvalue(res, 0, 6), PQgetvalue(res, 0, 7), PQgetvalue(res, 0, 8),
+                PQgetvalue(res, 0, 9), PQgetvalue(res, 0, 10));
+            PQclear(res);
             db_release(conn, 0);
             inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
@@ -1644,10 +1777,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "FROM institution_agreements WHERE institution_id = $1 ORDER BY created_at DESC",
                 1, pvals, lens);
 
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load agreements", origin, extra_headers, extra_len);
+                return;
+            }
+
             char json[65536] = {0};
             size_t pos = 0;
             pos += snprintf(json + pos, sizeof(json) - pos, "{\"agreements\":[");
-            int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+            int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
                 char id_esc[64] = {0}, title_esc[256] = {0}, digest_esc[128] = {0};
@@ -1751,15 +1891,18 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  (SELECT COUNT(*) FROM exams WHERE tenant_id = $1) AS exams", 1, pvals, lens);
 
             char u_live[256];
-            if (u_res && PQresultStatus(u_res) == PGRES_TUPLES_OK && PQntuples(u_res) > 0) {
-                snprintf(u_live, sizeof(u_live),
-                    "{\"campuses\":%s,\"devices\":%s,\"candidates\":%s,\"exams\":%s}",
-                    PQgetvalue(u_res, 0, 0), PQgetvalue(u_res, 0, 1),
-                    PQgetvalue(u_res, 0, 2), PQgetvalue(u_res, 0, 3));
-            } else {
-                snprintf(u_live, sizeof(u_live), "{\"campuses\":0,\"devices\":0,\"candidates\":0,\"exams\":0}");
+            if (!u_res || PQresultStatus(u_res) != PGRES_TUPLES_OK || PQntuples(u_res) == 0) {
+                if (u_res) PQclear(u_res);
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to compute license usage", origin, extra_headers, extra_len);
+                return;
             }
-            if (u_res) PQclear(u_res);
+            snprintf(u_live, sizeof(u_live),
+                "{\"campuses\":%s,\"devices\":%s,\"candidates\":%s,\"exams\":%s}",
+                PQgetvalue(u_res, 0, 0), PQgetvalue(u_res, 0, 1),
+                PQgetvalue(u_res, 0, 2), PQgetvalue(u_res, 0, 3));
+            PQclear(u_res);
 
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
                 const char *channels = PQgetvalue(res, 0, 13);
@@ -1832,10 +1975,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "WHERE institution_id = $8",
                 8, lv8, ll8);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+            int lic_rows = ok ? atoi(PQcmdTuples(res)) : 0;
             if (res) PQclear(res);
             if (!ok) {
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Failed to update institution license", origin, extra_headers, extra_len);
+                return;
+            }
+            if (lic_rows == 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "No license found for this institution", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -1858,7 +2007,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     sscanf(q + 9, "%31[^& \t\r\n]", res_type);
                 }
             }
-            if (!res_type[0]) snprintf(res_type, sizeof(res_type), "exams");
+            /* No implicit resource: callers must state which entitlement they
+             * are consuming, otherwise an unknown type silently maps to exams. */
+            if (strcmp(res_type, "campuses") != 0 && strcmp(res_type, "devices") != 0 &&
+                strcmp(res_type, "candidates") != 0 && strcmp(res_type, "exams") != 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400,
+                    "resource must be one of campuses, devices, candidates, or exams",
+                    origin, extra_headers, extra_len);
+                return;
+            }
 
             const char *pvals[1] = { inst_id };
             int lens[1] = { (int)strlen(inst_id) };
@@ -1867,7 +2025,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "FROM institution_licenses WHERE institution_id = $1", 1, pvals, lens);
 
             int allowed = 1;
-            int limit = 100, current = 0;
+            int limit = 0, current = 0;
             char reason[256] = "Entitlement valid and within limits";
 
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
@@ -1909,10 +2067,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *upv[1] = { inst_id };
             int upl[1] = { (int)strlen(inst_id) };
             PGresult *cres = db_simple(conn, usage_sql, 1, upv, upl);
-            if (cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0) {
-                current = atoi(PQgetvalue(cres, 0, 0));
+            if (!cres || PQresultStatus(cres) != PGRES_TUPLES_OK || PQntuples(cres) == 0) {
+                if (cres) PQclear(cres);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to compute current entitlement usage", origin, extra_headers, extra_len);
+                return;
             }
-            if (cres) PQclear(cres);
+            current = atoi(PQgetvalue(cres, 0, 0));
+            PQclear(cres);
 
             if (allowed && current >= limit) {
                 allowed = 0;
@@ -1939,10 +2101,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "FROM institution_os_deployments WHERE institution_id = $1 ORDER BY created_at DESC",
                 1, pvals, lens);
 
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load OS deployments", origin, extra_headers, extra_len);
+                return;
+            }
+
             char json[32768] = {0};
             size_t pos = 0;
             pos += snprintf(json + pos, sizeof(json) - pos, "{\"deployments\":[");
-            int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+            int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
                 char id_esc[64] = {0}, hash_esc[128] = {0};
@@ -2041,14 +2210,18 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  COUNT(*) FILTER (WHERE status = 'enrolled') AS enrolled "
                 "FROM devices WHERE tenant_id = $1 OR institution_id = $1",
                 1, pv, pl);
-            int dev_total = 0, dev_attested = 0, dev_locked = 0, dev_enrolled = 0;
-            if (dev_res && PQresultStatus(dev_res) == PGRES_TUPLES_OK && PQntuples(dev_res) > 0) {
-                dev_total = atoi(PQgetvalue(dev_res, 0, 0));
-                dev_attested = atoi(PQgetvalue(dev_res, 0, 1));
-                dev_locked = atoi(PQgetvalue(dev_res, 0, 2));
-                dev_enrolled = atoi(PQgetvalue(dev_res, 0, 3));
+            if (!dev_res || PQresultStatus(dev_res) != PGRES_TUPLES_OK || PQntuples(dev_res) == 0) {
+                if (dev_res) PQclear(dev_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution device readiness", origin, extra_headers, extra_len);
+                return;
             }
-            if (dev_res) PQclear(dev_res);
+            int dev_total = 0, dev_attested = 0, dev_locked = 0, dev_enrolled = 0;
+            dev_total = atoi(PQgetvalue(dev_res, 0, 0));
+            dev_attested = atoi(PQgetvalue(dev_res, 0, 1));
+            dev_locked = atoi(PQgetvalue(dev_res, 0, 2));
+            dev_enrolled = atoi(PQgetvalue(dev_res, 0, 3));
+            PQclear(dev_res);
 
             /* 2. Exam URLs configured for this institution */
             PGresult *exam_res = db_simple(conn,
@@ -2056,12 +2229,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  COUNT(*) FILTER (WHERE exam_url IS NOT NULL AND exam_url != '') AS with_url "
                 "FROM exams WHERE tenant_id = $1 OR institution_id = $1",
                 1, pv, pl);
-            int exam_total = 0, exam_with_url = 0;
-            if (exam_res && PQresultStatus(exam_res) == PGRES_TUPLES_OK && PQntuples(exam_res) > 0) {
-                exam_total = atoi(PQgetvalue(exam_res, 0, 0));
-                exam_with_url = atoi(PQgetvalue(exam_res, 0, 1));
+            if (!exam_res || PQresultStatus(exam_res) != PGRES_TUPLES_OK || PQntuples(exam_res) == 0) {
+                if (exam_res) PQclear(exam_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution exam readiness", origin, extra_headers, extra_len);
+                return;
             }
-            if (exam_res) PQclear(exam_res);
+            int exam_total = 0, exam_with_url = 0;
+            exam_total = atoi(PQgetvalue(exam_res, 0, 0));
+            exam_with_url = atoi(PQgetvalue(exam_res, 0, 1));
+            PQclear(exam_res);
 
             /* 3. Collect distinct exam URLs */
             PGresult *url_res = db_simple(conn,
@@ -2069,30 +2246,35 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "WHERE (tenant_id = $1 OR institution_id = $1) AND exam_url IS NOT NULL AND exam_url != '' "
                 "LIMIT 10",
                 1, pv, pl);
+            if (!url_res || PQresultStatus(url_res) != PGRES_TUPLES_OK) {
+                if (url_res) PQclear(url_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution exam URLs", origin, extra_headers, extra_len);
+                return;
+            }
             char url_list[2048] = "[";
             int url_count = 0;
-            if (url_res && PQresultStatus(url_res) == PGRES_TUPLES_OK) {
-                url_count = PQntuples(url_res);
-                for (int i = 0; i < PQntuples(url_res); i++) {
-                    char esc[256] = {0};
-                    const char *raw = PQgetvalue(url_res, i, 0);
-                    /* Simple JSON-safe copy */
-                    size_t j = 0;
-                    for (size_t k = 0; raw[k] && j < sizeof(esc) - 2; k++) {
-                        if (raw[k] == '"' || raw[k] == '\\') esc[j++] = '\\';
-                        esc[j++] = raw[k];
-                    }
-                    esc[j] = 0;
-                    size_t pos = strlen(url_list);
-                    snprintf(url_list + pos, sizeof(url_list) - pos, "%s\"%s\"", i > 0 ? "," : "", esc);
+            url_count = PQntuples(url_res);
+            for (int i = 0; i < PQntuples(url_res); i++) {
+                char esc[256] = {0};
+                const char *raw = PQgetvalue(url_res, i, 0);
+                /* Simple JSON-safe copy */
+                size_t j = 0;
+                for (size_t k = 0; raw[k] && j < sizeof(esc) - 2; k++) {
+                    if (raw[k] == '"' || raw[k] == '\\') esc[j++] = '\\';
+                    esc[j++] = raw[k];
                 }
+                esc[j] = 0;
+                size_t pos = strlen(url_list);
+                snprintf(url_list + pos, sizeof(url_list) - pos, "%s\"%s\"", i > 0 ? "," : "", esc);
             }
             strncat(url_list, "]", sizeof(url_list) - strlen(url_list) - 1);
-            if (url_res) PQclear(url_res);
+            PQclear(url_res);
 
             /* 4. Audit chain integrity — query the 'audit' table (prev+hash chain) */
             int chain_total = 0, chain_linked = 0;
             int chain_ok = 0;
+            int chain_query_ok = 0;
             {
                 /* C2 fix: scope audit chain to this institution only. */
                 PGresult *chain_res = db_simple(conn,
@@ -2103,8 +2285,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 if (chain_res && PQresultStatus(chain_res) == PGRES_TUPLES_OK && PQntuples(chain_res) > 0) {
                     chain_total = atoi(PQgetvalue(chain_res, 0, 0));
                     chain_linked = atoi(PQgetvalue(chain_res, 0, 1));
+                    chain_query_ok = 1;
                 }
                 if (chain_res) PQclear(chain_res);
+            }
+            if (!chain_query_ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution audit-chain readiness", origin, extra_headers, extra_len);
+                return;
             }
             chain_ok = (chain_total > 0 && chain_linked >= chain_total - 1);
 
@@ -2112,26 +2300,42 @@ void institution_handle(int client_fd, const char *method, const char *path,
             PGresult *onb_res = db_simple(conn,
                 "SELECT status, completed_steps, total_steps FROM institution_onboarding WHERE institution_id = $1",
                 1, pv, pl);
-            char onb_status[40] = "UNKNOWN";
-            int onb_completed = 0, onb_total = 8;
-            if (onb_res && PQresultStatus(onb_res) == PGRES_TUPLES_OK && PQntuples(onb_res) > 0) {
+            if (!onb_res || PQresultStatus(onb_res) != PGRES_TUPLES_OK) {
+                if (onb_res) PQclear(onb_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution onboarding readiness", origin, extra_headers, extra_len);
+                return;
+            }
+            char onb_status[40] = "UNRECORDED";
+            int onb_completed = 0, onb_total = 0;
+            if (PQntuples(onb_res) > 0) {
                 strncpy(onb_status, PQgetvalue(onb_res, 0, 0), sizeof(onb_status) - 1);
                 onb_completed = atoi(PQgetvalue(onb_res, 0, 1));
                 onb_total = atoi(PQgetvalue(onb_res, 0, 2));
             }
-            if (onb_res) PQclear(onb_res);
+            PQclear(onb_res);
 
             /* 6. Institution info */
             PGresult *inst_res = db_simple(conn,
                 "SELECT name, status, plan, contact_email FROM tenants WHERE id = $1",
                 1, pv, pl);
-            char inst_name[128] = "", inst_status[40] = "", inst_plan[40] = "";
-            if (inst_res && PQresultStatus(inst_res) == PGRES_TUPLES_OK && PQntuples(inst_res) > 0) {
-                strncpy(inst_name, PQgetvalue(inst_res, 0, 0), sizeof(inst_name) - 1);
-                strncpy(inst_status, PQgetvalue(inst_res, 0, 1), sizeof(inst_status) - 1);
-                strncpy(inst_plan, PQgetvalue(inst_res, 0, 2), sizeof(inst_plan) - 1);
+            if (!inst_res || PQresultStatus(inst_res) != PGRES_TUPLES_OK) {
+                if (inst_res) PQclear(inst_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution readiness profile", origin, extra_headers, extra_len);
+                return;
             }
-            if (inst_res) PQclear(inst_res);
+            if (PQntuples(inst_res) == 0) {
+                PQclear(inst_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
+                return;
+            }
+            char inst_name[128] = "", inst_status[40] = "", inst_plan[40] = "";
+            strncpy(inst_name, PQgetvalue(inst_res, 0, 0), sizeof(inst_name) - 1);
+            strncpy(inst_status, PQgetvalue(inst_res, 0, 1), sizeof(inst_status) - 1);
+            strncpy(inst_plan, PQgetvalue(inst_res, 0, 2), sizeof(inst_plan) - 1);
+            PQclear(inst_res);
 
             /* Build readiness gates */
             int gate_fleet = (dev_total > 0);
@@ -2167,16 +2371,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"auditChain\":{\"total\":%d,\"linked\":%d,\"ok\":%s},"
                 "\"onboarding\":{\"status\":\"%s\",\"completedSteps\":%d,\"totalSteps\":%d},"
                 "\"gates\":["
-                  "{\"key\":\"fleet\",\"check\":\"Workstation Fleet Hardware Boot in Kiosk Sandbox\","
-                    "\"pass\":%s,\"detail\":\"%d device(s) enrolled and reporting real-time telemetry\"},"
-                  "{\"key\":\"tpm\",\"check\":\"Hardware TPM 2.0 Silicon Attestation Validated\","
-                    "\"pass\":%s,\"detail\":\"%d of %d device(s) verified with signed PCR[0,2,4,7] cryptographic root\"},"
-                  "{\"key\":\"lock\",\"check\":\"Port Containment & External Peripheral Lock Engaged\","
-                    "\"pass\":%s,\"detail\":\"%d of %d workstation(s) enforced with active USB storage & peripheral containment\"},"
-                  "{\"key\":\"url\",\"check\":\"Target Assessment Portal URL Origin Clearance\","
-                    "\"pass\":%s,\"detail\":\"%d assessment portal(s) verified for kiosk navigation\"},"
-                  "{\"key\":\"chain\",\"check\":\"Cryptographic Ledger & Audit Chain Intact\","
-                    "\"pass\":%s,\"detail\":\"Dual-persistence HMAC-SHA256 hash chain verified with %d block(s)\"}"
+                  "{\"key\":\"fleet\",\"check\":\"Registered Device Records Present\","
+                    "\"pass\":%s,\"detail\":\"%d device record(s) found for this institution\"},"
+                  "{\"key\":\"tpm\",\"check\":\"Device Attestation State Markers Present\","
+                    "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an attested or verified state marker\"},"
+                  "{\"key\":\"lock\",\"check\":\"Enrolled or Attested Device State Markers Present\","
+                    "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an enrolled or attested state marker\"},"
+                  "{\"key\":\"url\",\"check\":\"Assessment Portal URLs Configured\","
+                    "\"pass\":%s,\"detail\":\"%d exam URL(s) are configured; URL reachability is not checked\"},"
+                  "{\"key\":\"chain\",\"check\":\"Audit Event Predecessor References Present\","
+                    "\"pass\":%s,\"detail\":\"%d of %d audit event(s) have predecessor references; cryptographic hashes are not verified here\"}"
                 "],"
                 "\"allPassed\":%s"
                 "}",
@@ -2190,7 +2394,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 gate_tpm ? "true" : "false", dev_attested, dev_total,
                 gate_lock ? "true" : "false", dev_locked, dev_total,
                 gate_url ? "true" : "false", url_count,
-                gate_chain ? "true" : "false", chain_total,
+                gate_chain ? "true" : "false", chain_linked, chain_total,
                 all_pass ? "true" : "false");
 
             inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
@@ -2324,6 +2528,25 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
+            /* Only institution-scoped roles may be granted here. Without this
+             * allow-list a caller could submit role=PLATFORM_OWNER and create a
+             * platform owner inside their own tenant. */
+            {
+                static const char *allowed_roles[] = {
+                    "inst_admin", "campus_admin", "exam_controller",
+                    "invigilator", "it_admin", "security_engineer", "auditor"
+                };
+                int role_ok = 0;
+                for (size_t ri = 0; ri < sizeof(allowed_roles) / sizeof(allowed_roles[0]); ri++) {
+                    if (strcmp(role, allowed_roles[ri]) == 0) { role_ok = 1; break; }
+                }
+                if (!role_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Invalid institution administrator role", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
             char effective_inst_id[64];
             strncpy(effective_inst_id, inst_id, sizeof(effective_inst_id) - 1);
             effective_inst_id[sizeof(effective_inst_id) - 1] = '\0';
@@ -2350,6 +2573,20 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     return;
                 }
                 PQclear(tchk);
+            }
+
+            if (campus_id[0]) {
+                const char *cv[2] = { campus_id, effective_inst_id };
+                int cl[2] = { (int)strlen(campus_id), (int)strlen(effective_inst_id) };
+                PGresult *cres = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE id = $1 AND tenant_id = $2 LIMIT 1", 2, cv, cl);
+                int c_ok = cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0;
+                if (cres) PQclear(cres);
+                if (!c_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Campus does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             if (!username[0]) {
@@ -2458,22 +2695,34 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "INSERT INTO staff (id, tenant_id, user_id, name, role_title, campus_id, status, created_at, updated_at) "
                     "VALUES ($1, $2, $3, $4, $5, $6, 'active', EXTRACT(EPOCH FROM NOW())::bigint, EXTRACT(EPOCH FROM NOW())::bigint) "
                     "ON CONFLICT (id) DO NOTHING", 6, s_vals, s_lens);
+                int s_ok = stf && PQresultStatus(stf) == PGRES_COMMAND_OK;
                 if (stf) PQclear(stf);
+                if (!s_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Administrator created but the campus assignment could not be saved", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
-            /* Update institution_onboarding: record first admin invitation and advance admin_mfa step */
+            /* Record the real invitation. Inviting an administrator is not the
+             * same as that administrator enrolling MFA, so admin_mfa is not
+             * marked complete here. */
             {
                 const char *onb_v[3] = { effective_inst_id, email, now_str };
                 int onb_l[3] = { (int)strlen(effective_inst_id), (int)strlen(email), (int)strlen(now_str) };
                 PGresult *onb_upd = db_simple(conn,
                     "UPDATE institution_onboarding SET "
-                    "checklist = jsonb_set(checklist, '{admin_mfa}', jsonb_build_object('completed', true, 'admin', $2::text, 'at', $3::bigint)), "
                     "first_admin_invited = 1, "
                     "first_admin_email = $2, "
-                    "completed_steps = (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true'), "
                     "updated_at = $3::bigint WHERE institution_id = $1",
                     3, onb_v, onb_l);
+                int onb_ok = onb_upd && PQresultStatus(onb_upd) == PGRES_COMMAND_OK;
                 if (onb_upd) PQclear(onb_upd);
+                if (!onb_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Administrator created but onboarding state could not be updated", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             audit_and_ledger(sess.user_id, "INSTITUTION_ADMIN_INVITED", effective_inst_id, email);
@@ -2567,15 +2816,31 @@ void institution_handle(int client_fd, const char *method, const char *path,
         /* 3m. Update Onboarding Step: POST /api/v1/admin/institutions/:id/onboarding/step */
         if (strcmp(method, "POST") == 0 && strcmp(sub, "onboarding/step") == 0) {
             char step_key[64] = {0}, notes[256] = {0};
-            int completed = 1;
+            static const char *allowed_steps[] = {
+                "registration", "identity_verification", "agreement", "license",
+                "admin_mfa", "campus_hierarchy", "os_deployment", "production_readiness"
+            };
+            int completed = 0;
+            int valid_step = 0;
             ctrl_json_string(body, "stepKey", step_key, sizeof(step_key));
             if (!step_key[0]) ctrl_json_string(body, "step", step_key, sizeof(step_key));
-            ctrl_json_bool(body, "completed", &completed);
+            int has_completed = ctrl_json_bool(body, "completed", &completed);
             ctrl_json_string(body, "notes", notes, sizeof(notes));
 
-            if (!step_key[0]) {
+            if (!is_owner) {
                 db_release(conn, 0);
-                inst_send_error(client_fd, 400, "stepKey is required", origin, extra_headers, extra_len);
+                inst_send_error(client_fd, 403, "Platform owner permission required to attest onboarding steps", origin, extra_headers, extra_len);
+                return;
+            }
+            for (size_t i = 0; i < sizeof(allowed_steps) / sizeof(allowed_steps[0]); i++) {
+                if (strcmp(step_key, allowed_steps[i]) == 0) {
+                    valid_step = 1;
+                    break;
+                }
+            }
+            if (!valid_step || !has_completed || strlen(notes) < 8) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid stepKey, completed flag, and verification notes of at least 8 characters are required", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -2641,7 +2906,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 ") "
                 "UPDATE institution_onboarding o SET "
                 "  completed_steps = cnt.n, "
-                "  status = CASE WHEN cnt.n >= 8 THEN 'ACTIVE' "
+                "  status = CASE WHEN cnt.n >= 8 THEN 'READY_FOR_REVIEW' "
                 "               WHEN cnt.n >= 6 THEN 'CONFIGURED' "
                 "               WHEN cnt.n >= 4 THEN 'LICENSED' "
                 "               WHEN cnt.n >= 1 THEN 'IN_PROGRESS' "
@@ -2684,7 +2949,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "FROM tenants WHERE id = $1", 1, pvals, lens);
 
             char json[8192] = {0};
-            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load institution", origin, extra_headers, extra_len);
+                return;
+            }
+            if (PQntuples(res) > 0) {
                 inst_list_json(res, json, sizeof(json));
                 /* Unwrap list to single object */
                 if (strncmp(json, "{\"institutions\":[", 17) == 0) {
@@ -2694,13 +2965,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
                         memmove(json, json + 17, jlen - 16);
                     }
                 }
-            } else {
-                snprintf(json, sizeof(json), "{\"error\":\"Institution not found\"}");
+                PQclear(res);
+                db_release(conn, 0);
+                inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+                return;
             }
-            if (res) PQclear(res);
+            PQclear(res);
             db_release(conn, 0);
-            int code = (json[0] == '{' && strstr(json, "\"error\"")) ? 404 : 200;
-            inst_send_json(client_fd, code, json, origin, extra_headers, extra_len);
+            inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
             return;
         }
 
@@ -2843,6 +3115,28 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(now_ms, sizeof(now_ms), "%ld000", now_sec);
             snprintf(valid_until_ms, sizeof(valid_until_ms), "%ld000", now_sec + 31536000L);
 
+            /* Verify scope before mutating anything. */
+            char affected_inst[64] = {0};
+            {
+                const char *sv[1] = { agr_id };
+                int sl[1] = { (int)strlen(agr_id) };
+                PGresult *sres = db_simple(conn,
+                    "SELECT institution_id FROM institution_agreements WHERE id = $1", 1, sv, sl);
+                if (!sres || PQresultStatus(sres) != PGRES_TUPLES_OK || PQntuples(sres) == 0) {
+                    if (sres) PQclear(sres);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 404, "Agreement not found", origin, extra_headers, extra_len);
+                    return;
+                }
+                snprintf(affected_inst, sizeof(affected_inst), "%s", PQgetvalue(sres, 0, 0));
+                PQclear(sres);
+            }
+            if (!is_owner && strcmp(sess.institution_id, affected_inst) != 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 403, "Access denied: agreement belongs to a different institution", origin, extra_headers, extra_len);
+                return;
+            }
+
             /* Generate SHA256 document digest over agreement id, signer, and timestamp */
             char sign_payload[512];
             snprintf(sign_payload, sizeof(sign_payload), "%s:%s:%s:%s:%s",
@@ -2859,62 +3153,58 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "status = 'EXECUTED', signer_name = $1, signer_email = $2, signer_role = $3, "
                 "signed_at = $4::bigint, document_digest = $5::text, effective_from = $4::bigint, effective_until = $6::bigint, "
                 "audit_trail = audit_trail || jsonb_build_array(jsonb_build_object('at',$4::bigint,'by',$2::varchar,'action','Digitally executed','digest',$5::text)) "
-                "WHERE id = $7 RETURNING institution_id", 7, u_vals, u_lens);
+                "WHERE id = $7", 7, u_vals, u_lens);
 
-            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-                char affected_inst[64] = {0};
-                snprintf(affected_inst, sizeof(affected_inst), "%s", PQgetvalue(res, 0, 0));
-                PQclear(res);
-
-                /* C3 fix: verify caller has scope over this agreement's institution. */
-                if (!is_owner && strcmp(sess.institution_id, affected_inst) != 0) {
-                    /* Undo the UPDATE we just did — the caller had no scope. */
-                    const char *rv[1] = { agr_id };
-                    int rl[1] = { (int)strlen(agr_id) };
-                    PGresult *undo = db_simple(conn,
-                        "UPDATE institution_agreements SET status='DRAFT', signer_name=NULL, signer_email=NULL, "
-                        "signer_role=NULL, signed_at=NULL, document_digest=NULL, effective_from=NULL, effective_until=NULL "
-                        "WHERE id=$1", 1, rv, rl);
-                    if (undo) PQclear(undo);
-                    db_release(conn, 0);
-                    inst_send_error(client_fd, 403, "Access denied: agreement belongs to a different institution", origin, extra_headers, extra_len);
-                    return;
-                }
-
-                /* Automatically advance agreement step on onboarding checklist */
-                if (affected_inst[0]) {
-                    const char *ov[3] = { affected_inst, now_ms, digest };
-                    int ol[3] = { (int)strlen(affected_inst), (int)strlen(now_ms), (int)strlen(digest) };
-                    PGresult *onb_r = db_simple(conn,
-                        "UPDATE institution_onboarding SET "
-                        "checklist = jsonb_set(checklist, '{agreement}', jsonb_build_object('completed', true, 'at', $2::bigint, 'digest', $3::text)), "
-                        "completed_steps = (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true'), "
-                        "updated_at = $2::bigint WHERE institution_id = $1",
-                        3, ov, ol);
-                    int onb_ok = onb_r && PQresultStatus(onb_r) == PGRES_COMMAND_OK;
-                    if (onb_r) PQclear(onb_r);
-                    if (!onb_ok) {
-                        /* The agreement was executed; report the onboarding
-                         * sync failure instead of claiming full success. */
-                        db_release(conn, 0);
-                        inst_send_error(client_fd, 500, "Agreement executed but onboarding state could not be updated", origin, extra_headers, extra_len);
-                        return;
-                    }
-                }
-
-                audit_and_ledger(sess.user_id, "AGREEMENT_DIGITALLY_SIGNED", agr_id, digest);
+            int sign_ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+            int sign_rows = sign_ok ? atoi(PQcmdTuples(res)) : 0;
+            if (res) PQclear(res);
+            if (!sign_ok) {
                 db_release(conn, 0);
-
-                char resp[512];
-                snprintf(resp, sizeof(resp),
-                    "{\"status\":\"executed\",\"agreement_id\":\"%s\",\"document_digest\":\"%s\",\"signed_at\":%s}",
-                    agr_id, digest, now_ms);
-                inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+                inst_send_error(client_fd, 500, "Failed to execute the agreement", origin, extra_headers, extra_len);
                 return;
             }
-            if (res) PQclear(res);
+            if (sign_rows == 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Agreement not found", origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (affected_inst[0]) {
+                const char *ov[3] = { affected_inst, now_ms, digest };
+                int ol[3] = { (int)strlen(affected_inst), (int)strlen(now_ms), (int)strlen(digest) };
+                /* Recompute completed_steps from the checklist produced by this
+                 * same statement (a plain UPDATE would read the pre-change row). */
+                PGresult *onb_r = db_simple(conn,
+                    "WITH upd AS ("
+                    "  UPDATE institution_onboarding SET "
+                    "    checklist = jsonb_set(checklist, '{agreement}', jsonb_build_object('completed', true, 'at', $2::bigint, 'digest', $3::text)), "
+                    "    updated_at = $2::bigint WHERE institution_id = $1 "
+                    "  RETURNING institution_id, checklist"
+                    "), cnt AS ("
+                    "  SELECT institution_id, (SELECT count(*) FROM jsonb_each(checklist) WHERE value->>'completed' = 'true') AS n FROM upd"
+                    ") "
+                    "UPDATE institution_onboarding o SET completed_steps = cnt.n "
+                    "FROM cnt WHERE o.institution_id = cnt.institution_id",
+                    3, ov, ol);
+                int onb_ok = onb_r && PQresultStatus(onb_r) == PGRES_COMMAND_OK;
+                if (onb_r) PQclear(onb_r);
+                if (!onb_ok) {
+                    /* The agreement was executed; report the onboarding
+                     * sync failure instead of claiming full success. */
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Agreement executed but onboarding state could not be updated", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
+            audit_and_ledger(sess.user_id, "AGREEMENT_DIGITALLY_SIGNED", agr_id, digest);
             db_release(conn, 0);
-            inst_send_error(client_fd, 404, "Agreement not found", origin, extra_headers, extra_len);
+
+            char resp[512];
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"executed\",\"agreement_id\":\"%s\",\"document_digest\":\"%s\",\"signed_at\":%s}",
+                agr_id, digest, now_ms);
+            inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
     }
@@ -2965,10 +3255,16 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 4, uv, ul);
             /* H3 fix: check UPDATE result, return 500 on failure. */
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+            int dep_rows = ok ? atoi(PQcmdTuples(res)) : 0;
             if (res) PQclear(res);
             if (!ok) {
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Failed to update deployment status", origin, extra_headers, extra_len);
+                return;
+            }
+            if (dep_rows == 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Deployment not found", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -3059,7 +3355,337 @@ void institution_handle(int client_fd, const char *method, const char *path,
     }
 
     /* -------------------------------------------------------------------------
-     * 4. Campuses Routes: /api/v1/admin/campuses...
+     * 4. Exam Centers Routes: /api/v1/admin/centers...
+     * ------------------------------------------------------------------------- */
+    if (strncmp(path, "/api/v1/admin/centers", 21) == 0) {
+        char center_id[64] = {0}, action[32] = {0};
+        extract_sub_id_and_action(path, "/api/v1/admin/centers/", center_id,
+                                  sizeof(center_id), action, sizeof(action));
+
+        if (strcmp(method, "GET") == 0 && !center_id[0]) {
+            char center_tenant[64] = {0};
+            if (is_owner) inst_query_param(path, "institution_id", center_tenant, sizeof(center_tenant));
+            else snprintf(center_tenant, sizeof(center_tenant), "%s", sess.institution_id);
+
+            PGresult *res = NULL;
+            if (center_tenant[0]) {
+                const char *values[1] = { center_tenant };
+                int lengths[1] = { (int)strlen(center_tenant) };
+                res = db_simple(conn,
+                    "SELECT id, tenant_id, COALESCE(campus_id,''), code, name, COALESCE(city,''), "
+                    "COALESCE(labs,1), COALESCE(seats_per_lab,24), COALESCE(capacity,24), "
+                    "COALESCE(status,'unknown'), created_at "
+                    "FROM centers WHERE tenant_id = $1 ORDER BY name ASC",
+                    1, values, lengths);
+            } else {
+                res = PQexec(conn,
+                    "SELECT id, tenant_id, COALESCE(campus_id,''), code, name, COALESCE(city,''), "
+                    "COALESCE(labs,1), COALESCE(seats_per_lab,24), COALESCE(capacity,24), "
+                    "COALESCE(status,'unknown'), created_at "
+                    "FROM centers ORDER BY name ASC");
+            }
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load centers", origin, extra_headers, extra_len);
+                return;
+            }
+
+            char json[32768] = "{\"centers\":[";
+            size_t pos = strlen(json);
+            int row_count = PQntuples(res);
+            for (int i = 0; i < row_count; i++) {
+                char id[128] = {0}, tenant[128] = {0}, campus[128] = {0};
+                char code[64] = {0}, name[256] = {0}, city[128] = {0}, status[64] = {0};
+                escape_json_str(PQgetvalue(res, i, 0), id, sizeof(id));
+                escape_json_str(PQgetvalue(res, i, 1), tenant, sizeof(tenant));
+                escape_json_str(PQgetvalue(res, i, 2), campus, sizeof(campus));
+                escape_json_str(PQgetvalue(res, i, 3), code, sizeof(code));
+                escape_json_str(PQgetvalue(res, i, 4), name, sizeof(name));
+                escape_json_str(PQgetvalue(res, i, 5), city, sizeof(city));
+                escape_json_str(PQgetvalue(res, i, 9), status, sizeof(status));
+                int written = snprintf(json + pos, sizeof(json) - pos,
+                    "%s{\"id\":\"%s\",\"tenantId\":\"%s\",\"campusId\":\"%s\","
+                    "\"code\":\"%s\",\"name\":\"%s\",\"city\":\"%s\","
+                    "\"labs\":%s,\"seatsPerLab\":%s,\"capacity\":%s,"
+                    "\"status\":\"%s\",\"createdAt\":%s}",
+                    i ? "," : "", id, tenant, campus, code, name, city,
+                    PQgetvalue(res, i, 6), PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
+                    status, PQgetvalue(res, i, 10));
+                if (written < 0 || (size_t)written >= sizeof(json) - pos) {
+                    PQclear(res);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Centers response exceeds the supported size", origin, extra_headers, extra_len);
+                    return;
+                }
+                pos += (size_t)written;
+            }
+            if (pos + 2 >= sizeof(json)) {
+                PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Centers response exceeds the supported size", origin, extra_headers, extra_len);
+                return;
+            }
+            snprintf(json + pos, sizeof(json) - pos, "]}");
+            PQclear(res);
+            db_release(conn, 0);
+            inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (strcmp(method, "POST") == 0 && !center_id[0]) {
+            char tenant_id[64] = {0}, campus_id[64] = {0}, code[32] = {0};
+            char name[128] = {0}, city[64] = {0};
+            int labs = 0, seats_per_lab = 0;
+            ctrl_json_string(body, "tenantId", tenant_id, sizeof(tenant_id));
+            if (!tenant_id[0]) ctrl_json_string(body, "tenant_id", tenant_id, sizeof(tenant_id));
+            ctrl_json_string(body, "campusId", campus_id, sizeof(campus_id));
+            ctrl_json_string(body, "code", code, sizeof(code));
+            ctrl_json_string(body, "name", name, sizeof(name));
+            ctrl_json_string(body, "city", city, sizeof(city));
+            ctrl_json_int(body, "labs", &labs);
+            ctrl_json_int(body, "seatsPerLab", &seats_per_lab);
+            if (!is_owner) snprintf(tenant_id, sizeof(tenant_id), "%s", sess.institution_id);
+            sanitize_utf8(code);
+            sanitize_utf8(name);
+            sanitize_utf8(city);
+            sanitize_utf8(campus_id);
+            for (char *p = code; *p; p++) {
+                if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
+            }
+            size_t code_len = strlen(code);
+            int valid_code = code_len >= 5 && code_len <= 7 && code[3] == '-';
+            for (size_t i = 0; valid_code && i < code_len; i++) {
+                if (i < 3) valid_code = code[i] >= 'A' && code[i] <= 'Z';
+                else if (i > 3) valid_code = code[i] >= '0' && code[i] <= '9';
+            }
+            if (!tenant_id[0] || !valid_code || strlen(name) < 3 ||
+                labs < 1 || labs > 12 || seats_per_lab < 8 || seats_per_lab > 96 ||
+                labs * seats_per_lab > 416) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid institution, center code, name, labs, and seats per lab are required", origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *tenant_values[1] = { tenant_id };
+            int tenant_lengths[1] = { (int)strlen(tenant_id) };
+            PGresult *tenant_res = db_simple(conn,
+                "SELECT status, max_centers, (SELECT count(*) FROM centers c WHERE c.tenant_id = t.id) "
+                "FROM tenants t WHERE t.id = $1",
+                1, tenant_values, tenant_lengths);
+            if (!tenant_res || PQresultStatus(tenant_res) != PGRES_TUPLES_OK ||
+                PQntuples(tenant_res) == 0) {
+                if (tenant_res) PQclear(tenant_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
+                return;
+            }
+            int tenant_active = strcmp(PQgetvalue(tenant_res, 0, 0), "active") == 0;
+            int max_centers = atoi(PQgetvalue(tenant_res, 0, 1));
+            int center_count = atoi(PQgetvalue(tenant_res, 0, 2));
+            PQclear(tenant_res);
+            if (!tenant_active) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 409, "Centers can only be created for an active institution", origin, extra_headers, extra_len);
+                return;
+            }
+            if (max_centers > 0 && center_count >= max_centers) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 409, "Institution center limit reached", origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *duplicate_values[2] = { tenant_id, code };
+            int duplicate_lengths[2] = { (int)strlen(tenant_id), (int)strlen(code) };
+            PGresult *duplicate = db_simple(conn,
+                "SELECT 1 FROM centers WHERE tenant_id = $1 AND code = $2 LIMIT 1",
+                2, duplicate_values, duplicate_lengths);
+            int duplicate_code = duplicate && PQresultStatus(duplicate) == PGRES_TUPLES_OK &&
+                PQntuples(duplicate) > 0;
+            if (duplicate) PQclear(duplicate);
+            if (duplicate_code) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 409, "Center code is already used in this institution", origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (campus_id[0]) {
+                const char *campus_values[2] = { campus_id, tenant_id };
+                int campus_lengths[2] = { (int)strlen(campus_id), (int)strlen(tenant_id) };
+                PGresult *campus = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+                    2, campus_values, campus_lengths);
+                int campus_exists = campus && PQresultStatus(campus) == PGRES_TUPLES_OK &&
+                    PQntuples(campus) > 0;
+                if (campus) PQclear(campus);
+                if (!campus_exists) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Campus does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
+            char id[64] = {0}, labs_text[16] = {0}, seats_text[16] = {0}, capacity_text[16] = {0};
+            inst_generate_id("ctr", id, sizeof(id));
+            snprintf(labs_text, sizeof(labs_text), "%d", labs);
+            snprintf(seats_text, sizeof(seats_text), "%d", seats_per_lab);
+            snprintf(capacity_text, sizeof(capacity_text), "%d", labs * seats_per_lab);
+            const char *values[9] = { id, tenant_id, campus_id, code, name, city, labs_text, seats_text, capacity_text };
+            int lengths[9];
+            for (int i = 0; i < 9; i++) lengths[i] = (int)strlen(values[i]);
+            PGresult *created = db_simple(conn,
+                "INSERT INTO centers (id, tenant_id, campus_id, code, name, city, labs, seats_per_lab, capacity, status, created_at) "
+                "VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7::integer,$8::integer,$9::integer,'active',"
+                "CAST(EXTRACT(EPOCH FROM clock_timestamp()) * 1000 AS BIGINT))",
+                9, values, lengths);
+            int created_ok = created && PQresultStatus(created) == PGRES_COMMAND_OK;
+            if (created) PQclear(created);
+            if (!created_ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to create center", origin, extra_headers, extra_len);
+                return;
+            }
+            audit_and_ledger(sess.user_id, "CENTER_CREATED", id, code);
+            db_release(conn, 0);
+            char response[256];
+            snprintf(response, sizeof(response),
+                "{\"status\":\"created\",\"center_id\":\"%s\",\"code\":\"%s\",\"message\":\"Center %s created with %d seats.\"}",
+                id, code, code, labs * seats_per_lab);
+            inst_send_json(client_fd, 201, response, origin, extra_headers, extra_len);
+            return;
+        }
+
+        if ((strcmp(method, "PUT") == 0 || strcmp(method, "POST") == 0) &&
+            center_id[0] && !action[0]) {
+            char campus_id[64] = {0}, name[128] = {0}, city[64] = {0};
+            int labs = 0, seats_per_lab = 0;
+            ctrl_json_string(body, "campusId", campus_id, sizeof(campus_id));
+            ctrl_json_string(body, "name", name, sizeof(name));
+            ctrl_json_string(body, "city", city, sizeof(city));
+            ctrl_json_int(body, "labs", &labs);
+            ctrl_json_int(body, "seatsPerLab", &seats_per_lab);
+            sanitize_utf8(campus_id);
+            sanitize_utf8(name);
+            sanitize_utf8(city);
+            if (strlen(name) < 3 || labs < 1 || labs > 12 ||
+                seats_per_lab < 8 || seats_per_lab > 96 || labs * seats_per_lab > 416) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "A valid name, labs, and seats per lab are required", origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *scope_values[1] = { center_id };
+            int scope_lengths[1] = { (int)strlen(center_id) };
+            PGresult *scope = is_owner
+                ? db_simple(conn, "SELECT tenant_id FROM centers WHERE id = $1", 1, scope_values, scope_lengths)
+                : db_simple(conn, "SELECT tenant_id FROM centers WHERE id = $1 AND tenant_id = $2",
+                    2, (const char *[]){ center_id, sess.institution_id },
+                    (int[]){ (int)strlen(center_id), (int)strlen(sess.institution_id) });
+            if (!scope || PQresultStatus(scope) != PGRES_TUPLES_OK || PQntuples(scope) == 0) {
+                if (scope) PQclear(scope);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 404, "Center not found in this institution", origin, extra_headers, extra_len);
+                return;
+            }
+            char tenant_id[64] = {0};
+            snprintf(tenant_id, sizeof(tenant_id), "%s", PQgetvalue(scope, 0, 0));
+            PQclear(scope);
+            if (campus_id[0]) {
+                const char *campus_values[2] = { campus_id, tenant_id };
+                int campus_lengths[2] = { (int)strlen(campus_id), (int)strlen(tenant_id) };
+                PGresult *campus = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+                    2, campus_values, campus_lengths);
+                int campus_exists = campus && PQresultStatus(campus) == PGRES_TUPLES_OK &&
+                    PQntuples(campus) > 0;
+                if (campus) PQclear(campus);
+                if (!campus_exists) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Campus does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
+            char labs_text[16] = {0}, seats_text[16] = {0};
+            snprintf(labs_text, sizeof(labs_text), "%d", labs);
+            snprintf(seats_text, sizeof(seats_text), "%d", seats_per_lab);
+            const char *values[7] = { name, city, campus_id, labs_text, seats_text, center_id, tenant_id };
+            int lengths[7];
+            for (int i = 0; i < 7; i++) lengths[i] = (int)strlen(values[i]);
+            PGresult *updated = db_simple(conn,
+                "UPDATE centers SET name=$1, city=$2, campus_id=NULLIF($3,''), labs=$4::integer, "
+                "seats_per_lab=$5::integer, capacity=$4::integer*$5::integer "
+                "WHERE id=$6 AND tenant_id=$7",
+                7, values, lengths);
+            int updated_ok = updated && PQresultStatus(updated) == PGRES_COMMAND_OK &&
+                atoi(PQcmdTuples(updated)) > 0;
+            if (updated) PQclear(updated);
+            if (!updated_ok) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to update center", origin, extra_headers, extra_len);
+                return;
+            }
+            audit_and_ledger(sess.user_id, "CENTER_UPDATED", center_id, name);
+            db_release(conn, 0);
+            char response[192];
+            snprintf(response, sizeof(response), "{\"status\":\"updated\",\"center_id\":\"%s\"}", center_id);
+            inst_send_json(client_fd, 200, response, origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (strcmp(method, "POST") == 0 && center_id[0] && strcmp(action, "status") == 0) {
+            char status[32] = {0}, reason[256] = {0};
+            ctrl_json_string(body, "status", status, sizeof(status));
+            ctrl_json_string(body, "reason", reason, sizeof(reason));
+            if ((strcmp(status, "active") != 0 && strcmp(status, "inactive") != 0) ||
+                (strcmp(status, "inactive") == 0 && strlen(reason) < 8)) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "Status must be active or inactive; deactivation requires a reason of at least 8 characters", origin, extra_headers, extra_len);
+                return;
+            }
+            if (strcmp(status, "inactive") == 0) {
+                const char *exam_values[1] = { center_id };
+                int exam_lengths[1] = { (int)strlen(center_id) };
+                PGresult *exam = db_simple(conn,
+                    "SELECT 1 FROM exams WHERE status IN ('published','live') "
+                    "AND center_ids ? $1 LIMIT 1",
+                    1, exam_values, exam_lengths);
+                int in_use = exam && PQresultStatus(exam) == PGRES_TUPLES_OK && PQntuples(exam) > 0;
+                if (exam) PQclear(exam);
+                if (in_use) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "An open exam uses this center; finish or cancel it first", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+            const char *values[2] = { center_id, status };
+            int lengths[2] = { (int)strlen(center_id), (int)strlen(status) };
+            PGresult *updated = is_owner
+                ? db_simple(conn, "UPDATE centers SET status=$2 WHERE id=$1", 2, values, lengths)
+                : db_simple(conn, "UPDATE centers SET status=$2 WHERE id=$1 AND tenant_id=$3",
+                    3, (const char *[]){ center_id, status, sess.institution_id },
+                    (int[]){ (int)strlen(center_id), (int)strlen(status), (int)strlen(sess.institution_id) });
+            int updated_ok = updated && PQresultStatus(updated) == PGRES_COMMAND_OK;
+            int rows = updated_ok ? atoi(PQcmdTuples(updated)) : 0;
+            if (updated) PQclear(updated);
+            if (!updated_ok || rows == 0) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, updated_ok ? 404 : 500,
+                    updated_ok ? "Center not found in this institution" : "Failed to update center status",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            audit_and_ledger(sess.user_id, "CENTER_STATUS_UPDATED", center_id, status);
+            db_release(conn, 0);
+            char response[192];
+            snprintf(response, sizeof(response), "{\"status\":\"ok\",\"center_id\":\"%s\",\"new_status\":\"%s\"}", center_id, status);
+            inst_send_json(client_fd, 200, response, origin, extra_headers, extra_len);
+            return;
+        }
+    }
+
+    /* -------------------------------------------------------------------------
+     * 5. Campuses Routes: /api/v1/admin/campuses...
      * ------------------------------------------------------------------------- */
     if (strncmp(path, "/api/v1/admin/campuses", 22) == 0) {
         char cmp_id[64] = {0}, act[32] = {0};
@@ -3069,7 +3695,10 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "GET") == 0 && !cmp_id[0]) {
             char target_inst[64] = {0};
             if (!is_owner) snprintf(target_inst, sizeof(target_inst), "%s", sess.institution_id);
-            else ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+            else {
+                ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+                if (!target_inst[0]) inst_query_param(path, "institution_id", target_inst, sizeof(target_inst));
+            }
 
             PGresult *res = NULL;
             if (target_inst[0]) {
@@ -3084,10 +3713,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "FROM campuses ORDER BY created_at DESC");
             }
 
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load campuses", origin, extra_headers, extra_len);
+                return;
+            }
+
             char json[32768] = {0};
             size_t pos = 0;
             pos += snprintf(json + pos, sizeof(json) - pos, "{\"campuses\":[");
-            int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+            int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
                 char c_id[64] = {0}, c_tid[64] = {0}, c_name[256] = {0}, c_code[64] = {0}, c_city[128] = {0}, c_addr[256] = {0};
@@ -3117,7 +3753,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "POST") == 0 && !cmp_id[0]) {
             char tenant_id[64] = {0}, name[128] = {0}, code[32] = {0};
             char city[64] = {0}, address[256] = {0};
-            int capacity = 100;
+            int capacity = 0;
 
             ctrl_json_string(body, "tenantId", tenant_id, sizeof(tenant_id));
             if (!tenant_id[0]) ctrl_json_string(body, "tenant_id", tenant_id, sizeof(tenant_id));
@@ -3139,12 +3775,50 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 inst_send_error(client_fd, 400, "name and tenantId are required", origin, extra_headers, extra_len);
                 return;
             }
+            if (capacity < 1 || capacity > 100000) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "capacity must be between 1 and 100000", origin, extra_headers, extra_len);
+                return;
+            }
+
+            /* The tenant must exist and be active before it can own a campus. */
+            {
+                const char *tv[1] = { tenant_id };
+                int tl[1] = { (int)strlen(tenant_id) };
+                PGresult *tres = db_simple(conn, "SELECT status FROM tenants WHERE id = $1", 1, tv, tl);
+                int t_ok = tres && PQresultStatus(tres) == PGRES_TUPLES_OK && PQntuples(tres) > 0;
+                int t_active = t_ok && strcmp(PQgetvalue(tres, 0, 0), "active") == 0;
+                if (tres) PQclear(tres);
+                if (!t_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
+                    return;
+                }
+                if (!t_active) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "Campuses can only be created for an active institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
 
             if (!code[0]) {
                 inst_generate_code("CMP", code, sizeof(code));
                 if (!code[0]) {
                     db_release(conn, 0);
                     inst_send_error(client_fd, 503, "Secure campus code generation unavailable", origin, extra_headers, extra_len);
+                    return;
+                }
+            } else {
+                /* A caller-supplied code must still be unique per institution. */
+                const char *dv[2] = { tenant_id, code };
+                int dl[2] = { (int)strlen(tenant_id), (int)strlen(code) };
+                PGresult *dres = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE tenant_id = $1 AND code = $2 LIMIT 1", 2, dv, dl);
+                int dup = dres && PQresultStatus(dres) == PGRES_TUPLES_OK && PQntuples(dres) > 0;
+                if (dres) PQclear(dres);
+                if (dup) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "Campus code is already used in this institution", origin, extra_headers, extra_len);
                     return;
                 }
             }
@@ -3328,7 +4002,10 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "GET") == 0 && !dep_id[0]) {
             char target_inst[64] = {0};
             if (!is_owner) snprintf(target_inst, sizeof(target_inst), "%s", sess.institution_id);
-            else ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+            else {
+                ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+                if (!target_inst[0]) inst_query_param(path, "institution_id", target_inst, sizeof(target_inst));
+            }
 
             PGresult *res = NULL;
             if (target_inst[0]) {
@@ -3343,10 +4020,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "FROM departments ORDER BY created_at DESC");
             }
 
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load departments", origin, extra_headers, extra_len);
+                return;
+            }
+
             char json[32768] = {0};
             size_t pos = 0;
             pos += snprintf(json + pos, sizeof(json) - pos, "{\"departments\":[");
-            int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+            int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
                 char d_id[64] = {0}, d_tid[64] = {0}, d_cid[64] = {0}, d_name[256] = {0}, d_code[64] = {0}, d_type[64] = {0};
@@ -3389,12 +4073,50 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
+            {
+                const char *tv[1] = { tenant_id };
+                int tl[1] = { (int)strlen(tenant_id) };
+                PGresult *tres = db_simple(conn, "SELECT id FROM tenants WHERE id = $1", 1, tv, tl);
+                int t_ok = tres && PQresultStatus(tres) == PGRES_TUPLES_OK && PQntuples(tres) > 0;
+                if (tres) PQclear(tres);
+                if (!t_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+            if (campus_id[0]) {
+                const char *cv[2] = { campus_id, tenant_id };
+                int cl[2] = { (int)strlen(campus_id), (int)strlen(tenant_id) };
+                PGresult *cres = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE id = $1 AND tenant_id = $2 LIMIT 1", 2, cv, cl);
+                int c_ok = cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0;
+                if (cres) PQclear(cres);
+                if (!c_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Campus does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
             char id[64]; inst_generate_id("dep", id, sizeof(id));
             if (!code[0]) {
                 inst_generate_code("DEP", code, sizeof(code));
                 if (!code[0]) {
                     db_release(conn, 0);
                     inst_send_error(client_fd, 503, "Secure department code generation unavailable", origin, extra_headers, extra_len);
+                    return;
+                }
+            } else {
+                const char *dv[2] = { tenant_id, code };
+                int dl[2] = { (int)strlen(tenant_id), (int)strlen(code) };
+                PGresult *dres = db_simple(conn,
+                    "SELECT 1 FROM departments WHERE tenant_id = $1 AND code = $2 LIMIT 1", 2, dv, dl);
+                int dup = dres && PQresultStatus(dres) == PGRES_TUPLES_OK && PQntuples(dres) > 0;
+                if (dres) PQclear(dres);
+                if (dup) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "Department code is already used in this institution", origin, extra_headers, extra_len);
                     return;
                 }
             }
@@ -3505,7 +4227,10 @@ void institution_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "GET") == 0 && !stf_id[0]) {
             char target_inst[64] = {0};
             if (!is_owner) snprintf(target_inst, sizeof(target_inst), "%s", sess.institution_id);
-            else ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+            else {
+                ctrl_json_string(body, "institution_id", target_inst, sizeof(target_inst));
+                if (!target_inst[0]) inst_query_param(path, "institution_id", target_inst, sizeof(target_inst));
+            }
 
             PGresult *res = NULL;
             if (target_inst[0]) {
@@ -3520,10 +4245,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "FROM staff ORDER BY created_at DESC");
             }
 
+            if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+                if (res) PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to load staff assignments", origin, extra_headers, extra_len);
+                return;
+            }
+
             char json[32768] = {0};
             size_t pos = 0;
             pos += snprintf(json + pos, sizeof(json) - pos, "{\"staff\":[");
-            int n = (res && PQresultStatus(res) == PGRES_TUPLES_OK) ? PQntuples(res) : 0;
+            int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
                 char s_id[64] = {0}, s_tid[64] = {0}, s_uid[64] = {0}, s_name[256] = {0};
@@ -3572,19 +4304,66 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            /* Lookup user name if missing */
-            if (!name[0]) {
-                const char *u_vals[1] = { user_id };
-                int u_lens[1] = { (int)strlen(user_id) };
-                PGresult *u_res = db_simple(conn, "SELECT name, title FROM users WHERE id = $1", 1, u_vals, u_lens);
-                if (u_res && PQresultStatus(u_res) == PGRES_TUPLES_OK && PQntuples(u_res) > 0) {
-                    snprintf(name, sizeof(name), "%s", PQgetvalue(u_res, 0, 0));
-                    if (!role_title[0]) snprintf(role_title, sizeof(role_title), "%s", PQgetvalue(u_res, 0, 1));
+            /* The account being assigned must belong to this institution. This
+             * prevents cross-tenant staff assignment by supplying a foreign
+             * user id. */
+            {
+                const char *u_vals[2] = { user_id, tenant_id };
+                int u_lens[2] = { (int)strlen(user_id), (int)strlen(tenant_id) };
+                PGresult *u_res = db_simple(conn,
+                    "SELECT name, COALESCE(title, '') FROM users WHERE id = $1 AND tenant_id = $2",
+                    2, u_vals, u_lens);
+                if (!u_res || PQresultStatus(u_res) != PGRES_TUPLES_OK || PQntuples(u_res) == 0) {
+                    if (u_res) PQclear(u_res);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 404, "User account does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
                 }
-                if (u_res) PQclear(u_res);
+                if (!name[0]) snprintf(name, sizeof(name), "%s", PQgetvalue(u_res, 0, 0));
+                if (!role_title[0]) snprintf(role_title, sizeof(role_title), "%s", PQgetvalue(u_res, 0, 1));
+                PQclear(u_res);
             }
 
-            char id[64]; inst_generate_id("stf", id, sizeof(id));
+            if (campus_id[0]) {
+                const char *cv[2] = { campus_id, tenant_id };
+                int cl[2] = { (int)strlen(campus_id), (int)strlen(tenant_id) };
+                PGresult *cres = db_simple(conn,
+                    "SELECT 1 FROM campuses WHERE id = $1 AND tenant_id = $2 LIMIT 1", 2, cv, cl);
+                int c_ok = cres && PQresultStatus(cres) == PGRES_TUPLES_OK && PQntuples(cres) > 0;
+                if (cres) PQclear(cres);
+                if (!c_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Campus does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+            if (department_id[0]) {
+                const char *dv[2] = { department_id, tenant_id };
+                int dl[2] = { (int)strlen(department_id), (int)strlen(tenant_id) };
+                PGresult *dres = db_simple(conn,
+                    "SELECT 1 FROM departments WHERE id = $1 AND tenant_id = $2 LIMIT 1", 2, dv, dl);
+                int d_ok = dres && PQresultStatus(dres) == PGRES_TUPLES_OK && PQntuples(dres) > 0;
+                if (dres) PQclear(dres);
+                if (!d_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Department does not belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
+            /* One assignment per (institution, user): update in place instead of
+             * inserting a duplicate row on every save. */
+            char id[64] = {0};
+            {
+                const char *ev[2] = { tenant_id, user_id };
+                int el[2] = { (int)strlen(tenant_id), (int)strlen(user_id) };
+                PGresult *eres = db_simple(conn,
+                    "SELECT id FROM staff WHERE tenant_id = $1 AND user_id = $2 LIMIT 1", 2, ev, el);
+                if (eres && PQresultStatus(eres) == PGRES_TUPLES_OK && PQntuples(eres) > 0)
+                    snprintf(id, sizeof(id), "%s", PQgetvalue(eres, 0, 0));
+                if (eres) PQclear(eres);
+            }
+            if (!id[0]) inst_generate_id("stf", id, sizeof(id));
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
 
             const char *pvals[8] = { id, tenant_id, user_id, name, role_title, campus_id, department_id, now };
@@ -3593,7 +4372,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
             PGresult *res = db_simple(conn,
                 "INSERT INTO staff (id, tenant_id, user_id, name, role_title, campus_id, department_id, status, created_at, updated_at) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8::bigint,$8::bigint) "
-                "ON CONFLICT (id) DO UPDATE SET campus_id = EXCLUDED.campus_id, department_id = EXCLUDED.department_id, "
+                "ON CONFLICT (id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, user_id = EXCLUDED.user_id, "
+                "name = EXCLUDED.name, campus_id = EXCLUDED.campus_id, department_id = EXCLUDED.department_id, "
                 "role_title = EXCLUDED.role_title, status = 'active', updated_at = EXCLUDED.updated_at",
                 8, pvals, plens);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
@@ -3622,7 +4402,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
 
         /* 6c. DELETE or POST /api/v1/admin/staff/:id/remove -> Remove staff */
-        if ((strcmp(method, "DELETE") == 0 || strcmp(method, "POST") == 0) && stf_id[0]) {
+        if ((strcmp(method, "DELETE") == 0 ||
+             (strcmp(method, "POST") == 0 && strcmp(act, "remove") == 0)) && stf_id[0]) {
             char reason[256] = {0};
             ctrl_json_string(body, "reason", reason, sizeof(reason));
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
@@ -3668,4 +4449,3 @@ void institution_handle(int client_fd, const char *method, const char *path,
     db_release(conn, 0);
     inst_send_error(client_fd, 404, "Endpoint not found", origin, extra_headers, extra_len);
 }
-

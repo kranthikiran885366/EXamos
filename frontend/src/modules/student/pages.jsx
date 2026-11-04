@@ -129,7 +129,7 @@ export function StudentExamPage() {
       <ol className="prose-list">
         <li>Complete the device check to confirm the seat kiosk is trusted.</li>
         <li>Start the session. The timer begins immediately and cannot be paused.</li>
-        <li>Answers save automatically. Submit before the timer reaches zero.</li>
+        <li>Follow the assessment portal instructions and submit before the timer reaches zero.</li>
       </ol>
       <div className="row gap">
         {submitted ? <Link className="btn primary" to={`/student/exams/${id}/submission`}>View receipt</Link>
@@ -197,7 +197,7 @@ export function StudentSessionPage() {
     const r = await run(() => submitMyExam(user, s.id), 'Exam submitted.');
     if (r) navigate(`/student/exams/${id}/submission`);
   };
-  return <StudentShell title={`${exam.code} · Session`} desc="Answers save automatically. Do not close this tab." actions={<span className={'badge ' + (left < 300000 ? 'r' : left < 900000 ? 'a' : 'g')}><i /> {Math.floor(left / 60000)}:{String(Math.floor((left % 60000) / 1000)).padStart(2, '0')} left</span>}>
+  return <StudentShell title={`${exam.code} · Session`} desc="Keep this secure session open while you use the assessment portal." actions={<span className={'badge ' + (left < 300000 ? 'r' : left < 900000 ? 'a' : 'g')}><i /> {Math.floor(left / 60000)}:{String(Math.floor((left % 60000) / 1000)).padStart(2, '0')} left</span>}>
     <Flash msg={msg} onClose={() => setMsg(null)} />
     <StatGrid cols={4}>
       <Stat label="Time left" value={`${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, '0')}`} icon="clock" tone={left < 300000 ? 'red' : 'blue'} />
@@ -231,7 +231,7 @@ export function StudentSessionPage() {
       <span className="muted sm">{saving ? 'Saving…' : 'Kiosk Session Active'}</span>
       <button className="btn primary" onClick={() => setConfirmSubmit(true)} disabled={left === 0}>Submit exam</button>
     </div>
-    {confirmSubmit && <ActionDialog title="Submit exam" desc="Are you sure you want to conclude and submit your exam session? Your attempt will be locked and a signed cryptographic receipt generated." confirmLabel="Submit now" requireReason={false} onClose={() => setConfirmSubmit(false)} onConfirm={submit} />}
+    {confirmSubmit && <ActionDialog title="Submit exam" desc="Submit your attempt to the server. The page will show the result returned by the server." confirmLabel="Submit now" requireReason={false} onClose={() => setConfirmSubmit(false)} onConfirm={submit} />}
   </StudentShell>;
 }
 
@@ -247,14 +247,16 @@ export function StudentSubmissionPage() {
   if (error) return <StudentShell title="Submission"><Alert tone="danger">{error.message}</Alert></StudentShell>;
   const { b, receipt: r } = data;
   if (!r) return <StudentShell title="Submission"><Empty icon="check" title="Nothing submitted yet" /><div className="row end"><Link className="btn" to={`/student/exams/${id}`}>Back to briefing</Link></div></StudentShell>;
-  return <StudentShell title="Submission receipt" desc="Signed proof that your answers were recorded." actions={<Link className="btn" to="/student/history">All receipts</Link>}>
+  return <StudentShell title="Submission receipt" desc="Submission metadata reported by the server." actions={<Link className="btn" to="/student/history">All receipts</Link>}>
     <Steps steps={STUDENT_STEPS} current={3} />
-    <Alert tone={r.valid ? 'success' : 'danger'} title={r.valid ? 'Receipt signature verified' : 'Receipt could not be verified'}>{r.valid ? 'This receipt matches the stored answers and the ExamOS signing key.' : 'Contact support immediately. The stored receipt failed verification.'}</Alert>
+    <Alert tone={r.valid ? 'success' : 'warn'} title={r.valid ? 'Receipt signature verified' : r.receipt ? 'Receipt not verified' : 'No cryptographic receipt provided'}>
+      {r.valid ? 'The server confirmed this receipt signature.' : r.receipt ? 'The server returned a receipt reference but did not confirm its signature.' : 'The server session endpoint did not provide a cryptographic receipt.'}
+    </Alert>
     <StatGrid cols={4}>
-      <Stat label="Receipt" value={r.receipt} icon="check" />
-      <Stat label="Status" value={r.status} icon="exam" />
-      <Stat label="Status" value="Completed" sub="Recorded" icon="check" />
-      <Stat label="Submitted" value={fmt(r.submittedAt)} icon="clock" />
+      <Stat label="Receipt" value={r.receipt || 'Not provided'} icon="check" />
+      <Stat label="Session status" value={r.status || 'Unknown'} icon="exam" />
+      <Stat label="Submission mode" value={r.auto == null ? 'Unknown' : r.auto ? 'Automatic' : 'Manual'} icon="check" />
+      <Stat label="Submitted" value={r.submittedAt ? fmt(r.submittedAt) : 'Not provided'} icon="clock" />
     </StatGrid>
     <div className="grid2">
       <Card title="Receipt details" pad>
@@ -263,12 +265,12 @@ export function StudentSubmissionPage() {
           ['Candidate', `${b.candidate.rollNo} · ${b.candidate.name}`],
           ['Centre', b.center ? `${b.center.code} · ${b.center.city}` : '—'],
           ['Seat', b.candidate.seat || '—'],
-          ['Answers recorded', Object.keys(r.answers || {}).length],
-          ['Auto-submitted', r.auto ? 'Yes' : 'No'],
+          ['Answers recorded', r.answers ? Object.keys(r.answers).length : 'Not provided'],
+          ['Auto-submitted', r.auto == null ? 'Unknown' : r.auto ? 'Yes' : 'No'],
         ]} />
       </Card>
       <Card title="Signature" pad>
-        <p className="muted sm">The receipt payload is hashed with SHA-256 and signed with the ExamOS receipt key.</p>
+        <p className="muted sm">Signature metadata is shown only when returned by the server.</p>
         <div className="codebox">{r.receiptSig || 'No signature'}</div>
       </Card>
     </div>
@@ -287,7 +289,7 @@ export function StudentHistoryPage() {
       { label: 'Started', render: (s) => fmt(s.startedAt) },
       { label: 'Submitted', render: (s) => (s.submittedAt ? fmt(s.submittedAt) : '—') },
       { label: 'Receipt', render: (s) => s.receipt || '—' },
-      { label: 'Signature', render: (s) => <Badge value={s.valid ? 'verified' : 'invalid'} /> },
+      { label: 'Signature', render: (s) => <Badge value={s.valid ? 'verified' : s.receipt ? 'unverified' : 'not provided'} /> },
       { label: '', render: (s) => (s.exam ? <Link className="btn small" to={`/student/exams/${s.exam.id}/submission`}>Open</Link> : '—') },
     ]} />
   </StudentShell>;
