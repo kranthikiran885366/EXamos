@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import SppioLogo, { SppioSymbol } from './SppioLogo';
@@ -23,53 +23,36 @@ export default function LandingPage() {
     fleetSize: '50-500',
     message: '',
   });
-  const [formSubmitted, setFormSubmitted] = useState(false);
   const [formError, setFormError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  // Live backend telemetry
-  const [telemetryStatus, setTelemetryStatus] = useState({
-    online: true,
-    tpmMode: 'production',
-    ledgerIntegrity: 'INTACT',
-    database: true,
-  });
-
-  useEffect(() => {
-    fetch('/api/v1/health')
-      .then((r) => r.json())
-      .then((data) => {
-        if (data?.status === 'ok') {
-          setTelemetryStatus({
-            online: true,
-            tpmMode: data.tpm_mode || 'production',
-            ledgerIntegrity: data.ledger_integrity || 'INTACT',
-            database: !!data.database,
-          });
-        }
-      })
-      .catch(() => {
-        // Fallback gracefully to offline simulation values
-      });
-  }, []);
+  const [formNotice, setFormNotice] = useState('');
+  const [contactErrors, setContactErrors] = useState({});
 
   const handleFormSubmit = (e) => {
     e.preventDefault();
-    if (!formData.name.trim() || !formData.email.trim() || !formData.organization.trim()) {
-      setFormError('Please complete all required fields.');
+    const errors = {};
+    if (!formData.name.trim()) errors.name = 'Enter your name.';
+    if (!formData.organization.trim()) errors.organization = 'Enter your organization.';
+    if (!formData.email.trim()) errors.email = 'Enter your email address.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) errors.email = 'Enter a valid email address.';
+    if (Object.keys(errors).length) {
+      setContactErrors(errors);
+      setFormError('Review the required fields below.');
+      setTimeout(() => document.getElementById(`contact-${Object.keys(errors)[0]}`)?.focus(), 0);
       return;
     }
-    if (!formData.email.includes('@') || !formData.email.includes('.')) {
-      setFormError('Please enter a valid institutional email address.');
-      return;
-    }
+    setContactErrors({});
     setFormError('');
-    setSubmitting(true);
-
-    setTimeout(() => {
-      setSubmitting(false);
-      setFormSubmitted(true);
-    }, 600);
+    const subject = `SPPIO technical briefing request — ${formData.organization.trim()}`;
+    const body = [
+      `Name: ${formData.name.trim()}`,
+      `Email: ${formData.email.trim()}`,
+      `Organization: ${formData.organization.trim()}`,
+      `Testing station scale: ${formData.fleetSize}`,
+      '',
+      formData.message.trim(),
+    ].join('\n');
+    window.location.href = `mailto:briefings@sppio.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    setFormNotice('An email draft was requested in your email app. It has not been sent; review and send it there.');
   };
 
   const productSuite = [
@@ -78,8 +61,8 @@ export default function LandingPage() {
       category: 'endpoint',
       tag: 'Operating System',
       tagline: 'Bare-Metal Secure Assessment OS',
-      desc: 'Immutable, read-only operating system running directly on commodity workstations. Eliminates host OS escapes, background tasks, remote desktop tools (AnyDesk, TeamViewer), and multitasking during corporate hiring and examinations.',
-      hiringRole: 'Prevents candidate ghosting, remote desktop takeovers, and dual-boot tampering during coding assessments.',
+      desc: 'A dedicated assessment operating-system concept for supported workstations. Isolation capabilities and update behavior depend on the released image and deployment configuration.',
+      hiringRole: 'Intended to limit access to unrelated host applications during supported assessment workflows.',
     },
     {
       name: 'SPPIO-PhysicalGuard™',
@@ -87,7 +70,7 @@ export default function LandingPage() {
       tag: 'Hardware Lockdown',
       tagline: 'Peripheral Port & Interface Control',
       desc: 'Kernel-level enforcement engine that suppresses unauthorized USB keystroke injectors, external storage, secondary display splitters (HDMI/DP), and Bluetooth eavesdropping devices.',
-      hiringRole: 'Blocks external secondary-screen cheating, hardware keystroke injection, and unauthorized peripheral dongles.',
+      hiringRole: 'Peripheral controls are intended to restrict configured device classes; supported devices must be verified.',
     },
     {
       name: 'SPPIO-Proctor™',
@@ -95,7 +78,7 @@ export default function LandingPage() {
       tag: 'Sensors & Vision',
       tagline: 'Vision & Multi-Sensor Intelligence',
       desc: 'Real-time client-side sensor intelligence analyzing continuous face presence, multi-face presence, gaze diversion, and acoustic anomalies without sending raw video streams off-premise.',
-      hiringRole: 'Eliminates proxy candidate substitution, third-party whispering, and off-screen prompt coaching during technical interviews.',
+      hiringRole: 'Optional monitoring can provide signals for review; it cannot establish misconduct on its own.',
     },
     {
       name: 'SPPIO-Kiosk™ Sandbox',
@@ -103,7 +86,7 @@ export default function LandingPage() {
       tag: 'Application Runtime',
       tagline: 'Deterministic Single-Task Kiosk',
       desc: 'Secure candidate evaluation and IDE sandbox. Enforces strict clipboard isolation, virtual desktop suppression, hotkey locks, and a zero-leak RAM-only runtime environment.',
-      hiringRole: 'Delivers a contained, cheat-proof coding workspace preventing unauthorized tab switching and LLM copy-pasting.',
+      hiringRole: 'Provides a configured assessment workspace; verify the available restrictions for the target device.',
     },
     {
       name: 'SPPIO-TrustEngine™',
@@ -111,7 +94,7 @@ export default function LandingPage() {
       tag: 'Hardware Attestation',
       tagline: 'Silicon Cryptographic Attestation',
       desc: 'Authenticates workstation hardware identity and platform firmware measurements against verified golden baselines before issuing assessment or interview tokens.',
-      hiringRole: 'Guarantees the technical assessment is executed on verified physical workstation hardware, never in a spoofed VM.',
+      hiringRole: 'Hardware measurement features depend on supported hardware and deployment policy.',
     },
     {
       name: 'SPPIO-Ledger™',
@@ -135,7 +118,7 @@ export default function LandingPage() {
       tag: 'Enterprise Backend',
       tagline: 'High-Throughput Assessment Backend',
       desc: 'Enterprise assessment orchestrator with TLS-authenticated storage, automated batch submission reconciliation, and multi-tenant corporate partition models.',
-      hiringRole: 'Powers mass campus hiring drives with thousands of concurrent test-takers with zero latency and zero data loss.',
+      hiringRole: 'Scale and recovery characteristics depend on the deployment profile and must be validated for each workload.',
     },
     {
       name: 'SPPIO-Command™ Console',
@@ -154,54 +137,54 @@ export default function LandingPage() {
       title: 'Hardware Cryptographic Attestation',
       summary: 'Physical device attestation authenticated against verified golden release policies.',
       description:
-        'Powered by SPPIO-TrustEngine™ and SPPIO-PhysicalGuard™, every candidate workstation is authenticated at the hardware silicon level. Measurements are verified against golden release policies, guaranteeing zero firmware tampering, unapproved VM sandboxes, or bootkit persistence.',
+        'Where supported, platform measurements can be compared with configured release policies. Coverage depends on hardware and the verification policy; this page does not claim that every boot threat is detected.',
       specs: [
         { label: 'Attestation Root', value: 'SPPIO-TrustEngine™ Silicon' },
         { label: 'Integrity Check', value: 'Golden Policy Verification' },
         { label: 'Replay Protection', value: 'Anti-Replay Challenge Protocol' },
-        { label: 'Attestation Latency', value: '< 120ms Roundtrip' },
+        { label: 'Attestation Latency', value: 'Deployment-dependent; no benchmark published' },
       ],
     },
     {
       number: '02',
       tag: 'Station Lockdown',
-      title: 'Zero-Trust Station Enclave',
+      title: 'Configured Station Enclave',
       summary: 'Dedicated display environment enforcing single-application containment.',
       description:
         'Built on SPPIO-Isolation™ Base OS and SPPIO-Kiosk™ Sandbox, candidate workstations run in complete isolation. Virtual terminal switching, host key shortcuts, secondary display mirroring, clipboard sharing, and unapproved peripheral access are blocked at the operating system foundation.',
       specs: [
         { label: 'Display Engine', value: 'SPPIO-Kiosk™ Compositor' },
         { label: 'Base OS', value: 'SPPIO-Isolation™ Base OS' },
-        { label: 'Port Lockdown', value: 'SPPIO-PhysicalGuard™ Active' },
+        { label: 'Peripheral controls', value: 'Configured per supported device' },
         { label: 'Host Access', value: 'Zero Residual Host Footprint' },
       ],
     },
     {
       number: '03',
       tag: 'Audit Integrity',
-      title: 'Immutable Chained Audit Ledger',
+      title: 'Hash-linked Audit Events',
       summary: 'Tamper-evident event chaining with strict separation of duties.',
       description:
-        'Engineered with SPPIO-Ledger™ and SPPIO-Forensics™, every candidate keystroke, code commit, supervisor interaction, and proctoring flag is cryptographically linked in sequence. Any retrospective alteration or omission is mathematically impossible.',
+        'Audit events may be hash-linked so selected changes can be detected. Hash chaining alone does not prevent deletion or guarantee non-repudiation; review key custody, backups, and verification evidence for the deployment.',
       specs: [
         { label: 'Ledger Engine', value: 'SPPIO-Ledger™ Cryptographic Chain' },
         { label: 'Approval Model', value: 'Two-Person Dual-Custody Controls' },
         { label: 'Code Forensics', value: 'SPPIO-Forensics™ Keystroke Replay' },
-        { label: 'Compliance', value: 'FIPS 140-3 & ISO 27001 Aligned' },
+        { label: 'Certification evidence', value: 'Not published on this page' },
       ],
     },
     {
       number: '04',
       tag: 'Fleet Management',
       title: 'Distributed Fleet Orchestration',
-      summary: 'Real-time telemetry, synchronized policy convergence, and offline resilience.',
+      summary: 'Fleet management and policy controls depend on deployment configuration.',
       description:
         'Orchestrated through SPPIO-Command™ Console and SPPIO-Core™ Server & Storage, organizations manage thousands of concurrent testing stations across decentralized examination centers and campus recruitment drives. Resilient offline execution safeguards tests during network outages.',
       specs: [
         { label: 'Control Plane', value: 'SPPIO-Command™ Console Web Portal' },
         { label: 'Backend Scaling', value: 'SPPIO-Core™ Server & Storage' },
         { label: 'Proctoring Intelligence', value: 'SPPIO-Proctor™ Vision & Sensor' },
-        { label: 'Data Recovery', value: 'Zero-Loss Local Cryptographic Cache' },
+        { label: 'Offline and recovery behavior', value: 'Confirm for selected deployment profile' },
       ],
     },
   ];
@@ -236,32 +219,32 @@ export default function LandingPage() {
   const deployments = [
     {
       scope: 'Global Enterprise Tech Hiring',
-      metric: '5,000+ Candidates',
-      metricDesc: 'Evaluated across enterprise engineering and campus recruitment drives',
+      metric: 'Illustrative scenario',
+      metricDesc: 'Example workflow only; not a customer result',
       title: 'Enterprise Technical Hiring & Viva Forensics',
-      desc: 'Deployed across major enterprise technical hiring programs to eliminate candidate proxy fraud and AI-assisted ghosting. SPPIO-Forensics™ and SPPIO-Proctor™ provided engineering hiring managers with line-by-line keystroke replay and verifiable viva defense evidence.',
+      desc: 'A technical hiring program may combine configured assessment workstations, event review, and interviewer-led follow-up. This example does not represent a verified customer deployment or outcome.',
       tags: ['Corporate Recruitment', 'SPPIO-Forensics™', 'SPPIO-Proctor™', 'Anti-Proxy Verification'],
     },
     {
-      scope: 'National Assessment Infrastructure',
-      metric: '150+ Stations',
-      metricDesc: 'Concurrently provisioned across multi-center test facilities',
+      scope: 'National assessment planning',
+      metric: 'Illustrative scenario',
+      metricDesc: 'Example workflow only; not a customer result',
       title: 'High-Assurance National Examination Enclave',
-      desc: 'A mission-critical examination deployment requiring zero host OS exposure and hardware-enforced boot attestation. SPPIO bootable stations sealed workstations against unauthorized media, virtual terminals, and external networks, maintaining 100% attestation integrity throughout examination sessions.',
-      tags: ['Hardware Attestation', 'Station Lockdown', 'Air-Gap Resilience', 'Zero-Loss Cache'],
+      desc: 'An examination program can evaluate supported boot and station policies, connectivity requirements, and submission reconciliation before deployment. Availability and controls must be tested for the target environment.',
+      tags: ['Hardware Attestation', 'Station Controls', 'Connectivity Planning', 'Recovery Planning'],
     },
     {
-      scope: 'State University Board',
-      metric: '100% Verifiable',
-      metricDesc: 'Chained tamper-evident audit ledger with two-person custody',
+      scope: 'University exam program',
+      metric: 'Illustrative scenario',
+      metricDesc: 'Example workflow only; not a customer result',
       title: 'Tamper-Evident Institutional Audit & Policy Governance',
-      desc: 'Implementation of dual-custody authorization for policy changes and candidate grade submissions. All supervisor activities and examination events were permanently recorded in an immutable hash-chained audit log, providing complete non-repudiation for institutional compliance audits.',
-      tags: ['Two-Person Rule', 'Audit Hash Chain', 'RBAC Enforcement', 'FIPS 140-3'],
+      desc: 'An institution can review role separation, approval requirements, event retention, and audit exports against its own governance policy. No certification or audit outcome is implied.',
+      tags: ['Role Separation', 'Audit Events', 'Access Controls', 'Evidence Review'],
     },
   ];
 
   return (
-    <div className="sppio-website">
+    <div id="top" tabIndex="-1" className="sppio-website">
       {/* ----------------- Header & Navigation ----------------- */}
       <header className="sppio-header" role="banner">
         <div className="sppio-container">
@@ -283,6 +266,7 @@ export default function LandingPage() {
               <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>
                 Institution Onboarding
               </Link>
+              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
               <Link to="/login" className="sppio-btn-ghost">
                 Sign In
               </Link>
@@ -318,6 +302,8 @@ export default function LandingPage() {
               <a href="#deployments" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Deployments</a>
               <a href="#company" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Company</a>
               <a href="#contact" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Request Briefing</a>
+              <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Institution Onboarding</Link>
+              <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Track Application</Link>
               <Link to="/login" onClick={() => setMobileMenuOpen(false)} style={{ color: '#B54F34', fontWeight: 700, textDecoration: 'none' }}>Sign In →</Link>
             </div>
           </div>
@@ -337,35 +323,24 @@ export default function LandingPage() {
 
               <h1 className="sppio-hero-headline">
                 High-assurance systems.<br />
-                <span className="sppio-highlight">Fraud-proof enterprise recruitment.</span>
+                <span className="sppio-highlight">Assessment workflows with clearer evidence.</span>
               </h1>
 
               <p className="sppio-hero-lead">
-                Engineered for enterprise corporate hiring, mass campus recruitment, and high-consequence institutional examinations. SPPIO unifies bare-metal workstation isolation, real-time sensor proctoring, code forensics, and cryptographic audit ledgers in one open aperture.
+                SPPIO serves institutions running exams, employers evaluating technical talent, and teams conducting technical assessments. Explore the workflow and confirm supported controls for your deployment.
               </p>
 
               <div className="sppio-hero-actions">
-                <a href="#contact" className="sppio-btn-primary">
-                  Request Architecture Briefing
-                </a>
+                <a href="#contact" className="sppio-btn-primary">Request a briefing</a>
                 <Link to="/login" className="sppio-btn-ghost">
-                  Access Enterprise Console
+                  Sign In
                 </Link>
-              </div>
-
-              <div className="sppio-hero-standards">
-                <span>SPPIO-TrustEngine™ Active</span>
-                <span className="sppio-sep">•</span>
-                <span>SPPIO-PhysicalGuard™ Active</span>
-                <span className="sppio-sep">•</span>
-                <span>SPPIO-Forensics™ Enabled</span>
-                <span className="sppio-sep">•</span>
-                <span>FIPS 140-3 Aligned</span>
               </div>
             </div>
 
-            {/* Right: Architectural Open Aperture Framing with Live Interactive Cockpit */}
+            {/* Illustrative product preview; not connected to live system state. */}
             <div className="sppio-hero-visual">
+              <p role="note" style={{ fontSize: '12px', color: '#756F79', margin: '0 0 8px' }}>Illustrative product preview — not live system data.</p>
               <div className="sppio-aperture-frame">
                 {/* Cockpit Window Titlebar */}
                 <div className="sppio-cockpit-bar">
@@ -379,7 +354,7 @@ export default function LandingPage() {
                   </div>
                   <div className="sppio-status-chip">
                     <span className="sppio-status-pulse" />
-                    <span>Enclave Attested</span>
+                    <span>Preview</span>
                   </div>
                 </div>
 
@@ -423,7 +398,7 @@ export default function LandingPage() {
                         <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                           SPPIO-Command™ Live Candidate Fleet
                         </span>
-                        <span style={{ fontSize: '11px', color: '#4ADE80', fontWeight: 650 }}>● 34 Active Stations</span>
+                        <span style={{ fontSize: '11px', color: '#4ADE80', fontWeight: 650 }}>● Sample station telemetry</span>
                       </div>
 
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -527,7 +502,7 @@ export default function LandingPage() {
                         <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                           SPPIO-PhysicalGuard™ Topology Shield
                         </span>
-                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Kernel Filter Active</span>
+                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Illustrative control state</span>
                       </div>
 
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -563,7 +538,7 @@ export default function LandingPage() {
 
                 {/* Cockpit Window Footer */}
                 <div className="sppio-frame-footer">
-                  <span>Compliance: FIPS 140-3 &amp; ISO 27001 Aligned</span>
+                  <span>Product preview — deployment behavior varies</span>
                   <button
                     type="button"
                     onClick={() => setShowSpecModal(true)}
@@ -578,11 +553,27 @@ export default function LandingPage() {
         </div>
       </section>
 
+      <section aria-label="Choose your assessment use case" style={{ padding: '36px 0', background: '#FFFFFF' }}>
+        <div className="sppio-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+          {[
+            { title: 'Institutional Exams', desc: 'Explore onboarding for institutions and exam programs.', href: '/register-institution', action: 'Start institutional onboarding' },
+            { title: 'Enterprise Hiring', desc: 'Review hiring and assessment workflows for employers.', href: '/solutions#solutions-grid', action: 'Explore hiring solutions' },
+            { title: 'Technical Evaluation', desc: 'Discuss technical assessment requirements and deployment scope.', href: '#contact', action: 'Request a technical briefing' },
+          ].map((item) => (
+            <article key={item.title} style={{ border: '1px solid #DCD5D2', borderRadius: '12px', padding: '20px', background: '#FBF9F7' }}>
+              <h2 style={{ fontSize: '17px', margin: '0 0 8px', color: '#302337' }}>{item.title}</h2>
+              <p style={{ fontSize: '13px', lineHeight: 1.5, color: '#756F79', margin: '0 0 14px' }}>{item.desc}</p>
+              <Link to={item.href} style={{ color: '#A4442D', fontWeight: 700, fontSize: '13px' }}>{item.action} →</Link>
+            </article>
+          ))}
+        </div>
+      </section>
+
       {/* ----------------- Enterprise Trust & Scale Strip ----------------- */}
       <section className="sppio-trust-strip">
         <div className="sppio-container">
           <div className="sppio-trust-inner">
-            <span className="sppio-trust-label">Proven Across Global Sectors:</span>
+            <span className="sppio-trust-label">Illustrative assessment contexts — not customer endorsements:</span>
             <div className="sppio-trust-badges">
               <span className="sppio-trust-badge">
                 <SppioSymbol size={14} accent="#B54F34" />
@@ -606,24 +597,24 @@ export default function LandingPage() {
       </section>
 
       {/* ----------------- Metrics Strip ----------------- */}
-      <section className="sppio-metrics-strip" aria-label="Key Performance Metrics">
+      <section className="sppio-metrics-strip" aria-label="Illustrative design areas">
         <div className="sppio-container">
           <div className="sppio-metrics-grid">
             <div className="sppio-metric-box">
-              <span className="sppio-metric-num">100%</span>
-              <span className="sppio-metric-label">Hardware-Rooted Boot Attestation</span>
+              <span className="sppio-metric-num">Policy-led</span>
+              <span className="sppio-metric-label">Hardware measurements where supported</span>
             </div>
             <div className="sppio-metric-box">
-              <span className="sppio-metric-num">0</span>
-              <span className="sppio-metric-label">Host OS Virtual Terminal Escapes</span>
+              <span className="sppio-metric-num">Configured</span>
+              <span className="sppio-metric-label">Station access restrictions</span>
             </div>
             <div className="sppio-metric-box">
-              <span className="sppio-metric-num">Chained</span>
-              <span className="sppio-metric-label">Immutable Cryptographic Event Verification</span>
+              <span className="sppio-metric-num">Reviewable</span>
+              <span className="sppio-metric-label">Audit event handling and verification</span>
             </div>
             <div className="sppio-metric-box">
-              <span className="sppio-metric-num">&lt; 120ms</span>
-              <span className="sppio-metric-label">Attestation Quote Verification Latency</span>
+              <span className="sppio-metric-num">Validated</span>
+              <span className="sppio-metric-label">Performance for the selected deployment</span>
             </div>
           </div>
         </div>
@@ -691,7 +682,7 @@ export default function LandingPage() {
           <div className="sppio-section-header">
             <div>
               <span className="sppio-section-eyebrow">Architecture</span>
-              <h2 className="sppio-section-title">Layered prevention-first security.</h2>
+              <h2 className="sppio-section-title">Layered security controls.</h2>
             </div>
             <p className="sppio-section-desc">
               Security is not a reactive detection layer; it is an architectural property enforced from physical silicon up through the display compositor and cryptographic ledger.
@@ -718,6 +709,7 @@ export default function LandingPage() {
             <div>
               <span className="sppio-section-eyebrow">Product Suite</span>
               <h2 className="sppio-section-title">The SPPIO Open Aperture Security Suite</h2>
+              <p style={{ margin: '10px 0 0', color: '#756F79', fontSize: '13px', lineHeight: 1.5 }}>Product descriptions are informational previews, not independent test results or certification claims. Confirm availability and evidence for the selected release.</p>
             </div>
             <p className="sppio-section-desc">
               Modular, hardware-rooted technologies engineered to protect corporate technical recruitment pipelines, campus hiring drives, and national institutional examinations.
@@ -811,13 +803,14 @@ export default function LandingPage() {
       {/* ----------------- Featured Work / Deployments ----------------- */}
       <section id="deployments" className="sppio-section">
         <div className="sppio-container">
+          <p role="note" style={{ fontSize: '12px', color: '#756F79', margin: '0 0 16px' }}>Illustrative examples only; not customer case studies or independently verified outcomes.</p>
           <div className="sppio-section-header">
             <div>
-              <span className="sppio-section-eyebrow">Field Deployments</span>
-              <h2 className="sppio-section-title">Proven in high-assurance environments.</h2>
+              <span className="sppio-section-eyebrow">Illustrative use cases</span>
+              <h2 className="sppio-section-title">Example assessment workflows.</h2>
             </div>
             <p className="sppio-section-desc">
-              Authentic institutional case studies delivering dependable, uncompromised examination security at national and university scale.
+              These scenarios are examples, not customer case studies or verified performance results.
             </p>
           </div>
 
@@ -881,7 +874,7 @@ export default function LandingPage() {
                 <div className="sppio-pillar-item">
                   <span className="sppio-pillar-mark" />
                   <div>
-                    <strong>Immutable Accountability</strong>
+                    <strong>Auditable Accountability</strong>
                     <p>Non-repudiable cryptographic audit logs with strict separation of duties and dual-custody governance.</p>
                   </div>
                 </div>
@@ -912,44 +905,14 @@ export default function LandingPage() {
 
               <div className="sppio-contact-details">
                 <div className="sppio-contact-method">
-                  <span className="sppio-method-label">Direct Communication</span>
-                  <span className="sppio-method-val">briefings@sppio.io</span>
-                </div>
-                <div className="sppio-contact-method">
-                  <span className="sppio-method-label">Enterprise Headquarters</span>
-                  <span className="sppio-method-val">SPPIO Infrastructure Systems Enclave</span>
-                </div>
-                <div className="sppio-contact-method">
-                  <span className="sppio-method-label">Attestation Endpoint</span>
-                  <span className="sppio-method-val">TLS 1.3 Verified · FIPS 140-3 Hardware Attested</span>
+                  <span className="sppio-method-label">Briefing contact</span>
+                  <a className="sppio-method-val" href="mailto:briefings@sppio.io">briefings@sppio.io</a>
                 </div>
               </div>
             </div>
 
-            {/* Right: Functional Inquiry Form */}
+            {/* Inquiry details are passed to the user's email app, not submitted to a backend. */}
             <div className="sppio-form-card">
-              {formSubmitted ? (
-                <div className="sppio-form-success" role="status">
-                  <SppioSymbol size={32} accent="#1B7A4B" />
-                  <h4 style={{ fontSize: '18px', fontWeight: 800, margin: '12px 0 6px' }}>
-                    Briefing Request Received
-                  </h4>
-                  <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.5 }}>
-                    Thank you, <strong>{formData.name}</strong>. An engineering representative from SPPIO will review your fleet profile (<strong>{formData.organization}</strong>) and deliver technical briefing materials within one business day.
-                  </p>
-                  <button
-                    type="button"
-                    className="sppio-btn-ghost"
-                    style={{ marginTop: '20px' }}
-                    onClick={() => {
-                      setFormSubmitted(false);
-                      setFormData({ name: '', email: '', organization: '', fleetSize: '50-500', message: '' });
-                    }}
-                  >
-                    Submit another inquiry
-                  </button>
-                </div>
-              ) : (
                 <form className="sppio-form" onSubmit={handleFormSubmit} noValidate>
                   <div className="sppio-form-row">
                     <div className="sppio-form-group">
@@ -957,11 +920,14 @@ export default function LandingPage() {
                       <input
                         id="contact-name"
                         className="sppio-form-input"
+                        aria-invalid={Boolean(contactErrors.name)}
+                        aria-describedby={contactErrors.name ? 'contact-name-error' : undefined}
                         placeholder="Dr. Avery Rao"
                         value={formData.name}
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setContactErrors((prev) => ({ ...prev, name: '' })); setFormError(''); setFormNotice(''); }}
                         required
                       />
+                      {contactErrors.name && <small id="contact-name-error" style={{ color: '#A93226' }}>{contactErrors.name}</small>}
                     </div>
                     <div className="sppio-form-group">
                       <label htmlFor="contact-email">Institutional Email *</label>
@@ -969,11 +935,14 @@ export default function LandingPage() {
                         id="contact-email"
                         type="email"
                         className="sppio-form-input"
+                        aria-invalid={Boolean(contactErrors.email)}
+                        aria-describedby={contactErrors.email ? 'contact-email-error' : undefined}
                         placeholder="a.rao@institution.edu"
                         value={formData.email}
-                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        onChange={(e) => { setFormData({ ...formData, email: e.target.value }); setContactErrors((prev) => ({ ...prev, email: '' })); setFormError(''); setFormNotice(''); }}
                         required
                       />
+                      {contactErrors.email && <small id="contact-email-error" style={{ color: '#A93226' }}>{contactErrors.email}</small>}
                     </div>
                   </div>
 
@@ -983,11 +952,14 @@ export default function LandingPage() {
                       <input
                         id="contact-org"
                         className="sppio-form-input"
+                        aria-invalid={Boolean(contactErrors.organization)}
+                        aria-describedby={contactErrors.organization ? 'contact-organization-error' : undefined}
                         placeholder="State Testing Agency"
                         value={formData.organization}
-                        onChange={(e) => setFormData({ ...formData, organization: e.target.value })}
+                        onChange={(e) => { setFormData({ ...formData, organization: e.target.value }); setContactErrors((prev) => ({ ...prev, organization: '' })); setFormError(''); setFormNotice(''); }}
                         required
                       />
+                      {contactErrors.organization && <small id="contact-organization-error" style={{ color: '#A93226' }}>{contactErrors.organization}</small>}
                     </div>
                     <div className="sppio-form-group">
                       <label htmlFor="contact-fleet">Testing Station Scale</label>
@@ -1017,20 +989,23 @@ export default function LandingPage() {
                   </div>
 
                   {formError && (
-                    <div style={{ color: '#C0392B', fontSize: '13px', fontWeight: 600 }}>
+                    <div role="alert" style={{ color: '#C0392B', fontSize: '13px', fontWeight: 600 }}>
                       {formError}
+                    </div>
+                  )}
+                  {formNotice && (
+                    <div role="status" style={{ color: '#302337', fontSize: '13px', fontWeight: 600 }}>
+                      {formNotice}
                     </div>
                   )}
 
                   <button
                     type="submit"
                     className="sppio-form-submit"
-                    disabled={submitting}
                   >
-                    {submitting ? 'Submitting Request…' : 'Schedule Architecture Briefing'}
+                    Open email draft
                   </button>
                 </form>
-              )}
             </div>
           </div>
         </div>
@@ -1045,11 +1020,7 @@ export default function LandingPage() {
               <p>
                 Open Aperture architecture. High-assurance infrastructure engineered for national, institutional, and corporate assessment integrity.
               </p>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>Hardware Attestation</span>
-                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>FIPS 140-3</span>
-                <span className="sppio-tag" style={{ background: 'rgba(255,255,255,0.08)', color: '#F6F2ED', borderColor: 'rgba(255,255,255,0.15)' }}>Station Enclave</span>
-              </div>
+              <p style={{ fontSize: '12px', lineHeight: 1.5 }}>Product descriptions are informational. Confirm current capabilities, deployment prerequisites, and assurance evidence before procurement.</p>
             </div>
 
             <div className="sppio-footer-col">
@@ -1067,7 +1038,7 @@ export default function LandingPage() {
               <ul className="sppio-footer-links">
                 <li><a href="#technology">Two-Person Authorization</a></li>
                 <li><a href="#technology">Role-Based Access Control</a></li>
-                <li><a href="#technology">Cryptographic Non-Repudiation</a></li>
+                <li><a href="#technology">Audit Event Handling</a></li>
                 <li><a href="#deployments">Compliance &amp; Attestation</a></li>
               </ul>
             </div>
@@ -1076,7 +1047,9 @@ export default function LandingPage() {
               <h5>Console Access</h5>
               <ul className="sppio-footer-links">
                 <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
-                <li><Link to="/login">Candidate Station Login</Link></li>
+                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
+                <li><Link to="/register-institution">Institution Onboarding</Link></li>
+                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
                 <li><Link to="/recovery">Emergency TOTP Recovery</Link></li>
                 <li><a href="#contact">Architecture Inquiry</a></li>
               </ul>
@@ -1088,7 +1061,7 @@ export default function LandingPage() {
               © 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.
             </div>
             <div className="sppio-legal-links">
-              <a href="#top" onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                 Back to Top ↑
               </a>
             </div>
@@ -1121,7 +1094,7 @@ export default function LandingPage() {
                   1. Hardware Root of Trust Attestation
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  Workstations utilize a dedicated hardware cryptoprocessor. Before assessment payloads are unlocked, the system cryptographically validates physical firmware, operating system components, and launch policies against authorized release manifests. Any unauthorized modification prevents workstation authorization.
+                  Where supported, platform measurements may be checked against configured policies. Hardware compatibility, measurement coverage, failure handling, and release-manifest evidence must be verified for the target deployment.
                 </p>
               </div>
 

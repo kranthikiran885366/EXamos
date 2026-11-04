@@ -4,43 +4,44 @@ import SppioLogo, { SppioSymbol } from './SppioLogo';
 
 export default function ArchitecturePage() {
   const [activeStep, setActiveStep] = useState(0);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const quoteSteps = [
     {
       step: '01 / Cold Boot Silicon Attestation',
       title: 'SPPIO-TrustEngine™ Hardware Attestation',
-      desc: 'Upon station power-on, platform measurement routines execute in silicon microcode. Firmware stages and bootloader components are cryptographically measured and isolated before execution begins, ensuring zero firmware tampering or hypervisor evasion.',
+      desc: 'A supported platform can measure selected firmware and boot components. Coverage and verification depend on hardware, firmware configuration, and the policy used by the deployment.',
       boundary: 'SPPIO-TrustEngine™ Silicon Roots',
       enforcement: 'Hardware-Enforced State Hashing',
-      status: 'VERIFIED AT COLD BOOT',
-      compliance: 'FIPS 140-3 Hardware Boundary',
+      status: 'CONFIGURATION-DEPENDENT',
+      compliance: 'Certification evidence not published',
     },
     {
       step: '02 / Peripheral & Port Lockdown',
       title: 'SPPIO-PhysicalGuard™ Interface Control',
-      desc: 'Enforces kernel-level peripheral whitelist policies. Suppresses unauthorized USB keystroke injectors, external storage, secondary display splitters (HDMI/DP), and Bluetooth devices to prevent recruitment prompt injection.',
+      desc: 'A deployment may apply peripheral allowlists or restrictions. Supported devices, enforcement behavior, and exceptions must be verified for the target workstation models.',
       boundary: 'SPPIO-PhysicalGuard™ Port Whitelist',
       enforcement: 'Deterministic Device Whitelisting',
-      status: 'INTERFACES SEALED',
-      compliance: 'Strict Peripheral Lockdown',
+      status: 'CONFIGURATION-DEPENDENT',
+      compliance: 'Deployment configuration required',
     },
     {
       step: '03 / Single-Task Graphical Enclave',
       title: 'SPPIO-Isolation™ Base OS & Kiosk™ Sandbox',
-      desc: 'The station initializes an immutable read-only system running a dedicated single-application evaluation environment. OS escape combinations, background multitasking, and unauthorized communications are suppressed during candidate coding rounds.',
+      desc: 'The intended station profile uses a dedicated assessment environment. Isolation behavior depends on the selected image, device, and configured policies and should be tested before operational use.',
       boundary: 'SPPIO-Isolation™ Base OS & Kiosk™',
       enforcement: 'Zero-Escape Application Sandbox',
-      status: 'ENCLAVE ACTIVE',
-      compliance: 'Zero Residual Host Footprint',
+      status: 'DEPLOYMENT-DEPENDENT',
+      compliance: 'Behavior depends on deployment profile',
     },
     {
       step: '04 / Vision Intelligence & Code Forensics',
       title: 'SPPIO-Proctor™ & SPPIO-Forensics™ Engine',
-      desc: 'Captures continuous on-device sensor intelligence: multi-face detection, acoustic anomaly tracking, and millisecond keystroke velocity telemetry for post-assessment technical viva defense and code construction replay.',
+      desc: 'Optional monitoring and event-capture features depend on the enabled product modules, consent, and retention policy. Verify data flows and retention with the institution before use.',
       boundary: 'SPPIO-Proctor™ & Forensics™ Telemetry',
       enforcement: 'Client-Side AI Sensor Pipeline',
-      status: 'SENSORS & FORENSICS ACTIVE',
-      compliance: 'Privacy-Preserving On-Device AI',
+      status: 'POLICY-DEPENDENT',
+      compliance: 'Data handling scope not documented here',
     },
   ];
 
@@ -48,37 +49,37 @@ export default function ArchitecturePage() {
     {
       threat: 'Host OS Escape & Multitasking',
       legacy: 'Software lockdown browser runs atop vulnerable Windows/macOS with background task exploits.',
-      sppio: 'SPPIO-Isolation™ Base OS provides a bare-metal boot into a dedicated single-task graphical enclave; zero host OS exists.',
-      status: 'PREVENTED',
+      sppio: 'A dedicated station image is intended to limit access to unrelated host functions; test the supported hardware and image configuration.',
+      status: 'DESIGN CONTROL',
     },
     {
       threat: 'Virtual Machine / Sandbox Evasion',
       legacy: 'Easily tricked by patched hypervisors, nested virtualization, and GPU pass-through hooks.',
-      sppio: 'SPPIO-TrustEngine™ silicon attestation validates cryptographic identity bound to the physical motherboard.',
-      status: 'VERIFIED SILICON',
+      sppio: 'Platform measurements may help identify unsupported or changed boot states where the hardware and policy support them.',
+      status: 'HARDWARE-DEPENDENT',
     },
     {
       threat: 'Hardware Keyloggers & Secondary Displays',
       legacy: 'OS drivers automatically mount USBs and external display splitters without detection.',
-      sppio: 'SPPIO-PhysicalGuard™ rejects unauthorized USB keystroke injection and suppresses unapproved external video splitters.',
-      status: 'BLOCKED AT KERNEL',
+      sppio: 'Peripheral restrictions are intended to reduce selected device risks; verify which devices and ports are covered.',
+      status: 'POLICY-DEPENDENT',
     },
     {
       threat: 'Recruitment Proxy Fraud & AI Assistance',
       legacy: 'Remote proctors cannot verify if candidate is typing or receiving whisper coaching / off-screen ChatGPT answers.',
-      sppio: 'SPPIO-Proctor™ gaze tracking combined with SPPIO-Forensics™ keystroke playback and viva defense tools expose proxy cheating.',
-      status: 'FORENSICS REPLAY',
+      sppio: 'Optional monitoring and review tools may provide signals for human assessment; they do not prove misconduct on their own.',
+      status: 'REVIEW SIGNALS',
     },
     {
       threat: 'Post-Exam Retrospective Alteration',
       legacy: 'Standard database updates where rogue operators can alter responses or delete audit logs.',
-      sppio: 'SPPIO-Ledger™ continuous cryptographic chain with dual-custody authorization; any alteration breaks downstream anchors.',
-      status: 'CRYPTOGRAPHIC CHAIN',
+      sppio: 'Hash-linked records can make certain modifications detectable. Independent backups and protected signing keys remain necessary.',
+      status: 'AUDIT CONTROL',
     },
   ];
 
   return (
-    <div className="sppio-website">
+    <div id="top" tabIndex="-1" className="sppio-website">
       {/* ---------------- Header ---------------- */}
       <header className="sppio-header" role="banner">
         <div className="sppio-container">
@@ -97,14 +98,32 @@ export default function ArchitecturePage() {
             </nav>
 
             <div className="sppio-header-actions">
+              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>Institution Onboarding</Link>
+              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
               <Link to="/login" className="sppio-btn-ghost">
                 Sign In
               </Link>
               <a href="/landing#contact" className="sppio-btn-primary">
                 Request Briefing
               </a>
+              <button type="button" className="sppio-mobile-toggle" aria-label="Toggle navigation" aria-expanded={mobileMenuOpen} aria-controls="architecture-mobile-navigation" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  {mobileMenuOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
+                </svg>
+              </button>
             </div>
           </div>
+          {mobileMenuOpen && <nav id="architecture-mobile-navigation" className="sppio-mobile-drawer" aria-label="Mobile navigation">
+            <Link to="/landing#suite" onClick={() => setMobileMenuOpen(false)}>Products</Link>
+            <Link to="/solutions" onClick={() => setMobileMenuOpen(false)}>Solutions</Link>
+            <Link to="/landing#capabilities" onClick={() => setMobileMenuOpen(false)}>Capabilities</Link>
+            <Link to="/architecture" onClick={() => setMobileMenuOpen(false)}>Architecture</Link>
+            <Link to="/landing#deployments" onClick={() => setMobileMenuOpen(false)}>Deployments</Link>
+            <Link to="/landing#company" onClick={() => setMobileMenuOpen(false)}>Company</Link>
+            <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)}>Institution Onboarding</Link>
+            <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)}>Track Application</Link>
+            <Link to="/login" onClick={() => setMobileMenuOpen(false)}>Sign In</Link>
+          </nav>}
         </div>
       </header>
 
@@ -122,7 +141,7 @@ export default function ArchitecturePage() {
           </h1>
 
           <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            A comprehensive technical breakdown of how the SPPIO product suite—from SPPIO-Isolation™ Base OS to SPPIO-TrustEngine™, SPPIO-Proctor™, and SPPIO-Forensics™—enforces station lockdown, eliminates hiring fraud, and guarantees tamper-evident assessment delivery.
+            An overview of the intended system boundaries and controls for assessment workstations. Actual protections depend on supported hardware, deployment configuration, and the policies enabled for each institution.
           </p>
 
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
@@ -157,6 +176,7 @@ export default function ArchitecturePage() {
                   key={idx}
                   type="button"
                   className={`sppio-cap-tab ${activeStep === idx ? 'active' : ''}`}
+                  aria-pressed={activeStep === idx}
                   onClick={() => setActiveStep(idx)}
                 >
                   <span className="sppio-cap-number">0{idx + 1}</span>
@@ -195,7 +215,7 @@ export default function ArchitecturePage() {
                     <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#4ADE80', marginTop: '6px' }}>{quoteSteps[activeStep].status}</div>
                   </div>
                   <div style={{ background: 'rgba(255, 255, 255, 0.04)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Compliance Assurance</div>
+                    <div style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em' }}>Certification scope</div>
                     <div style={{ fontSize: '13.5px', fontWeight: 600, color: '#FFFFFF', marginTop: '6px' }}>{quoteSteps[activeStep].compliance}</div>
                   </div>
                 </div>
@@ -211,10 +231,10 @@ export default function ArchitecturePage() {
           <div className="sppio-section-header">
             <div>
               <span className="sppio-section-eyebrow">Threat Model &amp; Defense</span>
-              <h2 className="sppio-section-title">Architectural Immunity vs. Traditional Software</h2>
+              <h2 className="sppio-section-title">Controls and threat considerations</h2>
             </div>
             <p className="sppio-section-desc">
-              Why software-only desktop lockdown applications fail, and how SPPIO’s bare-metal enclave eliminates attack vectors.
+              No single control eliminates every attack path. The table describes intended control areas, not independent test results or a guarantee of prevention.
             </p>
           </div>
 
@@ -262,16 +282,16 @@ export default function ArchitecturePage() {
       </section>
 
       {/* ---------------- Section 3: Chained Ledger ---------------- */}
-      <section className="sppio-section">
+      <section id="ledger" className="sppio-section">
         <div className="sppio-container">
           <div className="sppio-company-grid">
             <div className="sppio-company-text">
               <span className="sppio-section-eyebrow">Cryptographic Non-Repudiation</span>
               <h2 className="sppio-section-title" style={{ color: '#302337' }}>
-                The Immutable Chained Ledger
+                Audit Event Chain
               </h2>
               <p className="sppio-company-lead" style={{ color: '#756F79' }}>
-                Every supervisory action, candidate answer commit, anomaly flag, and administrative approval is chained sequentially. No record can be deleted or modified retroactively without invalidating all subsequent hash anchors.
+                A hash-linked audit chain can make certain record changes detectable. It does not by itself prevent deletion, guarantee non-repudiation, or replace independently protected backups and signing keys. The implementation and evidence available for this deployment should be reviewed before relying on it.
               </p>
 
               <div className="sppio-pillars">
@@ -279,7 +299,7 @@ export default function ArchitecturePage() {
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong style={{ color: '#302337' }}>Truncation Anchors</strong>
-                    <p style={{ color: '#756F79' }}>Periodic RSA-4096 signed checkpoints prevent log truncation or rollbacks.</p>
+                    <p style={{ color: '#756F79' }}>Checkpoint signing and key custody depend on the configured deployment. Algorithm and assurance evidence are not published here.</p>
                   </div>
                 </div>
                 <div className="sppio-pillar-item">
@@ -305,7 +325,7 @@ export default function ArchitecturePage() {
                 Tamper-Evident Ledger Integrity
               </h4>
               <p style={{ fontSize: '13.5px', color: '#F6F2ED', margin: '12px 0 20px', lineHeight: 1.6, maxWidth: '320px', opacity: 0.9 }}>
-                Continuous cryptographic state validation with sequential event chain integrity and hardware-signed checkpoint anchors.
+                Conceptual audit-chain design. Checkpoint availability and key protection depend on deployment configuration.
               </p>
               <div style={{ display: 'inline-flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
                 <span className="sppio-tag" style={{ background: '#48394F', color: '#FFFFFF', borderColor: '#5C4A65' }}>Sequential Event Hash-Chain</span>
@@ -314,6 +334,34 @@ export default function ArchitecturePage() {
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section id="deployment" className="sppio-section" style={{ background: '#FFFFFF' }}>
+        <div className="sppio-container">
+          <div className="sppio-section-header">
+            <div>
+              <span className="sppio-section-eyebrow">Deployment boundaries</span>
+              <h2 className="sppio-section-title">System flow and operational prerequisites</h2>
+            </div>
+            <p className="sppio-section-desc">Conceptual architecture only; confirm supported configurations and operational behavior with the deployment team.</p>
+          </div>
+          <div role="img" aria-label="Conceptual flow: candidate kiosk connects through a gateway to policy services and storage; audit events cross a separately managed audit boundary." style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'center' }}>
+            {['Candidate kiosk', 'Gateway', 'Policy service', 'Application storage', 'Audit boundary'].map((node, index) => (
+              <div key={node} style={{ border: '1px solid #DCD5D2', borderRadius: '10px', padding: '18px 12px', textAlign: 'center', background: index === 4 ? '#302337' : '#F6F2ED', color: index === 4 ? '#FFFFFF' : '#302337', fontWeight: 700 }}>
+                {node}
+                {index < 4 && <span aria-hidden="true" style={{ display: 'block', marginTop: '8px', color: '#B54F34' }}>↓</span>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginTop: '20px' }}>
+            <div><h3>Before deployment</h3><p>Validate supported workstation models, firmware settings, required network endpoints, site connectivity, data retention, and administrator responsibilities for the chosen profile.</p></div>
+            <div><h3>Offline behavior</h3><p>Offline availability and later synchronization depend on the configured product profile. Confirm which tasks can continue offline, how data is reconciled, and how conflicts are handled.</p></div>
+            <div><h3>Attestation failure</h3><p>Confirm the configured launch gate, retry limits, operator escalation, and candidate help path for an attestation failure. This page does not claim a universal retry or recovery behavior.</p></div>
+          </div>
+          <p style={{ marginTop: '20px', padding: '14px', background: '#FBF9F7', border: '1px solid #DCD5D2', borderRadius: '8px', fontSize: '13px', lineHeight: 1.6 }}>
+            No third-party certification report or independent assurance evidence is published on this page. References to cryptographic controls describe design concepts, not a certification or guarantee.
+          </p>
         </div>
       </section>
 
@@ -339,7 +387,7 @@ export default function ArchitecturePage() {
               <h5>Governance</h5>
               <ul className="sppio-footer-links">
                 <li><Link to="/architecture#threat-model">Threat Model</Link></li>
-                <li><Link to="/architecture">Audit Chaining</Link></li>
+                <li><Link to="/architecture#ledger">Audit Chaining</Link></li>
                 <li><a href="/landing#contact">Security Briefing</a></li>
               </ul>
             </div>
@@ -347,7 +395,9 @@ export default function ArchitecturePage() {
               <h5>Console Access</h5>
               <ul className="sppio-footer-links">
                 <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
-                <li><Link to="/login">Candidate Station Login</Link></li>
+                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
+                <li><Link to="/register-institution">Institution Onboarding</Link></li>
+                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
               </ul>
             </div>
           </div>
@@ -356,7 +406,7 @@ export default function ArchitecturePage() {
             <div>© 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.</div>
             <div className="sppio-legal-links">
               <Link to="/landing">Platform Home</Link>
-              <a href="#top" onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
+              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
             </div>
           </div>
         </div>

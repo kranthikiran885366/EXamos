@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Link, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useCol, useTenant } from '../../core/db/tenant';
+import { useTenant } from '../../core/db/tenant';
 import * as Api from '../../core/api/services';
 import { can } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
@@ -13,6 +13,7 @@ import {
 import {
   OnboardingWorkflowBar
 } from '../institutions/onboardingWorkflow';
+import { getApplicationLifecycle } from '../institutions/applicationLifecycle';
 import {
   createInstitution, setInstitutionStatus,
   fetchInstitutionApplications, fetchInstitutionApplication, reviewApplication, provisionApplication,
@@ -358,7 +359,11 @@ export function PlatformApplicationsPage() {
               },
               { key: 'representative', label: 'Representative', render: (a) => <>{a.repName || a.representative_name || 'Signatory'}<br /><small className="muted">{a.repEmail || a.representative_email}</small></> },
               { key: 'country', label: 'Region / Tier', render: (a) => `${a.country || '—'} (${(a.plan || '—').toUpperCase()})` },
-              { key: 'status', label: 'Status', render: (a) => <Badge value={a.status} tone={['APPROVED', 'PROVISIONED', 'approved'].includes(a.status) ? 'green' : (a.status === 'REJECTED' ? 'red' : 'amber')} /> },
+              { key: 'status', label: 'Lifecycle stage', render: (a) => {
+                const lifecycle = getApplicationLifecycle(a.status, a.institutionStatus, a.adminSetupComplete);
+                const status = String(a.status || '').toUpperCase();
+                return <Badge value={lifecycle.stage} tone={status === 'REJECTED' ? 'red' : status === 'PROVISIONED' && String(a.institutionStatus || '').toLowerCase() === 'active' ? 'green' : 'amber'} />;
+              } },
               { key: 'created_at', label: 'Submitted', render: (a) => fmt(a.createdAt || a.created_at) },
             ]}
             actions={(a) => {
@@ -585,6 +590,10 @@ export function PlatformVerificationPage() {
 
   const [evidenceNotes, setEvidenceNotes] = useState(inst?.reviewNotes || '');
   const [successAlert, setSuccessAlert] = useState(null);
+
+  useEffect(() => {
+    setEvidenceNotes(inst?.reviewNotes || '');
+  }, [inst?.reviewNotes]);
 
   const toggleCheck = (k) => setChecklist((s) => ({ ...s, [k]: !s[k] }));
   const checkedCount = Object.values(checklist).filter(Boolean).length;

@@ -192,6 +192,21 @@
   cursor: pointer;
 }
 
+.sppio-mobile-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 32px;
+  background: #F6F2ED;
+  border-bottom: 1px solid #DCD5D2;
+}
+
+.sppio-mobile-drawer a {
+  color: #302337;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 /* ------------------------------------------------------------
    HERO SECTION (Asymmetric Architectural Composition)
    ------------------------------------------------------------ */
@@ -1176,6 +1191,7 @@
    ------------------------------------------------------------ */
 @media (max-width: 1024px) {
   .sppio-nav,
+  .sppio-header-actions .sppio-nav-item,
   .sppio-header-actions .sppio-btn-ghost {
     display: none;
   }
@@ -1210,6 +1226,30 @@
 }
 
 @media (max-width: 768px) {
+  .institution-onboarding-split {
+    flex-direction: column !important;
+  }
+
+  .onboarding-showcase-column {
+    position: relative !important;
+    flex: none !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    padding: 28px 20px !important;
+  }
+
+  .onboarding-form-column {
+    flex: none !important;
+    width: 100% !important;
+    padding: 24px 16px 40px !important;
+  }
+
+  .onboarding-form-column form {
+    padding: 24px 18px !important;
+  }
+
   .sppio-hero-section {
     padding: 56px 0 64px;
   }

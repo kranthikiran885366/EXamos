@@ -648,12 +648,23 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *pvals[1] = { app_id };
             int plens[1] = { (int)strlen(app_id) };
             PGresult *res = db_simple(conn,
-                "SELECT id, legal_name, display_name, entity_type, status, created_at, reviewed_at, "
-                "       domain, plan, deployment_model "
-                "FROM institution_applications WHERE id = $1", 1, pvals, plens);
+                "SELECT a.id, a.legal_name, a.display_name, a.entity_type, a.status, a.created_at, a.reviewed_at, "
+                "       a.domain, a.plan, a.deployment_model, a.updated_at, COALESCE(a.institution_id, ''), "
+                "       COALESCE(t.status, ''), "
+                "       CASE WHEN EXISTS ("
+                "         SELECT 1 FROM institution_onboarding o "
+                "         JOIN users u ON u.tenant_id = o.institution_id "
+                "           AND LOWER(u.email) = LOWER(o.first_admin_email) "
+                "         WHERE o.institution_id = a.institution_id "
+                "           AND u.status = 'active' "
+                "           AND COALESCE(u.totp_secret, '') <> ''"
+                "       ) THEN TRUE ELSE FALSE END "
+                "FROM institution_applications a LEFT JOIN tenants t ON t.id = a.institution_id "
+                "WHERE a.id = $1", 1, pvals, plens);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
                 char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0};
                 char dom_esc[128] = {0}, plan_esc[64] = {0}, mod_esc[64] = {0};
+                char institution_id[128] = {0}, institution_status[64] = {0};
                 escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
                 escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
                 escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
@@ -661,15 +672,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 escape_json_str(PQgetvalue(res, 0, 7), dom_esc, sizeof(dom_esc));
                 escape_json_str(PQgetvalue(res, 0, 8), plan_esc, sizeof(plan_esc));
                 escape_json_str(PQgetvalue(res, 0, 9), mod_esc, sizeof(mod_esc));
+                escape_json_str(PQgetvalue(res, 0, 11), institution_id, sizeof(institution_id));
+                escape_json_str(PQgetvalue(res, 0, 12), institution_status, sizeof(institution_status));
 
                 char resp[1024];
                 snprintf(resp, sizeof(resp),
                     "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
-                    "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,"
+                    "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,\"updatedAt\":%s,"
+                    "\"institutionId\":\"%s\",\"institutionStatus\":\"%s\",\"adminSetupComplete\":%s,"
                     "\"domain\":\"%s\",\"plan\":\"%s\",\"deploymentModel\":\"%s\"}",
                     id_esc, l_name, d_name, PQgetvalue(res, 0, 3), st,
                     PQgetvalue(res, 0, 5)[0] ? PQgetvalue(res, 0, 5) : "0",
                     PQgetvalue(res, 0, 6)[0] ? PQgetvalue(res, 0, 6) : "null",
+                    PQgetvalue(res, 0, 10)[0] ? PQgetvalue(res, 0, 10) : "0",
+                    institution_id, institution_status,
+                    PQgetvalue(res, 0, 13)[0] == 't' ? "true" : "false",
                     dom_esc, plan_esc, mod_esc);
                 PQclear(res);
                 db_release(conn, 0);
@@ -696,8 +713,19 @@ void institution_handle(int client_fd, const char *method, const char *path,
             "       country, state, address, domain, rep_name, "
             "       rep_role, rep_email, rep_phone, campus_count, student_count, "
             "       device_count, deployment_model, hardware_profile, plan, status, "
-            "       review_notes, reviewed_by, reviewed_at, institution_id, created_at, updated_at "
-            "FROM institution_applications ORDER BY created_at DESC");
+            "       review_notes, reviewed_by, reviewed_at, institution_id, created_at, updated_at, "
+            "       COALESCE(t.status, ''), "
+            "       CASE WHEN EXISTS ("
+            "         SELECT 1 FROM institution_onboarding o "
+            "         JOIN users u ON u.tenant_id = o.institution_id "
+            "           AND LOWER(u.email) = LOWER(o.first_admin_email) "
+            "         WHERE o.institution_id = a.institution_id "
+            "           AND u.status = 'active' "
+            "           AND COALESCE(u.totp_secret, '') <> ''"
+            "       ) THEN TRUE ELSE FALSE END "
+            "FROM institution_applications a "
+            "LEFT JOIN tenants t ON t.id = a.institution_id "
+            "ORDER BY a.created_at DESC");
 
         if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
             if (res) PQclear(res);
@@ -714,6 +742,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
             char id_esc[64] = {0}, l_name[256] = {0}, d_name[256] = {0}, reg[64] = {0};
             char dom[128] = {0}, r_email[128] = {0}, st[64] = {0}, ins_id[64] = {0};
+            char institution_status[64] = {0};
             char notes[512] = {0};
 
             escape_json_str(PQgetvalue(res, i, 0), id_esc, sizeof(id_esc));
@@ -725,19 +754,22 @@ void institution_handle(int client_fd, const char *method, const char *path,
             escape_json_str(PQgetvalue(res, i, 19), st, sizeof(st));
             escape_json_str(PQgetvalue(res, i, 20), notes, sizeof(notes));
             escape_json_str(PQgetvalue(res, i, 23), ins_id, sizeof(ins_id));
+            escape_json_str(PQgetvalue(res, i, 26), institution_status, sizeof(institution_status));
 
             pos += snprintf(json + pos, sizeof(json) - pos,
                 "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
                 "\"registrationNumber\":\"%s\",\"country\":\"%s\",\"state\":\"%s\",\"domain\":\"%s\","
                 "\"repEmail\":\"%s\",\"campusCount\":%s,\"studentCount\":%s,\"deviceCount\":%s,"
                 "\"deploymentModel\":\"%s\",\"plan\":\"%s\",\"status\":\"%s\",\"reviewNotes\":\"%s\","
-                "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s}",
+                "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,"
+                "\"institutionStatus\":\"%s\",\"adminSetupComplete\":%s}",
                 id_esc, l_name, d_name, PQgetvalue(res, i, 3),
                 reg, PQgetvalue(res, i, 5), PQgetvalue(res, i, 6), dom,
                 r_email, PQgetvalue(res, i, 13), PQgetvalue(res, i, 14), PQgetvalue(res, i, 15),
                 PQgetvalue(res, i, 16), PQgetvalue(res, i, 18), st, notes,
                 ins_id, PQgetvalue(res, i, 24),
-                PQgetvalue(res, i, 22)[0] ? PQgetvalue(res, i, 22) : "null");
+                PQgetvalue(res, i, 22)[0] ? PQgetvalue(res, i, 22) : "null",
+                institution_status, PQgetvalue(res, i, 27)[0] == 't' ? "true" : "false");
         }
         snprintf(json + pos, sizeof(json) - pos, "]}");
         if (res) PQclear(res);

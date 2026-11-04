@@ -17,14 +17,14 @@ function LoginShowcase() {
         <div className="editorial-hero">
           <div className="editorial-telemetry-badge">
             <span className="editorial-ping" />
-            <span>SPPIO-TrustEngine™ Active • SPPIO-Ledger™ Intact</span>
+            <span>Management console sign-in</span>
           </div>
 
           <h1 className="editorial-headline">
             High-Assurance Infrastructure for <span>Enterprise Recruitment &amp; Exams</span>
           </h1>
           <p className="editorial-sub">
-            Engineered with SPPIO-TrustEngine™ silicon attestation, SPPIO-PhysicalGuard™ port containment, and SPPIO-Proctor™ real-time telemetry.
+            Sign in to manage institution, examination, and assessment workflows.
           </p>
 
           <div className="editorial-points">
@@ -32,7 +32,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>SPPIO-Isolation™ &amp; Kiosk™ Sandbox</strong>
-                <p>Bare-metal execution blocks candidate ghosting, unauthorized AI tools, and remote desktop exploits.</p>
+                <p>Assessment station controls depend on supported hardware and the profile configured for your institution.</p>
               </div>
             </div>
 
@@ -40,7 +40,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>SPPIO-Proctor™ &amp; Forensics™</strong>
-                <p>Client-side vision tracking, keystroke cadence analysis, and time-lapse code replay for technical viva defense.</p>
+                <p>Optional monitoring and event-review features depend on enabled modules, consent, and retention policy.</p>
               </div>
             </div>
 
@@ -48,7 +48,7 @@ function LoginShowcase() {
               <div className="editorial-point-marker" />
               <div>
                 <strong>SPPIO-Ledger™ &amp; Core™ Storage</strong>
-                <p>Immutable cryptographic audit stream providing talent acquisition with legally defensible compliance proof.</p>
+                <p>Hash-linked audit events may make selected changes detectable; they do not by themselves guarantee non-repudiation or compliance.</p>
               </div>
             </div>
           </div>
@@ -62,7 +62,7 @@ function LoginShowcase() {
             <span className="sep">•</span>
             <span>SPPIO-Forensics™</span>
             <span className="sep">•</span>
-            <span>FIPS 140-3 Aligned</span>
+            <span>Deployment-specific controls</span>
           </div>
           <div className="editorial-copy">© 2026 SPPIO Systems Enclave. All rights reserved.</div>
         </div>
@@ -87,7 +87,7 @@ export default function LoginPage() {
   const loc = useLocation();
   const navigate = useNavigate();
 
-  const [realm, setRealm] = useState('admin'); // 'admin' | 'candidate'
+  const [realm, setRealm] = useState(() => new URLSearchParams(window.location.search).get('realm') === 'candidate' ? 'candidate' : 'admin');
   const [u, setU] = useState('');
   const [p, setP] = useState('');
   const [candId, setCandId] = useState('');
@@ -337,7 +337,7 @@ export default function LoginPage() {
               <div className="login-auth-header">
                 <div>
                   <h2 className="login-auth-title">SPPIO Console Access</h2>
-                  <p className="login-auth-subtitle">High-Assurance Examination Enclave</p>
+                  <p className="login-auth-subtitle">Choose the sign-in path for your role.</p>
                 </div>
                 <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>
                   <span className="status-ping" />
@@ -350,6 +350,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   className={`realm-btn ${realm === 'admin' ? 'active' : ''}`}
+                  aria-pressed={realm === 'admin'}
                   onClick={() => { setRealm('admin'); setErr(''); }}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -360,6 +361,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   className={`realm-btn ${realm === 'candidate' ? 'active' : ''}`}
+                  aria-pressed={realm === 'candidate'}
                   onClick={() => { setRealm('candidate'); setErr(''); }}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -496,7 +498,7 @@ export default function LoginPage() {
                         ExamOS Hardware Kiosk Required
                       </div>
                       <p>
-                        Candidate examinations are restricted exclusively to workstations booted from the official ExamOS bootable USB drive. Standard web browsers cannot run candidate sessions.
+                        Candidate exams require an institution-configured ExamOS kiosk workstation. This browser cannot start an exam. Contact your institution’s exam office or help desk for kiosk access and assistance.
                       </p>
                     </div>
                   )}
@@ -561,10 +563,15 @@ export default function LoginPage() {
               </p>
 
               <div className="input-group" style={{ marginTop: '20px' }}>
+                <label htmlFor="mfa-code">{isRecoveryCode ? 'Single-use recovery code' : '6-digit authenticator code'}</label>
                 <input
+                  id="mfa-code"
                   ref={mfaInputRef}
                   className="polished-mfa-input"
                   inputMode={isRecoveryCode ? 'text' : 'numeric'}
+                  autoComplete="one-time-code"
+                  aria-describedby="mfa-help mfa-error"
+                  aria-invalid={Boolean(err)}
                   value={code}
                   onChange={(e) => {
                     const val = isRecoveryCode
@@ -572,13 +579,13 @@ export default function LoginPage() {
                       : e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
                     setCode(val);
                   }}
-                  autoComplete="one-time-code"
                   placeholder={isRecoveryCode ? 'XXXX-XXXX' : '••••••'}
                   autoFocus
                 />
+                <p id="mfa-help" className="login-auth-subtitle">Paste a current authenticator code. Recovery codes can be used once; remove spaces or dashes if needed.</p>
               </div>
 
-              {err && <div className="polished-error-banner">{err}</div>}
+              {err && <div id="mfa-error" className="polished-error-banner" role="alert">{err}</div>}
 
               <button
                 className="polished-submit-btn"

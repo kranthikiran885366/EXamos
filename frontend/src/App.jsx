@@ -99,8 +99,7 @@ export default function App() {
     <ErrorBoundary key={loc.pathname}>
       <Suspense fallback={<Fallback />}>
         <Routes>
-          {/* Direct redirect to login on root visit */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/" element={<LandingPage />} />
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/architecture" element={<ArchitecturePage />} />
           <Route path="/solutions" element={<SolutionsPage />} />
@@ -112,6 +111,7 @@ export default function App() {
 
           {/* Public auth routes */}
           <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
+          <Route path="/candidate-login" element={<Navigate to="/login?realm=candidate" replace />} />
           <Route path="/mfa" element={<PublicOnly><MfaPage /></PublicOnly>} />
           <Route path="/recovery" element={<PublicOnly><RecoveryPage /></PublicOnly>} />
           <Route path="/reset-password" element={<PublicOnly><ResetPasswordPage /></PublicOnly>} />
@@ -121,7 +121,7 @@ export default function App() {
 
           {/* Protected app shell */}
           <Route element={<ProtectedRoute><Shell /></ProtectedRoute>}>
-            <Route index element={<Home />} />
+            <Route path="app" element={<Home />} />
             {ROUTES.map((r) => {
               const LazyPage = ROUTE_COMPONENTS.get(r.path);
               return <Route key={r.path} path={r.path} element={

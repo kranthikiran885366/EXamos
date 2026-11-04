@@ -179,7 +179,6 @@ export function RecoveryPage() {
       }
       setOk('Password reset successfully. You can now sign in with your new password.');
       setBusy(false);
-      setTimeout(() => navigate('/login'), 3000);
     } catch (x) {
       setErr(x.message || String(x));
       setBusy(false);
@@ -228,7 +227,7 @@ export function RecoveryPage() {
         <div style={{ marginBottom: '1.25rem' }}>
           <h2 style={{ fontSize: '1.25rem', margin: '0 0 6px 0' }}>Reset Password with Recovery Code</h2>
           <p className="muted" style={{ fontSize: '12px', margin: 0, lineHeight: 1.5 }}>
-            Use one of the emergency recovery codes generated when Google Authenticator was configured for your account.
+            Use an unused recovery code generated during authenticator setup. Each code works once. If a code was already used or is no longer accepted, try another unused code; if none remain, contact your administrator.
           </p>
         </div>
 
@@ -266,13 +265,16 @@ export function RecoveryPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
                 maxLength={128}
-                placeholder="12+ chars with upper, lower, digit & symbol"
+                placeholder="At least 12 characters"
               />
               <button type="button" className="mini" onClick={() => setShowPw(!showPw)}>
                 {showPw ? 'Hide' : 'Show'}
               </button>
             </span>
           </label>
+          <p className="muted" style={{ fontSize: '11px', margin: '-8px 0 12px', lineHeight: 1.5 }}>
+            Use at least 12 characters. Choose a password you have not used for this account before.
+          </p>
 
           <label>
             Confirm New Password
@@ -288,15 +290,15 @@ export function RecoveryPage() {
 
           {err && <div className="err" role="alert" style={{ marginTop: '12px', marginBottom: '12px' }}>{err}</div>}
           {ok && (
-            <div className="alert success sm" style={{ marginTop: '12px', marginBottom: '12px' }}>
+            <div className="alert success sm" role="status" style={{ marginTop: '12px', marginBottom: '12px' }}>
               ✅ {ok}{' '}
-              <Link to="/login" style={{ color: '#10b981', fontWeight: 700 }}>Sign in now</Link>
+              <Link to="/login" style={{ color: '#10b981', fontWeight: 700 }}>Continue to sign in</Link>
             </div>
           )}
 
           <button
             className="btn primary wide"
-            disabled={busy || !username.trim() || !code.trim() || password.length < 12}
+            disabled={busy || Boolean(ok) || !username.trim() || !code.trim() || password.length < 12}
             style={{ height: '44px', fontSize: '14px', fontWeight: 600, marginTop: '16px' }}
           >
             {busy ? 'Verifying & Resetting…' : 'Reset Password & Re-enable Access'}
@@ -316,7 +318,7 @@ export function RecoveryPage() {
               💡 About Emergency Recovery
             </summary>
             <div style={{ padding: '6px 0', fontSize: '11px', lineHeight: 1.6, color: '#94a3b8' }}>
-              Recovery codes are single-use 8-character tokens hashed with SHA-256. Upon successful verification, the used code is permanently invalidated and a security audit entry is written to the cryptographic chain.
+              Recovery codes are single-use. The server verifies the code and resets the account password; this page does not reveal whether a username exists.
             </div>
           </details>
         </form>

@@ -151,7 +151,7 @@ export function AuthProvider({ children }) {
 
       if (result.mfaRequired) {
         failAttempt(pendingCredentials.username, 'MFA_FAILED');
-        return { error: 'Invalid MFA code or recovery code. Try again.' };
+        return { error: 'The verification code was not accepted. Check the latest code in your authenticator app, or use a valid unused recovery code.' };
       }
 
       const profile = result.profile || {};

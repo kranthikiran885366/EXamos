@@ -3,78 +3,105 @@ import { Link } from 'react-router-dom';
 import SppioLogo, { SppioSymbol } from './SppioLogo';
 
 export default function SolutionsPage() {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [stationCount, setStationCount] = useState(500);
+  const [stationInput, setStationInput] = useState('500');
   const [centerCount, setCenterCount] = useState(5);
+  const [centerInput, setCenterInput] = useState('5');
 
-  const totalCandidates = stationCount * 3; // 3 batches per day
-  const auditEntries = stationCount * 450; // average 450 ledger entries per candidate
+  const updateNumberInput = (raw, minimum, maximum, setRaw, setValue) => {
+    setRaw(raw);
+    if (!raw) return;
+    const value = Number(raw);
+    if (Number.isFinite(value)) setValue(Math.min(maximum, Math.max(minimum, value)));
+  };
+
+  const normalizeNumberInput = (raw, minimum, maximum, fallback, setRaw, setValue) => {
+    const value = Number(raw);
+    const normalized = raw && Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+    setValue(normalized);
+    setRaw(String(normalized));
+  };
+
+  const totalCandidates = stationCount * 3;
+  const auditEntries = totalCandidates * 450;
   const estimatedLedgerMB = Math.round((auditEntries * 256) / (1024 * 1024) * 10) / 10;
 
   const solutions = [
     {
       badge: 'Enterprise Technical Recruitment',
-      title: 'Fraud-Proof Engineering Hiring & Campus Placement Drives',
-      subtitle: 'Eliminate candidate proxy fraud, unauthorized AI assistance, and ghosting in tech recruitment.',
-      desc: 'In an era of generative AI and remote hiring fraud, technology enterprises face rampant proxy test-takers, hidden ChatGPT prompt injection, and screen-sharing shortcuts. SPPIO provides an end-to-end recruitment security architecture: SPPIO-Isolation™ Base OS and SPPIO-Kiosk™ Sandbox enforce a sandboxed IDE with zero host escape; SPPIO-Proctor™ monitors gaze and secondary displays; and SPPIO-Forensics™ records millisecond keystroke telemetry for code construction replay and technical viva defense.',
+      action: 'Request a technical briefing',
+      actionHref: '/#contact',
+      title: 'Engineering Hiring & Campus Assessment',
+      subtitle: 'Assessment controls and review workflows for technical hiring.',
+      desc: 'A technical hiring deployment may combine a dedicated assessment environment, configured monitoring, event review, and interviewer-led follow-up. Module availability, hardware support, and data handling depend on the deployment profile.',
       highlights: [
         'SPPIO-Forensics™ line-by-line keystroke replay and time-lapse code construction playback',
-        'SPPIO-Proctor™ real-time vision sensor detecting candidate gaze diversion and whisper coaching',
-        'SPPIO-PhysicalGuard™ port suppression blocking secondary HDMI splitters and keystroke injection USBs',
-        'SPPIO-Command™ Console live recruiter cockpit with real-time proctor flags and scorecard exports',
+        'Optional monitoring can surface signals for human review; it does not prove misconduct on its own',
+        'Peripheral restrictions depend on supported devices and configured policy',
+        'Recruiter workflows and exports depend on enabled modules',
       ],
     },
     {
       badge: 'Senior Tech Hiring & Viva Defense',
+      action: 'Request a technical briefing',
+      actionHref: '/#contact',
       title: 'Technical Viva Defense & Code Authorship Verification',
-      subtitle: 'Defensible proof of genuine code authorship and intellectual problem-solving.',
-      desc: 'High-compensation software engineering roles demand verified proof of independent problem-solving. SPPIO-Forensics™ equips engineering hiring panels with time-stamped code progression, typing cadence anomaly analysis, and interactive viva questioning tools, all chained permanently in the SPPIO-Ledger™ audit stream.',
+      subtitle: 'Structured review of assessment activity and candidate discussion.',
+      desc: 'Teams can use configured event histories and interviewer-led discussion to inform technical evaluation. These signals do not independently establish authorship or intent.',
       highlights: [
         'Interactive code playback allowing interviewers to challenge specific algorithmic decisions',
-        'Keystroke velocity telemetry identifying unnatural paste bursts and automated clipboard inputs',
-        'SPPIO-TrustEngine™ hardware binding ensuring tests are taken on authentic physical workstations',
-        'Defensible SPPIO-Ledger™ audit exports protecting corporate talent acquisition against bias claims',
+        'Event collection and retention depend on enabled modules and policy',
+        'Hardware checks require compatible workstations and deployment configuration',
+        'Review audit exports against organizational retention and access requirements',
       ],
     },
     {
       badge: 'National Testing Agencies',
-      title: 'Decentralized High-Stakes Testing Fleets',
+      action: 'Start institutional onboarding',
+      actionHref: '/register-institution',
+      title: 'Distributed Assessment Fleet Planning',
       subtitle: 'Massive concurrent scale across geographically dispersed assessment centers.',
-      desc: 'National competitive and civil service examinations require foolproof containment across heterogeneous hardware. SPPIO bootable drives turn any standard commodity x86_64 workstation into a cryptographically sealed testing enclave within 45 seconds using SPPIO-Isolation™ Base OS and SPPIO-TrustEngine™.',
+      desc: 'Plan supported workstation models, site connectivity, operational support, and submission reconciliation for geographically distributed assessments. Validate boot and attestation behavior on the target hardware before rollout.',
       highlights: [
-        'Unattended hardware attestation and golden policy verification on boot via SPPIO-TrustEngine™',
-        'Air-gap execution resilience with zero dependency on WAN stability',
-        'Batch cryptographic submission reconciliation with asymmetric signatures in SPPIO-Core™',
-        'Suppression of external mass storage, unauthorized networking, and OS escape via SPPIO-PhysicalGuard™',
+        'Hardware measurement coverage depends on compatible devices and policy',
+        'Offline availability and synchronization behavior depend on deployment configuration',
+        'Confirm submission reconciliation and audit requirements before rollout',
+        'Peripheral and network controls must be validated for each station profile',
       ],
     },
     {
       badge: 'Higher Education & Universities',
+      action: 'Start institutional onboarding',
+      actionHref: '/register-institution',
       title: 'Institutional Examination Enclaves',
       subtitle: 'Multi-campus assessment governance with role-based segregation.',
-      desc: 'Universities operate complex academic schedules across diverse faculties and departments. SPPIO-Command™ Console provides a unified multi-tenancy control plane with nine-tier RBAC, dual-custody approval for grade/policy changes, and student session attestation.',
+      desc: 'Institutions can map academic roles, approval requirements, and assessment workflows to the configured platform controls. Confirm tenancy boundaries and permissions with a representative deployment.',
       highlights: [
         'Departmental tenancy isolation with independent supervisor roles in SPPIO-Command™',
-        'Two-person approval rule for policy rollback and score release',
-        'Zero-trust student kiosk mode preventing secondary monitor sharing via SPPIO-Kiosk™',
-        'Integrated multi-factor authentication and FIPS-compliant cryptography in SPPIO-TrustEngine™',
+        'Configure role separation and approval rules to match institutional policy',
+        'Station restrictions depend on the selected kiosk profile and supported hardware',
+        'Review authentication and cryptographic assurance evidence for the deployed release',
       ],
     },
     {
       badge: 'Professional Licensure Boards',
+      action: 'Request a technical briefing',
+      actionHref: '/#contact',
       title: 'High-Integrity Credentialing & Certification',
-      subtitle: 'Non-repudiable audit trails for high-consequence licensure.',
-      desc: 'Medical, legal, and financial certification bodies demand mathematically provable integrity. SPPIO ensures that every candidate interaction, proctoring alert, and score generation is permanently chained in a verifiable tamper-evident ledger powered by SPPIO-Ledger™.',
+      subtitle: 'Audit and workflow planning for certification programs.',
+      desc: 'Certification teams can assess event handling, role separation, retention, and audit exports against their regulatory and operational requirements. No certification or audit outcome is implied.',
       highlights: [
-        'Non-repudiable candidate identity binding via hardware cryptographic quotes',
-        'Continuous real-time supervisory tracking and peripheral monitoring via SPPIO-Proctor™',
-        'Immutable audit export readable by independent third-party auditors via SPPIO-Ledger™',
-        'Zero residual client footprint post-examination reboot with SPPIO-Isolation™ Base OS',
+        'Confirm identity and attestation behavior for supported workstation models',
+        'Monitoring scope depends on enabled features, consent, and retention policy',
+        'Validate audit export format and verification procedures with intended reviewers',
+        'Confirm local data cleanup behavior for the selected station profile',
       ],
     },
   ];
 
   return (
-    <div className="sppio-website">
+    <div id="top" tabIndex="-1" className="sppio-website">
       {/* ---------------- Header ---------------- */}
       <header className="sppio-header" role="banner">
         <div className="sppio-container">
@@ -93,14 +120,32 @@ export default function SolutionsPage() {
             </nav>
 
             <div className="sppio-header-actions">
+              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>Institution Onboarding</Link>
+              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
               <Link to="/login" className="sppio-btn-ghost">
                 Sign In
               </Link>
               <a href="/landing#contact" className="sppio-btn-primary">
                 Request Briefing
               </a>
+              <button type="button" className="sppio-mobile-toggle" aria-label="Toggle navigation" aria-expanded={mobileMenuOpen} aria-controls="solutions-mobile-navigation" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  {mobileMenuOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
+                </svg>
+              </button>
             </div>
           </div>
+          {mobileMenuOpen && <nav id="solutions-mobile-navigation" className="sppio-mobile-drawer" aria-label="Mobile navigation">
+            <Link to="/landing#suite" onClick={() => setMobileMenuOpen(false)}>Products</Link>
+            <Link to="/solutions" onClick={() => setMobileMenuOpen(false)}>Solutions</Link>
+            <Link to="/landing#capabilities" onClick={() => setMobileMenuOpen(false)}>Capabilities</Link>
+            <Link to="/architecture" onClick={() => setMobileMenuOpen(false)}>Architecture</Link>
+            <Link to="/landing#deployments" onClick={() => setMobileMenuOpen(false)}>Deployments</Link>
+            <Link to="/landing#company" onClick={() => setMobileMenuOpen(false)}>Company</Link>
+            <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)}>Institution Onboarding</Link>
+            <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)}>Track Application</Link>
+            <Link to="/login" onClick={() => setMobileMenuOpen(false)}>Sign In</Link>
+          </nav>}
         </div>
       </header>
 
@@ -118,7 +163,7 @@ export default function SolutionsPage() {
           </h1>
 
           <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            From Fortune 500 technical hiring drives and university campus recruitment to high-consequence national examinations. Discover how SPPIO prevents recruitment fraud, verifies genuine code authorship, and delivers tamper-evident hiring records.
+            Explore example workflows for institutional examinations, enterprise hiring, and technical evaluation. Product capabilities and assurance depend on the selected deployment.
           </p>
 
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
@@ -183,6 +228,7 @@ export default function SolutionsPage() {
                     </div>
                   ))}
                 </div>
+                <Link to={sol.actionHref} className="sppio-btn-primary" style={{ display: 'inline-block', marginTop: '20px' }}>{sol.action} →</Link>
               </div>
             ))}
           </div>
@@ -198,46 +244,58 @@ export default function SolutionsPage() {
               <h2 className="sppio-section-title" style={{ color: '#FFFFFF' }}>Fleet Scale &amp; Cryptographic Estimator</h2>
             </div>
             <p className="sppio-section-desc" style={{ color: '#C3B7C6' }}>
-              Estimate concurrent station throughput, candidate capacity, and cryptographic ledger requirements.
+              Planning estimate only. Values are assumption-based, not measured capacity or storage commitments.
             </p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '48px', alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '32px', alignItems: 'center' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
               <div>
-                <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: 700, marginBottom: '10px' }}>
-                  <span>Concurrent Testing Stations:</span>
-                  <span style={{ color: '#FFAE99', fontFamily: 'monospace', fontSize: '16px' }}>{stationCount} Stations</span>
+                <label htmlFor="estimator-stations-range" style={{ display: 'block', fontSize: '14px', fontWeight: 700, marginBottom: '10px' }}>
+                  Concurrent testing stations
                 </label>
                 <input
+                  id="estimator-stations-range"
                   type="range"
                   min="50"
                   max="5000"
-                  step="50"
+                  step="1"
                   value={stationCount}
-                  onChange={(e) => setStationCount(Number(e.target.value))}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    setStationCount(value);
+                    setStationInput(String(value));
+                  }}
                   style={{ width: '100%', accentColor: '#B54F34', cursor: 'pointer' }}
                 />
+                <label htmlFor="estimator-stations-number" style={{ display: 'block', fontSize: '12px', marginTop: '10px' }}>Number of stations</label>
+                <input id="estimator-stations-number" type="number" min="50" max="5000" step="1" value={stationInput} onChange={(e) => updateNumberInput(e.target.value, 50, 5000, setStationInput, setStationCount)} onBlur={() => normalizeNumberInput(stationInput, 50, 5000, stationCount, setStationInput, setStationCount)} style={{ width: '100%', boxSizing: 'border-box', marginTop: '4px', padding: '9px', borderRadius: '6px' }} />
               </div>
 
               <div>
-                <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: 700, marginBottom: '10px' }}>
-                  <span>Testing Centers:</span>
-                  <span style={{ color: '#FFAE99', fontFamily: 'monospace', fontSize: '16px' }}>{centerCount} Centers</span>
+                <label htmlFor="estimator-centers-range" style={{ display: 'block', fontSize: '14px', fontWeight: 700, marginBottom: '10px' }}>
+                  Testing centers
                 </label>
                 <input
+                  id="estimator-centers-range"
                   type="range"
                   min="1"
                   max="50"
                   step="1"
                   value={centerCount}
-                  onChange={(e) => setCenterCount(Number(e.target.value))}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    setCenterCount(value);
+                    setCenterInput(String(value));
+                  }}
                   style={{ width: '100%', accentColor: '#B54F34', cursor: 'pointer' }}
                 />
+                <label htmlFor="estimator-centers-number" style={{ display: 'block', fontSize: '12px', marginTop: '10px' }}>Number of centers</label>
+                <input id="estimator-centers-number" type="number" min="1" max="50" step="1" value={centerInput} onChange={(e) => updateNumberInput(e.target.value, 1, 50, setCenterInput, setCenterCount)} onBlur={() => normalizeNumberInput(centerInput, 1, 50, centerCount, setCenterInput, setCenterCount)} style={{ width: '100%', boxSizing: 'border-box', marginTop: '4px', padding: '9px', borderRadius: '6px' }} />
               </div>
 
-              <div style={{ fontSize: '13px', color: '#A69BA9', lineHeight: 1.6 }}>
-                💡 <em>All stations run in local offline-first isolation. No central network bottleneck occurs even if hundreds of stations submit simultaneously.</em>
+              <div style={{ fontSize: '13px', color: '#D5CCD8', lineHeight: 1.6 }}>
+                Planning estimate only, not a capacity guarantee. Assumptions: 3 candidates per station per day, 450 audit events per candidate, and 256 bytes per event. Actual throughput and storage vary by workload and deployment.
               </div>
             </div>
 
@@ -250,7 +308,7 @@ export default function SolutionsPage() {
                   <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {totalCandidates.toLocaleString()}
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Candidates / 3 shifts</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>                  Candidates / day (assumed)</span>
                 </div>
 
                 <div>
@@ -270,7 +328,7 @@ export default function SolutionsPage() {
                   <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {auditEntries.toLocaleString()}
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Chained audit blocks per day</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>                  Events / day (assumed)</span>
                 </div>
 
                 <div>
@@ -280,7 +338,7 @@ export default function SolutionsPage() {
                   <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     ~{estimatedLedgerMB} MB
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Extremely lightweight</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>At assumed 256 bytes per event</span>
                 </div>
               </div>
             </div>
@@ -318,6 +376,9 @@ export default function SolutionsPage() {
               <h5>Console Access</h5>
               <ul className="sppio-footer-links">
                 <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
+                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
+                <li><Link to="/register-institution">Institution Onboarding</Link></li>
+                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
                 <li><a href="/landing#contact">Schedule Consultation</a></li>
               </ul>
             </div>
@@ -327,7 +388,7 @@ export default function SolutionsPage() {
             <div>© 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.</div>
             <div className="sppio-legal-links">
               <Link to="/landing">Platform Home</Link>
-              <a href="#top" onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
+              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
             </div>
           </div>
         </div>
