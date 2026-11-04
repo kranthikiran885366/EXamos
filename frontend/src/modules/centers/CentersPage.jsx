@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Crud from '../../core/ui/Crud';
 import { useTenant } from '../../core/db/tenant';
 import { createCenter, listCenters, setCenterStatus } from './service';
@@ -8,34 +8,57 @@ export default function CentersPage() {
   const [centers, setCenters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
+  const loadVersion = useRef(0);
 
   useEffect(() => {
     let active = true;
+    const version = ++loadVersion.current;
     setLoading(true);
     setError('');
     listCenters(tenantId)
-      .then((rows) => { if (active) setCenters(rows); })
-      .catch((err) => { if (active) { setCenters([]); setError(err.message || 'Failed to load centers.'); } })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [tenantId, reloadKey]);
+      .then((rows) => { if (active && version === loadVersion.current) setCenters(rows); })
+      .catch((err) => {
+        if (active && version === loadVersion.current) {
+          setCenters([]);
+          setError(err.message || 'Failed to load centers.');
+        }
+      })
+      .finally(() => { if (active && version === loadVersion.current) setLoading(false); });
+    return () => {
+      active = false;
+      if (version === loadVersion.current) loadVersion.current++;
+    };
+  }, [tenantId]);
 
-  const refresh = () => setReloadKey((key) => key + 1);
+  const refresh = async () => {
+    const version = ++loadVersion.current;
+    setLoading(true);
+    setError('');
+    try {
+      const rows = await listCenters(tenantId);
+      if (version === loadVersion.current) setCenters(rows);
+      return true;
+    } catch (err) {
+      if (version === loadVersion.current) setError(err.message || 'Failed to refresh centers.');
+      return false;
+    } finally {
+      if (version === loadVersion.current) setLoading(false);
+    }
+  };
   const create = tenantId ? {
     label: 'Add center',
     perm: 'center.manage',
     fields: [
-      { name: 'code', label: 'Code', placeholder: 'BLR-87' },
-      { name: 'name', label: 'Name' },
+      { name: 'code', label: 'Center code *', placeholder: 'BLR-87', help: 'Three letters, a hyphen, then one to three digits.' },
+      { name: 'name', label: 'Center name *' },
       { name: 'city', label: 'City' },
-      { name: 'labs', label: 'Labs', type: 'number', min: 1, max: 12 },
-      { name: 'seatsPerLab', label: 'Seats per lab', type: 'number', min: 8, max: 96 },
+      { name: 'labs', label: 'Labs *', type: 'number', min: 1, max: 12, help: 'Enter 1–12 labs.' },
+      { name: 'seatsPerLab', label: 'Seats per lab *', type: 'number', min: 8, max: 96, help: 'Enter 8–96 seats per lab; total capacity cannot exceed 416.' },
     ],
     submit: async (values) => {
       const message = await createCenter({ tenantId, ...values });
-      refresh();
-      return message;
+      const refreshed = await refresh();
+      return refreshed ? message : `${message} The grid could not refresh; use Refresh to retry.`;
     },
   } : undefined;
 
@@ -50,6 +73,7 @@ export default function CentersPage() {
         { label: 'Name', key: 'name' },
         { label: 'City', key: 'city' },
         { label: 'Labs', key: 'labs' },
+        { label: 'Seats per lab', key: 'seatsPerLab' },
         { label: 'Capacity', key: 'capacity' },
         { label: 'Status', key: 'status', badge: true },
       ]}
@@ -71,7 +95,7 @@ export default function CentersPage() {
           show: (center) => center.status === 'active',
           run: async (center, reason) => {
             const result = await setCenterStatus(center, 'inactive', reason);
-            refresh();
+            await refresh();
             return result;
           },
         },
@@ -82,7 +106,7 @@ export default function CentersPage() {
           show: (center) => center.status !== 'active',
           run: async (center, reason) => {
             const result = await setCenterStatus(center, 'active', reason);
-            refresh();
+            await refresh();
             return result;
           },
         },

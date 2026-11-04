@@ -8,7 +8,7 @@ import { fmt, ago } from '../../core/ui/format';
 import {
   Page, Card, StatGrid, Stat, Alert, Empty, Loading,
   DataTable, Badge, Modal, ActionDialog, useFlash, Flash,
-  Icon, Field, Input, Select, Textarea, Checkbox
+  Icon, Field, Input, Select, Textarea, Checkbox, KeyValue
 } from '../../core/ui/kit';
 import {
   createCampus, createDepartment, assignStaff, removeStaff,

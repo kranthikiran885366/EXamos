@@ -459,14 +459,13 @@ export default function PublicInstitutionRegisterPage() {
 
             <form onSubmit={handleTrack} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '10px', marginBottom: '24px', alignItems: 'end' }}>
               <label htmlFor="application-reference" style={{ gridColumn: '1 / -1', fontSize: '12.5px', fontWeight: 700 }}>
-                Application reference
+                Application Reference Number
               </label>
               <input
                 type="text"
                 required
                 aria-required="true"
                 id="application-reference"
-                aria-label="Application reference number"
                 aria-describedby={trackErr ? 'track-error' : 'track-reference-help'}
                 aria-invalid={Boolean(trackErr)}
                 placeholder="app_… reference from your receipt"
