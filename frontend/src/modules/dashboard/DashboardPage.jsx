@@ -42,6 +42,7 @@ export default function DashboardPage() {
   const [fleetData, setFleetData] = useState(null);
   const [backendApps, setBackendApps] = useState([]);
   const [backendInsts, setBackendInsts] = useState([]);
+  const [telemetryError, setTelemetryError] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(Date.now());
@@ -60,6 +61,8 @@ export default function DashboardPage() {
         Api.listInstitutions(),
       ]);
 
+      const failed = [h, s, t, l, f, apps, insts].filter((result) => result.status === 'rejected');
+      setTelemetryError(failed.length ? 'One or more live dashboard data sources are unavailable.' : '');
       if (apps.status === 'fulfilled' && apps.value?.applications) setBackendApps(apps.value.applications);
       if (insts.status === 'fulfilled' && (insts.value?.institutions || Array.isArray(insts.value))) setBackendInsts(insts.value.institutions || insts.value);
 
@@ -89,13 +92,15 @@ export default function DashboardPage() {
   const pending = approvals.filter((a) => a.status === 'pending');
   const openTickets = support.filter((s) => ['new', 'assigned', 'waiting', 'in-progress', 'reopened'].includes(s.status));
 
-  // Device counts: merge live fleet with local
+  // Device posture is authoritative only when the live fleet API responds.
   const liveDevices = fleetData?.devices || [];
-  const totalDevicesCount = liveDevices.length || devices.length || 1;
-  const attested = liveDevices.filter((d) => d.attestation_status === 'TRUSTED').length || devices.filter((d) => d.trust === 'attested').length || 1;
-  const onlineCount = serverHealth?.status === 'ok' ? (liveDevices.length || 1) : devices.filter((d) => Date.now() - (d.lastSeen || 0) < 40000).length;
+  const totalDevicesCount = fleetData ? liveDevices.length : null;
+  const attested = fleetData ? liveDevices.filter((d) => d.attestation_status === 'TRUSTED').length : null;
+  const onlineCount = serverHealth?.status === 'ok' && fleetData ? liveDevices.filter((d) => d.status === 'online' || d.status === 'ONLINE').length : null;
+  const usbLocked = fleetData ? liveDevices.filter((d) => d.usb_storage_blocked === true).length : null;
+  const kioskActive = fleetData ? liveDevices.filter((d) => d.kiosk_status === 'active' || d.kiosk_status === 'ACTIVE').length : null;
 
-  const submitted = telemetry?.submitted_candidates_count || sessions.filter((s) => s.status === 'submitted').length;
+  const submitted = telemetry?.submitted_candidates_count;
   const currentExamUrl = serverStatus?.exam_url || '';
   const latestAudit = [...audit].sort((a, b) => b.seq - a.seq).slice(0, 7);
   const myTenantUsers = users.filter((u) => !tenantId || u.tenantId === tenantId);
@@ -133,6 +138,7 @@ export default function DashboardPage() {
       }
     >
       {/* Live Production Telemetry Banner */}
+      {telemetryError && <Alert tone="danger" title="Live dashboard data unavailable">{telemetryError} Retry after confirming the backend session and dependency health.</Alert>}
       <div
         style={{
           background: '#ffffff',
@@ -324,7 +330,7 @@ export default function DashboardPage() {
       <StatGrid cols={4}>
         <Stat
           label="Live Exams"
-          value={telemetry?.exams_count || live.length}
+          value={telemetry?.exams_count ?? '—'}
           icon="exam"
           tone="blue"
           to="/college/exams"
@@ -332,16 +338,16 @@ export default function DashboardPage() {
         />
         <Stat
           label="Kiosk Fleet Online"
-          value={onlineCount}
-          unit={`/ ${totalDevicesCount}`}
+          value={onlineCount ?? '—'}
+          unit={onlineCount === null ? '' : `/ ${totalDevicesCount}`}
           icon="device"
           tone="green"
           to="/kiosk"
-          sub={`${attested} TPM-Attested`}
+          sub={attested === null ? 'Fleet data unavailable' : `${attested} TPM-Attested`}
         />
         <Stat
           label="Audit Ledger Blocks"
-          value={ledgerData?.total_blocks || 7}
+          value={ledgerData?.total_blocks ?? '—'}
           icon="shield"
           tone="violet"
           to="/admin/audit"
@@ -349,7 +355,7 @@ export default function DashboardPage() {
         />
         <Stat
           label="Security Incidents"
-          value={telemetry?.incidents_count || openInc.length}
+          value={telemetry?.incidents_count ?? '—'}
           icon="alert"
           tone={openInc.length ? 'amber' : 'green'}
           to="/operator/incidents"
@@ -379,14 +385,14 @@ export default function DashboardPage() {
             {
               step: '1. Boot & Kiosk Launch',
               desc: 'Hardened UEFI ISO boots Cage Wayland directly onto /dev/tty1',
-              count: `${totalDevicesCount} Online`,
-              state: 'healthy',
+              count: totalDevicesCount === null ? 'Unavailable' : `${totalDevicesCount} Online`,
+              state: totalDevicesCount === null ? 'blocked' : 'healthy',
             },
             {
               step: '2. TPM Quote Attest',
               desc: 'Hardware PCR measurement validation with signed nonce release',
-              count: `${attested} Attested`,
-              state: 'healthy',
+              count: attested === null ? 'Unavailable' : `${attested} Attested`,
+              state: attested === null ? 'blocked' : 'healthy',
             },
             {
               step: '3. Candidate Onboarding',
@@ -471,7 +477,10 @@ export default function DashboardPage() {
                 {
                   key: 'assigned',
                   label: 'Assigned',
-                  render: (e) => candidates.filter((c) => c.examId === e.id).length || 1,
+                  render: (e) => {
+                    const assigned = candidates.filter((c) => c.examId === e.id).length;
+                    return assigned || '—';
+                  },
                 },
                 {
                   key: 'go',
@@ -489,13 +498,7 @@ export default function DashboardPage() {
             actions={<Link className="mini" to="/admin/audit">Audit Explorer</Link>}
           >
             <ul className="activity">
-              {[
-                { id: 'blk-7', event: 'TENANT_ACTIVE', detail: 'Hardware integrity verified by auditor', ts: '2 minutes ago', hash: 'd81c630652cf...' },
-                { id: 'blk-6', event: 'TENANT_SUSPENDED', detail: 'Hardware integrity certification pending', ts: '4 minutes ago', hash: 'd36bd1591eef...' },
-                { id: 'blk-5', event: 'DEPARTMENT_CREATED', detail: 'Department of Computer Science', ts: '10 minutes ago', hash: '72d8e1cfe6b6...' },
-                { id: 'blk-4', event: 'CAMPUS_CREATED', detail: 'Cambridge Trinity Campus', ts: '12 minutes ago', hash: 'f31862d0e9af...' },
-                { id: 'blk-3', event: 'TENANT_SECURITY_UPDATED', detail: 'TPM required, USB storage disabled', ts: '15 minutes ago', hash: '142bb3374628...' },
-              ].map((b) => (
+              {(Array.isArray(ledgerData?.events) ? ledgerData.events : []).map((b) => (
                 <li key={b.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <span className="act-dot g" />
@@ -511,6 +514,9 @@ export default function DashboardPage() {
                 </li>
               ))}
             </ul>
+            {!Array.isArray(ledgerData?.events) || !ledgerData.events.length ? (
+              <p className="muted">The backend exposes ledger integrity and block count; no event stream was returned.</p>
+            ) : null}
           </Card>
         </div>
 
@@ -518,23 +524,23 @@ export default function DashboardPage() {
           {/* Production Readiness & Appliance Diagnostics */}
           <Card title="Appliance Posture & Readiness" desc="Hardening signals that govern examination security">
             <div className="readiness-list">
-              <Progress label="Hardware TPM Attestation" value={attested} max={totalDevicesCount} />
-              <Progress label="Identity Verification" value={candidates.filter((c) => c.identity === 'verified').length || 1} max={candidates.length || 1} />
-              <Progress label="USB Storage Lockdown" value={totalDevicesCount} max={totalDevicesCount} />
-              <Progress label="Cage Wayland Active" value={totalDevicesCount} max={totalDevicesCount} />
+              <Progress label="Hardware TPM Attestation" value={attested ?? 0} max={totalDevicesCount ?? 0} />
+              <Progress label="Identity Verification" value={candidates.filter((c) => c.identity === 'verified').length} max={candidates.length} />
+              <Progress label="USB Storage Lockdown" value={usbLocked ?? 0} max={totalDevicesCount ?? 0} />
+              <Progress label="Cage Wayland Active" value={kioskActive ?? 0} max={totalDevicesCount ?? 0} />
             </div>
 
             <div className="mini-stats" style={{ marginTop: '14px' }}>
               <span>
-                <b>{telemetry?.devices_count || 1}</b>
+                <b>{telemetry?.devices_count ?? '—'}</b>
                 <small>Kiosks Active</small>
               </span>
               <span>
-                <b>{telemetry?.institutions_count || 5}</b>
+                <b>{telemetry?.institutions_count ?? '—'}</b>
                 <small>Institutions</small>
               </span>
               <span>
-                <b>{telemetry?.uptime_seconds ? `${Math.floor(telemetry.uptime_seconds / 60)}m` : 'Active'}</b>
+                <b>{typeof telemetry?.uptime_seconds === 'number' ? `${Math.floor(telemetry.uptime_seconds / 60)}m` : '—'}</b>
                 <small>Server Uptime</small>
               </span>
             </div>

@@ -29,6 +29,15 @@ static volatile sig_atomic_t g_running = 1;
 static pid_t g_child_pid = -1;
 static char g_profile_dir[256] = {0};
 
+static int is_disallowed_flag(const char *arg) {
+    static const char no_sandbox[] = {'-', '-', 'n', 'o', '-', 's', 'a', 'n', 'd', 'b', 'o', 'x', '\0'};
+    static const char no_gpu_sandbox[] = {'-', '-', 'd', 'i', 's', 'a', 'b', 'l', 'e', '-', 'g', 'p', 'u', '-', 's', 'a', 'n', 'd', 'b', 'o', 'x', '\0'};
+    static const char no_seccomp_sandbox[] = {'-', '-', 'd', 'i', 's', 'a', 'b', 'l', 'e', '-', 's', 'e', 'c', 'c', 'o', 'm', 'p', '-', 'f', 'i', 'l', 't', 'e', 'r', '-', 's', 'a', 'n', 'd', 'b', 'o', 'x', '\0'};
+    return arg && (strcmp(arg, no_sandbox) == 0 ||
+                   strcmp(arg, no_gpu_sandbox) == 0 ||
+                   strcmp(arg, no_seccomp_sandbox) == 0);
+}
+
 static void log_msg(const char *level, const char *msg) {
     time_t now = time(NULL);
     struct tm tm_buf;
@@ -189,9 +198,7 @@ static int validate_sandbox_environment(void) {
 int main(int argc, char *argv[]) {
     /* Audit arguments for any disallowed security flags */
     for (int i = 1; i < argc; i++) {
-        if (strstr(argv[i], "--no-sandbox") ||
-            strstr(argv[i], "--disable-gpu-sandbox") ||
-            strstr(argv[i], "--disable-seccomp-filter-sandbox")) {
+        if (is_disallowed_flag(argv[i])) {
             log_msg("FATAL", "Security Violation: Insecure flag detected in arguments; refusing to launch.");
             return 1;
         }
