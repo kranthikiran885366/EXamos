@@ -2,7 +2,7 @@ import { clean } from '../../core/security/sanitize';
 import * as Api from '../../core/api/services';
 
 export async function listCenters(tenantId) {
-  const response = await Api.listCenters();
+  const response = await Api.listCenters(tenantId);
   if (!Array.isArray(response?.centers)) {
     throw new Error('The backend returned an invalid centers response.');
   }

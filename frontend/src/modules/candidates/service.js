@@ -3,6 +3,7 @@ import { clean } from '../../core/security/sanitize';
 import { id, need, fail, log, seatLabel, assertScope, requireReason } from '../../core/services/common';
 import { verifyPolicy } from '../policies/service';
 import * as Api from '../../core/api/services';
+import { listCenters } from '../centers/service';
 
 export function parseCsv(text) {
   const rows = []; let row = [], cell = '', q = false;
@@ -128,7 +129,8 @@ export async function addCandidate(a, input) {
 }
 export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
-  const ex = await get('exams', examId), ce = await get('centers', centerId);
+  const ex = await get('exams', examId);
+  const ce = (await listCenters(tenantId)).find((center) => center.id === centerId);
   if (!ex || ex.tenantId !== tenantId) fail('Pick an exam.');
   if (!['draft', 'review', 'approved', 'published'].includes(ex.status)) fail(`Exam is ${ex.status}; assignments are locked.`);
   if (!ce || !ex.centerIds.includes(centerId)) fail('That center is not part of this exam.');
@@ -145,7 +147,8 @@ export async function assignToExam(a, { tenantId, examId, centerId, count }) {
 
 export async function assignCandidates(a, { tenantId, examId, centerId, candidateIds }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
-  const ex = await get('exams', examId), ce = await get('centers', centerId);
+  const ex = await get('exams', examId);
+  const ce = (await listCenters(tenantId)).find((center) => center.id === centerId);
   if (!ex || ex.tenantId !== tenantId) fail('Pick an exam.');
   if (!['draft', 'review', 'approved', 'published'].includes(ex.status)) fail(`Exam is ${ex.status}; assignments are locked.`);
   if (!ce || !ex.centerIds.includes(centerId)) fail('That center is not part of this exam.');

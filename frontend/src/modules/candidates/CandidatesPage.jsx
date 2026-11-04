@@ -14,6 +14,7 @@ import {
   correctName, readinessFor, isReady, CSV_TEMPLATE, notifyCandidate,
   suspendStudent, reactivateStudent, progressSemester, getStudent360,
 } from './service';
+import { listCenters } from '../centers/service';
 
 function ImportPanel({ tenantId, onDone }) {
   const { user } = useAuth();
@@ -61,20 +62,41 @@ function AssignPanel({ tenantId, onDone }) {
   const { user } = useAuth();
   const may = usePerm();
   const exams = useCol('exams').filter((e) => ['draft', 'review', 'approved', 'published'].includes(e.status));
-  const centers = useCol('centers');
   const candidates = useCol('candidates');
+  const [centers, setCenters] = useState([]);
+  const [centersLoading, setCentersLoading] = useState(true);
+  const [centersError, setCentersError] = useState('');
   const [examId, setExamId] = useState('');
   const [centerId, setCenterId] = useState('');
   const [count, setCount] = useState('');
   const { msg, setMsg, run, busy } = useFlash();
   const exam = exams.find((e) => e.id === examId);
   const free = candidates.filter((c) => !c.examId).length;
+  useEffect(() => {
+    let active = true;
+    setCentersLoading(true);
+    setCentersError('');
+    listCenters(tenantId).then((rows) => {
+      if (active) setCenters(rows.filter((center) => center.status === 'active'));
+    }).catch((error) => {
+      if (active) {
+        setCenters([]);
+        setCentersError(error.message || 'Unable to load centers from the backend.');
+      }
+    }).finally(() => {
+      if (active) setCentersLoading(false);
+    });
+    return () => { active = false; };
+  }, [tenantId]);
+  const examCenterIds = Array.isArray(exam?.centerIds) ? exam.centerIds : [];
+  const availableCenters = centers.filter((center) => examCenterIds.includes(center.id));
   return (
     <Card title="Assign & seat" desc="Seats are allocated automatically from free centre capacity. Only unassigned candidates are seated.">
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {centersError && <Alert tone="danger">{centersError}</Alert>}
       <div className="formgrid">
         <Field label="Exam"><Select value={examId} onChange={(e) => { setExamId(e.target.value); setCenterId(''); }} options={exams.map((e) => ({ v: e.id, l: `${e.code} · ${e.status}` }))} placeholder="Choose an exam" /></Field>
-        <Field label="Centre"><Select value={centerId} onChange={(e) => setCenterId(e.target.value)} options={centers.filter((c) => exam?.centerIds.includes(c.id)).map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder="Choose a centre" /></Field>
+        <Field label="Centre"><Select value={centerId} onChange={(e) => setCenterId(e.target.value)} options={availableCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder={centersLoading ? 'Loading centres…' : 'Choose a centre'} /></Field>
         <Field label="How many" help={`${free} unassigned candidate(s) available`}><Input type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} placeholder="Blank = all" /></Field>
         <div className="field"><span className="field-label">&nbsp;</span><button className="btn primary" disabled={!examId || !centerId || busy || !may('candidate.manage')} onClick={() => run(async () => {
           const m = await assignToExam(user, { tenantId, examId, centerId, count });

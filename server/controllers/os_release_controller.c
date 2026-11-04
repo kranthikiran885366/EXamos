@@ -130,6 +130,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         char rootfs_hash[128] = {0}, uki_hash[128] = {0};
         ctrl_json_string(body, "rootfs_hash", rootfs_hash, sizeof(rootfs_hash));
         ctrl_json_string(body, "uki_hash", uki_hash, sizeof(uki_hash));
+        if (uki_hash[0]) {
+            const char *mp[2] = { uki_hash, pk_id };
+            int ml[2] = { (int)strlen(uki_hash), (int)strlen(pk_id) };
+            PGresult *mr = db_simple(conn,
+                "UPDATE os_releases SET manifest_digest = $1 WHERE id = $2", 2, mp, ml);
+            if (mr) PQclear(mr);
+        }
 
         if (rootfs_hash[0]) {
             char art_id[64];
@@ -238,6 +245,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         PGresult *r_res = db_simple(conn,
             "SELECT id, release_id, version, kernel_version, status, minimum_supported_version, "
             "rollback_permitted, created_by, approved_by, approved_at, source_commit, toolchain_version "
+            ", manifest_digest "
             "FROM os_releases WHERE id = $1 OR release_id = $1", 1, qp, ql);
 
         if (!r_res || PQntuples(r_res) == 0) {
@@ -247,7 +255,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64], r_creator[64];
+        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64], r_creator[64], r_digest[128];
         int r_rollback = 0;
         strncpy(r_pk, PQgetvalue(r_res, 0, 0), sizeof(r_pk) - 1);
         strncpy(r_id, PQgetvalue(r_res, 0, 1), sizeof(r_id) - 1);
@@ -257,6 +265,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         strncpy(r_min, PQgetvalue(r_res, 0, 5), sizeof(r_min) - 1);
         r_rollback = (strcmp(PQgetvalue(r_res, 0, 6), "t") == 0);
         strncpy(r_creator, PQgetvalue(r_res, 0, 7), sizeof(r_creator) - 1);
+        strncpy(r_digest, PQgetvalue(r_res, 0, 12), sizeof(r_digest) - 1);
         PQclear(r_res);
 
         /* ---------------- GET /api/v1/os/releases/:id (Details) ---------------- */
@@ -282,13 +291,35 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             }
             strncat(art_json, "]", sizeof(art_json) - strlen(art_json) - 1);
 
+            const char *test_p[1] = { r_pk };
+            int test_l[1] = { (int)strlen(r_pk) };
+            PGresult *test_res = db_simple(conn,
+                "SELECT test_type, status, details, executed_at FROM os_release_test_results "
+                "WHERE release_id = $1 ORDER BY executed_at DESC", 1, test_p, test_l);
+            char tests_json[8192] = "[";
+            if (test_res) {
+                int n_tests = PQntuples(test_res);
+                for (int i = 0; i < n_tests; i++) {
+                    if (i > 0) strncat(tests_json, ",", sizeof(tests_json) - strlen(tests_json) - 1);
+                    char item[512];
+                    snprintf(item, sizeof(item),
+                        "{\"test_type\":\"%s\",\"status\":\"%s\",\"details\":\"%s\",\"executed_at\":%s}",
+                        PQgetvalue(test_res, i, 0), PQgetvalue(test_res, i, 1),
+                        PQgetvalue(test_res, i, 2), PQgetvalue(test_res, i, 3));
+                    strncat(tests_json, item, sizeof(tests_json) - strlen(tests_json) - 1);
+                }
+                PQclear(test_res);
+            }
+            strncat(tests_json, "]", sizeof(tests_json) - strlen(tests_json) - 1);
+
             db_release(conn, 0);
             char resp[4096];
             snprintf(resp, sizeof(resp),
                 "{\"release\":{\"id\":\"%s\",\"release_id\":\"%s\",\"version\":\"%s\",\"kernel_version\":\"%s\","
                 "\"status\":\"%s\",\"minimum_supported_version\":\"%s\",\"rollback_permitted\":%s,"
-                "\"created_by\":\"%s\",\"artifacts\":%s}}",
-                r_pk, r_id, r_ver, r_kern, r_stat, r_min, r_rollback ? "true" : "false", r_creator, art_json);
+                "\"created_by\":\"%s\",\"manifest_digest\":\"%s\",\"artifacts\":%s,\"tests\":%s}}",
+                r_pk, r_id, r_ver, r_kern, r_stat, r_min, r_rollback ? "true" : "false",
+                r_creator, r_digest, art_json, tests_json);
             os_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }

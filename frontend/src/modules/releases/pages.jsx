@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useCol } from '../../core/db/tenant';
 import { useLoad, usePerm } from '../../core/ui/hooks';
+import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, Badge, DataTable, Empty, Icon, Alert, KeyValue, Flash, useFlash,
   Tabs, Modal, Field, Input, Select, Textarea, ActionDialog, Timeline, Progress, Loading, CopyField,
@@ -12,7 +13,7 @@ import { pct, downloadCsv } from '../../core/services/common';
 import {
   STEPS, EVIDENCE_KINDS, createRelease, verifyRelease, approveRelease, requestReleaseApproval,
   revokeRelease, recoverDevices, addReleaseEvidence, verifyReleaseEvidence, pauseRollout, resumeRollout,
-  rollbackRelease, rollout, rolloutStats, releaseReadiness, releaseStats,
+  rollbackRelease, rollout, rolloutStats, releaseReadiness, releaseStats, listReleases, listReleaseEvidence,
 } from './service';
 
 const statusTone = (s) => (s === 'stable' ? 'green' : s === 'revoked' ? 'red' : s === 'candidate' ? 'amber' : 'violet');
@@ -20,16 +21,23 @@ const statusTone = (s) => (s === 'stable' ? 'green' : s === 'revoked' ? 'red' : 
 export function ReleasesPage() {
   const { user } = useAuth();
   const nav = useNavigate();
-  const releases = useCol('releases', false);
+  const [releases, setReleases] = useState([]);
+  const [loadError, setLoadError] = useState('');
+  const refresh = async () => {
+    try { setLoadError(''); setReleases(await listReleases()); }
+    catch (error) { setReleases([]); setLoadError(error.message || 'Unable to load OS releases.'); }
+  };
+  useEffect(() => { refresh(); const timer = setInterval(refresh, 30000); return () => clearInterval(timer); }, []);
   const { msg, run, busy, setMsg } = useFlash();
   const can = usePerm();
   const [create, setCreate] = useState(false);
   const [action, setAction] = useState(null);
-  const [f, setF] = useState({ version: '', components: 'kiosk-agent@2.19.0\nopenssl@3.0.15\nlibwebp@1.3.2\ncurl@8.4.0\nchromium@126.0.0' });
+  const [f, setF] = useState({ version: '', components: '' });
   const stats = releaseStats(releases);
   return <Page title="Releases" desc="Signed release candidates, SBOM review, approval and staged rollout."
     actions={can('release.manage') ? <><button className="btn" onClick={() => run(() => recoverDevices(user))}>Recover devices</button><button className="btn primary" onClick={() => setCreate(true)}><Icon name="plus" size={15} /> New release</button></> : undefined}>
     <Flash msg={msg} onClose={() => setMsg(null)} />
+    {loadError && <Alert tone="danger">{loadError}</Alert>}
     <StatGrid cols={5}>
       <Stat label="Releases" value={stats.total} icon="package" />
       <Stat label="Candidates" value={stats.candidates} tone="amber" icon="clock" />
@@ -50,7 +58,7 @@ export function ReleasesPage() {
       ]}
       actions={(r) => [
         { label: 'Open', onClick: () => nav(`/releases/${r.id}`) },
-        { label: 'Verify', onClick: () => run(async () => (await verifyRelease(r)) ? `${r.version} signature verified.` : Promise.reject(new Error('Signature or digest verification failed.'))) },
+        { label: 'Verify', onClick: () => run(async () => { const result = await Api.getOsReleaseDetails(r.id); return result?.release ? `${r.version} is present in the OS release store.` : Promise.reject(new Error('Release was not found in the OS release store.')); }) },
         ...(r.status === 'candidate' && can('release.manage') ? [{ label: 'Request approval', onClick: () => setAction({ kind: 'request', r }) }] : []),
         ...(r.status === 'candidate' && can('release.approve') ? [{ label: 'Approve', onClick: () => setAction({ kind: 'approve', r }) }] : []),
         ...(['approved', 'rolling', 'stable', 'paused'].includes(r.status) && can('release.rollout') ? [{ label: 'Roll out', onClick: () => setAction({ kind: 'rollout', r }) }] : []),
@@ -62,19 +70,21 @@ export function ReleasesPage() {
         <Field label="SBOM components" required help="One component per line as name@version" className="span2"><Textarea rows={9} value={f.components} onChange={(e) => setF({ ...f, components: e.target.value })} className="mono" /></Field>
       </form>
     </Modal>}
-    {action?.kind === 'request' && <ActionDialog title={`Request approval for ${action.r.version}`} desc="A different privileged user must approve the release." confirmLabel="Request approval" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await requestReleaseApproval(user, action.r, reason); setAction(null); })} />}
-    {action?.kind === 'approve' && <ActionDialog title={`Approve ${action.r.version}`} desc="The signature, digest and SBOM are re-verified. Separation of duties is enforced." confirmLabel="Approve release" onClose={() => setAction(null)} onConfirm={() => run(async () => { await approveRelease(user, action.r); setAction(null); })} />}
-    {action?.kind === 'revoke' && <ActionDialog title={`Revoke ${action.r.version}`} desc="Devices on this release will fail attestation until they are recovered or moved." danger confirmLabel="Revoke release" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await revokeRelease(user, action.r, reason); setAction(null); })} />}
-    {action?.kind === 'rollout' && <ActionDialog title={`Roll out ${action.r.version}`} desc="Devices are bucketed deterministically. Devices moved to a new release must re-attest." field={{ label: 'Rollout step', options: STEPS.map((n) => ({ v: n, l: `${n}% of fleet` })) }} requireReason={false} confirmLabel="Start rollout" onClose={() => setAction(null)} onConfirm={(why, step) => run(async () => { await rollout(user, action.r, Number(step)); setAction(null); })} />}
+    {action?.kind === 'request' && <ActionDialog title={`Request approval for ${action.r.version}`} desc="A different privileged user must approve the release." confirmLabel="Request approval" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await requestReleaseApproval(user, action.r, reason); await refresh(); setAction(null); })} />}
+    {action?.kind === 'approve' && <ActionDialog title={`Approve ${action.r.version}`} desc="The signature, digest and SBOM are re-verified." confirmLabel="Approve release" onClose={() => setAction(null)} onConfirm={() => run(async () => { await approveRelease(user, action.r); await refresh(); setAction(null); })} />}
+    {action?.kind === 'revoke' && <ActionDialog title={`Revoke ${action.r.version}`} desc="Devices on this release will fail attestation until they are recovered or moved." danger confirmLabel="Revoke release" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await revokeRelease(user, action.r, reason); await refresh(); setAction(null); })} />}
+    {action?.kind === 'rollout' && <ActionDialog title={`Roll out ${action.r.version}`} desc="Devices moved to a new release must re-attest." field={{ label: 'Rollout step', options: STEPS.map((n) => ({ v: n, l: `${n}% of fleet` })) }} requireReason={false} confirmLabel="Start rollout" onClose={() => setAction(null)} onConfirm={(why, step) => run(async () => { await rollout(user, action.r, Number(step)); await refresh(); setAction(null); })} />}
   </Page>;
 }
 
 export function ReleaseDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
-  const releases = useCol('releases', false);
+  const [releases, setReleases] = useState([]);
+  useEffect(() => { listReleases().then(setReleases).catch(() => setReleases([])); }, []);
   const devices = useCol('devices');
-  const evidence = useCol('releaseEvidence', false);
+  const [evidence, setEvidence] = useState([]);
+  useEffect(() => { if (id) listReleaseEvidence(id).then(setEvidence).catch(() => setEvidence([])); }, [id]);
   const { msg, run, setMsg } = useFlash();
   const can = usePerm();
   const [tab, setTab] = useState('overview');
@@ -143,7 +153,8 @@ export function ReleaseDetailPage() {
 
 export function RolloutsPage() {
   const { user } = useAuth();
-  const releases = useCol('releases', false);
+  const [releases, setReleases] = useState([]);
+  useEffect(() => { listReleases().then(setReleases).catch(() => setReleases([])); }, []);
   const devices = useCol('devices');
   const { msg, run, setMsg } = useFlash();
   const can = usePerm();
@@ -171,12 +182,19 @@ export function RolloutsPage() {
 
 export function ReleaseValidationPage() {
   const { user } = useAuth();
-  const releases = useCol('releases', false);
-  const evidence = useCol('releaseEvidence', false);
+  const [releases, setReleases] = useState([]);
+  useEffect(() => { listReleases().then(setReleases).catch(() => setReleases([])); }, []);
+  const [evidence, setEvidence] = useState([]);
   const { msg, run, setMsg } = useFlash();
   const can = usePerm();
   const [addEv, setAddEv] = useState(false);
   const [f, setF] = useState({ releaseId: '', title: '', kind: 'test-report', classification: 'internal', content: '', link: '' });
+  useEffect(() => {
+    let active = true;
+    Promise.all(releases.map((release) => listReleaseEvidence(release.id).catch(() => [])))
+      .then((groups) => { if (active) setEvidence(groups.flat()); });
+    return () => { active = false; };
+  }, [releases]);
   const rows = [...evidence].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const tampered = rows.filter((e) => e.verification === 'tampered').length;
   const covered = new Set(rows.map((e) => e.releaseId)).size;
@@ -199,11 +217,11 @@ export function ReleaseValidationPage() {
         { key: 'version', label: 'Release', render: (e) => <Link to={`/releases/${e.releaseId}`}>{e.version}</Link> },
         { key: 'verification', label: 'Integrity', render: (e) => <Badge value={e.verification} /> },
         { key: 'createdAt', label: 'Sealed', render: (e) => fmt(e.createdAt) },
-        { key: 'hash', label: 'SHA-256', render: (e) => <span className="mono muted">{e.hash.slice(0, 12)}…</span> },
+        { key: 'hash', label: 'Backend status', render: (e) => <Badge value={e.verification} /> },
       ]}
       actions={(e) => [{ label: 'Verify', onClick: () => run(async () => { const x = await verifyReleaseEvidence(e); return x.ok ? 'Evidence verified.' : Promise.reject(new Error('Evidence was tampered with.')); }) }]} />
-    {addEv && <Modal title="Add validation evidence" wide onClose={() => setAddEv(false)} footer={<><button className="btn" onClick={() => setAddEv(false)}>Cancel</button><button className="btn primary" form="val-form">Seal evidence</button></>}>
-      <form id="val-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await addReleaseEvidence(user, f); setAddEv(false); }); }}>
+    {addEv && <Modal title="Add validation evidence" wide onClose={() => setAddEv(false)} footer={<><button className="btn" onClick={() => setAddEv(false)}>Cancel</button><button className="btn primary" form="val-form">Submit validation</button></>}>
+      <form id="val-form" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await addReleaseEvidence(user, f); setEvidence((await Promise.all(releases.map((release) => listReleaseEvidence(release.id).catch(() => [])))).flat()); setAddEv(false); }); }}>
         <Field label="Release" required><Select value={f.releaseId} onChange={(e) => setF({ ...f, releaseId: e.target.value })} options={releases.map((r) => ({ v: r.id, l: `${r.version} · ${r.status}` }))} /></Field>
         <Field label="Title" required><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={120} /></Field>
         <Field label="Type"><Select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} options={EVIDENCE_KINDS} placeholder={false} /></Field>
