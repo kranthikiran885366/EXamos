@@ -31,9 +31,13 @@ $role$;
 SQL
 
 unset app_password
-psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
-  --set=ON_ERROR_STOP=1 \
-  --file=/opt/examos/migrations/001_admin_auth.sql
+
+for migration in /opt/examos/migrations/*.sql; do
+  [ -f "$migration" ] || continue
+  psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+    --set=ON_ERROR_STOP=1 \
+    --file="$migration"
+done
 psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
   --set=ON_ERROR_STOP=1 <<'SQL'
 REVOKE ALL ON DATABASE examos FROM PUBLIC;

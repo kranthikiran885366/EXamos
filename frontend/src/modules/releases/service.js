@@ -208,7 +208,7 @@ export async function addReleaseEvidence(a, { releaseId, title, kind = 'test-rep
   const body = clean(content, 200000);
   const hash = await sha256(canon({ releaseId, title: clean(title, 120), kind, body, link: clean(link, 300) }));
   await Api.validateOsRelease(releaseId, { test_type: kind, status: 'passed', details: body || title });
-  await log(a, 'RELEASE_EVIDENCE_ADDED', `${r.version} · ${ev.title} sha256=${hash.slice(0, 12)}`);
+  await log(a, 'RELEASE_EVIDENCE_ADDED', `${r.version} · ${clean(title, 120)} sha256=${hash.slice(0, 12)}`);
   return `Evidence sealed for ${r.version}.`;
 }
 

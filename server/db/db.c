@@ -74,8 +74,13 @@ int db_init(const char *conninfo) {
         ready++;
     }
     if (ready == 0) {
-        fprintf(stderr, "[DB] WARNING: no database connections available; will retry on demand.\n");
-        return 0; /* Don't fail startup; retry on demand */
+        const char *mode = getenv("EXAMOS_TPM_MODE");
+        if (mode && strcmp(mode, "production") == 0) {
+            fprintf(stderr, "[DB] FATAL: no database connections available in production mode.\n");
+            return -1;
+        }
+        fprintf(stderr, "[DB] WARNING: no database connections available; database-backed requests will be unavailable.\n");
+        return 0;
     }
     fprintf(stderr, "[DB] Pool ready: %d/%d connections\n", ready, count);
     db_ensure_database_extensions(g_db_pool.conns[0].conn);
@@ -95,10 +100,12 @@ void db_shutdown(void) {
 }
 
 PGconn *db_acquire(void) {
-    for (;;) {
+    for (unsigned int attempt = 0; attempt < 1000; ++attempt) {
         pthread_mutex_lock(&g_db_pool.lock);
+        int available = 0;
         for (int i = 0; i < g_db_pool_count; i++) {
             if (!g_db_pool.conns[i].conn) continue;
+            available = 1;
             if (!g_db_pool.conns[i].in_use) {
                 if (PQstatus(g_db_pool.conns[i].conn) != CONNECTION_OK) {
                     PQfinish(g_db_pool.conns[i].conn);
@@ -137,10 +144,12 @@ PGconn *db_acquire(void) {
             }
         }
         pthread_mutex_unlock(&g_db_pool.lock);
+        if (!available) return NULL;
         struct timespec ts = {0, 5000000}; /* 5ms backoff */
         nanosleep(&ts, NULL);
     }
-    return NULL; /* No connections available */
+    fprintf(stderr, "[DB] ERROR: connection pool checkout timed out.\n");
+    return NULL;
 }
 
 void db_release(PGconn *conn, int broken) {

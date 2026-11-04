@@ -46,6 +46,7 @@ static const migration_t migrations[] = {
     {"024_student_management_system.sql",                   "students",                  1},
     {"025_corporate_entity_support.sql",                    "institutions",              1},
     {"026_mfa_enrollment_table.sql",                        "admin_auth",               10},
+    {"027_console_record_store.sql",                        "console_record_store",      1},
 };
 
 /*
@@ -528,4 +529,3 @@ done:
                sizeof(migrations) / sizeof(migrations[0]));
     return rc;
 }
-

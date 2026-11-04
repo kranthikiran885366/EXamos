@@ -36,7 +36,7 @@ int db_init(const char *conninfo);
 /* Shut down the pool, closing all connections. */
 void db_shutdown(void);
 
-/* Acquire a connection from the pool. Blocks until one is available. */
+/* Acquire a connection from the pool, returning NULL after a bounded wait. */
 PGconn *db_acquire(void);
 
 /* Release a connection back to the pool. If broken != 0, the connection
