@@ -37,7 +37,7 @@ export class AuditClient {
     this.sending   = true;
     const batch    = this.queue.splice(0);
     try {
-      const res = await api.post(ENDPOINTS.auditBatch, { events: batch }, { actor: 'console', sign: false });
+      const res = await api.post(ENDPOINTS.auditBatch, { events: batch }, { actor: 'console', sign: false, audit: false });
       // On server-side error just drop — we never fall back to local storage.
       if (res.status < 200 || res.status >= 300) console.warn('[AuditClient] server returned', res.status);
     } catch {

@@ -63,6 +63,7 @@ export async function request({
   headers: requestHeaders,
   useCandidateToken = false,
   sign = true,
+  audit = true,
   actor = 'console',
   retries = MAX_RETRIES,
   signal,
@@ -114,8 +115,9 @@ export async function request({
 
       if (!res.ok) {
         const err = new ApiError(res.status, typeof parsed === 'string' ? parsed : (parsed.error || parsed.message || `HTTP ${res.status}`), parsed);
-        // Audit the failed call.
-        try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'], error: err.message }); } catch {}
+        if (audit) {
+          try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'], error: err.message }); } catch {}
+        }
         // Do not retry client errors (4xx) except 429/408.
         if (res.status === 429 || res.status === 408) {
           lastError = err;
@@ -124,7 +126,9 @@ export async function request({
         throw err;
       }
 
-      try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'] }); } catch {}
+      if (audit) {
+        try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'] }); } catch {}
+      }
       return { status: res.status, data: parsed, headers: res.headers };
     } catch (err) {
       lastError = err;
