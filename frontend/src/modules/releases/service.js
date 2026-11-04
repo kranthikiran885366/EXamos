@@ -58,6 +58,16 @@ export async function listReleaseEvidence(releaseId) {
     createdAt: test.executed_at,
   }));
 }
+export async function listReleaseDevices() {
+  const response = await Api.listRegisteredDevices();
+  if (!Array.isArray(response?.devices)) fail('The device trust API returned an invalid response.');
+  return response.devices.map((device) => ({
+    ...device,
+    releaseId: device.os_release_id || device.releaseId || '',
+    status: device.status || 'unknown',
+    trust: device.trust || 'unknown',
+  }));
+}
 export const advisories = async () => (await get('meta', 'advisories'))?.list || [];
 export function parseComponents(text) {
   const out = [];
@@ -143,7 +153,7 @@ export async function recoverDevices(a) {
   const rels = await listReleases(); const good = rels.filter((x) => x.status === 'stable').sort((x, y) => cmpVer(y.version, x.version))[0];
   if (!good) fail('No stable release to recover to.');
   const bad = new Set(rels.filter((x) => x.status === 'revoked').map((x) => x.id));
-  const hit = (await all('devices')).filter((d) => bad.has(d.releaseId));
+  const hit = (await listReleaseDevices()).filter((d) => bad.has(d.releaseId));
   if (!hit.length) fail('No devices are on a revoked release.');
   await Promise.all(hit.map((device) => Api.requestDeviceOsRecovery(device.id, {
     recovery_release_id: good.id,
@@ -233,7 +243,7 @@ export async function rollbackRelease(a, r, reason) {
   const target = rels.filter((x) => x.id !== r.id && ['stable', 'superseded'].includes(x.status) && cmpVer(x.version, r.version) < 0)
     .sort((x, y) => cmpVer(y.version, x.version))[0];
   if (!target) fail('No earlier stable release is available as a rollback target.');
-  const devices = (await all('devices')).filter((d) => d.releaseId === r.id);
+  const devices = (await listReleaseDevices()).filter((d) => d.releaseId === r.id);
   await Promise.all(devices.map((device) => Api.requestDeviceOsRecovery(device.id, {
     recovery_release_id: target.id,
     reason: why,
@@ -255,7 +265,7 @@ export function rolloutStats(r, devices) {
 }
 
 export async function releaseReadiness(r, ctx = {}) {
-  const { devices = await all('devices'), evidence = await all('releaseEvidence') } = ctx;
+  const { devices = await listReleaseDevices(), evidence = await listReleaseEvidence(r.id) } = ctx;
   const backend = (await Api.getOsReleaseDetails(r.id))?.release;
   const ev = evidence.filter((e) => e.releaseId === r.id);
   const out = [];

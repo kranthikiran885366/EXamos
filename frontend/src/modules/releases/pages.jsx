@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useCol } from '../../core/db/tenant';
 import { useLoad, usePerm } from '../../core/ui/hooks';
 import * as Api from '../../core/api/services';
 import {
@@ -13,7 +12,7 @@ import { pct, downloadCsv } from '../../core/services/common';
 import {
   STEPS, EVIDENCE_KINDS, createRelease, verifyRelease, approveRelease, requestReleaseApproval,
   revokeRelease, recoverDevices, addReleaseEvidence, verifyReleaseEvidence, pauseRollout, resumeRollout,
-  rollbackRelease, rollout, rolloutStats, releaseReadiness, releaseStats, listReleases, listReleaseEvidence,
+  rollbackRelease, rollout, rolloutStats, releaseReadiness, releaseStats, listReleases, listReleaseEvidence, listReleaseDevices,
 } from './service';
 
 const statusTone = (s) => (s === 'stable' ? 'green' : s === 'revoked' ? 'red' : s === 'candidate' ? 'amber' : 'violet');
@@ -81,10 +80,12 @@ export function ReleaseDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const [releases, setReleases] = useState([]);
-  useEffect(() => { listReleases().then(setReleases).catch(() => setReleases([])); }, []);
-  const devices = useCol('devices');
+  const [loadError, setLoadError] = useState('');
+  useEffect(() => { listReleases().then(setReleases).catch((error) => setLoadError(error.message || 'Unable to load the release.')); }, []);
+  const [devices, setDevices] = useState([]);
+  useEffect(() => { listReleaseDevices().then(setDevices).catch((error) => setLoadError(error.message || 'Unable to load release devices.')); }, []);
   const [evidence, setEvidence] = useState([]);
-  useEffect(() => { if (id) listReleaseEvidence(id).then(setEvidence).catch(() => setEvidence([])); }, [id]);
+  useEffect(() => { if (id) listReleaseEvidence(id).then(setEvidence).catch((error) => setLoadError(error.message || 'Unable to load release evidence.')); }, [id]);
   const { msg, run, setMsg } = useFlash();
   const can = usePerm();
   const [tab, setTab] = useState('overview');
@@ -96,12 +97,13 @@ export function ReleaseDetailPage() {
   const ev = evidence.filter((e) => e.releaseId === id);
   const cov = r ? rolloutStats(r, devices) : null;
   const onRelease = devices.filter((d) => d.releaseId === id);
-  if (!r) return <Page title="Release"><Empty icon="package" title="Release not found" action={<Link className="btn" to="/admin/releases">Back to releases</Link>} /></Page>;
+  if (!r) return <Page title="Release">{loadError ? <Alert tone="danger">{loadError}</Alert> : <Empty icon="package" title="Release not found" action={<Link className="btn" to="/admin/releases">Back to releases</Link>} />}</Page>;
   const checks = readiness.data || [];
   return <Page title={`Release ${r.version}`} desc={`${r.status} · ${r.rollout || 0}% rollout · signed ${r.digest?.slice(0, 16)}…`}
     breadcrumb={<div className="crumbs-inline"><Link to="/admin/releases">Releases</Link><Icon name="arrow" size={12} /><span>{r.version}</span></div>}
     actions={<><Badge value={r.status} />{can('release.rollout') && ['approved', 'rolling', 'stable', 'paused'].includes(r.status) && <button className="btn primary" onClick={() => setAction({ kind: 'rollout' })}>Roll out</button>}</>}>
     <Flash msg={msg} onClose={() => setMsg(null)} />
+    {loadError && <Alert tone="danger">{loadError}</Alert>}
     {r.status === 'revoked' && <Alert tone="danger" title="Release revoked">{r.revokedReason}</Alert>}
     {r.criticalCves > 0 && <Alert tone="danger" title={`${r.criticalCves} critical CVE(s)`}>Approval is blocked until the vulnerable components are replaced.</Alert>}
     <StatGrid cols={4}>
@@ -154,14 +156,17 @@ export function ReleaseDetailPage() {
 export function RolloutsPage() {
   const { user } = useAuth();
   const [releases, setReleases] = useState([]);
-  useEffect(() => { listReleases().then(setReleases).catch(() => setReleases([])); }, []);
-  const devices = useCol('devices');
+  const [loadError, setLoadError] = useState('');
+  useEffect(() => { listReleases().then(setReleases).catch((error) => setLoadError(error.message || 'Unable to load rollouts.')); }, []);
+  const [devices, setDevices] = useState([]);
+  useEffect(() => { listReleaseDevices().then(setDevices).catch((error) => setLoadError(error.message || 'Unable to load rollout devices.')); }, []);
   const { msg, run, setMsg } = useFlash();
   const can = usePerm();
   const [action, setAction] = useState(null);
   const rows = releases.filter((r) => ['approved', 'rolling', 'paused', 'stable'].includes(r.status)).map((r) => ({ ...r, cov: rolloutStats(r, devices) }));
   return <Page title="Release rollouts" desc="Staged fleet rollout with pause, rollback and device re-attestation.">
     <Flash msg={msg} onClose={() => setMsg(null)} />
+    {loadError && <Alert tone="danger">{loadError}</Alert>}
     <StatGrid cols={4}>
       <Stat label="Active rollouts" value={rows.filter((r) => r.status === 'rolling').length} tone="violet" icon="upload" />
       <Stat label="Paused" value={rows.filter((r) => r.status === 'paused').length} tone="amber" icon="clock" />

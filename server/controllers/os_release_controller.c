@@ -57,6 +57,11 @@ void os_release_handle(int client_fd, const char *method, const char *path,
     int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
                     strcmp(sess.username, "admin") == 0 ||
                     strcmp(sess.username, "root") == 0));
+    if (strcmp(method, "GET") != 0 && ctrl_authorize(auth_header, AUTH_PERM_SECURITY_ADMIN, &sess) != 0) {
+        os_send_error(client_fd, 403, "Security administrator authorization required",
+                      origin, extra_headers, extra_len);
+        return;
+    }
 
     PGconn *conn = db_acquire();
     if (!conn) {
@@ -74,7 +79,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char rel_id[64] = {0}, version[64] = {0}, commit_id[64] = {0};
+        char rel_id[64] = {0}, version[64] = {0}, commit_id[64] = {0}, manifest_sig[4096] = {0};
         char build_cfg[256] = "mkosi-debian-secure-uefi", toolchain[64] = "Debian 12 / mkosi 14.1";
         char kernel_v[64] = "6.6.0-examos", min_v[64] = "1.0.0", pol_v[64] = "1.0";
         char signing_key_id[64] = "examos-prod-signing-key-v2";
@@ -88,10 +93,17 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "minimum_supported_version", min_v, sizeof(min_v));
         ctrl_json_string(body, "policy_version", pol_v, sizeof(pol_v));
         ctrl_json_string(body, "signing_key_id", signing_key_id, sizeof(signing_key_id));
+        ctrl_json_string(body, "signature", manifest_sig, sizeof(manifest_sig));
 
         if (!version[0]) {
             db_release(conn, 0);
             os_send_error(client_fd, 400, "Release version is required", origin, extra_headers, extra_len);
+            return;
+        }
+        if (!manifest_sig[0]) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 400, "A release manifest signature is required",
+                          origin, extra_headers, extra_len);
             return;
         }
         if (!rel_id[0]) {
@@ -131,10 +143,16 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "rootfs_hash", rootfs_hash, sizeof(rootfs_hash));
         ctrl_json_string(body, "uki_hash", uki_hash, sizeof(uki_hash));
         if (uki_hash[0]) {
-            const char *mp[2] = { uki_hash, pk_id };
-            int ml[2] = { (int)strlen(uki_hash), (int)strlen(pk_id) };
+            const char *mp[3] = { uki_hash, manifest_sig, pk_id };
+            int ml[3] = { (int)strlen(uki_hash), (int)strlen(manifest_sig), (int)strlen(pk_id) };
             PGresult *mr = db_simple(conn,
-                "UPDATE os_releases SET manifest_digest = $1 WHERE id = $2", 2, mp, ml);
+                "UPDATE os_releases SET manifest_digest = $1, manifest_signature = $2 WHERE id = $3", 3, mp, ml);
+            if (mr) PQclear(mr);
+        } else {
+            const char *mp[2] = { manifest_sig, pk_id };
+            int ml[2] = { (int)strlen(manifest_sig), (int)strlen(pk_id) };
+            PGresult *mr = db_simple(conn,
+                "UPDATE os_releases SET manifest_signature = $1 WHERE id = $2", 2, mp, ml);
             if (mr) PQclear(mr);
         }
 
@@ -176,8 +194,12 @@ void os_release_handle(int client_fd, const char *method, const char *path,
      * ========================================================================= */
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/v1/os/releases") == 0) {
         PGresult *res = PQexec(conn,
-            "SELECT id, release_id, version, kernel_version, status, minimum_supported_version, "
-            "rollback_permitted, created_by, approved_by, approved_at, created_at FROM os_releases "
+            "SELECT r.id, r.release_id, r.version, r.kernel_version, r.status, r.minimum_supported_version, "
+            "r.rollback_permitted, r.created_by, r.approved_by, r.approved_at, r.created_at, "
+            "COALESCE((SELECT MAX(CASE WHEN g.rollout_stage IN ('stable','general') THEN 100 "
+            "WHEN g.rollout_stage LIKE 'stage-%' THEN NULLIF(substring(g.rollout_stage FROM 7), '')::int "
+            "ELSE 0 END) FROM os_deployment_groups g WHERE g.target_release_id = r.id), 0) "
+            "FROM os_releases r "
             "ORDER BY created_at DESC");
 
         if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
@@ -203,13 +225,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             pos += snprintf(json + pos, 131072 - pos,
                 "{\"id\":\"%s\",\"release_id\":\"%s\",\"version\":\"%s\",\"kernel_version\":\"%s\","
                 "\"status\":\"%s\",\"minimum_supported_version\":\"%s\",\"rollback_permitted\":%s,"
-                "\"created_by\":\"%s\",\"approved_by\":\"%s\",\"approved_at\":%s,\"created_at\":%s}",
+                "\"created_by\":\"%s\",\"approved_by\":\"%s\",\"approved_at\":%s,\"created_at\":%s,\"rollout_percentage\":%s}",
                 PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
                 PQgetvalue(res, i, 3), PQgetvalue(res, i, 4), PQgetvalue(res, i, 5),
                 strcmp(PQgetvalue(res, i, 6), "t") == 0 ? "true" : "false",
                 PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
                 PQgetvalue(res, i, 9)[0] ? PQgetvalue(res, i, 9) : "null",
-                PQgetvalue(res, i, 10));
+                PQgetvalue(res, i, 10), PQgetvalue(res, i, 11));
         }
         pos += snprintf(json + pos, 131072 - pos, "]}");
         PQclear(res);
@@ -244,8 +266,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         int ql[1] = { (int)strlen(id_or_rel) };
         PGresult *r_res = db_simple(conn,
             "SELECT id, release_id, version, kernel_version, status, minimum_supported_version, "
-            "rollback_permitted, created_by, approved_by, approved_at, source_commit, toolchain_version "
-            ", manifest_digest "
+            "rollback_permitted, created_by, approved_by, approved_at, source_commit, toolchain_version, "
+            "manifest_digest, manifest_signature "
             "FROM os_releases WHERE id = $1 OR release_id = $1", 1, qp, ql);
 
         if (!r_res || PQntuples(r_res) == 0) {
@@ -255,7 +277,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64], r_creator[64], r_digest[128];
+        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64], r_creator[64], r_digest[128], r_sig[4096];
         int r_rollback = 0;
         strncpy(r_pk, PQgetvalue(r_res, 0, 0), sizeof(r_pk) - 1);
         strncpy(r_id, PQgetvalue(r_res, 0, 1), sizeof(r_id) - 1);
@@ -266,6 +288,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         r_rollback = (strcmp(PQgetvalue(r_res, 0, 6), "t") == 0);
         strncpy(r_creator, PQgetvalue(r_res, 0, 7), sizeof(r_creator) - 1);
         strncpy(r_digest, PQgetvalue(r_res, 0, 12), sizeof(r_digest) - 1);
+        strncpy(r_sig, PQgetvalue(r_res, 0, 13), sizeof(r_sig) - 1);
         PQclear(r_res);
 
         /* ---------------- GET /api/v1/os/releases/:id (Details) ---------------- */
@@ -371,6 +394,12 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 os_send_error(client_fd, 403, "Separation of duties violation: creator cannot approve own release", origin, extra_headers, extra_len);
                 return;
             }
+            if (!r_digest[0] || !r_sig[0]) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 409, "Release manifest is not signed",
+                              origin, extra_headers, extra_len);
+                return;
+            }
 
             /* Record Approval */
             char app_id[64];
@@ -384,12 +413,11 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             if (ar) PQclear(ar);
 
             /* Sign Manifest and Advance to Approved */
-            const char *up[3] = { reviewer, "approved", r_pk };
-            int ul[3] = { (int)strlen(reviewer), 8, (int)strlen(r_pk) };
+            const char *up[2] = { reviewer, r_pk };
+            int ul[2] = { (int)strlen(reviewer), (int)strlen(r_pk) };
             PGresult *ur = db_simple(conn,
                 "UPDATE os_releases SET approved_by = $1, approved_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "status = $2, manifest_signature = 'SIG_ED25519_RELEASE_APPROVED_OK', "
-                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $3", 3, up, ul);
+                "status = 'approved', updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up, ul);
             if (ur) PQclear(ur);
 
             os_audit_log(reviewer, "OS_RELEASE_APPROVED", r_id);
@@ -510,8 +538,37 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "maintenance_window_start", win_start, sizeof(win_start));
         ctrl_json_string(body, "maintenance_window_end", win_end, sizeof(win_end));
 
-        if (!inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "inst_vignan");
+        int rollout_percent = 0;
+        if (strncmp(stage, "stage-", 6) == 0) {
+            char *end = NULL;
+            long parsed = strtol(stage + 6, &end, 10);
+            if (end == stage + 6 || *end != '\0' || parsed < 1 || parsed > 100) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 400, "Rollout stage must be stage-1 through stage-100",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            rollout_percent = (int)parsed;
+        } else if (strcmp(stage, "stable") == 0 || strcmp(stage, "general") == 0) {
+            rollout_percent = 100;
+        } else {
+            db_release(conn, 0);
+            os_send_error(client_fd, 400, "Unsupported rollout stage",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (is_owner) {
+            if (!inst_id[0]) {
+                snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
+            }
+        } else if (sess.institution_id[0]) {
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
+        } else {
+            db_release(conn, 0);
+            os_send_error(client_fd, 403, "An institution scope is required",
+                          origin, extra_headers, extra_len);
+            return;
         }
         if (!gname[0]) {
             snprintf(gname, sizeof(gname), "Rollout Group %ld", (long)time(NULL));
@@ -537,6 +594,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             os_send_error(client_fd, 403, "Cannot create deployment for revoked release", origin, extra_headers, extra_len);
             return;
         }
+        if (strcmp(rel_stat, "approved") != 0 && strcmp(rel_stat, "active") != 0 &&
+            strcmp(rel_stat, "staged") != 0) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 409, "Release must be approved before deployment",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
         char dep_id[64];
         snprintf(dep_id, sizeof(dep_id), "dep_%ld_%d", (long)time(NULL), rand() % 10000);
@@ -551,7 +615,29 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             "INSERT INTO os_deployment_groups (id, institution_id, group_name, target_release_id, rollout_stage, "
             "max_concurrent_updates, maintenance_window_start, maintenance_window_end, created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6::int, $7, '23:59', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 7, dp, dl);
-        if (ins_dep) PQclear(ins_dep);
+        if (!ins_dep || PQresultStatus(ins_dep) != PGRES_COMMAND_OK) {
+            if (ins_dep) PQclear(ins_dep);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Deployment group could not be created",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(ins_dep);
+
+        const char *release_status = rollout_percent >= 100 ? "active" : "staged";
+        const char *rel_up[2] = { release_status, rel_pk };
+        int rel_ul[2] = { (int)strlen(release_status), (int)strlen(rel_pk) };
+        PGresult *rel_update = db_simple(conn,
+            "UPDATE os_releases SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2",
+            2, rel_up, rel_ul);
+        if (!rel_update || PQresultStatus(rel_update) != PGRES_COMMAND_OK) {
+            if (rel_update) PQclear(rel_update);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Release rollout state could not be updated",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(rel_update);
 
         os_audit_log(sess.username, "OS_DEPLOYMENT_CREATED", gname);
         db_release(conn, 0);
@@ -572,14 +658,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
     size_t dep_plen = strlen(dep_pfx);
     if (strncmp(path, dep_pfx, dep_plen) == 0 && strcmp(method, "GET") == 0) {
         const char *dep_id = path + dep_plen;
-        const char *dp[1] = { dep_id };
-        int dl[1] = { (int)strlen(dep_id) };
-
         PGresult *dr = db_simple(conn,
             "SELECT g.id, g.institution_id, g.group_name, r.release_id, r.version, g.rollout_stage, g.status, "
             "g.max_concurrent_updates, g.created_at "
             "FROM os_deployment_groups g JOIN os_releases r ON g.target_release_id = r.id "
-            "WHERE g.id = $1", 1, dp, dl);
+            "WHERE g.id = $1 AND ($2 = TRUE OR g.institution_id = $3)", 3,
+            (const char *[]){ dep_id, is_owner ? "TRUE" : "FALSE", sess.institution_id },
+            (int []){ (int)strlen(dep_id), is_owner ? 4 : 5, (int)strlen(sess.institution_id) });
 
         if (!dr || PQntuples(dr) == 0) {
             if (dr) PQclear(dr);
