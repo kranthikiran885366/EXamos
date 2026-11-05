@@ -165,12 +165,31 @@ export class AuthService {
 
   /* ─────────────────────────── Candidate auth ──────────────────────── */
 
-  async candidateLogin({ candidateId, pin }) {
+  async candidateLogin({ candidateId, pin, examToken, onPending }) {
     const res = await api.post(ENDPOINTS.candidateLogin, {
-      candidate_id: candidateId, pin,
+      candidate_id: candidateId, pin: pin || '', exam_token: examToken || '',
     }, { useCandidateToken: true, actor: 'candidate', sign: true });
 
-    const data = res.data;
+    let data = res.data;
+    if (data.status === 'PENDING_VERIFICATION') {
+      if (!data.poll_token) throw new ApiError(res.status, 'Server did not return an invigilator check-in reference', data);
+      onPending?.();
+      let completed = false;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const statusRes = await api.post(ENDPOINTS.candidateCheckinStatus, { poll_token: data.poll_token }, {
+          useCandidateToken: true, actor: 'candidate', sign: true,
+        });
+        if (statusRes.data.status === 'PENDING_VERIFICATION') continue;
+        if (statusRes.data.status !== 'SUCCESS') {
+          throw new ApiError(statusRes.status, statusRes.data.error || 'Invigilator verification was not approved', statusRes.data);
+        }
+        data = statusRes.data;
+        completed = true;
+        break;
+      }
+      if (!completed) throw new ApiError(410, 'Invigilator verification timed out. Please check in again.', data);
+    }
     if (data.status !== 'SUCCESS') {
       throw new ApiError(res.status, data.error || 'Candidate login failed', data);
     }

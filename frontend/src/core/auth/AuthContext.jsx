@@ -239,14 +239,14 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ── Candidate login — server only ─────────────────────────────────────────
-  const backendCandidateLogin = useCallback(async ({ candidateId, pin }) => {
+  const backendCandidateLogin = useCallback(async ({ candidateId, pin, examToken, onPending }) => {
     let ready = backendReady;
     if (!ready) {
       try { await authService.health(); ready = true; setBackendReady(true); }
       catch { return { error: 'ExamOS server is unreachable. Check that the backend is running on port 8895.' }; }
     }
     try {
-      const result = await authService.candidateLogin({ candidateId, pin });
+      const result = await authService.candidateLogin({ candidateId, pin, examToken, onPending });
       setBackendMode('candidate');
       const profile = result.profile || {};
       setUser(publicUser({

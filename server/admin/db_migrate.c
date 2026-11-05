@@ -47,6 +47,7 @@ static const migration_t migrations[] = {
     {"025_corporate_entity_support.sql",                    "institutions",              1},
     {"026_mfa_enrollment_table.sql",                        "admin_auth",               10},
     {"027_console_record_store.sql",                        "console_record_store",      1},
+    {"028_candidate_authentication_workflows.sql",          "candidate_authentication",  1},
 };
 
 /*
@@ -488,29 +489,12 @@ int main(int argc, char **argv) {
             goto done;
         }
         if (cs == 1 && CRYPTO_memcmp(recorded_hash, hash, 64) != 0) {
-            /*
-             * Checksum mismatch — the migration file was modified after it was
-             * applied.  If the migration is already marked as applied in
-             * examos_schema_migrations, this is an intentional file update (e.g.
-             * removing fabricated seed data), not corruption.  Update the
-             * checksum to the new file hash and continue instead of aborting.
-             */
-            if (applied == 1) {
-                char ver_str[16];
-                snprintf(ver_str, sizeof(ver_str), "%d", m->version);
-                const char *upd_p[3] = { hash, m->component, ver_str };
-                int upd_l[3] = { 64, (int)strlen(m->component), (int)strlen(ver_str) };
-                PGresult *upd_r = PQexecParams(conn,
-                    "UPDATE examos_schema_migration_checksums SET sha256 = $1 "
-                    "WHERE component = $2 AND version = $3::integer",
-                    3, NULL, upd_p, NULL, NULL, 0);
-                if (upd_r) PQclear(upd_r);
-                printf("[migrate] Updated checksum for %s (file intentionally modified).\n", m->file);
-            } else {
-                fprintf(stderr, "Checksum mismatch for '%s' — migration file was modified after it "
-                                "was applied.  Refusing to continue.\n", m->file);
-                goto done;
-            }
+            /* Applied migration history is immutable.  A correction must be
+             * delivered as a new migration, never by rewriting a checksum. */
+            fprintf(stderr, "Checksum mismatch for '%s': create a new corrective migration instead of modifying history.\n",
+                    m->file);
+            goto done;
+
         }
         if (cs == 0 && checksum_insert(conn, m, hash) != 0) {
             fprintf(stderr, "Could not record checksum for '%s'.\n", m->file);

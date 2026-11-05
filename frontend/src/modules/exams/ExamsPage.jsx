@@ -38,6 +38,16 @@ const STEP_PERM = {
   finalized: 'exam.manage',
 };
 const REASON = new Set(['live', 'in_progress', 'cancelled', 'draft']);
+const configFromApi = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { /* Older records may have no persisted configuration. */ }
+  }
+  return {};
+};
 
 export default function ExamsPage() {
   const { user } = useAuth();
@@ -57,27 +67,33 @@ export default function ExamsPage() {
         const list = res?.examinations || res?.exams || (Array.isArray(res) ? res : []);
         if (!cancelled) {
           // Map backend field names to frontend shape, sync to local cache
-          const mapped = list.map((e) => ({
+          const mapped = list.map((e) => {
+            const config = configFromApi(e.exam_config);
+            return ({
+            ...config,
             id: e.id,
             tenantId: e.institution_id,
-            code: e.code,
-            title: e.name || e.title,
-            type: e.exam_type || e.type || 'final',
-            course: e.subject || e.course || '',
-            academicYear: e.academic_year || e.academicYear || '',
+            code: config.code || e.code,
+            title: config.title || e.name || e.title,
+            type: config.type || e.exam_type || e.type || 'final',
+            course: config.course || e.subject || e.course || '',
+            academicYear: config.academicYear || e.academic_year || e.academicYear || '',
             status: e.status || 'draft',
-            startAt: e.scheduled_start || e.start_time || e.startAt || 0,
-            durationMin: e.duration_minutes || e.durationMin || 60,
-            examUrl: e.exam_url || e.examUrl || '',
-            instructions: e.instructions || '',
-            policyId: e.policy_id || e.policyId || null,
-            centerIds: e.center_ids || e.centerIds || [],
+            startAt: config.startAt || e.scheduled_start || e.start_time || e.startAt || 0,
+            durationMin: config.durationMin || e.duration_minutes || e.durationMin || 60,
+            timeZone: config.timezone || config.timeZone || 'Asia/Kolkata',
+            examUrl: config.examUrl || e.exam_url || e.examUrl || '',
+            instructions: config.instructions || e.instructions || '',
+            origins: config.origins || (e.allowed_origins || '').split(',').filter(Boolean),
+            policyId: config.policyId || e.policy_id || e.policyId || null,
+            centerIds: config.centerIds || e.center_ids || e.centerIds || [],
             createdBy: e.created_by || e.createdBy || '',
             createdAt: e.created_at || e.createdAt || 0,
             updatedAt: e.updated_at || e.updatedAt || 0,
             version: e.version || 1,
             history: e.history || [],
-          }));
+            });
+          });
           setBackendExams(mapped);
           // Sync to local cache so detail page reads are consistent
           for (const ex of mapped) {

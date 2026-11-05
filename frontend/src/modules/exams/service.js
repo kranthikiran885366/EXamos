@@ -23,9 +23,9 @@ export const LIFECYCLE_LABEL = {
   cancelled: 'Cancelled',
 };
 export const AUTH_MODES = [
-  { v: 'candidate-login', l: 'Candidate account sign-in' },
-  { v: 'exam-token', l: 'Exam token issued at the desk' },
-  { v: 'proctor-verify', l: 'Invigilator identity confirmation' },
+  { v: 'candidate-login', l: 'Candidate ID + account PIN' },
+  { v: 'exam-token', l: 'Candidate ID + single-use desk token' },
+  { v: 'proctor-verify', l: 'Candidate ID + PIN + invigilator approval' },
 ];
 export const SUBMISSION_MODES = [
   { v: 'manual', l: 'Candidate submits manually' },
@@ -44,6 +44,9 @@ export const REQUIRED_CHECKS = [
   { v: 'keyboard', l: 'Keyboard and pointer' }, { v: 'battery', l: 'Power / battery state' },
   { v: 'camera', l: 'Camera (only when required)' }, { v: 'microphone', l: 'Microphone (only when required)' },
 ];
+export const COMPATIBILITY_PROFILES = ['standard-uefi', 'secure-lab', 'legacy-bios'];
+export const NAVIGATION_MODES = ['locked', 'allowlist'];
+export const RECONNECT_POLICIES = ['allow-reconnect', 'resume-only', 'deny'];
 
 export function parseQuestions(text) {
   const out = [];
@@ -59,6 +62,72 @@ export function parseQuestions(text) {
 
 const startOf = (v) => (typeof v === 'number' ? v : Date.parse(v));
 
+const normalizeOrigins = (values) => {
+  if (!Array.isArray(values)) fail('Origins must be provided as a list.');
+  return [...new Set(values.filter((value) => String(value || '').trim()).map((value) => {
+  const origin = clean(value, 200);
+  let parsed;
+  try { parsed = new URL(origin); } catch { fail(`Allowed origin is invalid: ${origin}`); }
+  if (!validHttps(origin) || (parsed.pathname !== '/' && parsed.pathname !== '') || parsed.search || parsed.hash) {
+    fail(`Allowed origin must be an HTTPS origin without a path: ${origin}`);
+  }
+  return parsed.origin;
+  }).filter(Boolean))];
+};
+
+const integerInRange = (value, min, max, label) => {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) fail(`${label} must be an integer from ${min} to ${max}.`);
+  return number;
+};
+
+const validateTimezone = (value) => {
+  const timezone = clean(value, 40);
+  try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(0); } catch { fail('Choose a valid IANA time zone.'); }
+  return timezone;
+};
+
+const validateDelivery = (exam) => {
+  if (!AUTH_MODES.some(({ v }) => v === exam.authMode)) fail('Choose a valid candidate authentication mode.');
+  if (!SUBMISSION_MODES.some(({ v }) => v === exam.submissionMode)) fail('Choose a valid submission mode.');
+  if (!NAVIGATION_MODES.includes(exam.navigation)) fail('Choose a valid navigation mode.');
+  if (!RECONNECT_POLICIES.includes(exam.reconnectPolicy)) fail('Choose a valid reconnect policy.');
+  if (!ATTESTATION.some(({ v }) => v === exam.attestationLevel)) fail('Choose a valid attestation level.');
+  if (!COMPATIBILITY_PROFILES.includes(exam.compatibilityProfile)) fail('Choose a valid compatibility profile.');
+  if (typeof exam.identityRequired !== 'boolean') fail('Identity verification selection is invalid.');
+  if (!Array.isArray(exam.requiredChecks) ||
+      exam.requiredChecks.some((check) => !REQUIRED_CHECKS.some(({ v }) => v === check)) ||
+      new Set(exam.requiredChecks).size !== exam.requiredChecks.length) {
+    fail('Required device checks contain an invalid or duplicate selection.');
+  }
+  if (!Array.isArray(exam.centerIds) || new Set(exam.centerIds).size !== exam.centerIds.length ||
+      exam.centerIds.some((centerId) => typeof centerId !== 'string' || !centerId.trim())) {
+    fail('Exam centres contain an invalid or duplicate selection.');
+  }
+  if (exam.navigation === 'allowlist' && exam.allowedDestinations.length === 0) {
+    fail('Add at least one allowed destination or select locked navigation.');
+  }
+  if (exam.allowedDestinations.some((destination) => !exam.origins.includes(destination))) {
+    fail('Every allowed destination must also appear in the allowed origins.');
+  }
+};
+
+const backendExamConfig = (exam) => ({
+  title: exam.title, code: exam.code, type: exam.type, course: exam.course || '',
+  departmentId: exam.departmentId || '', academicYear: exam.academicYear || '',
+  description: exam.description || '', startAt: exam.startAt, durationMin: exam.durationMin,
+  centerIds: exam.centerIds || [], timezone: exam.timeZone || 'Asia/Kolkata',
+  lateEntryMin: exam.lateEntryMin || 0, capacity: exam.capacity || 0,
+  instructions: exam.instructions || '', resources: exam.resources || '',
+  accommodations: exam.accommodations || '', authMode: exam.authMode || 'candidate-login',
+  identityRequired: !!exam.identityRequired, origins: exam.origins || [],
+  navigation: exam.navigation || 'locked', allowedDestinations: exam.allowedDestinations || [],
+  compatibilityProfile: exam.compatibilityProfile || 'standard-uefi',
+  attestationLevel: exam.attestationLevel || 'tpm', sessionTimeoutMin: exam.sessionTimeoutMin || 15,
+  reconnectPolicy: exam.reconnectPolicy || 'allow-reconnect', submissionMode: exam.submissionMode || 'either',
+  requiredChecks: exam.requiredChecks || [], policyId: exam.policyId || null, examUrl: exam.examUrl || '',
+});
+
 export async function createExam(a, input) {
   need(a, 'exam.manage');
   const {
@@ -71,32 +140,71 @@ export async function createExam(a, input) {
     submissionMode = 'either', requiredChecks = ['uefi', 'usb', 'tpm', 'network', 'display', 'keyboard'],
   } = input;
   assertScope(a, tenantId);
+  if (typeof identityRequired !== 'boolean') fail('Identity verification selection is invalid.');
   const c = clean(code, 20).toUpperCase(); const t = clean(title, 100);
   if (!/^[A-Z0-9-]{4,20}$/.test(c)) fail('Code: 4–20 letters, digits or -.');
   if (t.length < 4) fail('Title needs 4+ characters.');
   if (!TYPES.includes(type)) fail('Choose a valid exam type.');
+  if (!AUTH_MODES.some((mode) => mode.v === authMode)) fail('Choose a valid candidate authentication mode.');
   /* Duplicate code check is enforced server-side (409 on duplicate code). */
-  const ids = Array.isArray(centerIds) ? centerIds.filter(Boolean) : [];
+  if (!Array.isArray(centerIds)) fail('Exam centres must be provided as a list.');
+  if (!Array.isArray(origins)) fail('Allowed origins must be provided as a list.');
+  if (!Array.isArray(allowedDestinations)) fail('Allowed destinations must be provided as a list.');
+  if (!Array.isArray(requiredChecks)) fail('Required device checks must be provided as a list.');
+  const ids = centerIds;
   const st = startOf(startAt);
-  const dur = Number(durationMin);
+  const dur = integerInRange(durationMin, 15, 300, 'Duration');
   if (!Number.isFinite(st)) fail('Choose a start date and time.');
-  if (!(dur >= 15 && dur <= 300)) fail('Duration must be 15–300 minutes.');
-  const targetUrl = clean(examUrl || input.examUrl, 500) || `https://assessment.sppio.io/exam/${c.toLowerCase()}`;
+  if (!instructions.trim()) fail('Candidate instructions are required.');
+  const targetInput = clean(examUrl || input.examUrl, 500);
+  const targetUrl = (() => { try { return new URL(targetInput).href; } catch { return targetInput; } })();
+  if (!validHttps(targetUrl)) fail('Exam URL must be a valid HTTPS URL.');
+  const targetOrigin = new URL(targetUrl).origin;
+  const allowedOrigins = normalizeOrigins([...origins.filter(Boolean), targetOrigin]);
+  const destinations = normalizeOrigins(allowedDestinations);
+  if (destinations.some((destination) => !allowedOrigins.includes(destination))) {
+    fail('Every allowed destination must also appear in the allowed origins.');
+  }
+  const timezone = validateTimezone(timeZone);
+  const lateEntry = integerInRange(lateEntryMin, 0, 60, 'Late entry');
+  const plannedCapacity = integerInRange(capacity, 0, 1000000, 'Planned capacity');
+  const timeout = integerInRange(sessionTimeoutMin, 5, 120, 'Session timeout');
+  const normalizedDepartmentId = clean(departmentId, 64);
+  const config = {
+    description: clean(description, 1000), course: clean(course, 80), departmentId: normalizedDepartmentId,
+    startAt: st, durationMin: dur, centerIds: ids, timezone,
+    lateEntryMin: lateEntry, capacity: plannedCapacity,
+    resources: clean(resources, 1000), accommodations: clean(accommodations, 1000),
+    authMode, identityRequired, origins: allowedOrigins,
+    navigation, allowedDestinations: destinations,
+    compatibilityProfile, attestationLevel,
+    sessionTimeoutMin: timeout, reconnectPolicy, submissionMode,
+    requiredChecks,
+  };
+  validateDelivery(config);
+  if (policyId) {
+    const policy = (await all('policies')).find((candidate) => candidate.id === policyId);
+    if (!policy || policy.tenantId !== tenantId || policy.status !== 'published') {
+      fail('Select a published policy belonging to this institution.');
+    }
+    if (!(Array.isArray(policy.config?.origins) ? policy.config.origins : []).some((value) => {
+      try { return new URL(value).origin === targetOrigin; } catch { return value === targetOrigin; }
+    })) fail(`The selected policy does not allow the exam URL origin ${targetOrigin}.`);
+  }
   const now = Date.now();
   const ex = {
-    id: id('exm'), tenantId, code: c, title: t, description: clean(description, 1000), course: clean(course, 80), departmentId, academicYear: clean(academicYear, 20),
-    type, centerIds: ids, startAt: st, durationMin: dur, timeZone, lateEntryMin: Math.max(0, Math.min(60, Number(lateEntryMin) || 0)), capacity: Number(capacity) || 0,
+    id: id('exm'), tenantId, code: c, title: t, description: config.description, course: config.course, departmentId: normalizedDepartmentId, academicYear: clean(academicYear, 20),
+    type, centerIds: ids, startAt: st, durationMin: dur, timeZone: config.timezone, lateEntryMin: config.lateEntryMin, capacity: config.capacity,
     instructions: clean(instructions, 3000), resources: clean(resources, 1000), accommodations: clean(accommodations, 1000),
     examUrl: targetUrl,
-    authMode, identityRequired: !!identityRequired, origins: (origins || []).map((o) => clean(o, 200)).filter(Boolean),
-    navigation: navigation === 'allowlist' ? 'allowlist' : 'locked', allowedDestinations: (allowedDestinations || []).map((o) => clean(o, 200)).filter(Boolean),
-    compatibilityProfile: clean(compatibilityProfile, 40), attestationLevel, sessionTimeoutMin: Number(sessionTimeoutMin) || 15,
+    authMode, identityRequired, origins: allowedOrigins,
+    navigation: config.navigation, allowedDestinations: config.allowedDestinations,
+    compatibilityProfile, attestationLevel, sessionTimeoutMin: timeout,
     reconnectPolicy, submissionMode, requiredChecks,
     policyId: policyId || null, questions: [], status: 'draft', createdBy: a.id, createdAt: now, updatedAt: now,
     version: 1, locked: false,
     history: [{ at: now, by: a.id, to: 'draft', note: 'Exam created with assessment URL' }],
   };
-  let backendId = null;
   try {
     const backendRes = await Api.createExamination({
       title: t,
@@ -112,15 +220,14 @@ export async function createExam(a, input) {
       instructions: clean(instructions, 3000),
       institutionId: tenantId,
       examUrl: targetUrl,
-      allowedOrigins: (origins || []).join(','),
-      timezone: timeZone || '',
+      allowedOrigins: allowedOrigins.join(','),
+      examConfig: backendExamConfig(ex),
     });
     if (!backendRes?.exam_id) fail('Backend did not return an exam ID. Cannot create exam without server confirmation.');
-    backendId = backendRes.exam_id;
+    ex.id = backendRes.exam_id;
   } catch (err) {
     fail(err.message || 'Backend exam creation failed. Exam not saved.');
   }
-  ex.id = backendId;
   await put('exams', ex);
   await log(a, 'EXAM_CREATED', `${c} url=${targetUrl}`);
   return `Exam ${c} saved as draft with assessment URL ${targetUrl}.`;
@@ -141,10 +248,11 @@ export async function updateExam(a, ex, patch) {
   if (patch.type !== undefined) { if (!TYPES.includes(patch.type)) fail('Choose a valid exam type.'); set('type', patch.type); }
   if (patch.startAt !== undefined) { const st = startOf(patch.startAt); if (!Number.isFinite(st)) fail('Choose a valid start time.'); set('startAt', st); }
   if (patch.durationMin !== undefined) { const d = Number(patch.durationMin); if (!(d >= 15 && d <= 300)) fail('Duration must be 15–300 minutes.'); set('durationMin', d); }
+  if (patch.authMode !== undefined && !AUTH_MODES.some((mode) => mode.v === patch.authMode)) fail('Choose a valid candidate authentication mode.');
   for (const k of ['description', 'course', 'academicYear', 'instructions', 'resources', 'accommodations', 'timeZone', 'compatibilityProfile', 'authMode', 'submissionMode', 'reconnectPolicy']) if (patch[k] !== undefined) set(k, clean(patch[k], k === 'instructions' ? 3000 : 1000));
   for (const k of ['departmentId', 'policyId', 'navigation', 'attestationLevel', 'lateEntryMin', 'capacity', 'sessionTimeoutMin', 'identityRequired']) if (patch[k] !== undefined) set(k, patch[k]);
   if (patch.centerIds !== undefined) {
-    const ids = patch.centerIds.filter(Boolean);
+    const ids = patch.centerIds;
     /* Center scope is validated server-side on exam assignment. */
     set('centerIds', ids);
   }
@@ -152,18 +260,50 @@ export async function updateExam(a, ex, patch) {
   if (patch.allowedDestinations !== undefined) set('allowedDestinations', (Array.isArray(patch.allowedDestinations) ? patch.allowedDestinations : String(patch.allowedDestinations).split(/[\s,]+/)).filter(Boolean));
   if (patch.requiredChecks !== undefined) set('requiredChecks', patch.requiredChecks);
   if (patch.examUrl !== undefined) set('examUrl', clean(patch.examUrl, 500));
+  if (patch.instructions !== undefined && !String(patch.instructions).trim()) fail('Candidate instructions are required.');
+  if (!validHttps(next.examUrl)) fail('Exam URL must be a valid HTTPS URL.');
+  if (typeof next.identityRequired !== 'boolean') fail('Identity verification selection is invalid.');
+  next.departmentId = clean(next.departmentId, 64);
+  next.examUrl = new URL(next.examUrl).href;
+  next.durationMin = integerInRange(next.durationMin, 15, 300, 'Duration');
+  next.lateEntryMin = integerInRange(next.lateEntryMin, 0, 60, 'Late entry');
+  next.capacity = integerInRange(next.capacity, 0, 1000000, 'Planned capacity');
+  next.sessionTimeoutMin = integerInRange(next.sessionTimeoutMin, 5, 120, 'Session timeout');
+  next.timeZone = validateTimezone(next.timeZone);
+  {
+    const targetOrigin = new URL(next.examUrl).origin;
+    const currentOrigins = Array.isArray(next.origins) ? next.origins : [];
+    next.origins = normalizeOrigins([...currentOrigins, targetOrigin]);
+    next.allowedDestinations = normalizeOrigins(next.allowedDestinations || []);
+    validateDelivery(next);
+    if (next.policyId) {
+      const policy = (await all('policies')).find((candidate) => candidate.id === next.policyId);
+      if (!policy || policy.tenantId !== ex.tenantId || policy.status !== 'published') {
+        fail('Select a published policy belonging to this institution.');
+      }
+      if (!(Array.isArray(policy.config?.origins) ? policy.config.origins : []).some((value) => {
+        try { return new URL(value).origin === targetOrigin; } catch { return value === targetOrigin; }
+      })) fail(`The selected policy does not allow the exam URL origin ${targetOrigin}.`);
+    }
+  }
   next.updatedAt = Date.now(); next.version = (ex.version || 1) + 1;
   next.history = [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, note: 'Configuration updated' }];
   // Backend-first: update on server before writing locally.
   try {
     await Api.updateExamination(ex.id, {
       name: next.title,
+      code: next.code,
       subject: next.course || '',
+      academic_year: next.academicYear || '',
+      exam_type: next.type,
       instructions: next.instructions || '',
       exam_url: next.examUrl || '',
       duration_minutes: next.durationMin,
       total_marks: next.totalMarks,
       passing_marks: next.passingMarks,
+      allowed_origins: next.origins.join(','),
+      policy_id: next.policyId || '',
+      exam_config_json: JSON.stringify(backendExamConfig(next)),
     });
   } catch (err) {
     fail(err.message || 'Backend exam update failed. Changes not saved.');
@@ -196,6 +336,7 @@ export async function duplicateExam(a, ex) {
       institutionId: ex.tenantId,
       examUrl: copy.examUrl || '',
       allowedOrigins: (copy.origins || []).join(','),
+      examConfig: backendExamConfig(copy),
     });
     if (!res?.exam_id) fail('Backend did not return an exam ID for the duplicate.');
     copy.id = res.exam_id;

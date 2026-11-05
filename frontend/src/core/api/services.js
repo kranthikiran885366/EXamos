@@ -116,12 +116,15 @@ export const adminProfile = wrap(async () => {
 // Candidate authentication
 // ---------------------------------------------------------------------------
 
-export const candidateLogin = wrap(async ({ candidateId, pin }) => {
+export const candidateLogin = wrap(async ({ candidateId, pin, examToken }) => {
   const res = await api.post(ENDPOINTS.candidateLogin, {
-    candidate_id: candidateId, pin,
+    candidate_id: candidateId, pin: pin || '', exam_token: examToken || '',
   }, { useCandidateToken: true, actor: ACTOR, sign: true });
 
   const data = res.data;
+  if (data.status === 'PENDING_VERIFICATION') {
+    return { pendingVerification: true, pollToken: data.poll_token };
+  }
   if (data.status !== 'SUCCESS') throw new ApiError(res.status, data.error || 'Candidate login failed', data);
 
   setCandidateToken(data.token);
@@ -139,6 +142,39 @@ export const candidateLogin = wrap(async ({ candidateId, pin }) => {
       token: data.token,
     },
   };
+});
+
+export const candidateCheckinStatus = wrap(async (pollToken) => {
+  const res = await api.post(ENDPOINTS.candidateCheckinStatus, { poll_token: pollToken }, {
+    useCandidateToken: true, actor: ACTOR, sign: true,
+  });
+  return res.data;
+});
+
+export const issueExamCandidateToken = wrap(async (examId, candidateId) => {
+  const res = await api.post(ENDPOINTS.examinationCandidateTokens(examId), { candidate_id: candidateId }, {
+    actor: ACTOR, sign: true,
+  });
+  return res.data;
+});
+
+export const issueExamCandidatePin = wrap(async (examId, candidateId) => {
+  const res = await api.post(ENDPOINTS.examinationCandidatePins(examId), { candidate_id: candidateId }, {
+    actor: ACTOR, sign: true,
+  });
+  return res.data;
+});
+
+export const listExamCandidateCheckins = wrap(async (examId) => {
+  const res = await api.get(ENDPOINTS.examinationCandidateCheckins(examId), { actor: ACTOR });
+  return res.data;
+});
+
+export const decideExamCandidateCheckin = wrap(async (examId, checkinId, decision, reason = '') => {
+  const res = await api.post(ENDPOINTS.examinationCandidateCheckin(examId, checkinId), { decision, reason }, {
+    actor: ACTOR, sign: true,
+  });
+  return res.data;
 });
 
 export const candidateLogout = wrap(async () => {
@@ -569,6 +605,7 @@ export const createExamination = wrap(async (exam) => {
     exam_url: exam.examUrl,
     allowed_origins: exam.allowedOrigins,
     institution_id: exam.institutionId || exam.tenantId,
+    exam_config_json: JSON.stringify(exam.examConfig || {}),
   }, { actor: ACTOR, sign: true });
   return res.data;
 });
@@ -635,6 +672,11 @@ export const addExaminationSchedule = wrap(async (id, schedule) => {
 
 export const assignExaminationStudent = wrap(async (id, student) => {
   const res = await api.post(ENDPOINTS.examinationStudents(id), student, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const unassignExaminationStudent = wrap(async (id, studentId) => {
+  const res = await api.del(ENDPOINTS.examinationStudent(id, studentId), { actor: ACTOR, sign: true });
   return res.data;
 });
 

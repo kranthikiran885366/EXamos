@@ -392,6 +392,7 @@ static const char *migration_sql =
 "  status VARCHAR(32) NOT NULL DEFAULT 'draft',"
 "  exam_url TEXT NOT NULL DEFAULT '',"
 "  allowed_origins TEXT NOT NULL DEFAULT '',"
+"  exam_config JSONB NOT NULL DEFAULT '{}'::jsonb,"
 "  policy_id VARCHAR(64),"
 "  approved_by VARCHAR(64),"
 "  approved_at BIGINT,"
@@ -447,6 +448,45 @@ static const char *migration_sql =
 "  created_at BIGINT NOT NULL,"
 "  CONSTRAINT fk_candidate_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)"
 ");"
+
+"CREATE TABLE IF NOT EXISTS candidate_exam_auth_tokens ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  examination_id VARCHAR(64) NOT NULL REFERENCES examinations(id) ON DELETE CASCADE,"
+"  institution_id VARCHAR(64) NOT NULL,"
+"  candidate_id VARCHAR(64) NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,"
+"  token_hash VARCHAR(64) NOT NULL UNIQUE,"
+"  issued_by VARCHAR(64) NOT NULL,"
+"  expires_at BIGINT NOT NULL,"
+"  used_at BIGINT,"
+"  revoked_at BIGINT,"
+"  created_at BIGINT NOT NULL"
+");"
+"CREATE INDEX IF NOT EXISTS idx_candidate_exam_auth_tokens_lookup "
+"  ON candidate_exam_auth_tokens(examination_id, candidate_id, expires_at) "
+"  WHERE used_at IS NULL AND revoked_at IS NULL;"
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_candidate_exam_auth_tokens_active "
+"  ON candidate_exam_auth_tokens(examination_id, candidate_id) "
+"  WHERE used_at IS NULL AND revoked_at IS NULL;"
+
+"CREATE TABLE IF NOT EXISTS candidate_exam_checkins ("
+"  id VARCHAR(64) PRIMARY KEY,"
+"  examination_id VARCHAR(64) NOT NULL REFERENCES examinations(id) ON DELETE CASCADE,"
+"  institution_id VARCHAR(64) NOT NULL,"
+"  candidate_id VARCHAR(64) NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,"
+"  poll_token_hash VARCHAR(64) NOT NULL UNIQUE,"
+"  status VARCHAR(16) NOT NULL CHECK (status IN ('pending','approved','rejected','consumed','expired')),"
+"  verified_by VARCHAR(64) NOT NULL DEFAULT '',"
+"  decision_reason TEXT NOT NULL DEFAULT '',"
+"  created_at BIGINT NOT NULL,"
+"  expires_at BIGINT NOT NULL,"
+"  verified_at BIGINT,"
+"  consumed_at BIGINT"
+");"
+"CREATE INDEX IF NOT EXISTS idx_candidate_exam_checkins_queue "
+"  ON candidate_exam_checkins(examination_id, status, created_at);"
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_candidate_exam_checkins_open "
+"  ON candidate_exam_checkins(examination_id, candidate_id) "
+"  WHERE status IN ('pending','approved');"
 
 "CREATE TABLE IF NOT EXISTS sessions ("
 "  id VARCHAR(64) PRIMARY KEY,"
@@ -1088,8 +1128,31 @@ static void db_ensure_database_extensions(PGconn *conn) {
     if (!conn) return;
 
     /* Maintain schema extensions without seeding or deleting institution data. */
+    /*
+     * The console query reads these fields from databases created before the
+     * institution onboarding schema was consolidated into migration_sql.
+     * Keep upgrades idempotent so an existing production database receives
+     * the same columns as a fresh install.
+     */
+    exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);");
+    exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS institution_id VARCHAR(64);");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS reviewed_at BIGINT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS updated_at BIGINT;");
+    exec_sql_step(conn, "CREATE TABLE IF NOT EXISTS institution_onboarding ("
+                        "  institution_id VARCHAR(64) PRIMARY KEY,"
+                        "  status VARCHAR(40) NOT NULL DEFAULT 'REGISTRATION_PENDING',"
+                        "  checklist JSONB NOT NULL DEFAULT '{}'::jsonb,"
+                        "  completed_steps INTEGER DEFAULT 0,"
+                        "  total_steps INTEGER DEFAULT 8,"
+                        "  first_admin_email VARCHAR(120),"
+                        "  first_admin_invited INTEGER DEFAULT 0,"
+                        "  mfa_enforced INTEGER DEFAULT 1,"
+                        "  updated_at BIGINT NOT NULL"
+                        ");");
     /* 5b. Ensure exam_url column on exams table */
     exec_sql_step(conn, "ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_url TEXT;");
+    exec_sql_step(conn, "ALTER TABLE examinations ADD COLUMN IF NOT EXISTS exam_config JSONB NOT NULL DEFAULT '{}'::jsonb;");
     exec_sql_step(conn, "CREATE TABLE IF NOT EXISTS examinations ("
                         "  id VARCHAR(64) PRIMARY KEY,"
                         "  institution_id VARCHAR(64) NOT NULL,"

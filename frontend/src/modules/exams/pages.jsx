@@ -33,6 +33,16 @@ const local = (t) => {
   const d = new Date(t - new Date().getTimezoneOffset() * 60000);
   return d.toISOString().slice(0, 16);
 };
+const examConfigFromApi = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { /* Older records may have no persisted configuration. */ }
+  }
+  return {};
+};
 const split = (v) => String(v || '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 const STEP_LABEL = {
   configured: 'Configure exam',
@@ -65,15 +75,15 @@ export function ExamNewPage() {
   const { tenantId } = useTenant();
   const may = usePerm();
   const navigate = useNavigate();
-  const centers = useCol('centers');
-  const policies = useCol('policies');
+  const { rows: centers, loaded: centersLoaded, error: centersError } = useColLoaded('centers');
+  const { rows: policies, loaded: policiesLoaded, error: policiesError } = useColLoaded('policies');
   const { msg, setMsg, run, busy } = useFlash();
   const [v, setV] = useState({
-    code: '', title: '', type: 'internal', course: '', academicYear: '', description: '',
+    code: '', title: '', type: 'internal', course: '', departmentId: '', academicYear: '', description: '',
     centerIds: [], startAt: local(Date.now() + 3600e3), durationMin: 60, lateEntryMin: 0,
     capacity: 0, timeZone: 'Asia/Kolkata', policyId: '',
     instructions: '', resources: '', accommodations: '',
-    authMode: 'candidate-login', identityRequired: true, origins: 'https://exam.examos.example',
+    authMode: 'candidate-login', identityRequired: true, origins: '',
     navigation: 'locked', allowedDestinations: '', compatibilityProfile: 'standard-uefi',
     attestationLevel: 'tpm', sessionTimeoutMin: 15, reconnectPolicy: 'allow-reconnect',
     submissionMode: 'either', requiredChecks: ['uefi', 'usb', 'tpm', 'network', 'display', 'keyboard'],
@@ -82,11 +92,20 @@ export function ExamNewPage() {
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const activeCenters = centers.filter((c) => c.status === 'active');
   const publishedPolicies = policies.filter((p) => p.status === 'published');
+  const catalogsReady = centersLoaded && policiesLoaded && !centersError && !policiesError && !!tenantId;
+  const catalogsError = centersError || policiesError;
+  let portalOrigin = '';
+  try { portalOrigin = v.examUrl ? new URL(v.examUrl).origin : ''; } catch { /* URL is validated on save. */ }
+  const selectedPolicy = publishedPolicies.find((p) => p.id === v.policyId);
+  const policyAllowsPortal = selectedPolicy?.config?.origins?.some((origin) => {
+    try { return new URL(origin).origin === portalOrigin; } catch { return origin === portalOrigin; }
+  });
   const toggleCenter = (id) => set('centerIds', v.centerIds.includes(id) ? v.centerIds.filter((x) => x !== id) : [...v.centerIds, id]);
   const toggleCheck = (key) => set('requiredChecks', v.requiredChecks.includes(key) ? v.requiredChecks.filter((x) => x !== key) : [...v.requiredChecks, key]);
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!catalogsReady) return;
     const ok = await run(() => createExam(user, {
       tenantId, ...v, centerIds: v.centerIds, origins: split(v.origins),
       allowedDestinations: split(v.allowedDestinations),
@@ -107,6 +126,8 @@ export function ExamNewPage() {
       actions={<button className="btn" onClick={() => navigate('/college/exams')}>Cancel</button>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {catalogsError && <Alert tone="danger" title="Backend data unavailable">Centres or policies could not be loaded from the backend. Retry after restoring the connection; the exam cannot be saved using incomplete data. {catalogsError.message || ''}</Alert>}
+      {!catalogsError && !catalogsReady && <Alert tone="info">Loading institution centres and published policies from the backend…</Alert>}
       <form onSubmit={submit} className="stack">
         <Card title="Exam details">
           <div className="formgrid">
@@ -114,6 +135,7 @@ export function ExamNewPage() {
             <Field label="Title" required><Input value={v.title} onChange={(e) => set('title', e.target.value)} maxLength={100} required /></Field>
             <Field label="Type"><Select value={v.type} onChange={(e) => set('type', e.target.value)} options={TYPES} placeholder={false} /></Field>
             <Field label="Course"><Input value={v.course} onChange={(e) => set('course', e.target.value)} maxLength={80} placeholder="B.Tech CSE" /></Field>
+            <Field label="Department"><Input value={v.departmentId} onChange={(e) => set('departmentId', e.target.value)} maxLength={64} /></Field>
             <Field label="Academic year"><Input value={v.academicYear} onChange={(e) => set('academicYear', e.target.value)} maxLength={20} placeholder="2026–27" /></Field>
             <Field label="Time zone"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} /></Field>
             <Field label="Description" className="span2"><Textarea rows={2} value={v.description} onChange={(e) => set('description', e.target.value)} maxLength={1000} /></Field>
@@ -142,12 +164,23 @@ export function ExamNewPage() {
             <Field label="Exam policy" help="Only published policies can be selected.">
               <Select value={v.policyId} onChange={(e) => set('policyId', e.target.value)} options={publishedPolicies.map((p) => ({ v: p.id, l: `${p.name} v${p.version}` }))} placeholder="No policy selected" />
             </Field>
-            <Field label="Candidate authentication">
+            {portalOrigin && selectedPolicy && !policyAllowsPortal && (
+              <div className="span2"><Alert tone="warn" title="Policy origin mismatch">
+                The selected policy does not allow {portalOrigin}. Add that origin to the policy and publish a new version before approving this exam.
+              </Alert></div>
+            )}
+            <Field label="Candidate authentication" help={
+              v.authMode === 'exam-token'
+                ? 'A signed-in invigilator issues a one-time exam-bound token to an assigned candidate. The token can be redeemed once.'
+                : v.authMode === 'proctor-verify'
+                  ? 'Candidate enters their ID and PIN, then waits for an authenticated invigilator to approve the live check-in before a session is issued.'
+                  : 'Candidate signs in with their assigned ID and account PIN.'
+            }>
               <Select value={v.authMode} onChange={(e) => set('authMode', e.target.value)} options={AUTH_MODES} placeholder={false} />
             </Field>
             <Field label="Submission mode"><Select value={v.submissionMode} onChange={(e) => set('submissionMode', e.target.value)} options={SUBMISSION_MODES} placeholder={false} /></Field>
             <Field label="Navigation"><Select value={v.navigation} onChange={(e) => set('navigation', e.target.value)} options={[{ v: 'locked', l: 'Locked to the exam' }, { v: 'allowlist', l: 'Allow listed destinations' }]} placeholder={false} /></Field>
-            <Field label="Allowed origins" className="span2" help="Comma or space separated https origins"><Input value={v.origins} onChange={(e) => set('origins', e.target.value)} /></Field>
+            <Field label="Additional allowed origins" className="span2" help="Comma or space separated HTTPS origins. The exam URL origin is added automatically."><Input value={v.origins} onChange={(e) => set('origins', e.target.value)} /></Field>
             {v.navigation === 'allowlist' && <Field label="Allowed destinations" className="span2" help="Optional allowlist for navigation"><Input value={v.allowedDestinations} onChange={(e) => set('allowedDestinations', e.target.value)} /></Field>}
             <Field label="Attestation"><Select value={v.attestationLevel} onChange={(e) => set('attestationLevel', e.target.value)} options={ATTESTATION} placeholder={false} /></Field>
             <Field label="Compatibility profile"><Input value={v.compatibilityProfile} onChange={(e) => set('compatibilityProfile', e.target.value)} maxLength={40} /></Field>
@@ -175,8 +208,8 @@ export function ExamNewPage() {
                 required
               />
             </Field>
-            <Field label="Candidate instructions" className="span2" help="Required before publication.">
-              <Textarea rows={4} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} placeholder="Read all instructions before starting. Do not attempt to disconnect hardware or exit the kiosk window." />
+            <Field label="Candidate instructions" required className="span2" help="Candidates see these before starting. Required to create and publish the exam.">
+              <Textarea rows={4} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} required placeholder="Read all instructions before starting. Do not attempt to disconnect hardware or exit the kiosk window." />
             </Field>
             <Field label="Resources" className="span2"><Textarea rows={2} value={v.resources} onChange={(e) => set('resources', e.target.value)} maxLength={1000} /></Field>
             <Field label="Accommodations" className="span2"><Textarea rows={2} value={v.accommodations} onChange={(e) => set('accommodations', e.target.value)} maxLength={1000} /></Field>
@@ -185,7 +218,7 @@ export function ExamNewPage() {
 
         <div className="form-actions">
           <button type="button" className="btn" onClick={() => navigate('/college/exams')}>Cancel</button>
-          <button className="btn primary" disabled={busy}>{busy ? 'Saving…' : 'Save draft'}</button>
+          <button className="btn primary" disabled={busy || !catalogsReady}>{busy ? 'Saving…' : 'Save draft'}</button>
         </div>
       </form>
     </Page>
@@ -198,12 +231,19 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
   const { msg, setMsg, run, busy } = useFlash();
   const [v, setV] = useState({
     code: exam.code, title: exam.title, type: exam.type, course: exam.course || '',
-    academicYear: exam.academicYear || '', description: exam.description || '',
+    departmentId: exam.departmentId || '', academicYear: exam.academicYear || '', description: exam.description || '',
     startAt: local(exam.startAt), durationMin: exam.durationMin, lateEntryMin: exam.lateEntryMin || 0,
     capacity: exam.capacity || 0, timeZone: exam.timeZone || 'Asia/Kolkata', policyId: exam.policyId || '',
     instructions: exam.instructions || '', resources: exam.resources || '', accommodations: exam.accommodations || '',
     examUrl: exam.examUrl || '',
     centerIds: exam.centerIds || [],
+    authMode: exam.authMode || 'candidate-login', identityRequired: exam.identityRequired !== false,
+    origins: (exam.origins || []).join(', '), navigation: exam.navigation || 'locked',
+    allowedDestinations: (exam.allowedDestinations || []).join(', '),
+    compatibilityProfile: exam.compatibilityProfile || 'standard-uefi',
+    attestationLevel: exam.attestationLevel || 'tpm', sessionTimeoutMin: exam.sessionTimeoutMin || 15,
+    reconnectPolicy: exam.reconnectPolicy || 'allow-reconnect', submissionMode: exam.submissionMode || 'either',
+    requiredChecks: exam.requiredChecks || ['uefi', 'usb', 'tpm', 'network', 'display', 'keyboard'],
   });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const toggleCenter = (id) => set('centerIds', v.centerIds.includes(id) ? v.centerIds.filter((x) => x !== id) : [...v.centerIds, id]);
@@ -212,6 +252,8 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
     const ok = await run(() => updateExam(user, exam, {
       ...v, durationMin: Number(v.durationMin), lateEntryMin: Number(v.lateEntryMin), capacity: Number(v.capacity),
       examUrl: v.examUrl.trim(),
+      origins: split(v.origins), allowedDestinations: split(v.allowedDestinations),
+      sessionTimeoutMin: Number(v.sessionTimeoutMin),
     }), 'Exam configuration saved.');
     if (ok) { onSaved?.(); onClose(); }
   };
@@ -228,8 +270,30 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
           <Field label="Duration (minutes)"><Input type="number" min={15} max={300} value={v.durationMin} onChange={(e) => set('durationMin', e.target.value)} /></Field>
           <Field label="Late entry (minutes)"><Input type="number" min={0} max={60} value={v.lateEntryMin} onChange={(e) => set('lateEntryMin', e.target.value)} /></Field>
           <Field label="Capacity"><Input type="number" min={0} value={v.capacity} onChange={(e) => set('capacity', e.target.value)} /></Field>
-          <Field label="Exam URL" className="span2" help="Secure assessment portal URL"><Input type="url" value={v.examUrl} onChange={(e) => set('examUrl', e.target.value)} placeholder="https://..." /></Field>
-          <Field label="Instructions" className="span2"><Textarea rows={3} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} /></Field>
+          <Field label="Time zone"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} /></Field>
+          <Field label="Department"><Input value={v.departmentId} onChange={(e) => set('departmentId', e.target.value)} maxLength={64} /></Field>
+          <Field label="Exam URL" required className="span2" help="Secure assessment portal URL. Its HTTPS origin is automatically included in the exam allowlist."><Input type="url" value={v.examUrl} onChange={(e) => set('examUrl', e.target.value)} placeholder="https://..." required /></Field>
+          <Field label="Allowed origins" className="span2" help="Additional comma-separated HTTPS origins"><Input value={v.origins} onChange={(e) => set('origins', e.target.value)} /></Field>
+          <Field label="Candidate authentication" help={
+            v.authMode === 'exam-token'
+              ? 'Invigilators issue one-time tokens to assigned candidates from the seating page.'
+              : v.authMode === 'proctor-verify'
+                ? 'Candidates enter ID + PIN and must be approved by an authenticated invigilator at check-in.'
+                : 'Candidates authenticate with their assigned ID and account PIN.'
+          }><Select value={v.authMode} onChange={(e) => set('authMode', e.target.value)} options={AUTH_MODES} placeholder={false} /></Field>
+          <Field label="Submission mode"><Select value={v.submissionMode} onChange={(e) => set('submissionMode', e.target.value)} options={SUBMISSION_MODES} placeholder={false} /></Field>
+          <Field label="Navigation"><Select value={v.navigation} onChange={(e) => set('navigation', e.target.value)} options={[{ v: 'locked', l: 'Locked to the exam' }, { v: 'allowlist', l: 'Allow listed destinations' }]} placeholder={false} /></Field>
+          {v.navigation === 'allowlist' &&           <Field label="Allowed destinations" className="span2" help="HTTPS origins, also listed under allowed origins."><Input value={v.allowedDestinations} onChange={(e) => set('allowedDestinations', e.target.value)} /></Field>}
+          <Field label="Attestation"><Select value={v.attestationLevel} onChange={(e) => set('attestationLevel', e.target.value)} options={ATTESTATION} placeholder={false} /></Field>
+          <Field label="Compatibility profile"><Input value={v.compatibilityProfile} onChange={(e) => set('compatibilityProfile', e.target.value)} maxLength={40} /></Field>
+          <Field label="Session timeout (minutes)"><Input type="number" min={5} max={120} value={v.sessionTimeoutMin} onChange={(e) => set('sessionTimeoutMin', e.target.value)} /></Field>
+          <Field label="Reconnect policy"><Select value={v.reconnectPolicy} onChange={(e) => set('reconnectPolicy', e.target.value)} options={[{ v: 'allow-reconnect', l: 'Allow reconnect with the same device' }, { v: 'resume-only', l: 'Resume only, no new device' }, { v: 'deny', l: 'Deny reconnection' }]} placeholder={false} /></Field>
+          <div className="span2"><Checkbox label="Identity verification required at check-in" checked={v.identityRequired} onChange={(e) => set('identityRequired', e.target.checked)} /></div>
+          <Field label="Required device checks" className="span2"><div className="checkgrid">{REQUIRED_CHECKS.map((check) => <Checkbox key={check.v} label={check.l} checked={v.requiredChecks.includes(check.v)} onChange={() => set('requiredChecks', v.requiredChecks.includes(check.v) ? v.requiredChecks.filter((key) => key !== check.v) : [...v.requiredChecks, check.v])} />)}</div></Field>
+          <Field label="Instructions" required className="span2"><Textarea rows={3} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} required /></Field>
+          <Field label="Description" className="span2"><Textarea rows={2} value={v.description} onChange={(e) => set('description', e.target.value)} maxLength={1000} /></Field>
+          <Field label="Resources" className="span2"><Textarea rows={2} value={v.resources} onChange={(e) => set('resources', e.target.value)} maxLength={1000} /></Field>
+          <Field label="Accommodations" className="span2"><Textarea rows={2} value={v.accommodations} onChange={(e) => set('accommodations', e.target.value)} maxLength={1000} /></Field>
           <Field label="Centres" className="span2">
             <div className="checkgrid">{centers.filter((c) => c.status === 'active').map((c) => <Checkbox key={c.id} label={`${c.code} · ${c.capacity} seats`} checked={v.centerIds.includes(c.id)} onChange={() => toggleCenter(c.id)} />)}</div>
           </Field>
@@ -258,33 +322,38 @@ export function ExamDetailPage() {
         const res = await Api.getExamination(id);
         const exam = res?.examination || res;
         if (exam && !cancelled) {
+          const config = examConfigFromApi(exam.exam_config);
+          const schedule = res?.schedules?.[0];
           const mapped = {
+            ...config,
             id: exam.id,
             tenantId: exam.institution_id,
-            code: exam.code,
-            title: exam.name || exam.title,
-            type: exam.exam_type || exam.type || 'final',
-            course: exam.subject || exam.course || '',
-            academicYear: exam.academic_year || exam.academicYear || '',
+            code: config.code || exam.code,
+            title: config.title || exam.name || exam.title,
+            type: config.type || exam.exam_type || exam.type || 'final',
+            course: config.course || exam.subject || exam.course || '',
+            academicYear: config.academicYear || exam.academic_year || exam.academicYear || '',
             status: exam.status || 'draft',
-            startAt: exam.scheduled_start || exam.startAt || 0,
-            durationMin: exam.duration_minutes || exam.durationMin || 60,
-            examUrl: exam.exam_url || exam.examUrl || '',
-            instructions: exam.instructions || '',
-            policyId: exam.policy_id || exam.policyId || null,
-            centerIds: exam.center_ids || exam.centerIds || [],
+            startAt: config.startAt || schedule?.start_time || exam.scheduled_start || exam.startAt || 0,
+            durationMin: config.durationMin || exam.duration_minutes || exam.durationMin || 60,
+            timeZone: config.timezone || schedule?.timezone || config.timeZone || 'Asia/Kolkata',
+            examUrl: config.examUrl || exam.exam_url || exam.examUrl || '',
+            instructions: config.instructions || exam.instructions || '',
+            origins: config.origins || (exam.allowed_origins || '').split(',').filter(Boolean),
+            policyId: config.policyId || exam.policy_id || exam.policyId || null,
+            centerIds: config.centerIds || exam.center_ids || exam.centerIds || [],
             createdBy: exam.created_by || exam.createdBy || '',
             createdAt: exam.created_at || exam.createdAt || 0,
             updatedAt: exam.updated_at || exam.updatedAt || 0,
             version: exam.version || 1,
             history: exam.history || [],
-            attestationLevel: exam.attestation_level || exam.attestationLevel || 'tpm',
-            authMode: exam.auth_mode || exam.authMode || 'candidate-login',
-            submissionMode: exam.submission_mode || exam.submissionMode || 'either',
-            navigation: exam.navigation || 'locked',
-            sessionTimeoutMin: exam.session_timeout_min || exam.sessionTimeoutMin || 15,
-            reconnectPolicy: exam.reconnect_policy || exam.reconnectPolicy || 'allow-reconnect',
-            identityRequired: exam.identity_required ?? exam.identityRequired ?? true,
+            attestationLevel: config.attestationLevel || exam.attestation_level || exam.attestationLevel || 'tpm',
+            authMode: config.authMode || exam.auth_mode || exam.authMode || 'candidate-login',
+            submissionMode: config.submissionMode || exam.submission_mode || 'either',
+            navigation: config.navigation || exam.navigation || 'locked',
+            sessionTimeoutMin: config.sessionTimeoutMin || exam.session_timeout_min || 15,
+            reconnectPolicy: config.reconnectPolicy || exam.reconnect_policy || 'allow-reconnect',
+            identityRequired: config.identityRequired ?? exam.identity_required ?? true,
           };
           setBackendExam(mapped);
           await put('exams', mapped).catch(() => {});
@@ -295,8 +364,9 @@ export function ExamDetailPage() {
     fetchDetail();
     return () => { cancelled = true; };
   }, [id]);
-  const centers = useCol('centers');
-  const policies = useCol('policies');
+  const { rows: centers, loaded: centersLoaded, error: centersError } = useColLoaded('centers');
+  const { rows: policies, loaded: policiesLoaded, error: policiesError } = useColLoaded('policies');
+  const examCatalogsReady = centersLoaded && policiesLoaded && !centersError && !policiesError;
   const candidates = useCol('candidates');
   const devices = useCol('devices');
   const releases = useCol('releases');
@@ -334,7 +404,7 @@ export function ExamDetailPage() {
       desc={`${e.title} · ${LIFECYCLE_LABEL[e.status]}`}
       breadcrumb={<div className="crumbs-inline"><Link to="/college/exams">Exams</Link><Icon name="arrow" size={12} /><span>{e.code}</span></div>}
       actions={<>
-        {may('exam.manage') && !['live', 'closed'].includes(e.status) && <button className="btn" onClick={() => setEdit(true)}>Edit</button>}
+        {may('exam.manage') && !['live', 'closed'].includes(e.status) && <button className="btn" disabled={!examCatalogsReady} onClick={() => setEdit(true)}>Edit</button>}
         {may('exam.manage') && ['review', 'approved', 'published'].includes(e.status) && <button className="btn" onClick={() => setPostpone({ startAt: local(e.startAt + 864e5) })}>Postpone</button>}
         {/* Deduplicate: 'pending_approval' and 'review' both map to the same label.
             Show only unique visible transitions. */}
@@ -351,6 +421,7 @@ export function ExamDetailPage() {
       </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {(centersError || policiesError) && <Alert tone="danger" title="Backend data unavailable">Centres or policies could not be loaded from the backend. Editing is disabled until those records can be verified. {(centersError || policiesError).message || ''}</Alert>}
       {e.status === 'live' && <Alert tone="success" title="Exam is live">Critical configuration is locked. Sessions started before the deadline can be monitored from Operations.</Alert>}
       {conflict && <Alert tone="warn" title={`Schedule conflict with ${conflict.code}`}>Both exams overlap at a shared centre. Adjust the window before publishing.</Alert>}
       {e.status === 'cancelled' && <Alert tone="danger" title="Exam cancelled">Reason: {e.cancelReason || 'not recorded'}</Alert>}
@@ -437,7 +508,7 @@ export function ExamDetailPage() {
         }))} />
       </Card>}
 
-      {tab === 'sessions' && <ExamSessionsTab examId={e.id} />}
+      {tab === 'sessions' && <ExamSessionsTab examId={e.id} authMode={e.authMode} />}
 
       {pending && <ActionDialog
         title={`${STEP_LABEL[pending.to]} · ${e.code}`}
@@ -476,7 +547,7 @@ function PostponeModal({ exam, value, onChange, onClose, onDone }) {
   );
 }
 
-function ExamSessionsTab({ examId }) {
+function ExamSessionsTab({ examId, authMode }) {
   const { data: sessData, loading, reload } = useLoad(async () => {
     try {
       const res = await listExaminationSessions(examId);
@@ -490,28 +561,103 @@ function ExamSessionsTab({ examId }) {
   const sessions = sessData || [];
 
   return (
-    <Card title="Live Exam Sessions" action={<button className="btn small" onClick={reload}>Refresh</button>}>
-      {sessions.length === 0 ? (
-        <Empty icon="candidate" title="No active or past sessions">
-          Sessions will appear here when authorized candidates connect from ExamOS terminals.
-        </Empty>
+    <div className="stack gap">
+      {authMode === 'proctor-verify' && <ExamCandidateCheckins examId={examId} />}
+      <Card title="Live Exam Sessions" action={<button className="btn small" onClick={reload}>Refresh</button>}>
+        {sessions.length === 0 ? (
+          <Empty icon="candidate" title="No active or past sessions">
+            Sessions will appear here when authorized candidates connect from ExamOS terminals.
+          </Empty>
+        ) : (
+          <DataTable
+            rows={sessions}
+            cols={[
+              { key: 'roll_no', label: 'Roll Number' },
+              { key: 'student_name', label: 'Student' },
+              { key: 'device_id', label: 'Terminal Device', render: (d) => d || '—' },
+              { key: 'status', label: 'Status', render: (s) => (
+                <Badge tone={s === 'active' ? 'success' : s === 'interrupted' ? 'warn' : s === 'closed' ? 'muted' : 'info'}>
+                  {String(s).toUpperCase()}
+                </Badge>
+              )},
+              { key: 'interruption_count', label: 'Interruptions' },
+              { key: 'last_heartbeat_at', label: 'Last Heartbeat', render: (t) => t ? fmt(Number(t)) : '—' },
+              { key: 'closure_reason', label: 'Closure Reason', render: (r) => r || '—' },
+            ]}
+          />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ExamCandidateCheckins({ examId }) {
+  const may = usePerm();
+  const [checkins, setCheckins] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  const [error, setError] = useState('');
+  const [reasons, setReasons] = useState({});
+  const reload = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await Api.listExamCandidateCheckins(examId);
+      setCheckins(result?.checkins || []);
+    } catch (err) {
+      setError(err.message || 'Could not load the invigilator check-in queue.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { reload(); }, [examId]);
+
+  const decide = async (checkin, decision) => {
+    const reason = String(reasons[checkin.id] || '').trim();
+    if (decision === 'reject' && reason.length < 3) {
+      setError('Enter a reason of at least 3 characters before rejecting an identity check.');
+      return;
+    }
+    setBusyId(checkin.id);
+    setError('');
+    try {
+      await Api.decideExamCandidateCheckin(examId, checkin.id, decision, reason);
+      await reload();
+    } catch (err) {
+      setError(err.message || 'Could not record the invigilator decision.');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  if (!may('candidate.verify')) {
+    return <Card title="Invigilator verification"><Alert tone="info">Candidate ID verification is available to authorized invigilators and examination administrators.</Alert></Card>;
+  }
+  return (
+    <Card title="Invigilator identity check-in" desc="Candidates with ID + PIN remain blocked until an authenticated invigilator approves their in-person identity check." actions={<button className="btn small" disabled={loading} onClick={reload}>Refresh queue</button>}>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {loading ? <Loading label="Loading pending identity checks…" /> : checkins.length === 0 ? (
+        <Empty icon="candidate" title="No candidates waiting for verification" />
       ) : (
-        <DataTable
-          rows={sessions}
-          cols={[
-            { key: 'roll_no', label: 'Roll Number' },
-            { key: 'student_name', label: 'Student' },
-            { key: 'device_id', label: 'Terminal Device', render: (d) => d || '—' },
-            { key: 'status', label: 'Status', render: (s) => (
-              <Badge tone={s === 'active' ? 'success' : s === 'interrupted' ? 'warn' : s === 'closed' ? 'muted' : 'info'}>
-                {String(s).toUpperCase()}
-              </Badge>
-            )},
-            { key: 'interruption_count', label: 'Interruptions' },
-            { key: 'last_heartbeat_at', label: 'Last Heartbeat', render: (t) => t ? fmt(Number(t)) : '—' },
-            { key: 'closure_reason', label: 'Closure Reason', render: (r) => r || '—' },
-          ]}
-        />
+        <div className="stack gap">
+          {checkins.map((checkin) => (
+            <div className="card-row" key={checkin.id}>
+              <div>
+                <strong>{checkin.name}</strong>
+                <div className="muted sm">Candidate {checkin.roll_no} · Seat {checkin.seat || 'not assigned'} · Requested {fmt(Number(checkin.created_at))}</div>
+              </div>
+              <Input
+                aria-label={`Rejection reason for ${checkin.roll_no}`}
+                value={reasons[checkin.id] || ''}
+                onChange={(event) => setReasons((current) => ({ ...current, [checkin.id]: event.target.value }))}
+                placeholder="Reason required to reject"
+                maxLength={240}
+              />
+              <button className="btn primary" disabled={Boolean(busyId)} onClick={() => decide(checkin, 'approve')}>Verify identity</button>
+              <button className="btn danger" disabled={Boolean(busyId) || String(reasons[checkin.id] || '').trim().length < 3} onClick={() => decide(checkin, 'reject')}>Reject</button>
+            </div>
+          ))}
+        </div>
       )}
     </Card>
   );
@@ -531,7 +677,15 @@ export function ExamCandidatesPage() {
     Api.getExamination(id).then((res) => {
       const exam = res?.examination || res;
       if (exam && !cancelled) {
-        const mapped = { id: exam.id, tenantId: exam.institution_id, code: exam.code, title: exam.name || exam.title, status: exam.status, startAt: exam.scheduled_start || 0, durationMin: exam.duration_minutes || 60, examUrl: exam.exam_url || '' };
+        const config = examConfigFromApi(exam.exam_config);
+        const mapped = {
+          id: exam.id, tenantId: exam.institution_id, code: exam.code,
+          title: exam.name || exam.title, status: exam.status,
+          startAt: config.startAt || exam.scheduled_start || 0,
+          durationMin: config.durationMin || exam.duration_minutes || 60,
+          examUrl: config.examUrl || exam.exam_url || '',
+          authMode: config.authMode || exam.auth_mode || 'candidate-login',
+        };
         setBackendExam(mapped);
         put('exams', mapped).catch(() => {});
       }
@@ -549,6 +703,9 @@ export function ExamCandidatesPage() {
   const [centerId, setCenterId] = useState('');
   const [count, setCount] = useState('');
   const [pending, setPending] = useState(null);
+  const [tokenCandidateId, setTokenCandidateId] = useState('');
+  const [issuedToken, setIssuedToken] = useState(null);
+  const [issuedPin, setIssuedPin] = useState(null);
 
   // Module 10: Eligibility state from backend API
   const { data: rules, reload: reloadRules } = useLoad(async () => (id ? listEligibilityRules(id) : []), [id]);
@@ -583,6 +740,31 @@ export function ExamCandidatesPage() {
     });
   };
 
+  const handleIssueExamToken = async (event) => {
+    event.preventDefault();
+    if (!tokenCandidateId.trim()) return;
+    setIssuedToken(null);
+    setIssuedPin(null);
+    await run(async () => {
+      const result = await Api.issueExamCandidateToken(e.id, tokenCandidateId.trim());
+      if (!result?.token) throw new Error('Backend did not return the one-time token.');
+      setIssuedToken(result);
+      return 'One-time exam token issued. Copy it now; it will not be shown again.';
+    });
+  };
+
+  const handleIssueCandidatePin = async (event) => {
+    event.preventDefault();
+    if (!tokenCandidateId.trim()) return;
+    setIssuedPin(null);
+    setIssuedToken(null);
+    await run(async () => {
+      const result = await Api.issueExamCandidatePin(e.id, tokenCandidateId.trim());
+      if (!result?.pin) throw new Error('Backend did not return the one-time candidate PIN.');
+      setIssuedPin(result);
+      return 'Candidate PIN provisioned. Copy it now and deliver it to the candidate through your approved channel.';
+    });
+  };
   return (
     <Page
       title={`${e.code} · Candidates & Eligibility`}
@@ -626,6 +808,52 @@ export function ExamCandidatesPage() {
 
       {activeTab === 'seating' && (
         <div className="stack gap">
+          {e.authMode === 'exam-token' && may('exam.operate') && (
+            <Card title="Issue a single-use exam token" desc="The server validates the candidate’s active assignment, revokes any prior unused token, stores only a token hash, and shows the new token once.">
+              <form className="row wrap gap" onSubmit={handleIssueExamToken}>
+                <Input
+                  aria-label="Assigned candidate ID or roll number"
+                  value={tokenCandidateId}
+                  onChange={(event) => setTokenCandidateId(event.target.value)}
+                  maxLength={63}
+                  placeholder="Candidate ID or roll number"
+                  required
+                />
+                <button className="btn primary" disabled={busy || !tokenCandidateId.trim()}>Issue token</button>
+              </form>
+              {issuedToken && (
+                <>
+                  <Alert tone="warn" title={`Token for ${issuedToken.candidate_id}`}>
+                    Give this token directly to the assigned candidate. It expires at {fmt(Number(issuedToken.expires_at))} and can be redeemed only once.
+                  </Alert>
+                  <CopyField label="One-time exam token (shown once)" value={issuedToken.token} />
+                </>
+              )}
+            </Card>
+          )}
+          {(e.authMode === 'candidate-login' || e.authMode === 'proctor-verify') && may('exam.operate') && (
+            <Card title="Provision candidate PIN" desc="Generate a cryptographically random PIN for an assigned candidate. Only its PBKDF2 hash is stored; the PIN is shown once for secure delivery.">
+              <form className="row wrap gap" onSubmit={handleIssueCandidatePin}>
+                <Input
+                  aria-label="Assigned candidate ID or roll number"
+                  value={tokenCandidateId}
+                  onChange={(event) => setTokenCandidateId(event.target.value)}
+                  maxLength={63}
+                  placeholder="Candidate ID or roll number"
+                  required
+                />
+                <button className="btn primary" disabled={busy || !tokenCandidateId.trim()}>Issue candidate PIN</button>
+              </form>
+              {issuedPin && (
+                <>
+                  <Alert tone="warn" title={`PIN for ${issuedPin.candidate_id}`}>
+                    Deliver this PIN to the assigned candidate through your institution’s approved channel. It will not be shown again.
+                  </Alert>
+                  <CopyField label="Candidate PIN (shown once)" value={issuedPin.pin} />
+                </>
+              )}
+            </Card>
+          )}
           {may('candidate.manage') && (
             <Card title="Assign candidates" desc="Seats are allocated automatically from free centre capacity. Only unassigned candidates are seated.">
               <div className="row wrap gap">
@@ -784,7 +1012,7 @@ export function ExamPoliciesPage() {
     return () => { cancelled = true; };
   }, [id]);
   const effectivePolicy = backendPolicy || pol;
-  const [v, setV] = useState({ requireTpm: true, kioskLockdown: true, allowUsb: false, onViolation: 'Warn candidate & log', origins: 'https://exam.examos.example' });
+  const [v, setV] = useState({ requireTpm: true, kioskLockdown: true, allowUsb: false, onViolation: 'Warn candidate & log', origins: '' });
   const [publish, setPublish] = useState(false);
   const [reason, setReason] = useState('');
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
@@ -795,7 +1023,12 @@ export function ExamPoliciesPage() {
       allowUsb: !!pol.config.allowUsb, onViolation: pol.config.onViolation || 'Warn candidate & log',
       origins: (pol.config.origins || []).join(', '),
     });
-  }, [pol?.id]);
+    else {
+      let origins = '';
+      try { origins = e?.examUrl ? new URL(e.examUrl).origin : ''; } catch { /* Invalid URLs are rejected before saving. */ }
+      setV((previous) => ({ ...previous, origins }));
+    }
+  }, [pol?.id, e?.id, e?.examUrl]);
 
   if (!loaded) return <Page title="Exam policy"><Loading /></Page>;
   if (!e) return <Page title="Exam policy"><Empty icon="exam" title="Exam not found" /></Page>;
@@ -842,4 +1075,3 @@ export function ExamPoliciesPage() {
     </Page>
   );
 }
-

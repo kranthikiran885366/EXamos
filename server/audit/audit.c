@@ -21,6 +21,16 @@ static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static const char GENESIS[] = "GENESIS";
 
+/* Audit hashes are fixed-width SHA-256 hex strings.  Do not silently
+ * truncate a value from persistent storage: a malformed stored hash means
+ * the audit chain cannot be trusted and initialization must fail. */
+static int copy_hash(char destination[65], const char *source) {
+    if (!source || strlen(source) != 64) return -1;
+    memcpy(destination, source, 64);
+    destination[64] = '\0';
+    return 0;
+}
+
 static int sha256_hex_str(const char *input, char *out, size_t out_len) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256((const unsigned char *)input, strlen(input), hash);
@@ -48,7 +58,11 @@ int audit_init(void) {
         res = PQexec(conn,
             "SELECT prev, hash FROM audit ORDER BY seq DESC LIMIT 1");
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-            strncpy(g_last_hash, PQgetvalue(res, 0, 1), sizeof(g_last_hash) - 1);
+            if (copy_hash(g_last_hash, PQgetvalue(res, 0, 1)) != 0) {
+                PQclear(res);
+                db_release(conn, 0);
+                return -1;
+            }
         }
         if (res) PQclear(res);
     } else {
@@ -123,7 +137,7 @@ int audit_append(const char *actor, const char *event, const char *detail) {
     int rc = -1;
     if (res && PQresultStatus(res) == PGRES_COMMAND_OK) {
         g_chain_len = seq;
-        strncpy(g_last_hash, hash, sizeof(g_last_hash) - 1);
+        (void)copy_hash(g_last_hash, hash);
         rc = 0;
     } else {
         fprintf(stderr, "[AUDIT] append failed: %s\n",
@@ -294,7 +308,7 @@ int audit_verify(void) {
             expected_seq++;
         }
         if (ok) {
-            strncpy(g_last_hash, prev, sizeof(g_last_hash) - 1);
+            (void)copy_hash(g_last_hash, prev);
             g_chain_len = expected_seq - 1;
         }
     }

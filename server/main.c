@@ -65,6 +65,7 @@
 #include "controllers/device_trust_controller.h"
 #include "controllers/os_release_controller.h"
 #include "controllers/student_controller.h"
+#include "controllers/campus_controller.h"
 #include "db/db.h"
 #include "security/security.h"
 #include "audit/audit.h"
@@ -1299,6 +1300,18 @@ static void* handle_client(void *arg) {
     /* Route: POST /api/v1/candidate/logout */
     else if (strcmp(route_path, "/api/v1/candidate/logout") == 0 && strcmp(method, "POST") == 0) {
         auth_candidate_logout(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if (strcmp(route_path, "/api/v1/candidate/checkin/status") == 0 &&
+             strcmp(method, "POST") == 0) {
+        if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response_ex(client_fd, 403, "application/json",
+                "{\"status\":\"FAIL\",\"error\":\"Candidate check-in polling is restricted to the ExamOS kiosk.\"}",
+                extra);
+            goto client_done;
+        }
+        auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
+                                       auth_header, origin, extra, sizeof(extra));
         goto client_done;
     }
     /* Canonical dashboard route plus the established API login alias. */
@@ -4444,6 +4457,18 @@ p5_score_done:
                 auth_candidate_logout(client_fd, auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
+            if (strcmp(route_path, "/api/v1/candidate/checkin/status") == 0 &&
+                strcmp(method, "POST") == 0) {
+                if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
+                    send_http_response_ex(client_fd, 403, "application/json",
+                        "{\"status\":\"FAIL\",\"error\":\"Candidate check-in polling is restricted to the ExamOS kiosk.\"}",
+                        extra);
+                    goto client_done;
+                }
+                auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
+                                               auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
 
             /* Institution routes */
             if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
@@ -4482,6 +4507,16 @@ p5_score_done:
                   strstr(route_path, "/eligibility/")))) {
                 registration_handle(client_fd, method, route_path, req_body,
                                     auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Exam check-in and one-time desk-token workflows */
+            if (strncmp(route_path, "/api/v1/examinations/", 21) == 0 &&
+                (strstr(route_path, "/candidate-tokens") ||
+                 strstr(route_path, "/candidate-pins") ||
+                 strstr(route_path, "/candidate-checkins"))) {
+                auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
+                                               auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 

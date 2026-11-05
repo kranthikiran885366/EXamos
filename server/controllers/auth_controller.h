@@ -23,6 +23,11 @@ void auth_candidate_login(int client_fd, const char *body,
 void auth_candidate_logout(int client_fd, const char *auth_header,
                            const char *origin, char *extra_headers, size_t extra_len);
 
+/* Candidate exam-token issuance and invigilator check-in workflow routes. */
+void auth_candidate_workflow_handle(int client_fd, const char *method, const char *path,
+                                    const char *body, const char *auth_header,
+                                    const char *origin, char *extra_headers, size_t extra_len);
+
 /* POST /api/v1/admin/mfa/setup */
 void auth_mfa_setup(int client_fd, const char *body, const char *auth_header,
                     const char *enrollment_token,

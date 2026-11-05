@@ -110,6 +110,7 @@ export default function LoginPage({ candidateOnly = false }) {
   const [p, setP] = useState('');
   const [candId, setCandId] = useState('');
   const [candPin, setCandPin] = useState('');
+  const [candExamToken, setCandExamToken] = useState('');
   const [code, setCode] = useState('');
   const [isRecoveryCode, setIsRecoveryCode] = useState(false);
   const [err, setErr] = useState('');
@@ -176,11 +177,16 @@ export default function LoginPage({ candidateOnly = false }) {
       setErr('ACCESS_DENIED: Candidate examinations require the secure ExamOS bootable kiosk operating system.');
       return;
     }
-    if (busy || !candId || !candPin) return;
+    if (busy || !candId || (!candPin && !candExamToken)) return;
     setBusy(true);
     setErr('');
     try {
-      const res = await backendCandidateLogin({ candidateId: candId, pin: candPin });
+      const res = await backendCandidateLogin({
+        candidateId: candId,
+        pin: candPin,
+        examToken: candExamToken,
+        onPending: () => setInfo('Identity submitted. Waiting for an invigilator to verify you at the desk…'),
+      });
       if (res?.ok) {
         const examId = res.profile?.examId;
         navigate(examId ? `/student/exams/${encodeURIComponent(examId)}` : '/student/home', { replace: true });
@@ -536,7 +542,7 @@ export default function LoginPage({ candidateOnly = false }) {
                   </div>
 
                   <div className="input-group">
-                    <label htmlFor="cand-pin">Examination Security PIN</label>
+                    <label htmlFor="cand-pin">Candidate PIN (account/proctor-verified exams)</label>
                     <input
                       id="cand-pin"
                       className="polished-input"
@@ -544,9 +550,26 @@ export default function LoginPage({ candidateOnly = false }) {
                       value={candPin}
                       onChange={(e) => setCandPin(e.target.value)}
                       maxLength={32}
-                      placeholder="6-digit examination PIN"
+                      placeholder="Enter your candidate PIN"
                     />
                   </div>
+
+                  <div className="input-group">
+                    <label htmlFor="cand-exam-token">Single-use desk token (token-authenticated exams)</label>
+                    <input
+                      id="cand-exam-token"
+                      className="polished-input"
+                      type="password"
+                      value={candExamToken}
+                      onChange={(e) => setCandExamToken(e.target.value.trim())}
+                      maxLength={128}
+                      autoComplete="off"
+                      placeholder="Enter token issued by the invigilator"
+                    />
+                    <p className="login-auth-subtitle">Use your PIN or the one-time token provided for this exam. The exam setting decides which credential is accepted.</p>
+                  </div>
+
+                  {info && <div className="polished-success-banner" role="status">{info}</div>}
 
                   {err && (
                     <div className="polished-error-banner" role="alert">
@@ -556,12 +579,12 @@ export default function LoginPage({ candidateOnly = false }) {
 
                   <button
                     className="polished-submit-btn"
-                    disabled={busy || !candId || !candPin || !isInsideExamOS}
+                    disabled={busy || !candId || (!candPin && !candExamToken) || !isInsideExamOS}
                   >
                     {!isInsideExamOS
                       ? 'ExamOS Kiosk Runtime Required'
                       : busy
-                      ? 'Authenticating Station…'
+                      ? (info ? 'Waiting for Invigilator…' : 'Authenticating Station…')
                       : 'Enter Examination Workspace'}
                   </button>
                 </form>

@@ -1,3 +1,5 @@
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS console_records (
   collection VARCHAR(48) NOT NULL,
   record_id VARCHAR(128) NOT NULL,
@@ -12,3 +14,9 @@ CREATE TABLE IF NOT EXISTS console_records (
 
 CREATE INDEX IF NOT EXISTS idx_console_records_tenant
   ON console_records (collection, institution_id, updated_at DESC);
+
+INSERT INTO examos_schema_migrations (component, version)
+VALUES ('console_record_store', 1)
+ON CONFLICT (component, version) DO NOTHING;
+
+COMMIT;

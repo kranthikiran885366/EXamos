@@ -200,12 +200,6 @@ int security_totp_generate_secret(char *out, size_t out_len) {
     return 0;
 }
 
-static int b32_decode_char(char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= '2' && c <= '7') return c - '2' + 26;
-    return -1;
-}
-
 int security_totp_verify(const char *secret, const char *code) {
     if (!secret || !code) return 0;
     /* Delegate entirely to the canonical totp.c implementation which has

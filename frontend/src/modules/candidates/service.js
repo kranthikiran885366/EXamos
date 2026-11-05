@@ -141,7 +141,18 @@ export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   const pool = cands.filter((c) => !c.examId); const n = Math.min(Number(count) || pool.length, pool.length);
   if (n < 1) fail('There are no unassigned candidates.');
   if (n > free.length) fail(`Only ${free.length} free seat(s) at ${ce.code}.`);
-  await putMany('candidates', pool.slice(0, n).map((c, i) => ({ ...c, examId, centerId, seat: free[i], status: 'assigned', assignedAt: Date.now() })));
+  const selected = pool.slice(0, n);
+  try {
+    for (let i = 0; i < selected.length; i += 1) {
+      await Api.assignExaminationStudent(examId, {
+        student_id: selected[i].id, roll_no: selected[i].rollNo, name: selected[i].name,
+        center_id: centerId, seat_no: free[i],
+      });
+    }
+  } catch (err) {
+    fail(err.message || 'Backend candidate assignment failed. Local roster was not updated.');
+  }
+  await putMany('candidates', selected.map((c, i) => ({ ...c, examId, centerId, seat: free[i], status: 'assigned', assignedAt: Date.now() })));
   await log(a, 'CANDIDATES_ASSIGNED', `${n} -> ${ex.code} @ ${ce.code}`); return `${n} candidate(s) seated at ${ce.code}.`;
 }
 
@@ -158,6 +169,16 @@ export async function assignCandidates(a, { tenantId, examId, centerId, candidat
   const free = []; for (let i = 0; i < ce.capacity; i++) { const s = seatLabel(i); if (!used.has(s)) free.push(s); }
   const pool = cands.filter((c) => candidateIds.includes(c.id));
   if (pool.length > free.length) fail(`Only ${free.length} free seat(s) at ${ce.code}.`);
+  try {
+    for (let i = 0; i < pool.length; i += 1) {
+      await Api.assignExaminationStudent(examId, {
+        student_id: pool[i].id, roll_no: pool[i].rollNo, name: pool[i].name,
+        center_id: centerId, seat_no: free[i],
+      });
+    }
+  } catch (err) {
+    fail(err.message || 'Backend candidate assignment failed. Local roster was not updated.');
+  }
   await putMany('candidates', pool.map((c, i) => ({ ...c, examId, centerId, seat: free[i], status: 'assigned', assignedAt: Date.now() })));
   await log(a, 'CANDIDATES_ASSIGNED', `${pool.length} -> ${ex.code} @ ${ce.code}`);
   return `${pool.length} candidate(s) assigned to ${ce.code}.`;
@@ -167,6 +188,11 @@ export async function unassign(a, c, reason) {
   need(a, 'candidate.manage'); assertScope(a, c.tenantId);
   const r = requireReason(reason, 8);
   if ((await all('sessions')).some((s) => s.candidateId === c.id && s.status === 'in_progress')) fail('The candidate has a session in progress.');
+  try {
+    await Api.unassignExaminationStudent(c.examId, c.rollNo);
+  } catch (err) {
+    fail(err.message || 'Backend candidate unassignment failed. Local roster was not updated.');
+  }
   await put('candidates', { ...c, examId: null, centerId: null, seat: null, status: 'registered' });
   await log(a, 'CANDIDATE_UNASSIGNED', `${c.rollNo}: ${r}`);
   return `${c.rollNo} removed from the exam.`;

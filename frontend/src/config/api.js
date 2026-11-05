@@ -37,6 +37,7 @@ export const ENDPOINTS = {
   // Auth — candidate
   candidateLogin: '/api/v1/candidate/login',
   candidateLogout: '/api/v1/candidate/logout',
+  candidateCheckinStatus: '/api/v1/candidate/checkin/status',
 
   // Admin platform
   institutions: '/api/v1/admin/institutions',
@@ -108,7 +109,12 @@ export const ENDPOINTS = {
   examinationStatus: (id) => `/api/v1/examinations/${id}/status`,
   examinationSchedules: (id) => `/api/v1/examinations/${id}/schedules`,
   examinationStudents: (id) => `/api/v1/examinations/${id}/students`,
+  examinationStudent: (id, studentId) => `/api/v1/examinations/${id}/students/${encodeURIComponent(studentId)}`,
   examinationPolicy: (id) => `/api/v1/examinations/${id}/policy`,
+  examinationCandidateTokens: (id) => `/api/v1/examinations/${id}/candidate-tokens`,
+  examinationCandidatePins: (id) => `/api/v1/examinations/${id}/candidate-pins`,
+  examinationCandidateCheckins: (id) => `/api/v1/examinations/${id}/candidate-checkins`,
+  examinationCandidateCheckin: (examId, checkinId) => `/api/v1/examinations/${examId}/candidate-checkins/${checkinId}`,
 
   // Module 5: Student Management System REST endpoints
   students: '/api/v1/students',

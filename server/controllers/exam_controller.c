@@ -127,6 +127,93 @@ static void record_exam_audit(PGconn *conn, const char *exam_id, const char *ins
     if (r) PQclear(r);
 }
 
+static int validate_exam_config(PGconn *conn, const char *config, const char *exam_url,
+                                const char *instructions, const char *institution_id,
+                                int require_ready) {
+    const char *values[5] = {
+        config, exam_url, instructions, institution_id, require_ready ? "true" : "false"
+    };
+    int lengths[5] = {
+        (int)strlen(config), (int)strlen(exam_url), (int)strlen(instructions),
+        (int)strlen(institution_id), (int)strlen(values[4])
+    };
+    PGresult *result = db_simple(conn,
+        "SELECT CASE WHEN "
+        "jsonb_typeof($1::jsonb) = 'object' "
+        "AND length(trim(COALESCE($1::jsonb->>'title',''))) BETWEEN 4 AND 100 "
+        "AND COALESCE($1::jsonb->>'code','') ~ '^[A-Z0-9-]{4,20}$' "
+        "AND COALESCE($1::jsonb->>'type','') IN ('practice','internal','laboratory','midterm','final') "
+        "AND jsonb_typeof($1::jsonb->'course') = 'string' AND length($1::jsonb->>'course') <= 80 "
+        "AND jsonb_typeof($1::jsonb->'departmentId') = 'string' AND length($1::jsonb->>'departmentId') <= 64 "
+        "AND jsonb_typeof($1::jsonb->'academicYear') = 'string' AND length($1::jsonb->>'academicYear') <= 20 "
+        "AND jsonb_typeof($1::jsonb->'description') = 'string' AND length($1::jsonb->>'description') <= 1000 "
+        "AND jsonb_typeof($1::jsonb->'resources') = 'string' AND length($1::jsonb->>'resources') <= 1000 "
+        "AND jsonb_typeof($1::jsonb->'accommodations') = 'string' AND length($1::jsonb->>'accommodations') <= 1000 "
+        "AND ($1::jsonb->>'examUrl') = $2 "
+        "AND length($2) <= 500 AND $2 ~ '^https://[^/@?#]+([/?#].*)?$' "
+        "AND ($1::jsonb->>'instructions') = $3 AND length(trim($3)) > 0 AND length($3) <= 3000 "
+        "AND COALESCE($1::jsonb->>'authMode','') IN ('candidate-login','exam-token','proctor-verify') "
+        "AND jsonb_typeof($1::jsonb->'identityRequired') = 'boolean' "
+        "AND CASE WHEN COALESCE($1::jsonb->>'startAt','') ~ '^[0-9]+$' "
+        "THEN ($1::jsonb->>'startAt')::numeric > 0 ELSE false END "
+        "AND CASE WHEN COALESCE($1::jsonb->>'durationMin','') ~ '^[0-9]+$' "
+        "THEN ($1::jsonb->>'durationMin')::integer BETWEEN 15 AND 300 ELSE false END "
+        "AND CASE WHEN COALESCE($1::jsonb->>'lateEntryMin','') ~ '^[0-9]+$' "
+        "THEN ($1::jsonb->>'lateEntryMin')::integer BETWEEN 0 AND 60 ELSE false END "
+        "AND CASE WHEN COALESCE($1::jsonb->>'capacity','') ~ '^[0-9]+$' "
+        "THEN ($1::jsonb->>'capacity')::integer BETWEEN 0 AND 1000000 ELSE false END "
+        "AND CASE WHEN COALESCE($1::jsonb->>'sessionTimeoutMin','') ~ '^[0-9]+$' "
+        "THEN ($1::jsonb->>'sessionTimeoutMin')::integer BETWEEN 5 AND 120 ELSE false END "
+        "AND EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1::jsonb->>'timezone') "
+        "AND COALESCE($1::jsonb->>'navigation','') IN ('locked','allowlist') "
+        "AND COALESCE($1::jsonb->>'submissionMode','') IN ('manual','auto','either') "
+        "AND COALESCE($1::jsonb->>'reconnectPolicy','') IN ('allow-reconnect','resume-only','deny') "
+        "AND COALESCE($1::jsonb->>'attestationLevel','') IN ('none','tpm','tpm-secureboot') "
+        "AND COALESCE($1::jsonb->>'compatibilityProfile','') IN ('standard-uefi','secure-lab','legacy-bios') "
+        "AND CASE WHEN jsonb_typeof($1::jsonb->'centerIds') = 'array' THEN "
+        "  (NOT ($5::boolean) OR jsonb_array_length($1::jsonb->'centerIds') > 0) "
+        "  AND (SELECT COUNT(*) FROM centers c WHERE c.tenant_id = $4 AND c.status = 'active' "
+        "       AND c.id IN (SELECT jsonb_array_elements_text($1::jsonb->'centerIds'))) "
+        "      = jsonb_array_length($1::jsonb->'centerIds') "
+        "  ELSE false END "
+        "AND CASE WHEN jsonb_typeof($1::jsonb->'origins') = 'array' THEN "
+        "  EXISTS (SELECT 1 FROM jsonb_array_elements_text($1::jsonb->'origins') o(value) "
+        "          WHERE o.value = regexp_replace($2, '^(https://[^/?#]+).*$','\\1')) "
+        "  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($1::jsonb->'origins') o(value) "
+        "                 WHERE o.value !~ '^https://[^/@?#]+$') "
+        "  ELSE false END "
+        "AND CASE WHEN jsonb_typeof($1::jsonb->'allowedDestinations') = 'array' THEN "
+        "  (COALESCE($1::jsonb->>'navigation','') <> 'allowlist' OR jsonb_array_length($1::jsonb->'allowedDestinations') > 0) "
+        "  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($1::jsonb->'allowedDestinations') d(value) "
+        "                  WHERE d.value !~ '^https://[^/@?#]+$' "
+        "                     OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($1::jsonb->'origins') o(value) WHERE o.value = d.value)) "
+        "  ELSE false END "
+        "AND CASE WHEN jsonb_typeof($1::jsonb->'requiredChecks') = 'array' THEN "
+        "  NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($1::jsonb->'requiredChecks') c(value) "
+        "              WHERE c.value NOT IN ('uefi','usb','tpm','secureboot','network','display','keyboard','battery','camera','microphone')) "
+        "  ELSE false END "
+        "AND CASE WHEN NULLIF($1::jsonb->>'policyId','') IS NULL THEN NOT $5::boolean ELSE EXISTS ("
+        "  SELECT 1 FROM console_records p WHERE p.collection = 'policies' "
+        "  AND p.record_id = $1::jsonb->>'policyId' AND p.institution_id = $4 "
+        "  AND p.data->>'tenantId' = $4 AND p.data->>'status' = 'published' "
+        "  AND length(COALESCE(p.data->>'hash','')) > 0 AND length(COALESCE(p.data->>'sig','')) > 0 "
+        "  AND CASE WHEN jsonb_typeof(p.data->'config'->'origins') = 'array' THEN "
+        "    EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.data->'config'->'origins') po(value) "
+        "            WHERE regexp_replace(po.value, '^(https://[^/?#]+).*$','\\1') = regexp_replace($2, '^(https://[^/?#]+).*$','\\1') "
+        "              AND po.value ~ '^https://[^/@?#]+([/?#].*)?$') "
+        "    ELSE false END "
+        ") END "
+        "THEN 'true' ELSE 'false' END",
+        5, values, lengths);
+    if (!result || PQresultStatus(result) != PGRES_TUPLES_OK || PQntuples(result) != 1) {
+        if (result) PQclear(result);
+        return -1;
+    }
+    int valid = strcmp(PQgetvalue(result, 0, 0), "true") == 0;
+    if (result) PQclear(result);
+    return valid;
+}
+
 void exam_handle(int client_fd, const char *method, const char *path,
                  const char *body, const char *auth_header,
                  const char *origin, char *extra_headers, size_t extra_len) {
@@ -162,13 +249,13 @@ void exam_handle(int client_fd, const char *method, const char *path,
             res = PQexec(conn,
                 "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
                 "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-                "allowed_origins, policy_id, created_by, created_at, updated_at "
+                "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
                 "FROM examinations ORDER BY created_at DESC");
         } else {
             res = db_simple(conn,
                 "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
                 "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-                "allowed_origins, policy_id, created_by, created_at, updated_at "
+                "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
                 "FROM examinations WHERE institution_id = $1 ORDER BY created_at DESC",
                 1, pvals, lens);
         }
@@ -198,17 +285,18 @@ void exam_handle(int client_fd, const char *method, const char *path,
                     "\"exam_type\":\"%s\",\"duration_minutes\":%s,\"total_marks\":%s,"
                     "\"passing_marks\":%s,\"status\":\"%s\",\"exam_url\":\"%s\","
                     "\"allowed_origins\":\"%s\",\"policy_id\":\"%s\",\"created_by\":\"%s\","
-                    "\"created_at\":%s,\"updated_at\":%s}",
+                    "\"created_at\":%s,\"updated_at\":%s,\"exam_config\":%s}",
                     PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
                     esc_name, esc_subj, PQgetvalue(res, i, 5),
                     PQgetvalue(res, i, 6), PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
                     PQgetvalue(res, i, 9), PQgetvalue(res, i, 10), esc_url,
                     PQgetvalue(res, i, 13), PQgetvalue(res, i, 14), PQgetvalue(res, i, 15),
-                    PQgetvalue(res, i, 16), PQgetvalue(res, i, 17));
+                    PQgetvalue(res, i, 16), PQgetvalue(res, i, 17), PQgetvalue(res, i, 18));
             }
         }
+        int total = res ? PQntuples(res) : 0;
         if (res) PQclear(res);
-        pos += snprintf(json + pos, 262144 - pos, "],\"total\":%d}", res ? PQntuples(res) : 0);
+        pos += snprintf(json + pos, 262144 - pos, "],\"total\":%d}", total);
         db_release(conn, 0);
 
         ex_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
@@ -228,6 +316,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         char name[128] = {0}, subject[128] = {0}, code[32] = {0}, academic_year[32] = {0};
         char exam_type[32] = {0}, instructions[2048] = {0}, exam_url[512] = {0}, allowed_origins[512] = {0};
+        char exam_config[8192] = {0};
         char inst_id[64] = {0};
         int duration_minutes = 60, total_marks = 100, passing_marks = 40;
 
@@ -242,6 +331,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "instructions", instructions, sizeof(instructions));
         ctrl_json_string(body, "exam_url", exam_url, sizeof(exam_url));
         ctrl_json_string(body, "allowed_origins", allowed_origins, sizeof(allowed_origins));
+        ctrl_json_string(body, "exam_config_json", exam_config, sizeof(exam_config));
         ctrl_json_string(body, "institution_id", inst_id, sizeof(inst_id));
         ctrl_json_int(body, "duration_minutes", &duration_minutes);
         ctrl_json_int(body, "total_marks", &total_marks);
@@ -257,8 +347,12 @@ void exam_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        if (!name[0] || !subject[0]) {
-            ex_send_error(client_fd, 400, "name and subject are required", origin, extra_headers, extra_len);
+        if (!name[0] || !subject[0] || !exam_url[0] || !instructions[0] || !exam_config[0]) {
+            ex_send_error(client_fd, 400, "name, subject, exam_url, candidate instructions and exam configuration are required", origin, extra_headers, extra_len);
+            return;
+        }
+        if (strlen(exam_url) <= 8 || strncmp(exam_url, "https://", 8) != 0) {
+            ex_send_error(client_fd, 400, "exam_url must use HTTPS", origin, extra_headers, extra_len);
             return;
         }
 
@@ -301,26 +395,62 @@ void exam_handle(int client_fd, const char *method, const char *path,
         }
         if (chk_res) PQclear(chk_res);
 
-        const char *p[15] = {
+        int config_valid = validate_exam_config(conn, exam_config, exam_url, instructions, inst_id, 0);
+        if (config_valid <= 0) {
+            db_release(conn, 0);
+            ex_send_error(client_fd, config_valid < 0 ? 500 : 400,
+                          config_valid < 0 ? "Could not validate exam configuration against the database" :
+                          "Exam configuration contains invalid, unsupported, or institution-inaccessible values",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
+        PGresult *center_check = db_simple(conn,
+            "SELECT COUNT(*)::text, jsonb_array_length(($2::jsonb)->'centerIds')::text "
+            "FROM centers WHERE tenant_id = $1 AND status = 'active' "
+            "AND id IN (SELECT jsonb_array_elements_text(($2::jsonb)->'centerIds'))",
+            2, (const char *[]){ inst_id, exam_config },
+            (int[]){ (int)strlen(inst_id), (int)strlen(exam_config) });
+        if (!center_check || PQresultStatus(center_check) != PGRES_TUPLES_OK ||
+            strtol(PQgetvalue(center_check, 0, 0), NULL, 10) !=
+            strtol(PQgetvalue(center_check, 0, 1), NULL, 10)) {
+            if (center_check) PQclear(center_check);
+            db_release(conn, 0);
+            ex_send_error(client_fd, 400, "Every selected exam center must be active and belong to this institution", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(center_check);
+
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 1);
+            ex_send_error(client_fd, 500, "Could not start exam creation transaction", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
+
+        const char *p[16] = {
             exam_id, inst_id, code, name, subject, academic_year, exam_type,
             dur_str, tot_str, pass_str, instructions, exam_url, allowed_origins,
-            sess.user_id, now_str
+            sess.user_id, now_str, exam_config
         };
-        int l[15] = {
+        int l[16] = {
             (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code),
             (int)strlen(name), (int)strlen(subject), (int)strlen(academic_year),
             (int)strlen(exam_type), (int)strlen(dur_str), (int)strlen(tot_str),
             (int)strlen(pass_str), (int)strlen(instructions), (int)strlen(exam_url),
-            (int)strlen(allowed_origins), (int)strlen(sess.user_id), (int)strlen(now_str)
+            (int)strlen(allowed_origins), (int)strlen(sess.user_id), (int)strlen(now_str),
+            (int)strlen(exam_config)
         };
 
         PGresult *r = db_simple(conn,
             "INSERT INTO examinations ("
             "  id, institution_id, code, name, subject, academic_year, exam_type, "
             "  duration_minutes, total_marks, passing_marks, instructions, exam_url, "
-            "  allowed_origins, status, created_by, created_at, updated_at"
-            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::integer, $9::integer, $10::integer, $11, $12, $13, 'draft', $14, $15::bigint, $15::bigint)",
-            15, p, l);
+            "  allowed_origins, status, created_by, created_at, updated_at, exam_config"
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::integer, $9::integer, $10::integer, $11, $12, $13, 'draft', $14, $15::bigint, $15::bigint, $16::jsonb)",
+            16, p, l);
 
         int ok = (r && PQresultStatus(r) == PGRES_COMMAND_OK);
         char err_detail[256] = {0};
@@ -332,24 +462,79 @@ void exam_handle(int client_fd, const char *method, const char *path,
         if (!ok) {
             char err_buf[512];
             snprintf(err_buf, sizeof(err_buf), "Failed to create examination: %s", err_detail[0] ? err_detail : "database error");
+            PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             ex_send_error(client_fd, 500, err_buf, origin, extra_headers, extra_len);
             return;
         }
 
-        /* Also mirror into exams table with exam_url */
-        const char *m_p[7] = { exam_id, inst_id, code, name, subject, exam_url, now_str };
-        int m_l[7] = { (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(name), (int)strlen(subject), (int)strlen(exam_url), (int)strlen(now_str) };
+        /* Keep the complete operational configuration in the canonical exam record. */
+        const char *m_p[7] = { exam_id, inst_id, code, name, subject, now_str, exam_config };
+        int m_l[7] = { (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(name), (int)strlen(subject), (int)strlen(now_str), (int)strlen(exam_config) };
         PGresult *m_r = db_simple(conn,
-            "INSERT INTO exams (id, tenant_id, code, title, course, exam_url, start_at, duration_min, created_at, updated_at, status) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, 60, $7::bigint, $7::bigint, 'draft') "
+            "INSERT INTO exams (id, tenant_id, code, title, description, course, department_id, academic_year, "
+            "type, center_ids, start_at, duration_min, timezone, late_entry_min, capacity, instructions, resources, "
+            "accommodations, auth_mode, identity_required, origins, navigation, allowed_destinations, compatibility_profile, "
+            "attestation_level, session_timeout_min, reconnect_policy, submission_mode, required_checks, policy_id, exam_url, "
+            "created_at, updated_at, status) "
+            "SELECT $1, $2, $3, $4, COALESCE($7::jsonb->>'description',''), COALESCE($7::jsonb->>'course',''), "
+            "NULLIF($7::jsonb->>'departmentId',''), COALESCE($7::jsonb->>'academicYear',''), "
+            "COALESCE($7::jsonb->>'type','internal'), COALESCE($7::jsonb->'centerIds','[]'::jsonb), "
+            "($7::jsonb->>'startAt')::bigint, ($7::jsonb->>'durationMin')::integer, "
+            "COALESCE($7::jsonb->>'timezone','Asia/Kolkata'), COALESCE(($7::jsonb->>'lateEntryMin')::integer,0), "
+            "COALESCE(($7::jsonb->>'capacity')::integer,0), COALESCE($7::jsonb->>'instructions',''), "
+            "COALESCE($7::jsonb->>'resources',''), COALESCE($7::jsonb->>'accommodations',''), "
+            "COALESCE($7::jsonb->>'authMode','candidate-login'), "
+            "CASE WHEN COALESCE($7::jsonb->>'identityRequired','true') = 'true' THEN 1 ELSE 0 END, "
+            "COALESCE($7::jsonb->'origins','[]'::jsonb), COALESCE($7::jsonb->>'navigation','locked'), "
+            "COALESCE($7::jsonb->'allowedDestinations','[]'::jsonb), "
+            "COALESCE($7::jsonb->>'compatibilityProfile','standard-uefi'), "
+            "COALESCE($7::jsonb->>'attestationLevel','tpm'), COALESCE(($7::jsonb->>'sessionTimeoutMin')::integer,15), "
+            "COALESCE($7::jsonb->>'reconnectPolicy','allow-reconnect'), COALESCE($7::jsonb->>'submissionMode','either'), "
+            "COALESCE($7::jsonb->'requiredChecks','[]'::jsonb), NULLIF($7::jsonb->>'policyId',''), "
+            "$7::jsonb->>'examUrl', $6::bigint, $6::bigint, 'draft' "
             "ON CONFLICT (id) DO UPDATE SET exam_url = EXCLUDED.exam_url, title = EXCLUDED.title",
             7, m_p, m_l);
+        if (!m_r || PQresultStatus(m_r) != PGRES_COMMAND_OK) {
+            if (m_r) PQclear(m_r);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            ex_send_error(client_fd, 500, "Failed to persist complete exam configuration", origin, extra_headers, extra_len);
+            return;
+        }
         if (m_r) PQclear(m_r);
+
+        char schedule_id[64];
+        snprintf(schedule_id, sizeof(schedule_id), "esch_%ld_%d", (long)time(NULL), rand() % 10000);
+        const char *sch_p[5] = { schedule_id, exam_id, inst_id, code, exam_config };
+        int sch_l[5] = { (int)strlen(schedule_id), (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(exam_config) };
+        PGresult *sch_r = db_simple(conn,
+            "INSERT INTO exam_schedules (id, exam_id, institution_id, session_name, start_time, end_time, timezone, created_at) "
+            "SELECT $1, $2, $3, $4, ($5::jsonb->>'startAt')::bigint, "
+            "($5::jsonb->>'startAt')::bigint + ($5::jsonb->>'durationMin')::bigint * 60000, "
+            "COALESCE($5::jsonb->>'timezone','Asia/Kolkata'), EXTRACT(EPOCH FROM NOW())::BIGINT * 1000",
+            5, sch_p, sch_l);
+        if (!sch_r || PQresultStatus(sch_r) != PGRES_COMMAND_OK) {
+            if (sch_r) PQclear(sch_r);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            ex_send_error(client_fd, 500, "Failed to persist exam schedule", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(sch_r);
 
         record_status_history(conn, exam_id, "none", "draft", sess.user_id, "Exam created in draft state");
         record_exam_audit(conn, exam_id, inst_id, sess.user_id, "EXAM_CREATED", name);
 
+        PGresult *commit = PQexec(conn, "COMMIT");
+        if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+            if (commit) PQclear(commit);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 1);
+            ex_send_error(client_fd, 500, "Failed to commit exam configuration", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(commit);
         audit_log(sess.user_id, "EXAM_CREATED", exam_id, name);
         db_release(conn, 0);
 
@@ -376,7 +561,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
         PGresult *exam_res = db_simple(conn,
             "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
             "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-            "allowed_origins, policy_id, created_by, created_at, updated_at "
+            "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
             "FROM examinations WHERE id = $1",
             1, chk_p, chk_l);
 
@@ -448,13 +633,15 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 "\"exam_type\":\"%s\",\"duration_minutes\":%s,\"total_marks\":%s,"
                 "\"passing_marks\":%s,\"status\":\"%s\",\"instructions\":\"%s\","
                 "\"exam_url\":\"%s\",\"allowed_origins\":\"%s\",\"policy_id\":\"%s\","
-                "\"created_by\":\"%s\",\"created_at\":%s,\"updated_at\":%s},\"schedules\":[",
+                "\"created_by\":\"%s\",\"created_at\":%s,\"updated_at\":%s,"
+                "\"exam_config\":%s},\"schedules\":[",
                 PQgetvalue(exam_res, 0, 0), ex_inst_id, PQgetvalue(exam_res, 0, 2),
                 esc_name, esc_subj, PQgetvalue(exam_res, 0, 5),
                 PQgetvalue(exam_res, 0, 6), PQgetvalue(exam_res, 0, 7), PQgetvalue(exam_res, 0, 8),
                 PQgetvalue(exam_res, 0, 9), ex_status, esc_inst,
                 esc_url, PQgetvalue(exam_res, 0, 13), PQgetvalue(exam_res, 0, 14),
-                ex_creator, PQgetvalue(exam_res, 0, 16), PQgetvalue(exam_res, 0, 17));
+                ex_creator, PQgetvalue(exam_res, 0, 16), PQgetvalue(exam_res, 0, 17),
+                PQgetvalue(exam_res, 0, 18));
 
             if (sched_res && PQresultStatus(sched_res) == PGRES_TUPLES_OK) {
                 int sn = PQntuples(sched_res);
@@ -509,13 +696,20 @@ void exam_handle(int client_fd, const char *method, const char *path,
             }
 
             char name[128] = {0}, subject[128] = {0}, instructions[2048] = {0}, exam_url[512] = {0};
-            char status_req[32] = {0};
+            char status_req[32] = {0}, code[32] = {0}, academic_year[32] = {0}, exam_type[32] = {0};
+            char allowed_origins[512] = {0}, policy_id[64] = {0}, exam_config[8192] = {0};
             int duration_minutes = 0, total_marks = 0, passing_marks = 0;
 
             ctrl_json_string(body, "name", name, sizeof(name));
             ctrl_json_string(body, "subject", subject, sizeof(subject));
             ctrl_json_string(body, "instructions", instructions, sizeof(instructions));
             ctrl_json_string(body, "exam_url", exam_url, sizeof(exam_url));
+            ctrl_json_string(body, "code", code, sizeof(code));
+            ctrl_json_string(body, "academic_year", academic_year, sizeof(academic_year));
+            ctrl_json_string(body, "exam_type", exam_type, sizeof(exam_type));
+            ctrl_json_string(body, "allowed_origins", allowed_origins, sizeof(allowed_origins));
+            ctrl_json_string(body, "policy_id", policy_id, sizeof(policy_id));
+            ctrl_json_string(body, "exam_config_json", exam_config, sizeof(exam_config));
             ctrl_json_string(body, "status", status_req, sizeof(status_req));
             ctrl_json_int(body, "duration_minutes", &duration_minutes);
             ctrl_json_int(body, "total_marks", &total_marks);
@@ -526,6 +720,157 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 target_status = status_req;
             }
 
+            if (exam_config[0]) {
+                int config_valid = validate_exam_config(conn, exam_config, exam_url, instructions, ex_inst_id, 0);
+                if (config_valid <= 0) {
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, config_valid < 0 ? 500 : 400,
+                                  config_valid < 0 ? "Could not validate exam configuration against the database" :
+                                  "Exam configuration contains invalid, unsupported, or institution-inaccessible values",
+                                  origin, extra_headers, extra_len);
+                    return;
+                }
+
+                PGresult *center_check = db_simple(conn,
+                    "SELECT COUNT(*)::text, jsonb_array_length(($2::jsonb)->'centerIds')::text "
+                    "FROM centers WHERE tenant_id = $1 AND status = 'active' "
+                    "AND id IN (SELECT jsonb_array_elements_text(($2::jsonb)->'centerIds'))",
+                    2, (const char *[]){ ex_inst_id, exam_config },
+                    (int[]){ (int)strlen(ex_inst_id), (int)strlen(exam_config) });
+                if (!center_check || PQresultStatus(center_check) != PGRES_TUPLES_OK ||
+                    strtol(PQgetvalue(center_check, 0, 0), NULL, 10) !=
+                    strtol(PQgetvalue(center_check, 0, 1), NULL, 10)) {
+                    if (center_check) PQclear(center_check);
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 400, "Every selected exam center must be active and belong to this institution", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(center_check);
+
+                PGresult *begin = PQexec(conn, "BEGIN");
+                if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                    if (begin) PQclear(begin);
+                    PQclear(exam_res);
+                    db_release(conn, 1);
+                    ex_send_error(client_fd, 500, "Could not start exam update transaction", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(begin);
+
+                const char *full_p[12] = {
+                    name[0] ? name : PQgetvalue(exam_res, 0, 3),
+                    subject[0] ? subject : PQgetvalue(exam_res, 0, 4),
+                    academic_year, exam_type, instructions, exam_url, allowed_origins,
+                    policy_id, target_status, eid, exam_config, code[0] ? code : PQgetvalue(exam_res, 0, 2)
+                };
+                int full_l[12];
+                for (int i = 0; i < 12; i++) full_l[i] = (int)strlen(full_p[i]);
+                PGresult *full_update = db_simple(conn,
+                    "UPDATE examinations SET name = $1, subject = $2, academic_year = $3, exam_type = $4, "
+                    "instructions = $5, exam_url = $6, allowed_origins = $7, policy_id = NULLIF($8,''), "
+                    "status = $9, code = $12, duration_minutes = ($11::jsonb->>'durationMin')::integer, exam_config = $11::jsonb, "
+                    "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $10",
+                    12, full_p, full_l);
+                if (!full_update || PQresultStatus(full_update) != PGRES_COMMAND_OK) {
+                    if (full_update) PQclear(full_update);
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 500, "Failed to persist exam configuration", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(full_update);
+
+                char now_str[32];
+                snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL) * 1000);
+                const char *mirror_p[6] = { eid, exam_config, full_p[0], full_p[11], full_p[5], now_str };
+                int mirror_l[6] = { (int)strlen(eid), (int)strlen(exam_config), (int)strlen(full_p[0]),
+                                    (int)strlen(full_p[11]), (int)strlen(full_p[5]), (int)strlen(now_str) };
+                PGresult *mirror_update = db_simple(conn,
+                    "UPDATE exams SET code = $4, title = $3, description = COALESCE($2::jsonb->>'description',''), "
+                    "course = COALESCE($2::jsonb->>'course',''), department_id = NULLIF($2::jsonb->>'departmentId',''), "
+                    "academic_year = COALESCE($2::jsonb->>'academicYear',''), type = COALESCE($2::jsonb->>'type','internal'), "
+                    "center_ids = COALESCE($2::jsonb->'centerIds','[]'::jsonb), start_at = ($2::jsonb->>'startAt')::bigint, "
+                    "duration_min = ($2::jsonb->>'durationMin')::integer, timezone = COALESCE($2::jsonb->>'timezone','Asia/Kolkata'), "
+                    "late_entry_min = COALESCE(($2::jsonb->>'lateEntryMin')::integer,0), capacity = COALESCE(($2::jsonb->>'capacity')::integer,0), "
+                    "instructions = COALESCE($2::jsonb->>'instructions',''), resources = COALESCE($2::jsonb->>'resources',''), "
+                    "accommodations = COALESCE($2::jsonb->>'accommodations',''), auth_mode = COALESCE($2::jsonb->>'authMode','candidate-login'), "
+                    "identity_required = CASE WHEN COALESCE($2::jsonb->>'identityRequired','true') = 'true' THEN 1 ELSE 0 END, "
+                    "origins = COALESCE($2::jsonb->'origins','[]'::jsonb), navigation = COALESCE($2::jsonb->>'navigation','locked'), "
+                    "allowed_destinations = COALESCE($2::jsonb->'allowedDestinations','[]'::jsonb), "
+                    "compatibility_profile = COALESCE($2::jsonb->>'compatibilityProfile','standard-uefi'), "
+                    "attestation_level = COALESCE($2::jsonb->>'attestationLevel','tpm'), "
+                    "session_timeout_min = COALESCE(($2::jsonb->>'sessionTimeoutMin')::integer,15), "
+                    "reconnect_policy = COALESCE($2::jsonb->>'reconnectPolicy','allow-reconnect'), "
+                    "submission_mode = COALESCE($2::jsonb->>'submissionMode','either'), "
+                    "required_checks = COALESCE($2::jsonb->'requiredChecks','[]'::jsonb), "
+                    "policy_id = NULLIF($2::jsonb->>'policyId',''), exam_url = $5, updated_at = $6::bigint "
+                    "WHERE id = $1",
+                    6, mirror_p, mirror_l);
+                if (!mirror_update || PQresultStatus(mirror_update) != PGRES_COMMAND_OK) {
+                    if (mirror_update) PQclear(mirror_update);
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 500, "Failed to update exam configuration mirror", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(mirror_update);
+
+                char schedule_id[64];
+                snprintf(schedule_id, sizeof(schedule_id), "esch_%ld_%d", (long)time(NULL), rand() % 10000);
+                const char *schedule_p[3] = { eid, code[0] ? code : PQgetvalue(exam_res, 0, 2), exam_config };
+                int schedule_l[3] = { (int)strlen(eid), (int)strlen(schedule_p[1]), (int)strlen(exam_config) };
+                PGresult *schedule_update = db_simple(conn,
+                    "UPDATE exam_schedules SET session_name = $2, start_time = ($3::jsonb->>'startAt')::bigint, "
+                    "end_time = ($3::jsonb->>'startAt')::bigint + ($3::jsonb->>'durationMin')::bigint * 60000, "
+                    "timezone = COALESCE($3::jsonb->>'timezone','Asia/Kolkata') "
+                    "WHERE id = (SELECT id FROM exam_schedules WHERE exam_id = $1 ORDER BY start_time LIMIT 1)",
+                    3, schedule_p, schedule_l);
+                if (!schedule_update || PQresultStatus(schedule_update) != PGRES_COMMAND_OK) {
+                    if (schedule_update) PQclear(schedule_update);
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 500, "Failed to update exam schedule", origin, extra_headers, extra_len);
+                    return;
+                }
+                int schedule_exists = strtol(PQcmdTuples(schedule_update), NULL, 10) > 0;
+                PQclear(schedule_update);
+                if (!schedule_exists) {
+                    const char *schedule_insert_p[5] = { schedule_id, eid, ex_inst_id, schedule_p[1], exam_config };
+                    int schedule_insert_l[5] = { (int)strlen(schedule_id), (int)strlen(eid), (int)strlen(ex_inst_id),
+                                                 (int)strlen(schedule_p[1]), (int)strlen(exam_config) };
+                    PGresult *schedule_insert = db_simple(conn,
+                        "INSERT INTO exam_schedules (id, exam_id, institution_id, session_name, start_time, end_time, timezone, created_at) "
+                        "SELECT $1, $2, $3, $4, ($5::jsonb->>'startAt')::bigint, "
+                        "($5::jsonb->>'startAt')::bigint + ($5::jsonb->>'durationMin')::bigint * 60000, "
+                        "COALESCE($5::jsonb->>'timezone','Asia/Kolkata'), EXTRACT(EPOCH FROM NOW())::BIGINT * 1000",
+                        5, schedule_insert_p, schedule_insert_l);
+                    if (!schedule_insert || PQresultStatus(schedule_insert) != PGRES_COMMAND_OK) {
+                        if (schedule_insert) PQclear(schedule_insert);
+                        PQexec(conn, "ROLLBACK");
+                        PQclear(exam_res);
+                        db_release(conn, 0);
+                        ex_send_error(client_fd, 500, "Failed to create exam schedule", origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(schedule_insert);
+                }
+
+                PGresult *commit = PQexec(conn, "COMMIT");
+                if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+                    if (commit) PQclear(commit);
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 1);
+                    ex_send_error(client_fd, 500, "Failed to commit exam update", origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(commit);
+            } else {
             /* Update database */
             const char *upd_p[9] = {
                 name[0] ? name : PQgetvalue(exam_res, 0, 3),
@@ -554,6 +899,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 "UPDATE exams SET exam_url = $1, title = $2, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $3",
                 3, me_p, me_l);
             if (me_res) PQclear(me_res);
+            }
 
             if (strcmp(target_status, ex_status) != 0) {
                 record_status_history(conn, eid, ex_status, target_status, sess.user_id, "Status updated via PATCH");
@@ -575,6 +921,18 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 PQclear(exam_res);
                 db_release(conn, 0);
                 ex_send_error(client_fd, 400, "Only draft or configured exams can be submitted for approval", origin, extra_headers, extra_len);
+                return;
+            }
+            int config_valid = validate_exam_config(conn, PQgetvalue(exam_res, 0, 18),
+                                                    PQgetvalue(exam_res, 0, 12), PQgetvalue(exam_res, 0, 11),
+                                                    ex_inst_id, 1);
+            if (config_valid <= 0) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, config_valid < 0 ? 500 : 400,
+                              config_valid < 0 ? "Could not validate exam readiness against the database" :
+                              "Exam is not ready for review: verify its schedule, active centres, published policy, origin, and delivery configuration",
+                              origin, extra_headers, extra_len);
                 return;
             }
 
@@ -619,6 +977,18 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 ex_send_error(client_fd, 400, "Exam must be in pending_approval or configured state to approve", origin, extra_headers, extra_len);
                 return;
             }
+            int config_valid = validate_exam_config(conn, PQgetvalue(exam_res, 0, 18),
+                                                    PQgetvalue(exam_res, 0, 12), PQgetvalue(exam_res, 0, 11),
+                                                    ex_inst_id, 1);
+            if (config_valid <= 0) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, config_valid < 0 ? 500 : 400,
+                              config_valid < 0 ? "Could not validate exam readiness against the database" :
+                              "Exam configuration is no longer valid for approval",
+                              origin, extra_headers, extra_len);
+                return;
+            }
 
             char app_id[64];
             snprintf(app_id, sizeof(app_id), "eapp_%ld_%d", (long)time(NULL), rand() % 10000);
@@ -658,6 +1028,18 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 PQclear(exam_res);
                 db_release(conn, 0);
                 ex_send_error(client_fd, 400, "Only approved exams can be published / scheduled", origin, extra_headers, extra_len);
+                return;
+            }
+            int config_valid = validate_exam_config(conn, PQgetvalue(exam_res, 0, 18),
+                                                    PQgetvalue(exam_res, 0, 12), PQgetvalue(exam_res, 0, 11),
+                                                    ex_inst_id, 1);
+            if (config_valid <= 0) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, config_valid < 0 ? 500 : 400,
+                              config_valid < 0 ? "Could not validate exam readiness against the database" :
+                              "Exam configuration is no longer valid for publication",
+                              origin, extra_headers, extra_len);
                 return;
             }
 
@@ -954,11 +1336,27 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/examinations/:id/students (Assign Student) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(suffix, "/students") == 0) {
-            char student_id[64] = {0}, roll_no[64] = {0}, sname[128] = {0}, room_id[64] = {0}, seat_no[32] = {0};
+            if (sess.role != ROLE_PLATFORM_OWNER && sess.role != ROLE_INSTITUTION_ADMIN &&
+                sess.role != ROLE_EXAM_MANAGER) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 403, "Candidate assignment permission required", origin, extra_headers, extra_len);
+                return;
+            }
+            if (strcmp(ex_status, "draft") != 0 && strcmp(ex_status, "configured") != 0 &&
+                strcmp(ex_status, "pending_approval") != 0 && strcmp(ex_status, "approved") != 0) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "Candidate assignments are locked for this examination status", origin, extra_headers, extra_len);
+                return;
+            }
+
+            char student_id[64] = {0}, roll_no[64] = {0}, sname[128] = {0};
+            char center_id[64] = {0}, seat_no[32] = {0};
             ctrl_json_string(body, "student_id", student_id, sizeof(student_id));
             ctrl_json_string(body, "roll_no", roll_no, sizeof(roll_no));
             ctrl_json_string(body, "name", sname, sizeof(sname));
-            ctrl_json_string(body, "room_id", room_id, sizeof(room_id));
+            ctrl_json_string(body, "center_id", center_id, sizeof(center_id));
             ctrl_json_string(body, "seat_no", seat_no, sizeof(seat_no));
 
             if (!student_id[0] || !roll_no[0]) {
@@ -967,33 +1365,222 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 ex_send_error(client_fd, 400, "student_id and roll_no are required", origin, extra_headers, extra_len);
                 return;
             }
-            if (!sname[0]) strcpy(sname, roll_no);
+
+            const char *student_params[2] = { ex_inst_id, roll_no };
+            int student_lengths[2] = { (int)strlen(ex_inst_id), (int)strlen(roll_no) };
+            PGresult *student = db_simple(conn,
+                "SELECT id, roll_no, name, academic_status, administrative_hold "
+                "FROM students WHERE institution_id=$1 AND roll_no=$2",
+                2, student_params, student_lengths);
+            if (!student || PQresultStatus(student) != PGRES_TUPLES_OK) {
+                if (student) PQclear(student);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Student roster lookup failed", origin, extra_headers, extra_len);
+                return;
+            }
+            if (PQntuples(student) != 1) {
+                PQclear(student);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 404, "Student does not exist in this institution", origin, extra_headers, extra_len);
+                return;
+            }
+            snprintf(student_id, sizeof(student_id), "%s", PQgetvalue(student, 0, 0));
+            snprintf(roll_no, sizeof(roll_no), "%s", PQgetvalue(student, 0, 1));
+            snprintf(sname, sizeof(sname), "%s", PQgetvalue(student, 0, 2));
+            int student_eligible = strcmp(PQgetvalue(student, 0, 3), "active") == 0 &&
+                                   strcmp(PQgetvalue(student, 0, 4), "t") != 0;
+            PQclear(student);
+            if (!student_eligible) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "Student is not eligible for examination assignment", origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (center_id[0]) {
+                const char *center_params[3] = { ex_inst_id, eid, center_id };
+                int center_lengths[3] = { (int)strlen(ex_inst_id), (int)strlen(eid), (int)strlen(center_id) };
+                PGresult *center = db_simple(conn,
+                    "SELECT 1 FROM centers c WHERE c.tenant_id=$1 AND c.id=$3 AND c.status='active' "
+                    "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+                    "COALESCE((SELECT exam_config->'centerIds' FROM examinations WHERE id=$2), '[]'::jsonb) "
+                    ") AS configured(center_id) WHERE configured.center_id=c.id)",
+                    3, center_params, center_lengths);
+                int center_query_ok = center && PQresultStatus(center) == PGRES_TUPLES_OK;
+                int center_ok = center_query_ok && PQntuples(center) == 1;
+                if (center) PQclear(center);
+                if (!center_query_ok) {
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 503, "Examination center lookup failed", origin, extra_headers, extra_len);
+                    return;
+                }
+                if (!center_ok) {
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 400, "Center must be active and configured for this examination", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
 
             char assign_id[64];
             snprintf(assign_id, sizeof(assign_id), "easg_%ld_%d", (long)time(NULL), rand() % 10000);
+            if ((center_id[0] != '\0') != (seat_no[0] != '\0')) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 400, "Center and seat must be provided together", origin, extra_headers, extra_len);
+                return;
+            }
+            char now_text[32];
+            snprintf(now_text, sizeof(now_text), "%lld", (long long)time(NULL) * 1000);
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Could not begin candidate assignment transaction", origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
 
-            const char *asg_p[7] = { assign_id, eid, ex_inst_id, student_id, roll_no, sname, room_id };
-            int asg_l[7] = { (int)strlen(assign_id), (int)strlen(eid), (int)strlen(ex_inst_id),
-                             (int)strlen(student_id), (int)strlen(roll_no), (int)strlen(sname), (int)strlen(room_id) };
+            PGresult *exam_lock = db_simple(conn,
+                "SELECT id FROM examinations WHERE id=$1 FOR UPDATE",
+                1, (const char *[]){ eid }, (int[]){ (int)strlen(eid) });
+            int lock_ok = exam_lock && PQresultStatus(exam_lock) == PGRES_TUPLES_OK &&
+                          PQntuples(exam_lock) == 1;
+            if (exam_lock) PQclear(exam_lock);
+            if (!lock_ok) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Could not lock examination roster for assignment", origin, extra_headers, extra_len);
+                return;
+            }
+            if (center_id[0]) {
+                PGresult *seat_check = db_simple(conn,
+                    "SELECT 1 FROM exam_student_assignments WHERE exam_id=$1 AND campus_id=$2 "
+                    "AND seat_no=$3 AND student_id<>$4 LIMIT 1",
+                    4, (const char *[]){ eid, center_id, seat_no, student_id },
+                    (int[]){ (int)strlen(eid), (int)strlen(center_id),
+                             (int)strlen(seat_no), (int)strlen(student_id) });
+                int seat_query_ok = seat_check && PQresultStatus(seat_check) == PGRES_TUPLES_OK;
+                int seat_taken = seat_query_ok && PQntuples(seat_check) > 0;
+                if (seat_check) PQclear(seat_check);
+                if (!seat_query_ok || seat_taken) {
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, seat_query_ok ? 409 : 503,
+                        seat_query_ok ? "The selected seat is already assigned" : "Seat availability lookup failed",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+            PGresult *attempt_check = db_simple(conn,
+                "SELECT 1 FROM exam_attempts WHERE exam_id=$1 AND student_id=$2 AND status<>'scheduled'",
+                2, (const char *[]){ eid, student_id },
+                (int[]){ (int)strlen(eid), (int)strlen(student_id) });
+            int attempt_query_ok = attempt_check && PQresultStatus(attempt_check) == PGRES_TUPLES_OK;
+            int attempt_exists = attempt_query_ok && PQntuples(attempt_check) > 0;
+            if (attempt_check) PQclear(attempt_check);
+            if (!attempt_query_ok || attempt_exists) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, attempt_query_ok ? 409 : 503,
+                    attempt_query_ok ? "Candidate has already started or completed this examination" :
+                        "Candidate attempt lookup failed",
+                    origin, extra_headers, extra_len);
+                return;
+            }
 
+            const char *asg_p[8] = {
+                assign_id, eid, ex_inst_id, student_id, roll_no, sname, center_id, seat_no
+            };
+            int asg_l[8];
+            for (int i = 0; i < 8; i++) asg_l[i] = (int)strlen(asg_p[i]);
             PGresult *asg_res = db_simple(conn,
-                "INSERT INTO exam_student_assignments (id, exam_id, institution_id, student_id, roll_no, name, room_id, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-                "ON CONFLICT (exam_id, student_id) DO UPDATE SET roll_no = EXCLUDED.roll_no, name = EXCLUDED.name",
-                7, asg_p, asg_l);
+                "INSERT INTO exam_student_assignments "
+                "(id, exam_id, institution_id, student_id, roll_no, name, campus_id, seat_no, created_at) "
+                "VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,EXTRACT(EPOCH FROM NOW())::BIGINT*1000) "
+                "ON CONFLICT (exam_id, student_id) DO UPDATE SET roll_no=EXCLUDED.roll_no, "
+                "name=EXCLUDED.name, campus_id=EXCLUDED.campus_id, seat_no=EXCLUDED.seat_no",
+                8, asg_p, asg_l);
+            int transaction_ok = asg_res && PQresultStatus(asg_res) == PGRES_COMMAND_OK;
             if (asg_res) PQclear(asg_res);
+
+            const char *candidate_params[7] = {
+                eid, center_id, seat_no, sname, ex_inst_id, roll_no, now_text
+            };
+            int candidate_lengths[7];
+            for (int i = 0; i < 7; i++) candidate_lengths[i] = (int)strlen(candidate_params[i]);
+            PGresult *candidate = transaction_ok ? db_simple(conn,
+                "UPDATE candidates SET exam_id=$1, center_id=NULLIF($2,''), seat=NULLIF($3,''), "
+                "name=$4, status='registered', assigned_at=$7::bigint "
+                "WHERE tenant_id=$5 AND roll_no=$6 AND (exam_id IS NULL OR exam_id=$1) "
+                "AND status NOT IN ('disqualified','suspended','withdrawn','cancelled','canceled',"
+                "'expired','completed','submitted','blocked','inactive','revoked','ineligible') "
+                "RETURNING id",
+                7, candidate_params, candidate_lengths) : NULL;
+            transaction_ok = transaction_ok && candidate &&
+                             PQresultStatus(candidate) == PGRES_TUPLES_OK;
+            int candidate_exists = transaction_ok && PQntuples(candidate) > 0;
+            if (candidate) PQclear(candidate);
+
+            if (transaction_ok && !candidate_exists) {
+                const char *existing_params[2] = { ex_inst_id, roll_no };
+                int existing_lengths[2] = { (int)strlen(ex_inst_id), (int)strlen(roll_no) };
+                PGresult *existing = db_simple(conn,
+                    "SELECT id FROM candidates WHERE tenant_id=$1 AND roll_no=$2",
+                    2, existing_params, existing_lengths);
+                int exists_elsewhere = existing && PQresultStatus(existing) == PGRES_TUPLES_OK &&
+                                       PQntuples(existing) > 0;
+                if (existing) PQclear(existing);
+                if (exists_elsewhere) {
+                    transaction_ok = 0;
+                } else {
+                    const char *insert_params[8] = {
+                        student_id, ex_inst_id, roll_no, sname, eid, center_id, seat_no, now_text
+                    };
+                    int insert_lengths[8];
+                    for (int i = 0; i < 8; i++) insert_lengths[i] = (int)strlen(insert_params[i]);
+                    PGresult *insert_candidate = db_simple(conn,
+                        "INSERT INTO candidates (id,tenant_id,roll_no,name,exam_id,center_id,seat,"
+                        "identity,status,assigned_at,created_at) "
+                        "VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),'pending','registered',$8::bigint,$8::bigint)",
+                        8, insert_params, insert_lengths);
+                    transaction_ok = insert_candidate &&
+                                     PQresultStatus(insert_candidate) == PGRES_COMMAND_OK;
+                    if (insert_candidate) PQclear(insert_candidate);
+                }
+            }
 
             /* Also seed scheduled attempt */
             char att_id[64];
             snprintf(att_id, sizeof(att_id), "att_%ld_%d", (long)time(NULL), rand() % 10000);
             const char *att_p[3] = { att_id, eid, student_id };
             int att_l[3] = { (int)strlen(att_id), (int)strlen(eid), (int)strlen(student_id) };
-            PGresult *att_res = db_simple(conn,
+            PGresult *att_res = transaction_ok ? db_simple(conn,
                 "INSERT INTO exam_attempts (id, exam_id, student_id, status, created_at) "
                 "VALUES ($1, $2, $3, 'scheduled', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
                 "ON CONFLICT (exam_id, student_id) DO NOTHING",
-                3, att_p, att_l);
+                3, att_p, att_l) : NULL;
+            transaction_ok = transaction_ok && att_res &&
+                             PQresultStatus(att_res) == PGRES_COMMAND_OK;
             if (att_res) PQclear(att_res);
+
+            PGresult *commit = transaction_ok ? PQexec(conn, "COMMIT") : NULL;
+            transaction_ok = transaction_ok && commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!transaction_ok) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "Candidate assignment could not be synchronized; no changes were saved", origin, extra_headers, extra_len);
+                return;
+            }
 
             record_exam_audit(conn, eid, ex_inst_id, sess.user_id, "STUDENT_ASSIGNED", roll_no);
             PQclear(exam_res);
@@ -1002,6 +1589,140 @@ void exam_handle(int client_fd, const char *method, const char *path,
             char resp[256];
             snprintf(resp, sizeof(resp), "{\"status\":\"assigned\",\"assignment_id\":\"%s\",\"exam_id\":\"%s\",\"student_id\":\"%s\"}", assign_id, eid, student_id);
             ex_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* ---------------- DELETE /api/v1/examinations/:id/students/:studentId (Unassign) ---------------- */
+        if (strcmp(method, "DELETE") == 0 && strncmp(suffix, "/students/", 10) == 0) {
+            if (sess.role != ROLE_PLATFORM_OWNER && sess.role != ROLE_INSTITUTION_ADMIN &&
+                sess.role != ROLE_EXAM_MANAGER) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 403, "Candidate assignment permission required", origin, extra_headers, extra_len);
+                return;
+            }
+            if (strcmp(ex_status, "draft") != 0 && strcmp(ex_status, "configured") != 0 &&
+                strcmp(ex_status, "pending_approval") != 0 && strcmp(ex_status, "approved") != 0) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "Candidate assignments are locked for this examination status", origin, extra_headers, extra_len);
+                return;
+            }
+            const char *student_ref = suffix + 10;
+            if (!student_ref[0] || strlen(student_ref) >= 64) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 400, "A candidate ID or roll number is required", origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *lookup_params[3] = { eid, ex_inst_id, student_ref };
+            int lookup_lengths[3] = { (int)strlen(eid), (int)strlen(ex_inst_id), (int)strlen(student_ref) };
+            PGresult *assigned = db_simple(conn,
+                "SELECT student_id, roll_no FROM exam_student_assignments "
+                "WHERE exam_id=$1 AND institution_id=$2 AND (student_id=$3 OR roll_no=$3)",
+                3, lookup_params, lookup_lengths);
+            if (!assigned || PQresultStatus(assigned) != PGRES_TUPLES_OK) {
+                if (assigned) PQclear(assigned);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Candidate assignment lookup failed", origin, extra_headers, extra_len);
+                return;
+            }
+            if (PQntuples(assigned) != 1) {
+                if (assigned) PQclear(assigned);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 404, "Candidate is not assigned to this examination", origin, extra_headers, extra_len);
+                return;
+            }
+            char assigned_student_id[64], assigned_roll_no[64];
+            snprintf(assigned_student_id, sizeof(assigned_student_id), "%s", PQgetvalue(assigned, 0, 0));
+            snprintf(assigned_roll_no, sizeof(assigned_roll_no), "%s", PQgetvalue(assigned, 0, 1));
+            PQclear(assigned);
+
+            const char *attempt_params[2] = { eid, assigned_student_id };
+            int attempt_lengths[2] = { (int)strlen(eid), (int)strlen(assigned_student_id) };
+            PGresult *attempt = db_simple(conn,
+                "SELECT 1 FROM exam_attempts WHERE exam_id=$1 AND student_id=$2 AND status<>'scheduled'",
+                2, attempt_params, attempt_lengths);
+            int attempt_query_ok = attempt && PQresultStatus(attempt) == PGRES_TUPLES_OK;
+            int attempt_started = attempt_query_ok && PQntuples(attempt) > 0;
+            if (attempt) PQclear(attempt);
+            if (!attempt_query_ok) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Candidate attempt lookup failed", origin, extra_headers, extra_len);
+                return;
+            }
+            if (attempt_started) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "A candidate with an active or completed attempt cannot be unassigned", origin, extra_headers, extra_len);
+                return;
+            }
+
+            PGresult *begin = PQexec(conn, "BEGIN");
+            int transaction_ok = begin && PQresultStatus(begin) == PGRES_COMMAND_OK;
+            if (begin) PQclear(begin);
+            const char *delete_params[3] = { eid, ex_inst_id, assigned_student_id };
+            int delete_lengths[3] = { (int)strlen(eid), (int)strlen(ex_inst_id), (int)strlen(assigned_student_id) };
+            PGresult *deleted = transaction_ok ? db_simple(conn,
+                "DELETE FROM exam_student_assignments WHERE exam_id=$1 AND institution_id=$2 AND student_id=$3",
+                3, delete_params, delete_lengths) : NULL;
+            transaction_ok = transaction_ok && deleted &&
+                             PQresultStatus(deleted) == PGRES_COMMAND_OK &&
+                             atoi(PQcmdTuples(deleted)) == 1;
+            if (deleted) PQclear(deleted);
+
+            PGresult *candidate_update = transaction_ok ? db_simple(conn,
+                "UPDATE candidates SET exam_id=NULL,center_id=NULL,seat=NULL,pin_hash=NULL,"
+                "status='registered',assigned_at=NULL WHERE tenant_id=$1 AND exam_id=$2 "
+                "AND (id=$3 OR roll_no=$4)",
+                4, (const char *[]){ ex_inst_id, eid, assigned_student_id, assigned_roll_no },
+                (int[]){ (int)strlen(ex_inst_id), (int)strlen(eid),
+                         (int)strlen(assigned_student_id), (int)strlen(assigned_roll_no) }) : NULL;
+            transaction_ok = transaction_ok && candidate_update &&
+                             PQresultStatus(candidate_update) == PGRES_COMMAND_OK;
+            if (candidate_update) PQclear(candidate_update);
+
+            char now_text[32];
+            snprintf(now_text, sizeof(now_text), "%lld", (long long)time(NULL) * 1000);
+            PGresult *revoked = transaction_ok ? db_simple(conn,
+                "UPDATE candidate_exam_auth_tokens SET revoked_at=$3::bigint "
+                "WHERE examination_id=$1 AND candidate_id=(SELECT id FROM candidates "
+                "WHERE tenant_id=$2 AND roll_no=$4) AND used_at IS NULL AND revoked_at IS NULL",
+                4, (const char *[]){ eid, ex_inst_id, now_text, assigned_roll_no },
+                (int[]){ (int)strlen(eid), (int)strlen(ex_inst_id),
+                         (int)strlen(now_text), (int)strlen(assigned_roll_no) }) : NULL;
+            transaction_ok = transaction_ok && revoked &&
+                             PQresultStatus(revoked) == PGRES_COMMAND_OK;
+            if (revoked) PQclear(revoked);
+
+            PGresult *expired = transaction_ok ? db_simple(conn,
+                "UPDATE candidate_exam_checkins SET status='expired' "
+                "WHERE examination_id=$1 AND candidate_id=(SELECT id FROM candidates "
+                "WHERE tenant_id=$2 AND roll_no=$3) AND status IN ('pending','approved')",
+                3, (const char *[]){ eid, ex_inst_id, assigned_roll_no },
+                (int[]){ (int)strlen(eid), (int)strlen(ex_inst_id), (int)strlen(assigned_roll_no) }) : NULL;
+            transaction_ok = transaction_ok && expired &&
+                             PQresultStatus(expired) == PGRES_COMMAND_OK;
+            if (expired) PQclear(expired);
+
+            PGresult *commit = transaction_ok ? PQexec(conn, "COMMIT") : NULL;
+            transaction_ok = transaction_ok && commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!transaction_ok) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 500, "Candidate unassignment failed; no changes were saved", origin, extra_headers, extra_len);
+                return;
+            }
+            record_exam_audit(conn, eid, ex_inst_id, sess.user_id, "STUDENT_UNASSIGNED", assigned_roll_no);
+            PQclear(exam_res);
+            db_release(conn, 0);
+            ex_send_json(client_fd, 200, "{\"status\":\"unassigned\"}", origin, extra_headers, extra_len);
             return;
         }
 
