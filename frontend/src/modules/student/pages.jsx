@@ -9,7 +9,7 @@ import { useLoad } from '../../core/ui/hooks';
 import { useNow } from '../../core/db/tenant';
 import { fmt } from '../../core/ui/format';
 import {
-  STUDENT_STEPS, assignments, briefing, deviceCheck, startMyExam, saveMyAnswer, submitMyExam,
+  STUDENT_STEPS, assignments, briefing, deviceCheck, startMyExam, confirmPortalSubmission,
   receipt, myHistory, requestHelp, remaining,
 } from './service';
 
@@ -85,8 +85,8 @@ export function StudentExamPage() {
   if (loading) return <StudentShell title="Exam briefing"><Card><div className="loading"><span className="spinner" /> Loading briefing…</div></Card></StudentShell>;
   if (error) return <StudentShell title="Exam briefing"><Alert tone="danger" title="Exam unavailable">{error.message}</Alert></StudentShell>;
   const b = data;
-  const submitted = b.session?.status === 'submitted';
-  const active = b.session?.status === 'in_progress';
+  const submitted = b.session?.status === 'submitted' || b.session?.status === 'closed';
+  const active = b.session?.status === 'in_progress' || b.session?.status === 'active';
   const start = async () => {
     const r = await run(() => startMyExam(user, id), 'Session started.');
     if (r) navigate(`/student/exams/${id}/session`);
@@ -190,14 +190,14 @@ export function StudentSessionPage() {
   if (error) return <StudentShell title="Exam session"><Alert tone="danger">{error.message}</Alert></StudentShell>;
   const b = data; const s = b.session; const exam = b.exam;
   if (!s) return <StudentShell title="Exam session"><Empty icon="pulse" title="No session yet">Start the exam from the briefing page.</Empty><div className="row end"><Link className="btn primary" to={`/student/exams/${id}`}>Open briefing</Link></div></StudentShell>;
-  if (s.status === 'submitted') return <StudentShell title="Exam session"><Alert tone="success" title="Session submitted">Your receipt is {s.receipt}. Answers can no longer be changed.</Alert><div className="row end"><Link className="btn primary" to={`/student/exams/${id}/submission`}>View receipt</Link></div></StudentShell>;
+  if (s.status === 'submitted' || s.status === 'closed') return <StudentShell title="Exam session"><Alert tone="warn" title="Portal completion confirmation recorded">ExamOS recorded your confirmation; it cannot verify submission in the external institution portal.</Alert><div className="row end"><Link className="btn primary" to={`/student/exams/${id}/submission`}>View completion status</Link></div></StudentShell>;
   const left = remaining(s, now);
 
   const submit = async () => {
-    const r = await run(() => submitMyExam(user, s.id), 'Exam submitted.');
+    const r = await run(() => confirmPortalSubmission(user, s.id), 'Your portal submission confirmation was recorded.');
     if (r) navigate(`/student/exams/${id}/submission`);
   };
-  return <StudentShell title={`${exam.code} · Session`} desc="Keep this secure session open while you use the assessment portal." actions={<span className={'badge ' + (left < 300000 ? 'r' : left < 900000 ? 'a' : 'g')}><i /> {Math.floor(left / 60000)}:{String(Math.floor((left % 60000) / 1000)).padStart(2, '0')} left</span>}>
+  return <StudentShell title={`${exam.code} · Session`} desc="Complete and submit your assessment in the institution portal, then confirm here." actions={<span className={'badge ' + (left < 300000 ? 'r' : left < 900000 ? 'a' : 'g')}><i /> {Math.floor(left / 60000)}:{String(Math.floor((left % 60000) / 1000)).padStart(2, '0')} left</span>}>
     <Flash msg={msg} onClose={() => setMsg(null)} />
     <StatGrid cols={4}>
       <Stat label="Time left" value={`${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, '0')}`} icon="clock" tone={left < 300000 ? 'red' : 'blue'} />
@@ -229,9 +229,9 @@ export function StudentSessionPage() {
     </Card>
     <div className="row end sticky-actions">
       <span className="muted sm">{saving ? 'Saving…' : 'Kiosk Session Active'}</span>
-      <button className="btn primary" onClick={() => setConfirmSubmit(true)} disabled={left === 0}>Submit exam</button>
+      <button className="btn primary" onClick={() => setConfirmSubmit(true)}>I submitted in the portal</button>
     </div>
-    {confirmSubmit && <ActionDialog title="Submit exam" desc="Submit your attempt to the server. The page will show the result returned by the server." confirmLabel="Submit now" requireReason={false} onClose={() => setConfirmSubmit(false)} onConfirm={submit} />}
+    {confirmSubmit && <ActionDialog title="Confirm portal submission" desc="This records that you say you submitted in the institution portal. ExamOS cannot verify the external portal's submission or receipt." confirmLabel="Confirm and finish" requireReason={false} onClose={() => setConfirmSubmit(false)} onConfirm={submit} />}
   </StudentShell>;
 }
 
@@ -249,8 +249,8 @@ export function StudentSubmissionPage() {
   if (!r) return <StudentShell title="Submission"><Empty icon="check" title="Nothing submitted yet" /><div className="row end"><Link className="btn" to={`/student/exams/${id}`}>Back to briefing</Link></div></StudentShell>;
   return <StudentShell title="Submission receipt" desc="Submission metadata reported by the server." actions={<Link className="btn" to="/student/history">All receipts</Link>}>
     <Steps steps={STUDENT_STEPS} current={3} />
-    <Alert tone={r.valid ? 'success' : 'warn'} title={r.valid ? 'Receipt signature verified' : r.receipt ? 'Receipt not verified' : 'No cryptographic receipt provided'}>
-      {r.valid ? 'The server confirmed this receipt signature.' : r.receipt ? 'The server returned a receipt reference but did not confirm its signature.' : 'The server session endpoint did not provide a cryptographic receipt.'}
+    <Alert tone={r.valid ? 'success' : 'warn'} title={r.valid ? 'Receipt signature verified' : r.status === 'closed' ? 'Portal completion confirmation recorded' : r.receipt ? 'Receipt not verified' : 'No cryptographic receipt provided'}>
+      {r.valid ? 'The server confirmed this receipt signature.' : r.status === 'closed' ? 'Your completion confirmation is recorded. The institution portal did not provide a receipt for independent verification.' : r.receipt ? 'The server returned a receipt reference but did not confirm its signature.' : 'The server session endpoint did not provide a cryptographic receipt.'}
     </Alert>
     <StatGrid cols={4}>
       <Stat label="Receipt" value={r.receipt || 'Not provided'} icon="check" />

@@ -13,6 +13,7 @@ void ctrl_send_json(int client_fd, int status_code, const char *body,
 
 /* Send an error JSON response. */
 void ctrl_send_error(int client_fd, int status_code, const char *error);
+void ctrl_json_escape(const char *input, char *output, size_t output_len);
 
 /* Extract Bearer token from Authorization header. Returns 1 if found. */
 int ctrl_extract_bearer(const char *auth_header, char *out, size_t out_len);
@@ -32,6 +33,10 @@ int ctrl_extract_origin(const char *buffer, char *out, size_t out_len);
 /* Authorize a Bearer token with required permission. Fills session. */
 int ctrl_authorize(const char *auth_header, uint32_t required_perm,
                    auth_session_t *out);
+
+/* Resolve a live ExamOS candidate bearer token to its roster candidate ID. */
+int ctrl_candidate_session_identity(const char *auth_header, char *out_candidate_id,
+                                    size_t out_len);
 
 /* Set CORS headers on the response for the given origin. */
 void ctrl_set_cors(char *extra_headers, size_t extra_len,

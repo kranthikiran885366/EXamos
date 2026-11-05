@@ -326,6 +326,7 @@ export function PlatformApplicationsPage() {
     <Page
       title="Onboarding Applications"
       desc="Review new institutional registrations, domain authenticity, and representative authorizations."
+      actions={<button className="btn" onClick={loadApps} disabled={loading}><Icon name="refresh" size={14} /> Retry / Refresh</button>}
       breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><span>Applications</span></div>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />

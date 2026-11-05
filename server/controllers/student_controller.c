@@ -78,6 +78,12 @@ void student_handle(int client_fd, const char *method, const char *path,
     memset(&sess, 0, sizeof(sess));
 
     int auth_rc = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess);
+    char candidate_id[64] = {0};
+    int is_candidate = ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id));
+    if (auth_rc != 0 && !is_candidate) {
+        stu_send_error(client_fd, 401, "Authentication required", origin, extra_headers, extra_len);
+        return;
+    }
     int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
                     strcmp(sess.username, "admin") == 0 ||
                     strcmp(sess.username, "root") == 0));
@@ -297,14 +303,42 @@ void student_handle(int client_fd, const char *method, const char *path,
         student_id[len] = '\0';
         const char *action = slash ? slash : "";
 
+        if (is_candidate &&
+            (strcmp(method, "GET") != 0 ||
+             (action[0] != '\0' && strcmp(action, "/exam-sessions") != 0))) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, 403, "Candidates have read-only access to their own exam workspace", origin, extra_headers, extra_len);
+            return;
+        }
+
         /* Load Student Profile */
-        const char *qp[1] = { student_id };
-        int ql[1] = { (int)strlen(student_id) };
-        PGresult *s_res = db_simple(conn,
-            "SELECT id, institution_id, roll_no, name, display_name, email, personal_email, phone_number, "
-            "course, department_id, campus_id, batch, semester, section, academic_status, attendance_pct, "
-            "prerequisites_completed, administrative_hold, hold_reason, verification_status, accommodations, notes "
-            "FROM students WHERE id = $1 OR roll_no = $1", 1, qp, ql);
+        PGresult *s_res = NULL;
+        if (is_candidate) {
+            if (strcmp(student_id, candidate_id) != 0) {
+                db_release(conn, 0);
+                stu_send_error(client_fd, 403, "Candidates may only access their own record", origin, extra_headers, extra_len);
+                return;
+            }
+            const char *qp[1] = { candidate_id };
+            int ql[1] = { (int)strlen(candidate_id) };
+            s_res = db_simple(conn,
+                "SELECT s.id, s.institution_id, s.roll_no, s.name, s.display_name, s.email, s.personal_email, s.phone_number, "
+                "s.course, s.department_id, s.campus_id, s.batch, s.semester, s.section, s.academic_status, s.attendance_pct, "
+                "s.prerequisites_completed, s.administrative_hold, s.hold_reason, "
+                "CASE WHEN lower(c.identity) = 'verified' OR lower(s.verification_status) = 'verified' THEN 'verified' "
+                "WHEN lower(c.identity) = 'rejected' OR lower(s.verification_status) = 'rejected' THEN 'rejected' "
+                "ELSE COALESCE(NULLIF(s.verification_status, ''), c.identity, '') END, s.accommodations, s.notes "
+                "FROM candidates c JOIN students s ON s.institution_id = c.tenant_id "
+                "AND (s.roll_no = c.roll_no OR s.id = c.id) WHERE c.id = $1 LIMIT 1", 1, qp, ql);
+        } else {
+            const char *qp[1] = { student_id };
+            int ql[1] = { (int)strlen(student_id) };
+            s_res = db_simple(conn,
+                "SELECT id, institution_id, roll_no, name, display_name, email, personal_email, phone_number, "
+                "course, department_id, campus_id, batch, semester, section, academic_status, attendance_pct, "
+                "prerequisites_completed, administrative_hold, hold_reason, verification_status, accommodations, notes "
+                "FROM students WHERE id = $1 OR roll_no = $1", 1, qp, ql);
+        }
 
         if (!s_res || PQntuples(s_res) == 0) {
             if (s_res) PQclear(s_res);
@@ -347,16 +381,25 @@ void student_handle(int client_fd, const char *method, const char *path,
         /* ---------------- GET /api/v1/students/:id (Profile Details) ---------------- */
         if (strcmp(method, "GET") == 0 && action[0] == '\0') {
             db_release(conn, 0);
-            char resp[4096];
+            const char *profile_fields[15] = {
+                s_pk, s_inst, s_roll, s_name, s_disp, s_email, s_p_email, s_phone,
+                s_course, s_batch, s_sec, s_status, s_verif, s_accommodations, s_notes
+            };
+            char escaped_profile[15][512];
+            for (int i = 0; i < 15; i++)
+                ctrl_json_escape(profile_fields[i], escaped_profile[i], sizeof(escaped_profile[i]));
+            char resp[8192];
             snprintf(resp, sizeof(resp),
                 "{\"student\":{\"id\":\"%s\",\"institution_id\":\"%s\",\"roll_no\":\"%s\",\"name\":\"%s\","
                 "\"display_name\":\"%s\",\"email\":\"%s\",\"personal_email\":\"%s\",\"phone_number\":\"%s\",\"course\":\"%s\","
                 "\"batch\":\"%s\",\"semester\":%d,\"section\":\"%s\",\"academic_status\":\"%s\","
                 "\"attendance_pct\":%d,\"administrative_hold\":%s,\"verification_status\":\"%s\","
                 "\"accommodations\":\"%s\",\"notes\":\"%s\"}}",
-                s_pk, s_inst, s_roll, s_name, s_disp, s_email, s_p_email, s_phone, s_course,
-                s_batch, s_sem, s_sec, s_status, s_att, s_hold ? "true" : "false", s_verif,
-                s_accommodations, s_notes);
+                escaped_profile[0], escaped_profile[1], escaped_profile[2], escaped_profile[3],
+                escaped_profile[4], escaped_profile[5], escaped_profile[6], escaped_profile[7],
+                escaped_profile[8], escaped_profile[9], s_sem, escaped_profile[10],
+                escaped_profile[11], s_att, s_hold ? "true" : "false", escaped_profile[12],
+                escaped_profile[13], escaped_profile[14]);
             stu_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
@@ -710,24 +753,76 @@ void student_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "GET") == 0 && strcmp(action, "/exam-sessions") == 0) {
             const char *qp[1] = { s_pk };
             int ql[1] = { (int)strlen(s_pk) };
+            const char *candidate_scope = is_candidate
+                ? "r.student_id = (SELECT s.id FROM candidates cx JOIN students s "
+                  "ON s.institution_id = cx.tenant_id AND s.roll_no = cx.roll_no WHERE cx.id = $1 LIMIT 1) "
+                  "AND r.examination_id = (SELECT exam_id FROM candidates WHERE id = $1)"
+                : "r.student_id = $1";
+            char query[4096];
+            snprintf(query, sizeof(query),
+                "SELECT COALESCE(es.id, ''), e.id, COALESCE(NULLIF(es.device_id, ''), d.id, ''), "
+                "COALESCE(es.status, 'scheduled'), sch.start_time, sch.end_time, es.launched_at, "
+                "e.code, e.name, e.status, e.duration_minutes, "
+                "e.instructions, e.exam_url, COALESCE(c.seat, ''), COALESCE(c.center_id, ''), "
+                "COALESCE(ce.code, ''), COALESCE(ce.name, ''), COALESCE(ce.city, ''), COALESCE(ce.status, ''), "
+                "COALESCE(d.hostname, ''), COALESCE(d.status, ''), COALESCE(d.trust, ''), "
+                "COALESCE(c.identity, ''), COALESCE(d.compat_status, '') "
+                "FROM exam_registrations r JOIN examinations e ON e.id = r.examination_id "
+                "LEFT JOIN LATERAL (SELECT id, device_id, status, launched_at FROM exam_sessions "
+                "WHERE student_id = r.student_id AND examination_id = r.examination_id "
+                "ORDER BY created_at DESC LIMIT 1) es ON TRUE "
+                "LEFT JOIN LATERAL (SELECT start_time, end_time FROM exam_schedules "
+                "WHERE exam_id = r.examination_id ORDER BY start_time LIMIT 1) sch ON TRUE "
+                "LEFT JOIN candidates c ON c.tenant_id = r.institution_id AND c.exam_id = r.examination_id AND c.roll_no = "
+                "(SELECT roll_no FROM students WHERE id = r.student_id LIMIT 1) "
+                "LEFT JOIN centers ce ON ce.id = c.center_id "
+                "LEFT JOIN devices d ON (d.id = es.device_id OR "
+                "(NULLIF(es.device_id, '') IS NULL AND d.center_id = c.center_id AND d.seat = c.seat)) "
+                "AND d.tenant_id = r.institution_id "
+                "WHERE %s AND r.registration_status IN ('approved', 'roster_published') "
+                "AND r.eligibility_status IN ('eligible', 'exempted') ORDER BY sch.start_time",
+                candidate_scope);
             PGresult *sr = db_simple(conn,
-                "SELECT id, examination_id, device_id, status, start_time, end_time FROM exam_sessions "
-                "WHERE student_id = $1 ORDER BY created_at DESC", 1, qp, ql);
+                query, 1, qp, ql);
 
+            if (!sr || PQresultStatus(sr) != PGRES_TUPLES_OK) {
+                if (sr) PQclear(sr);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 500, "Failed to load candidate exam assignments", origin, extra_headers, extra_len);
+                return;
+            }
             char *json = malloc(65536);
+            if (!json) {
+                PQclear(sr);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 500, "Unable to allocate exam assignment response", origin, extra_headers, extra_len);
+                return;
+            }
             size_t pos = 0;
             pos += snprintf(json + pos, 65536 - pos, "{\"exam_sessions\":[");
-            if (sr) {
+            {
                 int n = PQntuples(sr);
                 for (int i = 0; i < n; i++) {
+                    char escaped[24][1024];
+                    for (int j = 0; j < 24; j++)
+                        ctrl_json_escape(PQgetvalue(sr, i, j), escaped[j], sizeof(escaped[j]));
                     if (i > 0) pos += snprintf(json + pos, 65536 - pos, ",");
                     pos += snprintf(json + pos, 65536 - pos,
                         "{\"session_id\":\"%s\",\"examination_id\":\"%s\",\"device_id\":\"%s\","
-                        "\"status\":\"%s\",\"start_time\":%s,\"end_time\":%s}",
-                        PQgetvalue(sr, i, 0), PQgetvalue(sr, i, 1), PQgetvalue(sr, i, 2),
-                        PQgetvalue(sr, i, 3),
+                        "\"status\":\"%s\",\"start_time\":%s,\"end_time\":%s,\"launched_at\":%s,"
+                        "\"exam_code\":\"%s\",\"exam_name\":\"%s\",\"exam_status\":\"%s\","
+                        "\"duration_minutes\":%s,\"instructions\":\"%s\",\"exam_url\":\"%s\","
+                        "\"seat\":\"%s\",\"center_id\":\"%s\",\"center_code\":\"%s\",\"center_name\":\"%s\","
+                        "\"center_city\":\"%s\",\"center_status\":\"%s\",\"device_hostname\":\"%s\","
+                        "\"device_status\":\"%s\",\"device_trust\":\"%s\",\"identity\":\"%s\",\"compat_status\":\"%s\"}",
+                        escaped[0], escaped[1], escaped[2], escaped[3],
                         PQgetvalue(sr, i, 4)[0] ? PQgetvalue(sr, i, 4) : "null",
-                        PQgetvalue(sr, i, 5)[0] ? PQgetvalue(sr, i, 5) : "null");
+                        PQgetvalue(sr, i, 5)[0] ? PQgetvalue(sr, i, 5) : "null",
+                        PQgetvalue(sr, i, 6)[0] ? PQgetvalue(sr, i, 6) : "null",
+                        escaped[7], escaped[8], escaped[9], PQgetvalue(sr, i, 10),
+                        escaped[11], escaped[12], escaped[13], escaped[14], escaped[15],
+                        escaped[16], escaped[17], escaped[18], escaped[19], escaped[20],
+                        escaped[21], escaped[22], escaped[23]);
                 }
                 PQclear(sr);
             }

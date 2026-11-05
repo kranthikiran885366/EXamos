@@ -780,7 +780,7 @@ static int candidate_status_permits_login(const char *status) {
 }
 
 /*
- * Returns 0 when the candidate is eligible and inside a scheduled window,
+ * Returns 0 when the candidate is eligible and within the sign-in lead window,
  * or 1 with a human-readable reason when they are not.  Missing schedule or
  * assignment rows are treated as "no constraint recorded" so an institution
  * that does not use scheduling/eligibility is not locked out.
@@ -792,13 +792,36 @@ static int candidate_exam_window_reason(PGconn *conn, const char *exam_id,
     if (reason && reason_len) reason[0] = '\0';
 
     if (exam_id && exam_id[0]) {
+        const char *exam_p[1] = { exam_id };
+        int exam_l[1] = { (int)strlen(exam_id) };
+        PGresult *exam = db_simple(conn,
+            "SELECT status FROM examinations WHERE id = $1", 1, exam_p, exam_l);
+        if (!exam || PQresultStatus(exam) != PGRES_TUPLES_OK || PQntuples(exam) == 0) {
+            if (exam) PQclear(exam);
+            if (reason && reason_len)
+                snprintf(reason, reason_len, "The assigned examination is not available.");
+            return 1;
+        }
+        const char *exam_status = PQgetvalue(exam, 0, 0);
+        int available = strcmp(exam_status, "scheduled") == 0 ||
+                        strcmp(exam_status, "ready") == 0 ||
+                        strcmp(exam_status, "in_progress") == 0;
+        PQclear(exam);
+        if (!available) {
+            if (reason && reason_len)
+                snprintf(reason, reason_len, "The assigned examination is not open for candidates.");
+            return 1;
+        }
+
         char now_ms[32];
         snprintf(now_ms, sizeof(now_ms), "%lld",
                  (long long)time(NULL) * 1000LL);
         const char *sp[2] = { exam_id, now_ms };
         int sl[2] = { (int)strlen(exam_id), (int)strlen(now_ms) };
         PGresult *sr = db_simple(conn,
-            "SELECT COUNT(*), COUNT(*) FILTER (WHERE start_time <= $2 AND end_time >= $2) "
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE "
+            "(CASE WHEN start_time < 10000000000 THEN start_time * 1000 ELSE start_time END) <= ($2::bigint + 1800000) "
+            "AND (CASE WHEN end_time < 10000000000 THEN end_time * 1000 ELSE end_time END) >= $2::bigint) "
             "FROM exam_schedules WHERE exam_id = $1",
             2, sp, sl);
         if (sr && PQresultStatus(sr) == PGRES_TUPLES_OK && PQntuples(sr) == 1) {
@@ -974,7 +997,17 @@ void auth_candidate_login(int client_fd, const char *req_body,
         goto done;
     }
 
-    if (found && db_exam_id[0]) {
+    if (!found || !db_exam_id[0]) {
+        send_json_cors(client_fd, 403,
+            "{\"status\":\"FAIL\",\"error\":\"No assigned institution assessment is configured for this candidate. Contact your examination controller.\"}",
+            origin, extra_headers, extra_len);
+        audit_log(db_id[0] ? db_id : candidate_id, "CANDIDATE_LOGIN_DENIED",
+                  "candidate has no assigned examination");
+        db_release(conn, 0);
+        goto done;
+    }
+
+    {
         char window_reason[256] = {0};
         if (candidate_exam_window_reason(conn, db_exam_id, db_id,
                                          db_id, db_roll,
@@ -989,6 +1022,37 @@ void auth_candidate_login(int client_fd, const char *req_body,
             db_release(conn, 0);
             goto done;
         }
+    }
+
+    char exam_title[128] = "ExamOS Examination", exam_url[512] = "";
+    const char *epvals[1] = { db_exam_id };
+    int elens[1] = { (int)strlen(db_exam_id) };
+    PGresult *eres = db_simple(conn,
+        "SELECT title, COALESCE(exam_url, '') FROM exams WHERE id = $1", 1, epvals, elens);
+    if (eres && PQresultStatus(eres) == PGRES_TUPLES_OK && PQntuples(eres) > 0) {
+        strncpy(exam_title, PQgetvalue(eres, 0, 0), sizeof(exam_title) - 1);
+        strncpy(exam_url, PQgetvalue(eres, 0, 1), sizeof(exam_url) - 1);
+    }
+    if (eres) PQclear(eres);
+
+    if (!exam_url[0]) {
+        PGresult *xres = db_simple(conn,
+            "SELECT name, COALESCE(exam_url, '') FROM examinations WHERE id = $1 OR code = $1", 1, epvals, elens);
+        if (xres && PQresultStatus(xres) == PGRES_TUPLES_OK && PQntuples(xres) > 0) {
+            strncpy(exam_title, PQgetvalue(xres, 0, 0), sizeof(exam_title) - 1);
+            strncpy(exam_url, PQgetvalue(xres, 0, 1), sizeof(exam_url) - 1);
+        }
+        if (xres) PQclear(xres);
+    }
+
+    if (!exam_url[0]) {
+        send_json_cors(client_fd, 503,
+            "{\"status\":\"FAIL\",\"error\":\"The assigned institution assessment portal URL is not configured.\"}",
+            origin, extra_headers, extra_len);
+        audit_log(db_id[0] ? db_id : candidate_id, "CANDIDATE_LOGIN_DENIED",
+                  "assigned exam portal URL is not configured");
+        db_release(conn, 0);
+        goto done;
     }
 
     /* Create candidate token via canonical secure_token_create path. */
@@ -1048,44 +1112,21 @@ void auth_candidate_login(int client_fd, const char *req_body,
         }
     }
 
-    /* Get Exam Name & URL if configured */
-    char exam_title[128] = "ExamOS Examination", exam_url[512] = "";
-    if (db_exam_id[0]) {
-        const char *epvals[1] = { db_exam_id };
-        int elens[1] = { (int)strlen(db_exam_id) };
-        /* 1. Try exams table */
-        PGresult *eres = db_simple(conn,
-            "SELECT title, COALESCE(exam_url, '') FROM exams WHERE id = $1", 1, epvals, elens);
-        if (eres && PQresultStatus(eres) == PGRES_TUPLES_OK && PQntuples(eres) > 0) {
-            strncpy(exam_title, PQgetvalue(eres, 0, 0), sizeof(exam_title) - 1);
-            strncpy(exam_url, PQgetvalue(eres, 0, 1), sizeof(exam_url) - 1);
-        }
-        if (eres) PQclear(eres);
-
-        /* 2. Fallback to examinations table if URL empty */
-        if (!exam_url[0]) {
-            PGresult *xres = db_simple(conn,
-                "SELECT name, COALESCE(exam_url, '') FROM examinations WHERE id = $1 OR code = $1", 1, epvals, elens);
-            if (xres && PQresultStatus(xres) == PGRES_TUPLES_OK && PQntuples(xres) > 0) {
-                if (exam_title[0] == '\0' || strcmp(exam_title, "ExamOS Examination") == 0) {
-                    strncpy(exam_title, PQgetvalue(xres, 0, 0), sizeof(exam_title) - 1);
-                }
-                strncpy(exam_url, PQgetvalue(xres, 0, 1), sizeof(exam_url) - 1);
-            }
-            if (xres) PQclear(xres);
-        }
-    }
-    if (!exam_url[0]) {
-        strncpy(exam_url, "https://assessment.sppio.io/exam/live", sizeof(exam_url) - 1);
-    }
     db_release(conn, 0);
 
-    char resp_body[1024];
+    char escaped_candidate[128], escaped_name[256], escaped_exam[128];
+    char escaped_title[256], escaped_url[1024];
+    ctrl_json_escape(db_id[0] ? db_id : candidate_id, escaped_candidate, sizeof(escaped_candidate));
+    ctrl_json_escape(db_name[0] ? db_name : candidate_id, escaped_name, sizeof(escaped_name));
+    ctrl_json_escape(db_exam_id, escaped_exam, sizeof(escaped_exam));
+    ctrl_json_escape(exam_title, escaped_title, sizeof(escaped_title));
+    ctrl_json_escape(exam_url, escaped_url, sizeof(escaped_url));
+
+    char resp_body[4096];
     snprintf(resp_body, sizeof(resp_body),
         "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"candidate_id\":\"%s\","
         "\"name\":\"%s\",\"exam_id\":\"%s\",\"exam_name\":\"%s\",\"exam_url\":\"%s\"}",
-        token, db_id[0] ? db_id : candidate_id, db_name[0] ? db_name : candidate_id,
-        db_exam_id, exam_title, exam_url);
+        token, escaped_candidate, escaped_name, escaped_exam, escaped_title, escaped_url);
 
     ctrl_set_cors(extra_headers, extra_len, origin,
                   ctrl_cors_origin_allowed(origin));

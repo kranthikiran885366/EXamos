@@ -4,6 +4,7 @@
  */
 
 #include "controller.h"
+#include "../include/candidate_login.h"
 #include <stdlib.h>
 #include <time.h>
 #include <pthread.h>
@@ -29,6 +30,24 @@ static const char *status_text(int code) {
         case 503: return "Service Unavailable";
         default: return "Internal Server Error";
     }
+}
+
+void ctrl_json_escape(const char *input, char *output, size_t output_len) {
+    if (!output || output_len == 0) return;
+    if (!input) input = "error";
+    size_t out = 0;
+    for (size_t in = 0; input[in] && out + 2 < output_len; ++in) {
+        unsigned char c = (unsigned char)input[in];
+        switch (c) {
+            case '"': output[out++] = '\\'; output[out++] = '"'; break;
+            case '\\': output[out++] = '\\'; output[out++] = '\\'; break;
+            case '\n': output[out++] = '\\'; output[out++] = 'n'; break;
+            case '\r': output[out++] = '\\'; output[out++] = 'r'; break;
+            case '\t': output[out++] = '\\'; output[out++] = 't'; break;
+            default: output[out++] = c >= 0x20 ? (char)c : ' '; break;
+        }
+    }
+    output[out] = '\0';
 }
 
 void ctrl_send_json(int client_fd, int status_code, const char *body,
@@ -58,9 +77,11 @@ void ctrl_send_json(int client_fd, int status_code, const char *body,
 }
 
 void ctrl_send_error(int client_fd, int status_code, const char *error) {
-    char body[512];
-    int blen = snprintf(body, sizeof(body), "{\"error\":\"%s\"}", error ? error : "error");
-    if (blen < 0) blen = 0;
+    char escaped[1024];
+    char body[1100];
+    ctrl_json_escape(error, escaped, sizeof(escaped));
+    int blen = snprintf(body, sizeof(body), "{\"error\":\"%s\"}", escaped);
+    if (blen < 0 || (size_t)blen >= sizeof(body)) return;
     ctrl_send_json(client_fd, status_code, body, NULL);
 }
 
@@ -179,6 +200,16 @@ int ctrl_authorize(const char *auth_header, uint32_t required_perm,
         return -1;
     }
     return 0;
+}
+
+int ctrl_candidate_session_identity(const char *auth_header, char *out_candidate_id,
+                                    size_t out_len) {
+    char token[128] = {0};
+    if (!out_candidate_id || out_len == 0 ||
+        !ctrl_extract_bearer(auth_header, token, sizeof(token))) {
+        return 0;
+    }
+    return candidate_session_identity(token, out_candidate_id, out_len);
 }
 
 void ctrl_set_cors(char *extra_headers, size_t extra_len,

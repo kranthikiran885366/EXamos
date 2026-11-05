@@ -901,6 +901,7 @@ export function InstitutionApplicationsPage() {
     <Page
       title="Institution Onboarding Queue"
       desc="Applications submitted by enterprises, companies, universities, and institutions awaiting identity verification, contracting, and provisioning."
+      actions={<button className="btn" onClick={reloadApps} disabled={loading}><Icon name="refresh" size={14} /> Retry / Refresh</button>}
       breadcrumb={
         <div className="crumbs-inline">
           <Link to="/admin/institutions">Institutions</Link>

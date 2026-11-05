@@ -5,73 +5,91 @@ import { safeRedirect } from '../../core/security/sanitize';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
 
-function LoginShowcase() {
+function LoginShowcase({ candidateOnly = false }) {
   return (
     <div className="login-editorial-showcase">
       <div className="editorial-content">
         <div className="editorial-brand">
           <SppioLogo width={164} accent="#B54F34" ink="#FFFFFF" />
-          <span className="editorial-badge">SPPIO-Command™ Console</span>
+          <span className="editorial-badge">{candidateOnly ? 'ExamOS Candidate Station' : 'SPPIO-Command™ Console'}</span>
         </div>
 
         <div className="editorial-hero">
           <div className="editorial-telemetry-badge">
             <span className="editorial-ping" />
-            <span>Management console sign-in</span>
+            <span>{candidateOnly ? 'Candidate examination sign-in' : 'Management console sign-in'}</span>
           </div>
 
-          <h1 className="editorial-headline">
-            High-Assurance Infrastructure for <span>Enterprise Recruitment &amp; Exams</span>
-          </h1>
-          <p className="editorial-sub">
-            Sign in to manage institution, examination, and assessment workflows.
-          </p>
-
-          <div className="editorial-points">
-            <div className="editorial-point">
-              <div className="editorial-point-marker" />
-              <div>
-                <strong>SPPIO-Isolation™ &amp; Kiosk™ Sandbox</strong>
-                <p>Assessment station controls depend on supported hardware and the profile configured for your institution.</p>
+          {candidateOnly ? (
+            <>
+              <h1 className="editorial-headline">Your examination <span>workspace</span></h1>
+              <p className="editorial-sub">Sign in with the candidate ID and examination PIN provided by your institution.</p>
+              <div className="editorial-points">
+                <div className="editorial-point">
+                  <div className="editorial-point-marker" />
+                  <div>
+                    <strong>Secure candidate access</strong>
+                    <p>Your assignments and exam readiness steps are shown after authentication.</p>
+                  </div>
+                </div>
               </div>
-            </div>
+            </>
+          ) : (
+            <>
+              <h1 className="editorial-headline">
+                High-Assurance Infrastructure for <span>Enterprise Recruitment &amp; Exams</span>
+              </h1>
+              <p className="editorial-sub">
+                Sign in to manage institution, examination, and assessment workflows.
+              </p>
 
-            <div className="editorial-point">
-              <div className="editorial-point-marker" />
-              <div>
-                <strong>SPPIO-Proctor™ &amp; Forensics™</strong>
-                <p>Optional monitoring and event-review features depend on enabled modules, consent, and retention policy.</p>
+              <div className="editorial-points">
+                <div className="editorial-point">
+                  <div className="editorial-point-marker" />
+                  <div>
+                    <strong>SPPIO-Isolation™ &amp; Kiosk™ Sandbox</strong>
+                    <p>Assessment station controls depend on supported hardware and the profile configured for your institution.</p>
+                  </div>
+                </div>
+                <div className="editorial-point">
+                  <div className="editorial-point-marker" />
+                  <div>
+                    <strong>SPPIO-Proctor™ &amp; Forensics™</strong>
+                    <p>Optional monitoring and event-review features depend on enabled modules, consent, and retention policy.</p>
+                  </div>
+                </div>
+                <div className="editorial-point">
+                  <div className="editorial-point-marker" />
+                  <div>
+                    <strong>SPPIO-Ledger™ &amp; Core™ Storage</strong>
+                    <p>Hash-linked audit events may make selected changes detectable; they do not by themselves guarantee non-repudiation or compliance.</p>
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div className="editorial-point">
-              <div className="editorial-point-marker" />
-              <div>
-                <strong>SPPIO-Ledger™ &amp; Core™ Storage</strong>
-                <p>Hash-linked audit events may make selected changes detectable; they do not by themselves guarantee non-repudiation or compliance.</p>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
 
         <div className="editorial-footer">
-          <div className="editorial-standards">
-            <span>SPPIO-TrustEngine™</span>
-            <span className="sep">•</span>
-            <span>SPPIO-PhysicalGuard™</span>
-            <span className="sep">•</span>
-            <span>SPPIO-Forensics™</span>
-            <span className="sep">•</span>
-            <span>Deployment-specific controls</span>
-          </div>
-          <div className="editorial-copy">© 2026 SPPIO Systems Enclave. All rights reserved.</div>
+          {!candidateOnly && (
+            <div className="editorial-standards">
+              <span>SPPIO-TrustEngine™</span>
+              <span className="sep">•</span>
+              <span>SPPIO-PhysicalGuard™</span>
+              <span className="sep">•</span>
+              <span>SPPIO-Forensics™</span>
+              <span className="sep">•</span>
+              <span>Deployment-specific controls</span>
+            </div>
+          )}
+          <div className="editorial-copy">{candidateOnly ? 'ExamOS Candidate Examination Portal' : '© 2026 SPPIO Systems Enclave. All rights reserved.'}</div>
         </div>
       </div>
     </div>
   );
 }
 
-export default function LoginPage() {
+export default function LoginPage({ candidateOnly = false }) {
   const {
     user,
     pending,
@@ -87,7 +105,7 @@ export default function LoginPage() {
   const loc = useLocation();
   const navigate = useNavigate();
 
-  const [realm, setRealm] = useState(() => new URLSearchParams(window.location.search).get('realm') === 'candidate' ? 'candidate' : 'admin');
+  const [realm, setRealm] = useState(() => candidateOnly || new URLSearchParams(window.location.search).get('realm') === 'candidate' ? 'candidate' : 'admin');
   const [u, setU] = useState('');
   const [p, setP] = useState('');
   const [candId, setCandId] = useState('');
@@ -112,7 +130,7 @@ export default function LoginPage() {
 
   if (user) {
     if (user.role === 'student' || user.candidateId) {
-      return <Navigate to="/exam" replace />;
+      return <Navigate to="/student/home" replace />;
     }
     return <Navigate to={safeRedirect(loc.state?.from)} replace />;
   }
@@ -164,7 +182,8 @@ export default function LoginPage() {
     try {
       const res = await backendCandidateLogin({ candidateId: candId, pin: candPin });
       if (res?.ok) {
-        navigate('/student/home');
+        const examId = res.profile?.examId;
+        navigate(examId ? `/student/exams/${encodeURIComponent(examId)}` : '/student/home', { replace: true });
       } else if (res?.error) {
         setErr(res.error);
       }
@@ -319,9 +338,9 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="login-flow-container">
+    <div className={`login-flow-container${candidateOnly ? ' candidate-login-only' : ''}`}>
       {/* Left Column: Refined Editorial Showcase (No Cards / No Grids) */}
-      <LoginShowcase />
+      <LoginShowcase candidateOnly={candidateOnly} />
 
       {/* Right Column: Polished Authentication Form */}
       <div className="login-form-container">
@@ -336,8 +355,8 @@ export default function LoginPage() {
               {/* Header with Connectivity Status */}
               <div className="login-auth-header">
                 <div>
-                  <h2 className="login-auth-title">SPPIO Console Access</h2>
-                  <p className="login-auth-subtitle">Choose the sign-in path for your role.</p>
+                  <h2 className="login-auth-title">{candidateOnly ? 'Candidate Sign In' : 'SPPIO Console Access'}</h2>
+                  <p className="login-auth-subtitle">{candidateOnly ? 'Enter your institution-issued examination credentials.' : 'Choose the sign-in path for your role.'}</p>
                 </div>
                 <div className={`status-pill ${backendReady ? 'status-online' : 'status-offline'}`}>
                   <span className="status-ping" />
@@ -346,7 +365,7 @@ export default function LoginPage() {
               </div>
 
               {/* Segmented Realm Switcher */}
-              <div className="segmented-realm-control">
+              {!candidateOnly && <div className="segmented-realm-control">
                 <button
                   type="button"
                   className={`realm-btn ${realm === 'admin' ? 'active' : ''}`}
@@ -370,9 +389,9 @@ export default function LoginPage() {
                   </svg>
                   Candidate Station
                 </button>
-              </div>
+              </div>}
 
-              {realm === 'admin' ? (
+              {!candidateOnly && realm === 'admin' ? (
                 <form onSubmit={handleAdminSubmit} className="login-flow-form">
                   <div className="input-group">
                     <label htmlFor="login-username">Username</label>

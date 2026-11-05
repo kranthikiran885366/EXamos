@@ -179,7 +179,7 @@ export class AuthService {
     this.candidateToken   = data.token;
     this.candidateId      = candidateId;
     this.candidateProfile = {
-      candidateId,
+      candidateId: data.candidate_id || candidateId,
       name:     data.name     || candidateId,
       examId:   data.exam_id  || null,
       examName: data.exam_name || null,

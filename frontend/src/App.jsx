@@ -111,7 +111,7 @@ export default function App() {
 
           {/* Public auth routes */}
           <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
-          <Route path="/candidate-login" element={<Navigate to="/login?realm=candidate" replace />} />
+          <Route path="/candidate-login" element={<PublicOnly><LoginPage candidateOnly /></PublicOnly>} />
           <Route path="/mfa" element={<PublicOnly><MfaPage /></PublicOnly>} />
           <Route path="/recovery" element={<PublicOnly><RecoveryPage /></PublicOnly>} />
           <Route path="/reset-password" element={<PublicOnly><ResetPasswordPage /></PublicOnly>} />

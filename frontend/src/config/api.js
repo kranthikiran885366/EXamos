@@ -56,7 +56,7 @@ export const ENDPOINTS = {
   institutionAdminInvite: (id) => `/api/v1/admin/institutions/${id}/admins/invite`,
   institutionAdminRemove: (id, userId) => `/api/v1/admin/institutions/${id}/admins/${userId}`,
   auditTrail: '/api/v1/admin/audit',
-  auditBatch: '/api/v1/admin/audit/batch',
+  auditBatch: '/api/v1/audit/batch',
   institutionAgreements: (id) => `/api/v1/admin/institutions/${id}/agreements`,
   signAgreement: (id) => `/api/v1/admin/agreements/${id}/sign`,
   institutionLicense: (id) => `/api/v1/admin/institutions/${id}/license`,

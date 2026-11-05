@@ -20,10 +20,15 @@ static void ex_send_json(int fd, int code, const char *body,
     ctrl_send_json(fd, code, body, extra);
 }
 
+static void json_escape(const char *in, char *out, size_t out_len);
+
 static void ex_send_error(int fd, int code, const char *msg,
                           const char *origin, char *extra, size_t extra_len) {
-    char buf[512];
-    snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", msg ? msg : "An error occurred");
+    char escaped[1024];
+    char buf[1100];
+    json_escape(msg ? msg : "An error occurred", escaped, sizeof(escaped));
+    int written = snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", escaped);
+    if (written < 0 || (size_t)written >= sizeof(buf)) return;
     ex_send_json(fd, code, buf, origin, extra, extra_len);
 }
 
@@ -126,12 +131,22 @@ void exam_handle(int client_fd, const char *method, const char *path,
                  const char *body, const char *auth_header,
                  const char *origin, char *extra_headers, size_t extra_len) {
     auth_session_t sess;
-    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+    memset(&sess, 0, sizeof(sess));
+    int auth_rc = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess);
+    char candidate_id[64] = {0};
+    int is_candidate = ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id));
+    if (auth_rc != 0 && !is_candidate) {
         ex_send_error(client_fd, 401, "Admin credentials required", origin, extra_headers, extra_len);
         return;
     }
 
-    int is_owner = (sess.role == ROLE_PLATFORM_OWNER);
+    int is_owner = (auth_rc == 0 && sess.role == ROLE_PLATFORM_OWNER);
+    if (is_candidate && (strcmp(method, "GET") != 0 ||
+        strcmp(path, "/api/v1/examinations") == 0 ||
+        strcmp(path, "/api/v1/admin/exams") == 0)) {
+        ex_send_error(client_fd, 403, "Candidates may only view their assigned examination", origin, extra_headers, extra_len);
+        return;
+    }
 
     /* =========================================================================
      * 1. GET /api/v1/examinations or /api/v1/admin/exams: List examinations
@@ -376,7 +391,20 @@ void exam_handle(int client_fd, const char *method, const char *path,
         const char *ex_status = PQgetvalue(exam_res, 0, 10);
         const char *ex_creator = PQgetvalue(exam_res, 0, 15);
 
-        if (!is_owner && strcmp(ex_inst_id, sess.institution_id) != 0) {
+        if (is_candidate) {
+            PGresult *cr = db_simple(conn,
+                "SELECT 1 FROM candidates WHERE id = $1 AND exam_id = $2 AND tenant_id = $3",
+                3, (const char *[]){ candidate_id, eid, ex_inst_id },
+                (int[]){ (int)strlen(candidate_id), (int)strlen(eid), (int)strlen(ex_inst_id) });
+            int assigned = cr && PQresultStatus(cr) == PGRES_TUPLES_OK && PQntuples(cr) == 1;
+            if (cr) PQclear(cr);
+            if (!assigned || suffix[0] != '\0') {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 403, "Examination is not assigned to this candidate", origin, extra_headers, extra_len);
+                return;
+            }
+        } else if (!is_owner && strcmp(ex_inst_id, sess.institution_id) != 0) {
             PQclear(exam_res);
             db_release(conn, 0);
             ex_send_error(client_fd, 403, "Access to other institution's exam is prohibited", origin, extra_headers, extra_len);

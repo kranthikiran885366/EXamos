@@ -4,6 +4,12 @@ import * as Api from '../../core/api/services';
 
 export const STUDENT_STEPS = ['Briefing', 'Device check', 'Exam session', 'Submission'];
 
+function epochMs(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  return timestamp < 10000000000 ? timestamp * 1000 : timestamp;
+}
+
 function examSessionsFromResponse(response) {
   const sessions = response?.exam_sessions ?? response?.sessions ?? response;
   if (!Array.isArray(sessions)) fail('The server returned an invalid exam-session response.');
@@ -23,6 +29,7 @@ export async function myCandidate(user) {
       name: s.name || s.display_name || '',
       rollNo: s.rollNo || s.roll_no || '',
       seat: s.seat || s.assigned_seat || '',
+      verification_status: s.verification_status || s.identity || '',
     };
   } catch (err) {
     fail(err.message || 'Failed to load your candidate record from the server.');
@@ -33,7 +40,7 @@ export async function assignments(user, ctx = {}) {
   const c = await myCandidate(user);
   let examSessions;
   try {
-    const res = await Api.getStudentExamSessions(c.id || user.candidateId);
+    const res = await Api.getStudentExamSessions(user.candidateId);
     examSessions = examSessionsFromResponse(res);
   } catch (err) {
     fail(err.message || 'Failed to load your exam sessions from the server.');
@@ -45,28 +52,29 @@ export async function assignments(user, ctx = {}) {
       code: s.exam_code,
       title: s.exam_name || s.title,
       status: s.exam_status,
-      startAt: s.scheduled_start || 0,
+      startAt: epochMs(s.scheduled_start || s.start_time),
       durationMin: s.duration_minutes || s.duration_min || 60,
       examUrl: s.exam_url || '',
       instructions: s.instructions || '',
     };
-    const session = {
+    const session = s.session_id ? {
       id: s.session_id || s.id,
       status: s.session_status || s.status,
-      startedAt: s.launched_at || s.start_time || s.authorized_at || 0,
-      deadline: s.deadline || s.end_time || 0,
+      startedAt: epochMs(s.launched_at || s.start_time || s.authorized_at),
+      deadline: epochMs(s.deadline || s.end_time),
       receipt: s.receipt_hash || null,
-    };
-    const status = session.status === 'submitted' ? 'submitted'
-      : session.status === 'in_progress' || session.status === 'active' ? 'in-progress'
-      : exam.status === 'in_progress' || exam.status === 'live' ? 'ready'
+    } : null;
+    const status = session?.status === 'submitted' ? 'submitted'
+      : session?.status === 'closed' ? 'submitted'
+      : session?.status === 'in_progress' || session?.status === 'active' ? 'in-progress'
+      : ['in_progress', 'live', 'ready'].includes(exam.status) ? 'ready'
       : exam.status === 'scheduled' || exam.status === 'published' ? 'scheduled'
       : exam.status === 'cancelled' ? 'cancelled' : exam.status;
     return {
       candidate: c,
       exam: exam.id ? exam : null,
-      center: s.center_name ? { id: s.center_id, code: s.center_code, name: s.center_name, city: s.center_city, status: s.center_status } : null,
-      device: s.device_id ? { id: s.device_id, hostname: s.device_hostname, seat: s.seat, trust: s.trust_status, status: s.device_status } : null,
+      center: s.center_id ? { id: s.center_id, code: s.center_code, name: s.center_name, city: s.center_city, status: s.center_status } : null,
+      device: s.device_id ? { id: s.device_id, hostname: s.device_hostname, seat: s.seat, trust: s.device_trust, status: s.device_status } : null,
       session,
       policy: null,
       release: null,
@@ -94,7 +102,7 @@ export async function briefing(user, examId, ctx = {}) {
     code: examDetail.code || exam.code,
     title: examDetail.name || examDetail.title || exam.title,
     status: examDetail.status || exam.status,
-    startAt: examDetail.start_time || examDetail.scheduled_start || exam.startAt,
+    startAt: epochMs(examDetail.start_time || examDetail.scheduled_start || exam.startAt),
     durationMin: examDetail.duration_minutes || exam.durationMin,
     instructions: examDetail.instructions || exam.instructions || '',
     resources: examDetail.resources || '',
@@ -107,7 +115,9 @@ export async function briefing(user, examId, ctx = {}) {
     exam: fullExam,
     lifecycle: fullExam.status,
     startsIn: (fullExam.startAt || 0) - Date.now(),
-    windowOpen: fullExam.status === 'in_progress' || (fullExam.status === 'scheduled' && Date.now() >= (fullExam.startAt || 0) - 30 * 60000),
+    windowOpen: ['in_progress', 'live'].includes(fullExam.status) ||
+      (['scheduled', 'published', 'ready'].includes(fullExam.status) &&
+       (!fullExam.startAt || Date.now() >= fullExam.startAt)),
     instructions: fullExam.instructions || '',
     resources: fullExam.resources || '',
     accommodations: fullExam.accommodations || '',
@@ -147,13 +157,14 @@ export async function deviceCheck(user, examId, ctx = {}) {
   }
 
   add('assignment', 'Exam assignment', exam ? 'PASS' : 'FAIL', exam ? `${exam.code} · seat ${candidate.seat || 'unassigned'}` : 'No exam');
-  add('identity', 'Identity verified', candidate.verification_status === 'VERIFIED' ? 'PASS' : candidate.verification_status === 'REJECTED' ? 'FAIL' : 'WARN', candidate.verification_status || 'pending');
-  add('centre', 'Exam centre active', center?.status === 'active' ? 'PASS' : center ? 'WARN' : 'FAIL', center ? `${center.code || ''} · ${center.name || ''}` : 'No centre');
-  add('device', 'Seat device enrolled', device?.status === 'enrolled' || device?.status === 'active' ? 'PASS' : 'WARN', device?.hostname || 'No device at your seat');
-  add('session', 'No previous submission', !session || session.status === 'in_progress' || session.status === 'active' ? 'PASS' : 'FAIL', session ? session.status : 'not started');
+  const identity = String(candidate.verification_status || '').toLowerCase();
+  add('identity', 'Identity verified', identity === 'verified' ? 'PASS' : identity === 'rejected' ? 'FAIL' : 'WARN', identity || 'pending');
+  add('centre', 'Exam centre active', String(center?.status).toLowerCase() === 'active' ? 'PASS' : center ? 'WARN' : 'FAIL', center ? `${center.code || ''} · ${center.name || ''}` : 'No centre');
+  add('device', 'Seat device attested', ['enrolled', 'active'].includes(String(device?.status).toLowerCase()) && String(device?.trust).toLowerCase() === 'attested' ? 'PASS' : 'WARN', device?.hostname || 'No device at your seat');
+  add('session', 'Session available', !session || ['authorized', 'active', 'in_progress'].includes(session.status) ? 'PASS' : 'FAIL', session ? session.status : 'not started');
 
   const blocking = checks.filter((c) => c.status !== 'PASS');
-  return { ...b, checks, blocking, ready: blocking.length === 0 && ['in_progress', 'published'].includes(exam?.status) };
+  return { ...b, checks, blocking, ready: blocking.length === 0 && String(authResult?.status).toLowerCase() === 'authorized' };
 }
 
 export async function startMyExam(user, examId) {
@@ -161,30 +172,35 @@ export async function startMyExam(user, examId) {
   const d = await deviceCheck(user, examId);
   if (!d.ready) fail(`Device check is not complete: ${d.blocking.map((b) => b.label).join(', ')}.`);
   try {
-    const res = await Api.createAuthorizedExamSession({
-      examination_id: examId,
-      student_id: c.id || user.candidateId,
-      device_id: d.device?.id || '',
-    });
+    let res;
+    let sessionId;
+    if (d.session?.status === 'authorized') {
+      res = { session: d.session };
+      sessionId = d.session.id;
+    } else {
+      res = await Api.createAuthorizedExamSession({
+        examination_id: examId,
+        student_id: c.id || user.candidateId,
+        device_id: d.device?.id || '',
+      });
+      sessionId = res?.session?.id || res?.session_id;
+    }
+    if (!sessionId) fail('The server did not create an exam session. The exam was not launched.');
+    const launch = await Api.launchAuthorizedExamUrl(sessionId);
+    if (launch?.status !== 'launch_authorized' || !launch?.exam_url) {
+      fail('The server did not authorize the assessment portal launch.');
+    }
     return res;
   } catch (err) {
     fail(err.message || 'Failed to start exam session on the server.');
   }
 }
 
-export async function saveMyAnswer(user, sessionId, qi, choice) {
+export async function confirmPortalSubmission(user, sessionId) {
   try {
-    return await Api.saveAnswer({ questionId: qi, selectedOption: choice, status: 'answered' });
+    return await Api.closeAuthorizedExamSession(sessionId, 'candidate_confirmed_portal_submission');
   } catch (err) {
-    fail(err.message || 'Failed to save your answer on the server.');
-  }
-}
-
-export async function submitMyExam(user, sessionId) {
-  try {
-    return await Api.submitExam();
-  } catch (err) {
-    fail(err.message || 'Failed to submit exam on the server.');
+    fail(err.message || 'Unable to record the portal submission confirmation.');
   }
 }
 
@@ -210,13 +226,13 @@ export async function receipt(user, sessionId) {
 export async function myHistory(user, ctx = {}) {
   const c = await myCandidate(user);
   try {
-    const res = await Api.getStudentExamSessions(c.id || user.candidateId);
+    const res = await Api.getStudentExamSessions(user.candidateId);
     return examSessionsFromResponse(res).map((s) => ({
       id: s.session_id || s.id,
       examId: s.examination_id || s.exam_id,
       status: s.status || s.session_status,
-      startedAt: s.launched_at || s.start_time || s.authorized_at || null,
-      submittedAt: s.closed_at || s.submitted_at || null,
+      startedAt: epochMs(s.launched_at || s.start_time || s.authorized_at) || null,
+      submittedAt: epochMs(s.closed_at || s.submitted_at) || null,
       receipt: s.receipt_hash || s.document_digest || null,
       receiptSig: s.receipt_signature || s.receipt_sig || null,
       valid: s.receipt_verified === true,

@@ -78,6 +78,21 @@ static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
     out_hex[SHA256_DIGEST_LENGTH * 2] = '\0';
 }
 
+static int candidate_owns_exam_student(PGconn *conn, const char *candidate_id,
+                                       const char *exam_id, const char *student_id) {
+    if (!conn || !candidate_id || !candidate_id[0] || !exam_id || !exam_id[0] ||
+        !student_id || !student_id[0]) return 0;
+    const char *p[3] = { candidate_id, exam_id, student_id };
+    int l[3] = { (int)strlen(candidate_id), (int)strlen(exam_id), (int)strlen(student_id) };
+    PGresult *r = db_simple(conn,
+        "SELECT 1 FROM candidates c JOIN students s ON s.institution_id = c.tenant_id "
+        "AND s.roll_no = c.roll_no WHERE c.id = $1 AND c.exam_id = $2 "
+        "AND (s.id = $3 OR s.roll_no = $3) LIMIT 1", 3, p, l);
+    int owns = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1;
+    if (r) PQclear(r);
+    return owns;
+}
+
 /*
  * Evaluates session authorization:
  * Returns:
@@ -86,6 +101,7 @@ static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
  *  -1  -> Denied / ineligible / window expired / concurrent session
  */
 static int verify_session_authorization(PGconn *conn, const char *exam_id, const char *student_id_or_roll,
+                                        int is_candidate,
                                         char *out_student_id, size_t sid_len,
                                         char *out_inst_id, size_t inst_len,
                                         char *out_exam_url, size_t url_len,
@@ -112,7 +128,12 @@ static int verify_session_authorization(PGconn *conn, const char *exam_id, const
     strncpy(ex_orgs, PQgetvalue(ex_res, 0, 4), sizeof(ex_orgs) - 1);
     PQclear(ex_res);
 
-    if (strcmp(ex_stat, "cancelled") == 0 || strcmp(ex_stat, "closed") == 0) {
+    if (is_candidate && strcmp(ex_stat, "scheduled") != 0 &&
+        strcmp(ex_stat, "ready") != 0 && strcmp(ex_stat, "in_progress") != 0) {
+        snprintf(out_reason, reason_len, "Examination is not available for candidates (status: %s)", ex_stat);
+        return -1;
+    }
+    if (!is_candidate && (strcmp(ex_stat, "cancelled") == 0 || strcmp(ex_stat, "closed") == 0)) {
         snprintf(out_reason, reason_len, "Examination is closed or cancelled (status: %s)", ex_stat);
         return -1;
     }
@@ -165,11 +186,11 @@ static int verify_session_authorization(PGconn *conn, const char *exam_id, const
     strncpy(r_elig, PQgetvalue(rg_res, 0, 1), sizeof(r_elig) - 1);
     PQclear(rg_res);
 
-    if (strcmp(r_stat, "approved") != 0 && strcmp(r_stat, "exception_approved") != 0) {
+    if (strcmp(r_stat, "approved") != 0 && strcmp(r_stat, "roster_published") != 0) {
         snprintf(out_reason, reason_len, "Student examination registration is not approved (status: %s)", r_stat);
         return -1;
     }
-    if (strcmp(r_elig, "eligible") != 0) {
+    if (strcmp(r_elig, "eligible") != 0 && strcmp(r_elig, "exempted") != 0) {
         snprintf(out_reason, reason_len, "Student does not meet eligibility requirements for this examination");
         return -1;
     }
@@ -230,6 +251,12 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
 
     /* Authenticate user or candidate */
     int auth_rc = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess);
+    char candidate_id[64] = {0};
+    int is_candidate = ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id));
+    if (auth_rc != 0 && !is_candidate) {
+        ses_send_error(client_fd, 401, "Authentication required", origin, extra_headers, extra_len);
+        return;
+    }
     int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
                     strcmp(sess.username, "admin") == 0 ||
                     strcmp(sess.username, "root") == 0));
@@ -254,12 +281,17 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             ses_send_error(client_fd, 400, "examination_id and student_id are required", origin, extra_headers, extra_len);
             return;
         }
+        if (is_candidate && !candidate_owns_exam_student(conn, candidate_id, exam_id, student_id)) {
+            db_release(conn, 0);
+            ses_send_error(client_fd, 403, "Candidate is not assigned to this examination", origin, extra_headers, extra_len);
+            return;
+        }
 
         char resolved_sid[64] = {0}, inst_id[64] = {0}, exam_url[512] = {0}, allowed_origins[512] = {0};
         char reason[256] = {0};
         long long wait_sec = 0;
 
-        int res = verify_session_authorization(conn, exam_id, student_id,
+        int res = verify_session_authorization(conn, exam_id, student_id, is_candidate,
                                                resolved_sid, sizeof(resolved_sid),
                                                inst_id, sizeof(inst_id),
                                                exam_url, sizeof(exam_url),
@@ -328,12 +360,17 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             ses_send_error(client_fd, 400, "examination_id and student_id are required", origin, extra_headers, extra_len);
             return;
         }
+        if (is_candidate && !candidate_owns_exam_student(conn, candidate_id, exam_id, student_id)) {
+            db_release(conn, 0);
+            ses_send_error(client_fd, 403, "Candidate is not assigned to this examination", origin, extra_headers, extra_len);
+            return;
+        }
 
         char resolved_sid[64] = {0}, inst_id[64] = {0}, exam_url[512] = {0}, allowed_origins[512] = {0};
         char reason[256] = {0};
         long long wait_sec = 0;
 
-        int res = verify_session_authorization(conn, exam_id, student_id,
+        int res = verify_session_authorization(conn, exam_id, student_id, is_candidate,
                                                resolved_sid, sizeof(resolved_sid),
                                                inst_id, sizeof(inst_id),
                                                exam_url, sizeof(exam_url),
@@ -471,8 +508,20 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
         PQclear(s_res);
 
         if (!is_owner && strcmp(s_inst, sess.institution_id) != 0) {
+            if (is_candidate && candidate_owns_exam_student(conn, candidate_id, s_exam, s_sid)) {
+                /* Candidate sessions are scoped to the roster record and exam below. */
+            } else {
+                db_release(conn, 0);
+                ses_send_error(client_fd, 403, "Access to other institution's exam session is prohibited", origin, extra_headers, extra_len);
+                return;
+            }
+        }
+        if (is_candidate &&
+            (!candidate_owns_exam_student(conn, candidate_id, s_exam, s_sid) ||
+             (strcmp(method, "GET") != 0 && strcmp(action, "/launch") != 0 &&
+              strcmp(action, "/heartbeat") != 0 && strcmp(action, "/close") != 0))) {
             db_release(conn, 0);
-            ses_send_error(client_fd, 403, "Access to other institution's exam session is prohibited", origin, extra_headers, extra_len);
+            ses_send_error(client_fd, 403, "Candidate may only access their own exam session", origin, extra_headers, extra_len);
             return;
         }
 
@@ -499,6 +548,11 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             if (strcmp(s_status, "closed") == 0) {
                 db_release(conn, 0);
                 ses_send_error(client_fd, 400, "Cannot launch closed exam session", origin, extra_headers, extra_len);
+                return;
+            }
+            if (!s_url[0]) {
+                db_release(conn, 0);
+                ses_send_error(client_fd, 409, "Assessment portal URL is not configured", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -741,7 +795,16 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
         /* ---------------- POST /api/v1/exam-sessions/:id/close (Session Closure) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/close") == 0) {
             char reason[128] = "student_completed";
-            ctrl_json_string(body, "reason", reason, sizeof(reason));
+            if (is_candidate) {
+                if (strcmp(s_status, "active") != 0) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 409, "Candidate can only confirm completion for an active session", origin, extra_headers, extra_len);
+                    return;
+                }
+                snprintf(reason, sizeof(reason), "candidate_confirmed_portal_submission");
+            } else {
+                ctrl_json_string(body, "reason", reason, sizeof(reason));
+            }
 
             if (strcmp(s_status, "closed") == 0) {
                 db_release(conn, 0);

@@ -574,7 +574,7 @@ export const createExamination = wrap(async (exam) => {
 });
 
 export const getExamination = wrap(async (id) => {
-  const res = await api.get(ENDPOINTS.examinationById(id), { actor: ACTOR });
+  const res = await api.get(ENDPOINTS.examinationById(id), { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
@@ -653,7 +653,7 @@ export const createStudent = wrap(async (student) => {
 });
 
 export const getStudentById = wrap(async (id) => {
-  const res = await api.get(ENDPOINTS.studentById(id), { actor: ACTOR });
+  const res = await api.get(ENDPOINTS.studentById(id), { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
@@ -733,7 +733,7 @@ export const getStudentAssignedDevices = wrap(async (id) => {
 });
 
 export const getStudentExamSessions = wrap(async (id) => {
-  const res = await api.get(ENDPOINTS.studentExamSessions(id), { actor: ACTOR });
+  const res = await api.get(ENDPOINTS.studentExamSessions(id), { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
@@ -821,27 +821,27 @@ export const checkExamStudentEligibility = wrap(async (examId, studentId) => {
 // ---------------------------------------------------------------------------
 
 export const authorizeStudentExamSession = wrap(async (authData) => {
-  const res = await api.post(ENDPOINTS.examSessionsAuthorize, authData, { actor: ACTOR, sign: true });
+  const res = await api.post(ENDPOINTS.examSessionsAuthorize, authData, { actor: ACTOR, sign: true, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
 export const createAuthorizedExamSession = wrap(async (sessionData) => {
-  const res = await api.post(ENDPOINTS.examSessions, sessionData, { actor: ACTOR, sign: true });
+  const res = await api.post(ENDPOINTS.examSessions, sessionData, { actor: ACTOR, sign: true, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
 export const getExamSessionDetails = wrap(async (sessionId) => {
-  const res = await api.get(ENDPOINTS.examSessionById(sessionId), { actor: ACTOR });
+  const res = await api.get(ENDPOINTS.examSessionById(sessionId), { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
 export const launchAuthorizedExamUrl = wrap(async (sessionId) => {
-  const res = await api.post(ENDPOINTS.examSessionLaunch(sessionId), {}, { actor: ACTOR, sign: true });
+  const res = await api.post(ENDPOINTS.examSessionLaunch(sessionId), {}, { actor: ACTOR, sign: true, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
 export const sendExamSessionHeartbeat = wrap(async (sessionId) => {
-  const res = await api.post(ENDPOINTS.examSessionHeartbeat(sessionId), {}, { actor: ACTOR });
+  const res = await api.post(ENDPOINTS.examSessionHeartbeat(sessionId), {}, { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
@@ -856,7 +856,7 @@ export const resumeInterruptedExamSession = wrap(async (sessionId) => {
 });
 
 export const closeAuthorizedExamSession = wrap(async (sessionId, reason) => {
-  const res = await api.post(ENDPOINTS.examSessionClose(sessionId), { reason }, { actor: ACTOR, sign: true });
+  const res = await api.post(ENDPOINTS.examSessionClose(sessionId), { reason }, { actor: ACTOR, sign: true, useCandidateToken: !!getCandidateToken() });
   return res.data;
 });
 
