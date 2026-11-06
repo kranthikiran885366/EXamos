@@ -1051,6 +1051,11 @@ export const createOsDeploymentGroup = wrap(async (groupData) => {
   return res.data;
 });
 
+export const listOsDeploymentGroups = wrap(async () => {
+  const res = await api.get(ENDPOINTS.osDeployments, { actor: ACTOR });
+  return res.data;
+});
+
 export const getOsDeploymentGroup = wrap(async (deploymentId) => {
   const res = await api.get(ENDPOINTS.osDeploymentById(deploymentId), { actor: ACTOR });
   return res.data;
@@ -1073,6 +1078,32 @@ export const verifyDeviceOsRelease = wrap(async (deviceId, verificationData) => 
 
 export const requestDeviceOsRecovery = wrap(async (deviceId, recoveryData) => {
   const res = await api.post(ENDPOINTS.osDeviceRecovery(deviceId), recoveryData, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+// Central approval governance API. The server derives all actor and tenant
+// identity from the authenticated session; these values are never sent by callers.
+export const listApprovalRequests = wrap(async () => {
+  const res = await api.get(ENDPOINTS.approvalRequests, { actor: ACTOR });
+  if (!Array.isArray(res.data)) throw new Error('The approval API returned an invalid response.');
+  return res.data;
+});
+
+export const createApprovalRequest = wrap(async ({ kind, label, targetId, tenantId, reason, data = {} }) => {
+  const res = await api.post(ENDPOINTS.approvalRequests, {
+    kind, label, target_id: targetId, tenant_id: tenantId || '',
+    reason, data_json: JSON.stringify(data),
+  }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const decideApprovalRequest = wrap(async (requestId, decision, reason) => {
+  const res = await api.post(ENDPOINTS.approvalDecision(requestId), { decision, reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
+export const cancelApprovalRequest = wrap(async (requestId, reason) => {
+  const res = await api.post(ENDPOINTS.approvalCancel(requestId), { reason }, { actor: ACTOR, sign: true });
   return res.data;
 });
 
@@ -1138,8 +1169,21 @@ export const scheduleExam = wrap(async (examId, timezone, startTime, endTime) =>
   return res.data;
 });
 
-export const rollbackExamPolicy = wrap(async (examId, targetVersion) => {
-  const res = await api.post(ENDPOINTS.platformExamPolicyRollback(examId), { target_version: targetVersion }, { actor: ACTOR, sign: true });
+export const rollbackExamPolicy = wrap(async (examId, targetVersion, reason) => {
+  const justification = String(reason || '').trim();
+  if (!Number.isInteger(Number(targetVersion)) || Number(targetVersion) <= 0)
+    throw new Error('A valid target policy version is required.');
+  if (justification.length < 8)
+    throw new Error('A rollback reason of at least 8 characters is required.');
+  const res = await api.post(ENDPOINTS.approvalRequests, {
+    kind: 'policy-rollback',
+    label: `Rollback exam policy to v${Number(targetVersion)}`,
+    target_id: examId,
+    reason: justification,
+    data_json: JSON.stringify({ targetVersion: Number(targetVersion) }),
+  }, { actor: ACTOR, sign: true });
+  if (!res.data?.id || res.data.status !== 'pending_review')
+    throw new Error('The backend did not confirm that the rollback request was persisted.');
   return res.data;
 });
 

@@ -73,22 +73,15 @@ assert_valid_origin \
     'https://portal.beta.edu:8443/session' \
     'https://portal.beta.edu:8443' \
     'alternate origin and port'
-assert_valid_origin \
-    'http://localhost:8000/exam' \
-    'http://localhost:8000' \
-    'loopback localhost development endpoint'
-assert_valid_origin \
-    'http://127.0.0.1:8000/exam' \
-    'http://127.0.0.1:8000' \
-    'loopback IPv4 development endpoint'
-
 assert_rejected 'https://user:secret@exam.alpha.edu/exam' 'reject URL credentials'
 assert_rejected 'https://exam.alpha.edu:99999/exam' 'reject invalid port'
 assert_rejected 'http://exam.alpha.edu/exam' 'reject external HTTP'
-assert_rejected 'http://localhost/exam' 'reject loopback HTTP without admin port'
-assert_rejected 'http://127.0.0.1/exam' 'reject loopback IPv4 HTTP without admin port'
-assert_rejected 'http://localhost:8001/exam' 'reject non-admin loopback HTTP port'
-assert_rejected 'http://127.0.0.1:8001/exam' 'reject non-admin loopback IPv4 HTTP port'
+assert_rejected 'http://localhost:8000/exam' 'reject loopback HTTP admin endpoint'
+assert_rejected 'http://127.0.0.1:8000/exam' 'reject loopback IPv4 HTTP admin endpoint'
+assert_rejected 'http://localhost/exam' 'reject loopback HTTP without TLS'
+assert_rejected 'http://127.0.0.1/exam' 'reject loopback IPv4 HTTP without TLS'
+assert_rejected 'http://localhost:8001/exam' 'reject non-TLS loopback endpoint'
+assert_rejected 'http://127.0.0.1:8001/exam' 'reject non-TLS loopback IPv4 endpoint'
 assert_rejected 'https:///missing-host' 'reject missing hostname'
 assert_rejected 'NOT_CONFIGURED' 'reject unconfigured endpoint'
 

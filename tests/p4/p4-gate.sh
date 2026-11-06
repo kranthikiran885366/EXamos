@@ -116,7 +116,9 @@ for policy_path in "${CAMERA_POLICIES[@]}"; do
 done
 if [ "$POLICY_FILES_PRESENT" = true ]; then
     CAMERA_RESULT=""
-    if CAMERA_RESULT=$(python3 - "${CAMERA_POLICIES[@]}" "$EXAM_CONFIG" <<'PY'
+    GENERATED_POLICY="$(mktemp)"
+    if EXAM_CONF="$EXAM_CONFIG" bash "$WORKSPACE/image/scripts/generate-chromium-policy.sh" --dry-run >"$GENERATED_POLICY" 2>"$GENERATED_POLICY.log" &&
+        CAMERA_RESULT=$(python3 - "$GENERATED_POLICY" "$GENERATED_POLICY" "$EXAM_CONFIG" <<'PY'
 import ipaddress
 import json
 import pathlib
@@ -214,6 +216,7 @@ print("PASS: deny-by-default and media capture limited to explicitly configured 
 PY
     ); then
         CAMERA_STATUS="PASS"
+        rm -f "$GENERATED_POLICY" "$GENERATED_POLICY.log"
     else
         CAMERA_RC=$?
         if [ "$CAMERA_RC" -eq 2 ]; then
@@ -222,6 +225,8 @@ PY
             CAMERA_STATUS="FAIL"
         fi
         echo "$CAMERA_RESULT"
+        cat "$GENERATED_POLICY.log" >&2 2>/dev/null || true
+        rm -f "$GENERATED_POLICY" "$GENERATED_POLICY.log"
     fi
 fi
 echo "[P4-GATE] P4.4 Browser Media Restriction: $CAMERA_STATUS"

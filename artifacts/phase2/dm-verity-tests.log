@@ -1,0 +1,2 @@
+=== [P2-VERITY] dm-verity Tests: 2026-11-05T06:55:00Z ===
+[VERITY-BLOCKED] P2-06: BLOCKED_ENVIRONMENT: clean SquashFS not found at artifacts/phase2/examos-root.squashfs

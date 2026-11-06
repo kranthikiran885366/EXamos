@@ -2509,3 +2509,1206 @@ void auth_recovery_reset(int client_fd, const char *req_body,
 r_done:
     OPENSSL_cleanse(new_pw, sizeof(new_pw));
 }
+
+
+/* ------------------------------------------------------------- Session Helpers */
+static void gen_secure_id(const char *prefix, char *out, size_t out_len) {
+    unsigned char rb[8];
+    if (RAND_bytes(rb, sizeof(rb)) != 1) {
+        snprintf(out, out_len, "%s_%ld_%x", prefix, (long)time(NULL), (unsigned int)rand());
+        return;
+    }
+    snprintf(out, out_len, "%s_%02x%02x%02x%02x%02x%02x%02x%02x", prefix,
+             rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7]);
+}
+
+static const char *normalize_role_str(const char *in) {
+    if (!in || !in[0]) return "auditor";
+    if (strcasecmp(in, "superadmin") == 0 || strcasecmp(in, "PLATFORM_OWNER") == 0 || strcmp(in, "1") == 0) return "superadmin";
+    if (strcasecmp(in, "inst_admin") == 0 || strcasecmp(in, "INSTITUTION_ADMIN") == 0 || strcmp(in, "2") == 0) return "inst_admin";
+    if (strcasecmp(in, "exam_controller") == 0 || strcasecmp(in, "EXAM_MANAGER") == 0 || strcmp(in, "3") == 0) return "exam_controller";
+    if (strcasecmp(in, "security_engineer") == 0 || strcasecmp(in, "SECURITY_ADMIN") == 0 || strcmp(in, "4") == 0) return "security_engineer";
+    if (strcasecmp(in, "invigilator") == 0 || strcasecmp(in, "INVIGILATOR") == 0 || strcmp(in, "5") == 0) return "invigilator";
+    if (strcasecmp(in, "it_admin") == 0 || strcasecmp(in, "ops_admin") == 0 || strcasecmp(in, "TECH_OPERATOR") == 0 || strcmp(in, "6") == 0) return "ops_admin";
+    if (strcasecmp(in, "auditor") == 0 || strcasecmp(in, "INCIDENT_INVESTIGATOR") == 0 || strcmp(in, "7") == 0) return "auditor";
+    if (strcasecmp(in, "readonly_auditor") == 0 || strcasecmp(in, "READONLY_AUDITOR") == 0 || strcmp(in, "8") == 0) return "readonly_auditor";
+    if (strcasecmp(in, "support") == 0 || strcasecmp(in, "SUPPORT_ENGINEER") == 0 || strcmp(in, "9") == 0) return "support";
+    if (strcasecmp(in, "student") == 0 || strcasecmp(in, "candidate") == 0) return "student";
+    return in;
+}
+
+static int role_to_int_val(const char *in) {
+    if (!in || !in[0]) return 8;
+    if (strcasecmp(in, "superadmin") == 0 || strcasecmp(in, "PLATFORM_OWNER") == 0) return 1;
+    if (strcasecmp(in, "inst_admin") == 0 || strcasecmp(in, "INSTITUTION_ADMIN") == 0) return 2;
+    if (strcasecmp(in, "exam_controller") == 0 || strcasecmp(in, "EXAM_MANAGER") == 0) return 3;
+    if (strcasecmp(in, "security_engineer") == 0 || strcasecmp(in, "SECURITY_ADMIN") == 0) return 4;
+    if (strcasecmp(in, "invigilator") == 0 || strcasecmp(in, "INVIGILATOR") == 0) return 5;
+    if (strcasecmp(in, "it_admin") == 0 || strcasecmp(in, "ops_admin") == 0 || strcasecmp(in, "TECH_OPERATOR") == 0) return 6;
+    if (strcasecmp(in, "auditor") == 0 || strcasecmp(in, "INCIDENT_INVESTIGATOR") == 0) return 7;
+    if (strcasecmp(in, "readonly_auditor") == 0 || strcasecmp(in, "READONLY_AUDITOR") == 0) return 8;
+    if (strcasecmp(in, "support") == 0 || strcasecmp(in, "SUPPORT_ENGINEER") == 0) return 9;
+    return atoi(in);
+}
+
+static int role_privilege_rank(int role_id) {
+    switch (role_id) {
+        case 1: return 100;
+        case 2: return 80;
+        case 3: return 70;
+        case 4: return 65;
+        case 5: return 50;
+        case 6: return 60;
+        case 7:
+        case 8: return 40;
+        case 9: return 30;
+        default: return 0;
+    }
+}
+
+/* ------------------------------------------------------------- Sessions List */
+void auth_admin_sessions_list(int client_fd, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len) {
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char current_token[128] = {0};
+    char current_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (ctrl_extract_bearer(auth_header, current_token, sizeof(current_token))) {
+        secure_token_hash(current_token, current_hash);
+    }
+    OPENSSL_cleanse(current_token, sizeof(current_token));
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    const char *pvals[1] = { sess.user_id };
+    int lens[1] = { (int)strlen(sess.user_id) };
+    PGresult *res = db_simple(conn,
+        "SELECT id, user_id, username, COALESCE(institution_id, ''), role, "
+        "       session_token, created_at, expires_at, status, "
+        "       COALESCE(ip_address, ''), COALESCE(user_agent, ''), "
+        "       COALESCE(last_seen_at, created_at), "
+        "       COALESCE(revocation_reason, ''), COALESCE(revoked_at, 0) "
+        "FROM auth_sessions "
+        "WHERE user_id = $1 "
+        "ORDER BY created_at DESC "
+        "LIMIT 50",
+        1, pvals, lens);
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        db_release(conn, 0);
+        send_json_cors(client_fd, 500, "{\"error\":\"Failed to load sessions\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    time_t now = time(NULL);
+    int n = PQntuples(res);
+    char *buf = malloc(65536);
+    if (!buf) {
+        PQclear(res);
+        db_release(conn, 0);
+        send_json_cors(client_fd, 500, "{\"error\":\"Out of memory\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    size_t pos = snprintf(buf, 65536, "{\"sessions\":[");
+    for (int i = 0; i < n; i++) {
+        const char *sid = PQgetvalue(res, i, 0);
+        const char *uid = PQgetvalue(res, i, 1);
+        const char *stoken = PQgetvalue(res, i, 5);
+        long long created_at = atoll(PQgetvalue(res, i, 6));
+        long long expires_at = atoll(PQgetvalue(res, i, 7));
+        const char *status = PQgetvalue(res, i, 8);
+        const char *ip = PQgetvalue(res, i, 9);
+        const char *ua = PQgetvalue(res, i, 10);
+        long long last_seen = atoll(PQgetvalue(res, i, 11));
+        const char *reason = PQgetvalue(res, i, 12);
+        long long revoked_at = atoll(PQgetvalue(res, i, 13));
+
+        int is_curr = (current_hash[0] && strcmp(stoken, current_hash) == 0);
+        const char *eff_status = status;
+        if (strcmp(status, "active") == 0 && expires_at < (long long)now) {
+            eff_status = "expired";
+        }
+
+        char clean_ua[256] = {0};
+        size_t cj = 0;
+        for (size_t ci = 0; ua[ci] && cj + 4 < sizeof(clean_ua); ci++) {
+            if (ua[ci] == '"' || ua[ci] == '\\') clean_ua[cj++] = '\\';
+            clean_ua[cj++] = (ua[ci] >= 32 && ua[ci] <= 126) ? ua[ci] : ' ';
+        }
+        clean_ua[cj] = '\0';
+
+        pos += snprintf(buf + pos, 65536 - pos,
+            "%s{\"id\":\"%s\",\"user_id\":\"%s\",\"ip_address\":\"%s\",\"user_agent\":\"%s\","
+            "\"created_at\":%lld,\"expires_at\":%lld,\"last_seen_at\":%lld,\"status\":\"%s\","
+            "\"current\":%s,\"revocation_reason\":\"%s\",\"revoked_at\":%lld}",
+            (i > 0 ? "," : ""),
+            sid, uid, ip[0] ? ip : "127.0.0.1", clean_ua[0] ? clean_ua : "ExamOS Console Web",
+            created_at * 1000LL, expires_at * 1000LL, last_seen * 1000LL,
+            eff_status, is_curr ? "true" : "false",
+            reason, revoked_at ? revoked_at * 1000LL : 0LL);
+        if (pos >= 65000) break;
+    }
+    pos += snprintf(buf + pos, 65536 - pos, "]}");
+
+    PQclear(res);
+    db_release(conn, 0);
+
+    send_json_cors(client_fd, 200, buf, origin, extra_headers, extra_len);
+    free(buf);
+}
+
+/* ----------------------------------------------------------- Session Revocation */
+void auth_admin_session_revoke(int client_fd, const char *sid, const char *auth_header,
+                               const char *origin, char *extra_headers, size_t extra_len) {
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+    if (!sid || !sid[0]) {
+        send_json_cors(client_fd, 400, "{\"error\":\"Session ID required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char now_str[32];
+    snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL));
+
+    int is_super = (sess.role == ROLE_PLATFORM_OWNER);
+    const char *pvals[4] = { now_str, sid, sess.user_id, is_super ? "true" : "false" };
+    int lens[4] = { (int)strlen(now_str), (int)strlen(sid), (int)strlen(sess.user_id), is_super ? 4 : 5 };
+
+    PGresult *res = db_simple(conn,
+        "UPDATE auth_sessions SET status = 'revoked', revocation_reason = 'Revoked by user', "
+        "       revoked_at = $1::bigint "
+        "WHERE id = $2 AND (user_id = $3 OR $4::boolean) AND status = 'active' "
+        "RETURNING session_token",
+        4, pvals, lens);
+
+    char token_hash[65] = {0};
+    int ok = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0;
+    if (ok) {
+        strncpy(token_hash, PQgetvalue(res, 0, 0), sizeof(token_hash) - 1);
+    }
+    if (res) PQclear(res);
+
+    if (token_hash[0]) {
+        const char *th_vals[1] = { token_hash };
+        int th_lens[1] = { 64 };
+        PGresult *as_res = db_simple(conn,
+            "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE token_hash = $1",
+            1, th_vals, th_lens);
+        if (as_res) PQclear(as_res);
+    }
+    db_release(conn, 0);
+
+    audit_log(sess.user_id, "ADMIN_SESSION_REVOKED", sid);
+    send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"Session revoked\"}",
+                   origin, extra_headers, extra_len);
+}
+
+/* ----------------------------------------------------- Revoke Other Sessions */
+void auth_admin_sessions_revoke_others(int client_fd, const char *auth_header,
+                                      const char *origin, char *extra_headers, size_t extra_len) {
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char current_token[128] = {0};
+    char current_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (ctrl_extract_bearer(auth_header, current_token, sizeof(current_token))) {
+        secure_token_hash(current_token, current_hash);
+    }
+    OPENSSL_cleanse(current_token, sizeof(current_token));
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char now_str[32];
+    snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL));
+
+    const char *pvals[3] = { now_str, sess.user_id, current_hash };
+    int lens[3] = { (int)strlen(now_str), (int)strlen(sess.user_id), (int)strlen(current_hash) };
+
+    PGresult *res = db_simple(conn,
+        "UPDATE auth_sessions SET status = 'revoked', revocation_reason = 'Revoked by sign out others', "
+        "       revoked_at = $1::bigint "
+        "WHERE user_id = $2 AND session_token <> $3 AND status = 'active' "
+        "RETURNING session_token",
+        3, pvals, lens);
+
+    int count = 0;
+    if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+        count = PQntuples(res);
+        for (int i = 0; i < count; i++) {
+            const char *th = PQgetvalue(res, i, 0);
+            const char *th_vals[1] = { th };
+            int th_lens[1] = { (int)strlen(th) };
+            PGresult *as_res = db_simple(conn,
+                "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE token_hash = $1",
+                1, th_vals, th_lens);
+            if (as_res) PQclear(as_res);
+        }
+    }
+    if (res) PQclear(res);
+    db_release(conn, 0);
+
+    audit_log(sess.user_id, "ADMIN_SESSIONS_REVOKE_OTHERS", "");
+    char resp[256];
+    snprintf(resp, sizeof(resp), "{\"status\":\"SUCCESS\",\"count\":%d}", count);
+    send_json_cors(client_fd, 200, resp, origin, extra_headers, extra_len);
+}
+
+/* ---------------------------------------------------- Regenerate Recovery */
+void auth_recovery_regenerate(int client_fd, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len) {
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char codes[TOTP_NUM_RECOVERY_CODES][TOTP_RECOVERY_CODE_LEN + 1];
+    char hashes[TOTP_NUM_RECOVERY_CODES][65];
+    if (totp_generate_recovery_codes(codes, hashes) != 0) {
+        send_json_cors(client_fd, 500, "{\"error\":\"Failed to generate recovery codes\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    const char *del_p[1] = { sess.user_id };
+    int del_l[1] = { (int)strlen(sess.user_id) };
+    PGresult *del_r = db_simple(conn,
+        "DELETE FROM examos_admin_recovery_codes WHERE user_id = $1 AND NOT used",
+        1, del_p, del_l);
+    if (del_r) PQclear(del_r);
+
+    for (int i = 0; i < TOTP_NUM_RECOVERY_CODES; i++) {
+        const char *ins_p[2] = { hashes[i], sess.user_id };
+        int ins_l[2] = { 64, (int)strlen(sess.user_id) };
+        PGresult *ins_r = db_simple(conn,
+            "INSERT INTO examos_admin_recovery_codes (code_hash, user_id, used) "
+            "VALUES ($1, $2, false) ON CONFLICT (code_hash) DO NOTHING",
+            2, ins_p, ins_l);
+        if (ins_r) PQclear(ins_r);
+    }
+
+    db_release(conn, 0);
+
+    char recovery_json[1024] = "[";
+    for (int i = 0; i < TOTP_NUM_RECOVERY_CODES; i++) {
+        char item[64];
+        snprintf(item, sizeof(item), "%s\"%s\"", (i > 0) ? "," : "", codes[i]);
+        strncat(recovery_json, item, sizeof(recovery_json) - strlen(recovery_json) - 1);
+    }
+    strncat(recovery_json, "]", sizeof(recovery_json) - strlen(recovery_json) - 1);
+
+    char resp[1536];
+    snprintf(resp, sizeof(resp),
+        "{\"status\":\"SUCCESS\",\"codes\":%s,\"message\":\"New single-use recovery codes generated\"}",
+        recovery_json);
+
+    send_json_cors(client_fd, 200, resp, origin, extra_headers, extra_len);
+    audit_log(sess.user_id, "ADMIN_RECOVERY_CODES_REGENERATED", "user rotated emergency recovery codes");
+}
+
+/* --------------------------------------------------------- Update Profile */
+void auth_update_profile(int client_fd, const char *req_body, const char *auth_header,
+                         const char *origin, char *extra_headers, size_t extra_len) {
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    char name[128] = {0}, email[128] = {0};
+    ctrl_json_string(req_body, "name", name, sizeof(name));
+    if (!name[0]) ctrl_json_string(req_body, "full_name", name, sizeof(name));
+    ctrl_json_string(req_body, "email", email, sizeof(email));
+
+    if (!name[0] && !email[0]) {
+        send_json_cors(client_fd, 400, "{\"error\":\"Name or email required for profile update\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    if (name[0] && strlen(name) < 2) {
+        send_json_cors(client_fd, 400, "{\"error\":\"Name must be at least 2 characters long\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    if (email[0] && (!strchr(email, '@') || !strchr(email, '.'))) {
+        send_json_cors(client_fd, 400, "{\"error\":\"A valid email address is required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    if (email[0]) {
+        const char *ck_p[2] = { email, sess.user_id };
+        int ck_l[2] = { (int)strlen(email), (int)strlen(sess.user_id) };
+        PGresult *ck = db_simple(conn,
+            "SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2",
+            2, ck_p, ck_l);
+        if (ck && PQresultStatus(ck) == PGRES_TUPLES_OK && PQntuples(ck) > 0) {
+            PQclear(ck);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 409, "{\"error\":\"Email is already associated with another account\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (ck) PQclear(ck);
+    }
+
+    if (name[0] && email[0]) {
+        const char *up_p[3] = { name, email, sess.user_id };
+        int up_l[3] = { (int)strlen(name), (int)strlen(email), (int)strlen(sess.user_id) };
+        PGresult *up = db_simple(conn,
+            "UPDATE users SET name = $1, email = $2 WHERE id = $3 OR username = $3",
+            3, up_p, up_l);
+        if (up) PQclear(up);
+
+        PGresult *up_adm = db_simple(conn,
+            "UPDATE examos_admin_users SET full_name = $1, email = $2 WHERE user_id = $3 OR username = $3",
+            3, up_p, up_l);
+        if (up_adm) PQclear(up_adm);
+    } else if (name[0]) {
+        const char *up_p[2] = { name, sess.user_id };
+        int up_l[2] = { (int)strlen(name), (int)strlen(sess.user_id) };
+        PGresult *up = db_simple(conn,
+            "UPDATE users SET name = $1 WHERE id = $2 OR username = $2",
+            2, up_p, up_l);
+        if (up) PQclear(up);
+
+        PGresult *up_adm = db_simple(conn,
+            "UPDATE examos_admin_users SET full_name = $1 WHERE user_id = $2 OR username = $2",
+            2, up_p, up_l);
+        if (up_adm) PQclear(up_adm);
+    } else if (email[0]) {
+        const char *up_p[2] = { email, sess.user_id };
+        int up_l[2] = { (int)strlen(email), (int)strlen(sess.user_id) };
+        PGresult *up = db_simple(conn,
+            "UPDATE users SET email = $1 WHERE id = $2 OR username = $2",
+            2, up_p, up_l);
+        if (up) PQclear(up);
+
+        PGresult *up_adm = db_simple(conn,
+            "UPDATE examos_admin_users SET email = $1 WHERE user_id = $2 OR username = $2",
+            2, up_p, up_l);
+        if (up_adm) PQclear(up_adm);
+    }
+
+    const char *get_p[1] = { sess.user_id };
+    int get_l[1] = { (int)strlen(sess.user_id) };
+    PGresult *gr = db_simple(conn,
+        "SELECT id, username, name, email, role, COALESCE(tenant_id, '') FROM users WHERE id = $1 OR username = $1",
+        1, get_p, get_l);
+
+    char r_id[64] = {0}, r_user[64] = {0}, r_name[128] = {0}, r_email[128] = {0}, r_role[64] = {0}, r_tenant[64] = {0};
+    if (gr && PQresultStatus(gr) == PGRES_TUPLES_OK && PQntuples(gr) > 0) {
+        strncpy(r_id, PQgetvalue(gr, 0, 0), sizeof(r_id) - 1);
+        strncpy(r_user, PQgetvalue(gr, 0, 1), sizeof(r_user) - 1);
+        strncpy(r_name, PQgetvalue(gr, 0, 2), sizeof(r_name) - 1);
+        strncpy(r_email, PQgetvalue(gr, 0, 3), sizeof(r_email) - 1);
+        strncpy(r_role, PQgetvalue(gr, 0, 4), sizeof(r_role) - 1);
+        strncpy(r_tenant, PQgetvalue(gr, 0, 5), sizeof(r_tenant) - 1);
+    }
+    if (gr) PQclear(gr);
+    db_release(conn, 0);
+
+    audit_log(sess.user_id, "USER_PROFILE_UPDATED", sess.user_id);
+    char resp[1024];
+    snprintf(resp, sizeof(resp),
+        "{\"status\":\"SUCCESS\",\"user\":{\"id\":\"%s\",\"username\":\"%s\",\"name\":\"%s\","
+        "\"email\":\"%s\",\"role\":\"%s\",\"tenantId\":\"%s\"}}",
+        r_id[0] ? r_id : sess.user_id,
+        r_user[0] ? r_user : sess.username,
+        r_name[0] ? r_name : name,
+        r_email[0] ? r_email : email,
+        r_role, r_tenant);
+
+    send_json_cors(client_fd, 200, resp, origin, extra_headers, extra_len);
+}
+
+/* ---------------------------------------------------- User Administration Dispatcher */
+void auth_admin_user_dispatch(int client_fd, const char *method, const char *sub_path,
+                              const char *req_body, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len) {
+    if (!sub_path || !sub_path[0]) {
+        send_json_cors(client_fd, 400, "{\"error\":\"Invalid user endpoint\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 1. Accept Invitation (Public route with single-use token) */
+    if (strcmp(sub_path, "accept-invite") == 0 && strcmp(method, "POST") == 0) {
+        char token[128] = {0}, username[64] = {0}, password[256] = {0};
+        ctrl_json_string(req_body, "token", token, sizeof(token));
+        ctrl_json_string(req_body, "username", username, sizeof(username));
+        ctrl_json_string(req_body, "password", password, sizeof(password));
+
+        if (!token[0] || !username[0] || !password[0]) {
+            send_json_cors(client_fd, 400, "{\"error\":\"Token, username and password are required\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (!password_meets_policy(password)) {
+            send_json_cors(client_fd, 400,
+                "{\"error\":\"Password must be 12+ characters with uppercase, lowercase, digit, and symbol\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        PGconn *conn = db_acquire();
+        if (!conn) {
+            send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *t_p[1] = { token };
+        int t_l[1] = { (int)strlen(token) };
+        PGresult *inv_r = db_simple(conn,
+            "SELECT name, email, role, COALESCE(tenant_id, ''), status, expires_at "
+            "FROM user_invitations WHERE token = $1", 1, t_p, t_l);
+
+        if (!inv_r || PQresultStatus(inv_r) != PGRES_TUPLES_OK || PQntuples(inv_r) == 0) {
+            if (inv_r) PQclear(inv_r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 404, "{\"error\":\"Invalid invitation token\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *inv_name = PQgetvalue(inv_r, 0, 0);
+        const char *inv_email = PQgetvalue(inv_r, 0, 1);
+        const char *inv_role = PQgetvalue(inv_r, 0, 2);
+        const char *inv_tenant = PQgetvalue(inv_r, 0, 3);
+        const char *inv_status = PQgetvalue(inv_r, 0, 4);
+        long long expires_at = atoll(PQgetvalue(inv_r, 0, 5));
+
+        time_t now = time(NULL);
+        if (strcmp(inv_status, "pending") != 0 || expires_at < (long long)now) {
+            PQclear(inv_r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 410, "{\"error\":\"Invitation has expired or has already been accepted\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        char user_id[64];
+        gen_secure_id("usr", user_id, sizeof(user_id));
+
+        unsigned char salt_bytes[16];
+        RAND_bytes(salt_bytes, sizeof(salt_bytes));
+        char salt_hex[33] = {0};
+        static const char hex_c[] = "0123456789abcdef";
+        for (int i = 0; i < 16; i++) {
+            salt_hex[i * 2] = hex_c[salt_bytes[i] >> 4];
+            salt_hex[i * 2 + 1] = hex_c[salt_bytes[i] & 0x0f];
+        }
+        salt_hex[32] = '\0';
+
+        char hash[256] = {0};
+        security_pbkdf2_hash(password, salt_hex, hash, sizeof(hash));
+
+        char base32_secret[TOTP_BASE32_LEN + 1] = {0};
+        totp_generate_secret(base32_secret);
+
+        char otpauth_url[512] = {0};
+        totp_generate_uri(username, "ExamOS", base32_secret, otpauth_url, sizeof(otpauth_url));
+
+        char codes[TOTP_NUM_RECOVERY_CODES][TOTP_RECOVERY_CODE_LEN + 1];
+        char rec_hashes[TOTP_NUM_RECOVERY_CODES][65];
+        totp_generate_recovery_codes(codes, rec_hashes);
+
+        char now_str[32];
+        snprintf(now_str, sizeof(now_str), "%lld", (long long)now);
+
+        const char *u_p[10] = {
+            user_id, username, inv_name, normalize_role_str(inv_role),
+            inv_tenant, inv_email, hash, salt_hex, base32_secret, now_str
+        };
+        int u_l[10];
+        for (int k = 0; k < 10; k++) u_l[k] = (int)strlen(u_p[k]);
+
+        PGresult *ins_u = db_simple(conn,
+            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, totp_secret, status, created_at, mfa_enabled) "
+            "VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, 'active', $10::bigint, 1) "
+            "RETURNING id", 10, u_p, u_l);
+
+        if (!ins_u || PQresultStatus(ins_u) != PGRES_TUPLES_OK || PQntuples(ins_u) == 0) {
+            if (ins_u) PQclear(ins_u);
+            PQclear(inv_r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 409, "{\"error\":\"Username or email already in use\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(ins_u);
+
+        /* Mirror into examos_admin_users */
+        char role_num[16];
+        snprintf(role_num, sizeof(role_num), "%d", role_to_int_val(inv_role));
+        char full_cred[320];
+        snprintf(full_cred, sizeof(full_cred), "210000:%s:%s", salt_hex, hash);
+
+        const char *adm_p[8] = {
+            user_id, username, full_cred, inv_name, inv_email, inv_tenant, role_num, base32_secret
+        };
+        int adm_l[8];
+        for (int k = 0; k < 8; k++) adm_l[k] = (int)strlen(adm_p[k]);
+
+        PGresult *ins_adm = db_simple(conn,
+            "INSERT INTO examos_admin_users (user_id, username, password_hash, full_name, email, institution_id, role, totp_secret, mfa_enabled, active) "
+            "VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7::smallint, $8, true, true) "
+            "ON CONFLICT (user_id) DO NOTHING", 8, adm_p, adm_l);
+        if (ins_adm) PQclear(ins_adm);
+
+        /* Install recovery codes */
+        for (int i = 0; i < TOTP_NUM_RECOVERY_CODES; i++) {
+            const char *rc_p[2] = { rec_hashes[i], user_id };
+            int rc_l[2] = { 64, (int)strlen(user_id) };
+            PGresult *rc_res = db_simple(conn,
+                "INSERT INTO examos_admin_recovery_codes (code_hash, user_id, used) "
+                "VALUES ($1, $2, false) ON CONFLICT (code_hash) DO NOTHING", 2, rc_p, rc_l);
+            if (rc_res) PQclear(rc_res);
+        }
+
+        /* Mark invitation as accepted */
+        const char *mark_p[2] = { now_str, token };
+        int mark_l[2] = { (int)strlen(now_str), (int)strlen(token) };
+        PGresult *mark_r = db_simple(conn,
+            "UPDATE user_invitations SET status = 'accepted', accepted_at = $1::bigint WHERE token = $2",
+            2, mark_p, mark_l);
+        if (mark_r) PQclear(mark_r);
+
+        PQclear(inv_r);
+        db_release(conn, 0);
+
+        char recovery_json[1024] = "[";
+        for (int i = 0; i < TOTP_NUM_RECOVERY_CODES; i++) {
+            char item[64];
+            snprintf(item, sizeof(item), "%s\"%s\"", (i > 0) ? "," : "", codes[i]);
+            strncat(recovery_json, item, sizeof(recovery_json) - strlen(recovery_json) - 1);
+        }
+        strncat(recovery_json, "]", sizeof(recovery_json) - strlen(recovery_json) - 1);
+
+        char resp[2048];
+        snprintf(resp, sizeof(resp),
+            "{\"status\":\"SUCCESS\",\"username\":\"%s\",\"totp\":\"%s\",\"recovery\":%s,\"otpauth_url\":\"%s\"}",
+            username, base32_secret, recovery_json, otpauth_url);
+
+        OPENSSL_cleanse(password, sizeof(password));
+        send_json_cors(client_fd, 201, resp, origin, extra_headers, extra_len);
+        audit_log(username, "USER_INVITATION_ACCEPTED", user_id);
+        return;
+    }
+
+    /* All remaining user administration operations require an authenticated management session */
+    auth_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+        send_json_cors(client_fd, 401, "{\"error\":\"Authenticated management session required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 2. Create Invitation: POST /api/v1/admin/users/invite */
+    if (strcmp(sub_path, "invite") == 0 && strcmp(method, "POST") == 0) {
+        if (!admin_role_has_permission(sess.role, AUTH_PERM_USER_MANAGEMENT)) {
+            send_json_cors(client_fd, 403, "{\"error\":\"Permission denied: User management required\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        char inv_name[128] = {0}, inv_email[128] = {0}, inv_role[64] = {0}, inv_tenant[64] = {0};
+        ctrl_json_string(req_body, "name", inv_name, sizeof(inv_name));
+        ctrl_json_string(req_body, "email", inv_email, sizeof(inv_email));
+        ctrl_json_string(req_body, "role", inv_role, sizeof(inv_role));
+        ctrl_json_string(req_body, "tenantId", inv_tenant, sizeof(inv_tenant));
+        if (!inv_tenant[0]) ctrl_json_string(req_body, "institution_id", inv_tenant, sizeof(inv_tenant));
+
+        if (!inv_name[0] || !inv_email[0] || !inv_role[0]) {
+            send_json_cors(client_fd, 400, "{\"error\":\"Name, email, and role are required\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (sess.role != ROLE_PLATFORM_OWNER) {
+            snprintf(inv_tenant, sizeof(inv_tenant), "%s", sess.institution_id);
+            if (!inv_tenant[0]) {
+                send_json_cors(client_fd, 403, "{\"error\":\"Your account has no institution scope\"}",
+                               origin, extra_headers, extra_len);
+                return;
+            }
+        }
+
+        char inv_token[80];
+        gen_secure_id("inv", inv_token, sizeof(inv_token));
+
+        time_t now = time(NULL);
+        time_t expires_at = now + (7 * 86400);
+
+        char now_str[32], exp_str[32];
+        snprintf(now_str, sizeof(now_str), "%lld", (long long)now);
+        snprintf(exp_str, sizeof(exp_str), "%lld", (long long)expires_at);
+
+        PGconn *conn = db_acquire();
+        if (!conn) {
+            send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *pvals[7] = {
+            inv_token, inv_name, inv_email, inv_role,
+            inv_tenant, sess.user_id, exp_str
+        };
+        int lens[7];
+        for (int k = 0; k < 7; k++) lens[k] = (int)strlen(pvals[k]);
+
+        PGresult *r = db_simple(conn,
+            "INSERT INTO user_invitations (token, name, email, role, tenant_id, invited_by, status, created_at, expires_at) "
+            "VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, 'pending', EXTRACT(EPOCH FROM clock_timestamp())::bigint, $7::bigint)",
+            7, pvals, lens);
+
+        if (!r || PQresultStatus(r) != PGRES_COMMAND_OK) {
+            if (r) PQclear(r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 500, "{\"error\":\"Failed to persist user invitation\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(r);
+        db_release(conn, 0);
+
+        char link[256];
+        snprintf(link, sizeof(link), "/invite/%s", inv_token);
+
+        char resp[512];
+        snprintf(resp, sizeof(resp),
+            "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"link\":\"%s\",\"expiresAt\":%lld}",
+            inv_token, link, (long long)expires_at * 1000LL);
+
+        audit_log(sess.user_id, "USER_INVITATION_CREATED", inv_email);
+        send_json_cors(client_fd, 201, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* Parse target user ID and sub-action */
+    char target_id[64] = {0};
+    char action[64] = {0};
+    const char *slash = strchr(sub_path, '/');
+    if (slash) {
+        size_t id_len = (size_t)(slash - sub_path);
+        if (id_len >= sizeof(target_id)) id_len = sizeof(target_id) - 1;
+        strncpy(target_id, sub_path, id_len);
+        target_id[id_len] = '\0';
+        strncpy(action, slash + 1, sizeof(action) - 1);
+    } else {
+        strncpy(target_id, sub_path, sizeof(target_id) - 1);
+    }
+
+    if (!target_id[0]) {
+        send_json_cors(client_fd, 400, "{\"error\":\"Target user ID is required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        send_json_cors(client_fd, 503, "{\"error\":\"Database service unavailable\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 3. Fetch Single User: GET /api/v1/admin/users/:id */
+    if (!action[0] && strcmp(method, "GET") == 0) {
+        const char *pvals[1] = { target_id };
+        int lens[1] = { (int)strlen(target_id) };
+        PGresult *r = db_simple(conn,
+            "SELECT id, username, name, role, email, COALESCE(tenant_id, ''), status, "
+            "       mfa_enabled, created_at, COALESCE(last_login, 0), COALESCE(password_changed_at, 0) "
+            "FROM users WHERE id = $1 OR LOWER(username) = LOWER($1)",
+            1, pvals, lens);
+
+        if (!r || PQresultStatus(r) != PGRES_TUPLES_OK || PQntuples(r) == 0) {
+            if (r) PQclear(r);
+            /* Fallback to examos_admin_users */
+            PGresult *ar = db_simple(conn,
+                "SELECT user_id, username, full_name, role, email, COALESCE(institution_id, ''), "
+                "       (CASE WHEN active THEN 'active' ELSE 'suspended' END), "
+                "       mfa_enabled, EXTRACT(EPOCH FROM created_at)::bigint, "
+                "       COALESCE(EXTRACT(EPOCH FROM last_login_at)::bigint, 0), 0 "
+                "FROM examos_admin_users WHERE user_id = $1 OR LOWER(username) = LOWER($1)",
+                1, pvals, lens);
+
+            if (!ar || PQresultStatus(ar) != PGRES_TUPLES_OK || PQntuples(ar) == 0) {
+                if (ar) PQclear(ar);
+                db_release(conn, 0);
+                send_json_cors(client_fd, 404, "{\"error\":\"User not found\"}",
+                               origin, extra_headers, extra_len);
+                return;
+            }
+            r = ar;
+        }
+
+        const char *u_id = PQgetvalue(r, 0, 0);
+        const char *u_user = PQgetvalue(r, 0, 1);
+        const char *u_name = PQgetvalue(r, 0, 2);
+        const char *u_role = PQgetvalue(r, 0, 3);
+        const char *u_email = PQgetvalue(r, 0, 4);
+        const char *u_inst = PQgetvalue(r, 0, 5);
+        const char *u_status = PQgetvalue(r, 0, 6);
+        const char *mfa_val = PQgetvalue(r, 0, 7);
+        long long u_created = atoll(PQgetvalue(r, 0, 8));
+        long long u_last_login = atoll(PQgetvalue(r, 0, 9));
+        long long u_pw_changed = atoll(PQgetvalue(r, 0, 10));
+
+        int mfa_en = (mfa_val && (mfa_val[0] == 't' || mfa_val[0] == '1' || atoi(mfa_val) > 0));
+
+        /* Institution scoping */
+        if (sess.role != ROLE_PLATFORM_OWNER && u_inst[0] &&
+            strcmp(u_inst, sess.institution_id) != 0) {
+            PQclear(r);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 403, "{\"error\":\"Access denied to accounts in other institutions\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        char resp[1536];
+        snprintf(resp, sizeof(resp),
+            "{\"user\":{\"id\":\"%s\",\"username\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
+            "\"email\":\"%s\",\"tenantId\":\"%s\",\"status\":\"%s\",\"mfaEnabled\":%s,"
+            "\"createdAt\":%lld,\"lastLogin\":%s,\"passwordChangedAt\":%s}}",
+            u_id, u_user, u_name, normalize_role_str(u_role),
+            u_email, u_inst, u_status, mfa_en ? "true" : "false",
+            u_created * 1000LL,
+            u_last_login ? "true" : "null",
+            u_pw_changed ? "true" : "null");
+
+        PQclear(r);
+        db_release(conn, 0);
+        send_json_cors(client_fd, 200, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* Operations 4-8 require User Management permission */
+    if (!admin_role_has_permission(sess.role, AUTH_PERM_USER_MANAGEMENT)) {
+        db_release(conn, 0);
+        send_json_cors(client_fd, 403, "{\"error\":\"Permission denied: User management required\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 4. Update User Profile by Admin: PUT /api/v1/admin/users/:id */
+    if (!action[0] && strcmp(method, "PUT") == 0) {
+        char nm[128] = {0}, em[128] = {0}, inst[64] = {0};
+        ctrl_json_string(req_body, "name", nm, sizeof(nm));
+        if (!nm[0]) ctrl_json_string(req_body, "full_name", nm, sizeof(nm));
+        ctrl_json_string(req_body, "email", em, sizeof(em));
+        ctrl_json_string(req_body, "institution_id", inst, sizeof(inst));
+
+        if (sess.role != ROLE_PLATFORM_OWNER && inst[0] && strcmp(inst, sess.institution_id) != 0) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 403, "{\"error\":\"Only platform owners can reassign institutions\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (nm[0]) {
+            const char *p[2] = { nm, target_id };
+            int l[2] = { (int)strlen(nm), (int)strlen(target_id) };
+            PGresult *u1 = db_simple(conn, "UPDATE users SET name = $1 WHERE id = $2 OR username = $2", 2, p, l);
+            if (u1) PQclear(u1);
+            PGresult *u2 = db_simple(conn, "UPDATE examos_admin_users SET full_name = $1 WHERE user_id = $2 OR username = $2", 2, p, l);
+            if (u2) PQclear(u2);
+        }
+        if (em[0]) {
+            const char *p[2] = { em, target_id };
+            int l[2] = { (int)strlen(em), (int)strlen(target_id) };
+            PGresult *u1 = db_simple(conn, "UPDATE users SET email = $1 WHERE id = $2 OR username = $2", 2, p, l);
+            if (u1) PQclear(u1);
+            PGresult *u2 = db_simple(conn, "UPDATE examos_admin_users SET email = $1 WHERE user_id = $2 OR username = $2", 2, p, l);
+            if (u2) PQclear(u2);
+        }
+        if (sess.role == ROLE_PLATFORM_OWNER && inst[0]) {
+            const char *p[2] = { inst, target_id };
+            int l[2] = { (int)strlen(inst), (int)strlen(target_id) };
+            PGresult *u1 = db_simple(conn, "UPDATE users SET tenant_id = $1 WHERE id = $2 OR username = $2", 2, p, l);
+            if (u1) PQclear(u1);
+            PGresult *u2 = db_simple(conn, "UPDATE examos_admin_users SET institution_id = $1 WHERE user_id = $2 OR username = $2", 2, p, l);
+            if (u2) PQclear(u2);
+        }
+
+        db_release(conn, 0);
+        audit_log(sess.user_id, "ADMIN_USER_UPDATED", target_id);
+        send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"User updated successfully\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 5. Set Status: POST /api/v1/admin/users/:id/status */
+    if (strcmp(action, "status") == 0 && strcmp(method, "POST") == 0) {
+        char status[32] = {0}, reason[256] = {0};
+        ctrl_json_string(req_body, "status", status, sizeof(status));
+        ctrl_json_string(req_body, "reason", reason, sizeof(reason));
+
+        if (!status[0] || (!strcmp(status, "active") && !strcmp(status, "suspended") &&
+                           !strcmp(status, "deactivated") && !strcmp(status, "locked"))) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"Valid status required (active, suspended, deactivated, locked)\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (strcmp(target_id, sess.user_id) == 0 || strcmp(target_id, sess.username) == 0) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"You cannot change your own account status\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        char now_str[32];
+        snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL));
+
+        const char *pvals[5] = { status, reason, now_str, sess.user_id, target_id };
+        int lens[5];
+        for (int k = 0; k < 5; k++) lens[k] = (int)strlen(pvals[k]);
+
+        PGresult *u1 = db_simple(conn,
+            "UPDATE users SET status = $1, status_reason = $2, status_at = $3::bigint, status_by = $4 "
+            "WHERE id = $5 OR username = $5", 5, pvals, lens);
+        if (u1) PQclear(u1);
+
+        const char *adm_p[2] = { strcmp(status, "active") == 0 ? "true" : "false", target_id };
+        int adm_l[2] = { (int)strlen(adm_p[0]), (int)strlen(target_id) };
+        PGresult *u2 = db_simple(conn,
+            "UPDATE examos_admin_users SET active = $1::boolean WHERE user_id = $2 OR username = $2",
+            2, adm_p, adm_l);
+        if (u2) PQclear(u2);
+
+        /* If non-active, terminate active sessions */
+        if (strcmp(status, "active") != 0) {
+            const char *inv_p[1] = { target_id };
+            int inv_l[1] = { (int)strlen(target_id) };
+            PGresult *s1 = db_simple(conn, "UPDATE auth_sessions SET status = 'ended' WHERE user_id = $1 OR username = $1", 1, inv_p, inv_l);
+            if (s1) PQclear(s1);
+            PGresult *s2 = db_simple(conn, "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE user_id = $1 AND revoked_at IS NULL", 1, inv_p, inv_l);
+            if (s2) PQclear(s2);
+        }
+
+        db_release(conn, 0);
+        audit_log(sess.user_id, "ADMIN_USER_STATUS_CHANGED", target_id);
+        send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"Account status updated\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 6. Change Role: POST /api/v1/admin/users/:id/role */
+    if (strcmp(action, "role") == 0 && strcmp(method, "POST") == 0) {
+        char role[64] = {0}, reason[256] = {0};
+        ctrl_json_string(req_body, "role", role, sizeof(role));
+        ctrl_json_string(req_body, "reason", reason, sizeof(reason));
+
+        if (!role[0]) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"Role is required\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (strlen(reason) < 8) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"A role-change reason of at least 8 characters is required\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (strcmp(target_id, sess.user_id) == 0 || strcmp(target_id, sess.username) == 0) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"Self-escalation prohibited: Cannot change your own role\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"Could not start role-change transaction\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
+        const char *target_params[1] = { target_id };
+        int target_lengths[1] = { (int)strlen(target_id) };
+        PGresult *target = db_simple(conn,
+            "SELECT id,COALESCE(tenant_id,''),role FROM users "
+            "WHERE id=$1 OR username=$1 LIMIT 1 FOR UPDATE",
+            1, target_params, target_lengths);
+        if (!target || PQresultStatus(target) != PGRES_TUPLES_OK) {
+            if (target) PQclear(target);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"Could not load role-change target\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (PQntuples(target) != 1) {
+            PQclear(target);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 404, "{\"error\":\"User not found\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        char canonical_target_id[65], target_tenant[65], current_role[64];
+        snprintf(canonical_target_id, sizeof(canonical_target_id), "%s", PQgetvalue(target, 0, 0));
+        snprintf(target_tenant, sizeof(target_tenant), "%s", PQgetvalue(target, 0, 1));
+        snprintf(current_role, sizeof(current_role), "%s", PQgetvalue(target, 0, 2));
+        PQclear(target);
+        int current_role_rank = role_privilege_rank(role_to_int_val(current_role));
+        if (sess.role != ROLE_PLATFORM_OWNER &&
+            (strcmp(target_tenant, sess.institution_id) != 0 ||
+             current_role_rank >= role_privilege_rank((int)sess.role))) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 403,
+                "{\"error\":\"User is outside your institution or has equal or higher privilege\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *norm_role = normalize_role_str(role);
+        int target_role_tier = role_to_int_val(norm_role);
+
+        if (role_privilege_rank(target_role_tier) == 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400, "{\"error\":\"Unsupported administrative role\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (target_role_tier == 1 && sess.role != ROLE_PLATFORM_OWNER) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 403, "{\"error\":\"Only platform owners can grant platform owner role\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        if (role_privilege_rank(target_role_tier) >= 60 &&
+            sess.role != ROLE_PLATFORM_OWNER) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 409,
+                "{\"error\":\"This role change requires a centralized approval request\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *p1[2] = { norm_role, canonical_target_id };
+        int l1[2] = { (int)strlen(norm_role), (int)strlen(canonical_target_id) };
+        PGresult *u1 = db_simple(conn, "UPDATE users SET role = $1 WHERE id = $2 OR username = $2", 2, p1, l1);
+        if (!u1 || PQresultStatus(u1) != PGRES_COMMAND_OK ||
+            strcmp(PQcmdTuples(u1), "1") != 0) {
+            if (u1) PQclear(u1);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"User role could not be updated\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(u1);
+
+        char r_num[16];
+        snprintf(r_num, sizeof(r_num), "%d", target_role_tier);
+        const char *p2[2] = { r_num, canonical_target_id };
+        int l2[2] = { (int)strlen(r_num), (int)strlen(canonical_target_id) };
+        PGresult *u2 = db_simple(conn, "UPDATE examos_admin_users SET role = $1::smallint WHERE user_id = $2 OR username = $2", 2, p2, l2);
+        if (!u2 || PQresultStatus(u2) != PGRES_COMMAND_OK ||
+            strcmp(PQcmdTuples(u2), "1") != 0) {
+            if (u2) PQclear(u2);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"Administrative role mirror could not be updated\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(u2);
+
+        /* Revoke active sessions to enforce fresh RBAC */
+        const char *inv_p[1] = { canonical_target_id };
+        int inv_l[1] = { (int)strlen(canonical_target_id) };
+        PGresult *s1 = db_simple(conn, "UPDATE auth_sessions SET status = 'ended' WHERE user_id = $1 OR username = $1", 1, inv_p, inv_l);
+        if (!s1 || PQresultStatus(s1) != PGRES_COMMAND_OK) {
+            if (s1) PQclear(s1);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"User sessions could not be revoked\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(s1);
+        PGresult *s2 = db_simple(conn, "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE user_id = $1 AND revoked_at IS NULL", 1, inv_p, inv_l);
+        if (!s2 || PQresultStatus(s2) != PGRES_COMMAND_OK) {
+            if (s2) PQclear(s2);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"Administrative sessions could not be revoked\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(s2);
+
+        PGresult *commit = PQexec(conn, "COMMIT");
+        if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+            if (commit) PQclear(commit);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503, "{\"error\":\"Role-change transaction could not commit\"}",
+                           origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(commit);
+
+        db_release(conn, 0);
+        audit_log(sess.user_id, "ADMIN_USER_ROLE_CHANGED", canonical_target_id);
+        send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"User role updated\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 7. Admin Reset Password: POST /api/v1/admin/users/:id/reset-password */
+    if (strcmp(action, "reset-password") == 0 && strcmp(method, "POST") == 0) {
+        char new_pw[256] = {0};
+        ctrl_json_string(req_body, "password", new_pw, sizeof(new_pw));
+
+        if (!new_pw[0] || !password_meets_policy(new_pw)) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 400,
+                "{\"error\":\"Password must be at least 12 characters and contain upper, lower, digit and symbol\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        unsigned char salt_bytes[16];
+        RAND_bytes(salt_bytes, sizeof(salt_bytes));
+        char salt_hex[33] = {0};
+        static const char hex_c[] = "0123456789abcdef";
+        for (int i = 0; i < 16; i++) {
+            salt_hex[i * 2] = hex_c[salt_bytes[i] >> 4];
+            salt_hex[i * 2 + 1] = hex_c[salt_bytes[i] & 0x0f];
+        }
+        salt_hex[32] = '\0';
+
+        char new_hash[256] = {0};
+        security_pbkdf2_hash(new_pw, salt_hex, new_hash, sizeof(new_hash));
+
+        char now_str[32];
+        snprintf(now_str, sizeof(now_str), "%ld", (long)time(NULL));
+
+        const char *u_p[4] = { new_hash, salt_hex, now_str, target_id };
+        int u_l[4] = { (int)strlen(new_hash), (int)strlen(salt_hex), (int)strlen(now_str), (int)strlen(target_id) };
+        PGresult *u1 = db_simple(conn,
+            "UPDATE users SET password_hash = $1, salt = $2, password_changed_at = $3::bigint "
+            "WHERE id = $4 OR username = $4", 4, u_p, u_l);
+        if (u1) PQclear(u1);
+
+        char full_cred[320];
+        snprintf(full_cred, sizeof(full_cred), "210000:%s:%s", salt_hex, new_hash);
+        const char *adm_p[2] = { full_cred, target_id };
+        int adm_l[2] = { (int)strlen(full_cred), (int)strlen(target_id) };
+        PGresult *u2 = db_simple(conn,
+            "UPDATE examos_admin_users SET password_hash = $1 WHERE user_id = $2 OR username = $2",
+            2, adm_p, adm_l);
+        if (u2) PQclear(u2);
+
+        /* Revoke active sessions */
+        const char *inv_p[1] = { target_id };
+        int inv_l[1] = { (int)strlen(target_id) };
+        PGresult *s1 = db_simple(conn, "UPDATE auth_sessions SET status = 'ended' WHERE user_id = $1 OR username = $1", 1, inv_p, inv_l);
+        if (s1) PQclear(s1);
+        PGresult *s2 = db_simple(conn, "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE user_id = $1 AND revoked_at IS NULL", 1, inv_p, inv_l);
+        if (s2) PQclear(s2);
+
+        OPENSSL_cleanse(new_pw, sizeof(new_pw));
+        db_release(conn, 0);
+
+        audit_log(sess.user_id, "ADMIN_RESET_PASSWORD", target_id);
+        send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"Password reset successfully\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* 8. Revoke User Sessions: POST /api/v1/admin/users/:id/revoke-sessions */
+    if (strcmp(action, "revoke-sessions") == 0 && strcmp(method, "POST") == 0) {
+        const char *inv_p[1] = { target_id };
+        int inv_l[1] = { (int)strlen(target_id) };
+        PGresult *s1 = db_simple(conn, "UPDATE auth_sessions SET status = 'ended' WHERE user_id = $1 OR username = $1", 1, inv_p, inv_l);
+        if (s1) PQclear(s1);
+        PGresult *s2 = db_simple(conn, "UPDATE examos_admin_sessions SET revoked_at = clock_timestamp() WHERE user_id = $1 AND revoked_at IS NULL", 1, inv_p, inv_l);
+        if (s2) PQclear(s2);
+
+        db_release(conn, 0);
+        audit_log(sess.user_id, "ADMIN_USER_SESSIONS_REVOKED", target_id);
+        send_json_cors(client_fd, 200, "{\"status\":\"SUCCESS\",\"message\":\"All sessions revoked for user\"}",
+                       origin, extra_headers, extra_len);
+        return;
+    }
+
+    db_release(conn, 0);
+    send_json_cors(client_fd, 404, "{\"error\":\"Unknown user sub-endpoint\"}",
+                   origin, extra_headers, extra_len);
+}

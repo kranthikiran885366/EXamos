@@ -110,6 +110,10 @@ export const ROLES = {
 };
 
 export const HUMAN_ROLES = Object.keys(ROLES).filter((r) => r !== 'system');
+export const BACKEND_ADMIN_ROLES = [
+  'superadmin', 'inst_admin', 'exam_controller', 'security_engineer',
+  'invigilator', 'it_admin', 'auditor', 'support', 'ops_admin',
+];
 
 /** Register custom roles loaded from the database. */
 export function registerRoles(list = []) {

@@ -304,7 +304,8 @@ echo ""
 echo "=== [SB-GATE] PASS=$PASS FAIL=$FAIL BLOCKED=$BLOCKED OVERALL=$OVERALL ==="
 echo "Log: $GATE_LOG"
 
-# Exit 2 if entirely blocked (no real checks ran), 1 on failure, 0 on pass
+# A release gate is complete only when every required check executed.  A
+# partially blocked run is diagnostic evidence, not a pass.
 if [ "$FAIL" -gt 0 ]; then exit 1; fi
-if [ "$PASS" -eq 0 ]; then exit 2; fi
+if [ "$BLOCKED" -gt 0 ] || [ "$PASS" -eq 0 ]; then exit 2; fi
 exit 0

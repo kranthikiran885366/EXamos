@@ -106,6 +106,17 @@ bool wait_for_text(int socket, FILE* log, std::string& transcript,
     return strip_terminal_controls(transcript).find(marker) != std::string::npos;
 }
 
+bool send_password_after_prompt(int socket, FILE* log, std::string& transcript,
+                                const std::string& prompt,
+                                const std::string& password,
+                                int timeout_seconds) {
+    if (!wait_for_text(socket, log, transcript, prompt, timeout_seconds)) {
+        return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    return send_text(socket, password + "\n");
+}
+
 std::string make_test_username() {
     unsigned char random[12] {};
     std::size_t filled = 0;
@@ -173,7 +184,7 @@ bool redact_password(const char* path, const std::string& password) {
 
 bool wait_for_login_result(int socket, FILE* log, std::string& transcript) {
     const std::regex result_line(
-        R"((^|\n)EXAMOS_P0_LOGIN_OK=([1-9][0-9]*)\|([^|\r\n]*)\|([^\r\n]*))");
+        R"((^|\n)EXAMOS_P0_LOGIN_OK=([1-9][0-9]*)\|([^|\r\n]*)\|([^\r\n]*)\r?\n)");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     std::vector<char> buffer(4096);
     std::smatch match;
@@ -323,7 +334,7 @@ int main(int argc, char* argv[]) {
     if (resume) {
         success = wait_for_text(socket_fd, log, transcript,
                                 "Account " + username +
-                                    " is missing; repairing interrupted first-boot setup.", 180) &&
+                                    " is missing; repairing interrupted first-boot setup.", 600) &&
                   wait_for_text(socket_fd, log, transcript,
                                 "Resuming account setup for " + username +
                                     " after an interrupted first boot.", 30);
@@ -333,14 +344,14 @@ int main(int argc, char* argv[]) {
                   send_text(socket_fd, username + "\n");
     }
     success = success &&
-        wait_for_text(socket_fd, log, transcript, "New password:", 30) &&
-        send_text(socket_fd, password + "\n") &&
-        wait_for_text(socket_fd, log, transcript, "Retype new password:", 30) &&
-        send_text(socket_fd, password + "\n") &&
+        send_password_after_prompt(socket_fd, log, transcript,
+                                   "New password:", password, 30) &&
+        send_password_after_prompt(socket_fd, log, transcript,
+                                   "Retype new password:", password, 30) &&
         wait_for_text(socket_fd, log, transcript, " login:", 45) &&
         send_text(socket_fd, username + "\n") &&
-        wait_for_text(socket_fd, log, transcript, "Password:", 30) &&
-        send_text(socket_fd, password + "\n");
+        send_password_after_prompt(socket_fd, log, transcript,
+                                   "Password:", password, 30);
     if (success) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         success = send_text(socket_fd,
@@ -357,7 +368,7 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
         const std::string command =
-            "sudo -S -p 'EXAMOS_P0_SUDO_PASSWORD:' /bin/bash -c '"
+            "sudo -k -S -p 'EXAMOS_P0_SUDO_PASSWORD:' /bin/bash -c '"
             "passwd --delete " + username + " && "
             "printf %s pending:" + username +
             " > /var/lib/examos/dev-console-user-created && "
@@ -370,18 +381,46 @@ int main(int argc, char* argv[]) {
                   wait_for_text(socket_fd, log, transcript,
                                 "Resuming account setup for " + username +
                                     " after an interrupted first boot.", 30) &&
-                  wait_for_text(socket_fd, log, transcript, "New password:", 30) &&
-                  send_text(socket_fd, password + "\n") &&
-                  wait_for_text(socket_fd, log, transcript,
-                                "Retype new password:", 30) &&
-                  send_text(socket_fd, password + "\n") &&
+                  send_password_after_prompt(socket_fd, log, transcript,
+                                             "New password:", password, 30) &&
+                  send_password_after_prompt(socket_fd, log, transcript,
+                                             "Retype new password:", password, 30) &&
                   wait_for_text(socket_fd, log, transcript, " is ready.", 45) &&
+                  (transcript.clear(), true) &&
+                  wait_for_text(socket_fd, log, transcript, "$ ", 30) &&
+                  send_text(socket_fd, "exit\n") &&
+                  wait_for_text(socket_fd, log, transcript, "localhost login:", 45) &&
+                  send_text(socket_fd, username + "\n") &&
+                  send_password_after_prompt(socket_fd, log, transcript,
+                                             "Password:", password, 30) &&
+                  (transcript.clear(), wait_for_text(socket_fd, log, transcript, "$ ", 30)) &&
+                  send_text(socket_fd,
+                            "printf '\\nEXAMOS_P0_LOGIN_OK=%s|%s|%s\\n' "
+                            "\"$(id -u)\" \"$(id -nG)\" "
+                            "\"$(stat -c '%u:%g:%a' /usr/local/sbin/"
+                            "examos-dev-console-setup)\"\n") &&
+                  wait_for_login_result(socket_fd, log, transcript) &&
+                  (transcript.clear(), wait_for_text(socket_fd, log, transcript, "$ ", 30)) &&
+                  (transcript.clear(), send_text(socket_fd, "exit\n")) &&
+                  wait_for_text(socket_fd, log, transcript, " login:", 45) &&
+                  send_text(socket_fd, username + "\n") &&
+                  wait_for_text(socket_fd, log, transcript, "Password:", 30) &&
+                  send_text(socket_fd, password + "\n") &&
+                  send_text(socket_fd,
+                            "printf '\\nEXAMOS_P0_LOGIN_OK=%s|%s|%s\\n' "
+                            "\"$(id -u)\" \"$(id -nG)\" "
+                            "\"$(stat -c '%u:%g:%a' /usr/local/sbin/"
+                            "examos-dev-console-setup)\"\n") &&
+                  wait_for_login_result(socket_fd, log, transcript) &&
+                  (transcript.clear(), true) &&
                   send_text(socket_fd,
                             "sudo -k && sudo -S -p 'EXAMOS_P0_STATE_PASSWORD:' "
                             "/bin/cat /var/lib/examos/dev-console-user-created\n") &&
                   wait_for_text(socket_fd, log, transcript,
                                 "EXAMOS_P0_STATE_PASSWORD:", 30) &&
-                  send_text(socket_fd, password + "\n") &&
+                  send_password_after_prompt(socket_fd, log, transcript,
+                                             "EXAMOS_P0_STATE_PASSWORD:",
+                                             password, 30) &&
                   wait_for_text(socket_fd, log, transcript,
                                 "complete:" + username, 30);
     }

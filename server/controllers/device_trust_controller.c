@@ -43,8 +43,8 @@ static void dt_send_error(int fd, int code, const char *msg,
     dt_send_json(fd, code, buf, origin, extra, extra_len);
 }
 
-static void record_device_audit(PGconn *conn, const char *device_id, const char *inst_id,
-                                const char *actor_id, const char *action, const char *details) {
+static int record_device_audit(PGconn *conn, const char *device_id, const char *inst_id,
+                               const char *actor_id, const char *action, const char *details) {
     char aid[64];
     snprintf(aid, sizeof(aid), "daud_%ld_%d", (long)time(NULL), rand() % 10000);
     const char *p[6] = { aid, device_id, inst_id, actor_id, action, details ? details : "" };
@@ -54,7 +54,9 @@ static void record_device_audit(PGconn *conn, const char *device_id, const char 
     PGresult *r = db_simple(conn,
         "INSERT INTO device_audit_events (id, device_id, institution_id, actor_id, action, details, created_at) "
         "VALUES ($1, $2, $3, $4, $5, $6, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 6, p, l);
+    int ok = r && PQresultStatus(r) == PGRES_COMMAND_OK;
     if (r) PQclear(r);
+    return ok ? 0 : -1;
 }
 
 static void record_device_security_event(PGconn *conn, const char *device_id,
@@ -254,9 +256,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
     memset(&sess, 0, sizeof(sess));
 
     int auth_rc = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess);
-    int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
-                    strcmp(sess.username, "admin") == 0 ||
-                    strcmp(sess.username, "root") == 0));
+    int is_owner = auth_rc == 0 && sess.role == ROLE_PLATFORM_OWNER;
 
     PGconn *conn = db_acquire();
     if (!conn) {
@@ -268,13 +268,19 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
      * 1. POST /api/v1/devices/register: Submit device registration
      * ========================================================================= */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/devices/register") == 0) {
+        if (ctrl_authorize(auth_header, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 403, "Fleet mutation permission is required to register a device",
+                          origin, extra_headers, extra_len);
+            return;
+        }
         char dev_id[64] = {0}, inst_id[64] = {0}, campus_id[64] = {0};
-        char hostname[128] = {0}, dev_name[128] = {0}, dev_cat[32] = "lab_pc";
-        char mfr[128] = "Generic", model[128] = "Standard", cpu_arch[64] = "x86_64";
-        char boot_mode[32] = "UEFI", sb_state[32] = "enabled";
-        char tpm_ver[32] = "2.0", os_rel[64] = "ExamOS 2.0", kernel_v[64] = "6.6.0-examos";
+        char hostname[128] = {0}, dev_name[128] = {0}, dev_cat[32] = "unknown";
+        char mfr[128] = "unknown", model[128] = "unknown", cpu_arch[64] = "unknown";
+        char boot_mode[32] = "unknown", sb_state[32] = "unknown";
+        char tpm_ver[32] = "unknown", os_rel[64] = "unknown", kernel_v[64] = "unknown";
         char ak_pem[2048] = {0};
-        int tpm_present = 1;
+        int tpm_present = 0;
 
         ctrl_json_string(body, "device_id", dev_id, sizeof(dev_id));
         ctrl_json_string(body, "institution_id", inst_id, sizeof(inst_id));
@@ -293,12 +299,26 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "kernel_version", kernel_v, sizeof(kernel_v));
         ctrl_json_string(body, "ak_public_key_pem", ak_pem, sizeof(ak_pem));
 
-        if (!inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "inst_vignan");
+        if (sess.role != ROLE_PLATFORM_OWNER) {
+            if (!sess.institution_id[0] ||
+                (inst_id[0] && strcmp(inst_id, sess.institution_id) != 0)) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 403, "Device registration is outside the authenticated institution",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
+        } else if (!inst_id[0]) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 400, "Platform owner must provide an institution_id",
+                          origin, extra_headers, extra_len);
+            return;
         }
-
         if (!dev_id[0]) {
-            snprintf(dev_id, sizeof(dev_id), "dev_%ld_%d", (long)time(NULL), rand() % 10000);
+            db_release(conn, 0);
+            dt_send_error(client_fd, 400, "A provisioned device_id is required",
+                          origin, extra_headers, extra_len);
+            return;
         }
         if (!dev_name[0]) {
             snprintf(dev_name, sizeof(dev_name), "ExamOS Terminal %s", dev_id);
@@ -307,35 +327,54 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             snprintf(hostname, sizeof(hostname), "%s.examos.local", dev_id);
         }
 
-        /* Ensure institution exists in tenants table so fk_device_tenant and other FKs succeed */
+        /* Registration must never manufacture an institution or its trust policy. */
         const char *tchk_p[1] = { inst_id };
         int tchk_l[1] = { (int)strlen(inst_id) };
         PGresult *tchk = db_simple(conn, "SELECT id FROM tenants WHERE id = $1", 1, tchk_p, tchk_l);
-        if (!tchk || PQntuples(tchk) == 0) {
-            char t_code[64];
-            snprintf(t_code, sizeof(t_code), "T_%ld_%d", (long)time(NULL), rand() % 10000);
-            const char *t_ins[3] = { inst_id, inst_id, t_code };
-            int t_len[3] = { (int)strlen(inst_id), (int)strlen(inst_id), (int)strlen(t_code) };
-            PGresult *ti = db_simple(conn,
-                "INSERT INTO tenants (id, name, code, domains, branding, notification_prefs, exam_defaults, security, history, created_at) "
-                "VALUES ($1, $2, $3, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-                "ON CONFLICT (id) DO NOTHING", 3, t_ins, t_len);
-            if (ti) PQclear(ti);
+        if (!tchk || PQresultStatus(tchk) != PGRES_TUPLES_OK) {
+            if (tchk) PQclear(tchk);
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Institution registry could not be verified",
+                          origin, extra_headers, extra_len);
+            return;
         }
-        if (tchk) PQclear(tchk);
+        if (PQntuples(tchk) != 1) {
+            PQclear(tchk);
+            db_release(conn, 0);
+            dt_send_error(client_fd, 404, "Institution does not exist",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(tchk);
 
-        /* Check institution active policy */
-        int req_approval = 0;
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Could not start device registration transaction",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
+
+        /* Lock the active policy while the registration decision is persisted. */
         const char *pp[1] = { inst_id };
         int pl[1] = { (int)strlen(inst_id) };
         PGresult *pol_r = db_simple(conn,
-            "SELECT require_admin_approval FROM device_trust_policies WHERE institution_id = $1 AND status = 'active' LIMIT 1", 1, pp, pl);
-        if (pol_r && PQntuples(pol_r) > 0) {
-            req_approval = (strcmp(PQgetvalue(pol_r, 0, 0), "t") == 0);
-            PQclear(pol_r);
-        } else {
+            "SELECT require_admin_approval FROM device_trust_policies "
+            "WHERE institution_id=$1 AND status='active' FOR SHARE",
+            1, pp, pl);
+        if (!pol_r || PQresultStatus(pol_r) != PGRES_TUPLES_OK ||
+            PQntuples(pol_r) != 1) {
             if (pol_r) PQclear(pol_r);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 409, "A unique active device trust policy is required",
+                          origin, extra_headers, extra_len);
+            return;
         }
+        int req_approval = strcmp(PQgetvalue(pol_r, 0, 0), "t") == 0;
+        PQclear(pol_r);
 
         const char *initial_status = req_approval ? "pending_approval" : "registered";
 
@@ -367,6 +406,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             snprintf(err, sizeof(err), "Failed to register device: %s",
                      ins_dev ? PQresultErrorMessage(ins_dev) : "Database query failed");
             if (ins_dev) PQclear(ins_dev);
+            PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             dt_send_error(client_fd, 500, err, origin, extra_headers, extra_len);
             return;
@@ -376,14 +416,30 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         /* Record Registration Attempt */
         char reg_id[64];
         snprintf(reg_id, sizeof(reg_id), "dreg_%ld_%d", (long)time(NULL), rand() % 10000);
-        const char *rp[5] = { reg_id, dev_id, inst_id, sess.user_id[0] ? sess.user_id : "installer", initial_status };
-        int rl[5];
-        for (int i = 0; i < 5; i++) rl[i] = rp[i] ? (int)strlen(rp[i]) : 0;
+        const char *registration_decision = req_approval ? "pending" : "approved";
+        const char *registration_actor = sess.user_id[0] ? sess.user_id : "installer";
+        const char *decided_by = req_approval ? "" : "system";
+        const char *rp[6] = {
+            reg_id, dev_id, inst_id, registration_actor, registration_decision, decided_by
+        };
+        int rl[6];
+        for (int i = 0; i < 6; i++) rl[i] = rp[i] ? (int)strlen(rp[i]) : 0;
 
         PGresult *ins_reg = db_simple(conn,
-            "INSERT INTO device_registrations (id, device_id, institution_id, requested_by, decision, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, rp, rl);
-        if (ins_reg) PQclear(ins_reg);
+            "INSERT INTO device_registrations "
+            "(id,device_id,institution_id,requested_by,decision,decided_by,created_at,updated_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6,EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+            "EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+            6, rp, rl);
+        if (!ins_reg || PQresultStatus(ins_reg) != PGRES_COMMAND_OK) {
+            if (ins_reg) PQclear(ins_reg);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Device registration record could not be persisted",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(ins_reg);
 
         /* Enroll Attestation Key if provided */
         if (ak_pem[0]) {
@@ -399,11 +455,36 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             PGresult *ins_ak = db_simple(conn,
                 "INSERT INTO device_attestation_keys (id, device_id, key_name, public_key_pem, public_key_fingerprint, status, enrolled_at) "
                 "VALUES ($1, $2, $3, $4, $5, 'active', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, ak_p, ak_l);
-            if (ins_ak) PQclear(ins_ak);
+            if (!ins_ak || PQresultStatus(ins_ak) != PGRES_COMMAND_OK) {
+                if (ins_ak) PQclear(ins_ak);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Device attestation key could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(ins_ak);
         }
 
-        record_device_audit(conn, dev_id, inst_id, sess.user_id[0] ? sess.user_id : "system",
-                            "DEVICE_REGISTERED", initial_status);
+        const char *registration_auditor = sess.user_id[0] ? sess.user_id : "system";
+        if (record_device_audit(conn, dev_id, inst_id, registration_auditor,
+                                "DEVICE_REGISTERED", initial_status) != 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Device registration audit record could not be persisted",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PGresult *commit = PQexec(conn, "COMMIT");
+        if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+            if (commit) PQclear(commit);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Device registration transaction could not commit",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(commit);
         dt_audit_log(sess.user_id[0] ? sess.user_id : "system", "DEVICE_REGISTERED", dev_id);
 
         db_release(conn, 0);
@@ -546,22 +627,102 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/devices/:id/approve (Admin Approval) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/approve") == 0) {
-            const char *up_p[2] = { "registered", device_id };
-            int up_l[2] = { 10, (int)strlen(device_id) };
+            auth_session_t approver;
+            if (ctrl_authorize(auth_header, AUTH_PERM_FLEET_MUTATION, &approver) != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 403, "Fleet mutation permission is required to approve device enrollment",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (approver.role != ROLE_PLATFORM_OWNER &&
+                (!approver.institution_id[0] ||
+                 strcmp(approver.institution_id, d_inst) != 0)) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 403, "Device enrollment approval is outside the authenticated institution",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (strcmp(d_status, "pending_approval") != 0 &&
+                strcmp(d_status, "registration_requested") != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 409, "Device is not awaiting enrollment approval",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Could not start device approval transaction",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
+
+            const char *up_p[3] = { "registered", device_id, d_inst };
+            const int up_l[3] = {
+                (int)strlen(up_p[0]), (int)strlen(up_p[1]), (int)strlen(up_p[2])
+            };
             PGresult *up_r = db_simple(conn,
-                "UPDATE devices SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up_p, up_l);
-            if (up_r) PQclear(up_r);
+                "UPDATE devices SET status=$1,updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+                "WHERE id=$2 AND institution_id=$3 "
+                "AND status IN ('pending_approval','registration_requested')",
+                3, up_p, up_l);
+            if (!up_r || PQresultStatus(up_r) != PGRES_COMMAND_OK ||
+                strcmp(PQcmdTuples(up_r), "1") != 0) {
+                if (up_r) PQclear(up_r);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                dt_send_error(client_fd, 409, "Device enrollment state changed; approval was not applied",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(up_r);
 
-            /* Update device_registrations */
-            const char *reg_p[3] = { "approved", sess.user_id[0] ? sess.user_id : "admin", device_id };
-            int reg_l[3] = { 8, (int)strlen(reg_p[1]), (int)strlen(device_id) };
+            const char *reg_p[5] = {
+                "approved", approver.user_id, device_id, d_inst, approver.user_id
+            };
+            const int reg_l[5] = {
+                (int)strlen(reg_p[0]), (int)strlen(reg_p[1]), (int)strlen(reg_p[2]),
+                (int)strlen(reg_p[3]), (int)strlen(reg_p[4])
+            };
             PGresult *reg_r = db_simple(conn,
-                "UPDATE device_registrations SET decision = $1, decided_by = $2, "
-                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE device_id = $3", 3, reg_p, reg_l);
-            if (reg_r) PQclear(reg_r);
+                "UPDATE device_registrations SET decision=$1,decided_by=$2,"
+                "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+                "WHERE device_id=$3 AND institution_id=$4 AND decision='pending' "
+                "AND requested_by<>$5",
+                5, reg_p, reg_l);
+            if (!reg_r || PQresultStatus(reg_r) != PGRES_COMMAND_OK ||
+                strcmp(PQcmdTuples(reg_r), "1") != 0) {
+                if (reg_r) PQclear(reg_r);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                dt_send_error(client_fd, 409, "A pending enrollment from a different requester was not found",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(reg_r);
 
-            record_device_audit(conn, device_id, d_inst, sess.user_id, "DEVICE_APPROVED", "Registration approved");
-            dt_audit_log(sess.user_id, "DEVICE_APPROVED", device_id);
+            if (record_device_audit(conn, device_id, d_inst, approver.user_id,
+                                    "DEVICE_APPROVED", "Registration approved") != 0) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Device approval audit record could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PGresult *commit = PQexec(conn, "COMMIT");
+            if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+                if (commit) PQclear(commit);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Device approval transaction could not commit",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(commit);
+            dt_audit_log(approver.user_id, "DEVICE_APPROVED", device_id);
 
             db_release(conn, 0);
             char resp[256];

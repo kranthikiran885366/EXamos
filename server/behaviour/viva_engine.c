@@ -217,10 +217,10 @@ static int find_existing_viva(const char *session_id,
         if (sscanf(line, "%15[^|]|%63[^|]|%127[^|]", ftype, fvid, fsess) < 3) continue;
         if (strcmp(ftype,"VIVA")!=0) continue;
         if (strcmp(fsess,session_id)!=0) continue;
-        /* Extract receipt hash field (field 5) */
+        /* Extract receipt hash field (field 5; fields are zero-indexed). */
         char *p = line;
         int field = 0;
-        while (field < 4 && p) { p = strchr(p,'|'); if (p) { p++; field++; } }
+        while (field < 5 && p) { p = strchr(p,'|'); if (p) { p++; field++; } }
         if (p && sscanf(p, "%64[^|]", frh)==1 &&
             strcmp(frh, submission_receipt_hash)==0) {
             copy_text(out_viva_id, vid_max, fvid);
@@ -834,6 +834,7 @@ int viva_generate(const char *session_id,
     /* Call LLM */
     char llm_body[8192]={0};
     int llm_rc = llm_https_post(prompt, llm_body, sizeof(llm_body));
+    int used_offline_fallback = 0;
 
     if (llm_rc != 0) {
         /* ISS-04 fix: LLM unavailable — use offline academic integrity fallback question bank.
@@ -848,6 +849,7 @@ int viva_generate(const char *session_id,
                       "LLM unavailable and offline fallback also failed");
             return -1;
         }
+        used_offline_fallback = 1;
         /* Offline fallback succeeded — fall through to validation and persistence */
     } else {
         viva_question_t questions[VIVA_MAX_QUESTIONS];
@@ -884,6 +886,20 @@ int viva_generate(const char *session_id,
         }
     }
 
+    /* Both provider and offline questions are tied to the same submitted
+       examination evidence. Populate the references here so the offline path
+       serializes a complete, retrievable record as well. */
+    for (int i = 0; i < out_viva->question_count; i++) {
+        if (!out_viva->questions[i].source_question_id[0]) {
+            strncpy(out_viva->questions[i].source_question_id, "SUBMITTED_EXAM",
+                    sizeof(out_viva->questions[i].source_question_id) - 1);
+        }
+        if (!out_viva->questions[i].source_answer_version[0]) {
+            strncpy(out_viva->questions[i].source_answer_version, submission_receipt_hash,
+                    sizeof(out_viva->questions[i].source_answer_version) - 1);
+        }
+    }
+
     /* Validate output */
     if (!validate_viva_output(out_viva)) {
         out_viva->status = VIVA_STATUS_INVALID;
@@ -895,15 +911,18 @@ int viva_generate(const char *session_id,
         return -1;
     }
 
-    out_viva->status = VIVA_STATUS_SUCCEEDED;
-    strncpy(out_viva->status_str, "SUCCEEDED", sizeof(out_viva->status_str)-1);
+    if (!used_offline_fallback) {
+        out_viva->status = VIVA_STATUS_SUCCEEDED;
+        strncpy(out_viva->status_str, "SUCCEEDED", sizeof(out_viva->status_str)-1);
+    }
 
     /* Persist generation record */
     char line[16384];
     int base_len = snprintf(line, sizeof(line),
-        "VIVA|%s|%s|%s|%s|%s|SUCCEEDED|%s|%d|%ld|%s",
+        "VIVA|%s|%s|%s|%s|%s|%s|%s|%d|%ld|%s",
         out_viva->viva_id, out_viva->session_id, out_viva->candidate_id,
         out_viva->exam_id, out_viva->submission_receipt_hash,
+        out_viva->status_str,
         out_viva->generation_model, out_viva->question_count,
         (long)out_viva->generated_ts, out_viva->build_id);
     if (base_len < 0 || (size_t)base_len >= sizeof(line)) {
@@ -975,7 +994,9 @@ int viva_retrieve(const char *viva_id, viva_generation_t *out_viva) {
              field = strtok_r(NULL, "|\r\n", &save)) {
             fields[field_count++] = field;
         }
-        if (field_count < 11 || strcmp(fields[6], "SUCCEEDED") != 0) continue;
+        if (field_count < 11 ||
+            (strcmp(fields[6], "SUCCEEDED") != 0 &&
+             strcmp(fields[6], "VIVA_OFFLINE_FALLBACK") != 0)) continue;
         char *end = NULL;
         long question_count = strtol(fields[8], &end, 10);
         if (!end || *end || question_count < VIVA_MIN_QUESTIONS ||
@@ -994,7 +1015,8 @@ int viva_retrieve(const char *viva_id, viva_generation_t *out_viva) {
         out_viva->question_count = (int)question_count;
         out_viva->generated_ts = (time_t)strtoll(fields[9], NULL, 10);
         copy_text(out_viva->build_id, sizeof(out_viva->build_id), fields[10]);
-        out_viva->status = VIVA_STATUS_SUCCEEDED;
+        out_viva->status = strcmp(fields[6], "VIVA_OFFLINE_FALLBACK") == 0
+            ? VIVA_STATUS_OFFLINE_FALLBACK : VIVA_STATUS_SUCCEEDED;
 
         for (int i = 0; i < out_viva->question_count; ++i) {
             size_t offset = 11 + (size_t)i * 7;
@@ -1018,7 +1040,8 @@ int viva_retrieve(const char *viva_id, viva_generation_t *out_viva) {
                 break;
             }
         }
-        found = out_viva->status == VIVA_STATUS_SUCCEEDED;
+        found = out_viva->status == VIVA_STATUS_SUCCEEDED ||
+                out_viva->status == VIVA_STATUS_OFFLINE_FALLBACK;
     }
     fclose(f);
     pthread_mutex_unlock(&g_vlock);
@@ -1048,7 +1071,8 @@ int viva_submit_response(const char *viva_id,
                 candidate_id, viva_id, vgen.candidate_id);
         return -1;
     }
-    if (vgen.status != VIVA_STATUS_SUCCEEDED) return -1;
+    if (vgen.status != VIVA_STATUS_SUCCEEDED &&
+        vgen.status != VIVA_STATUS_OFFLINE_FALLBACK) return -1;
     int question_belongs_to_viva = 0;
     for (int i = 0; i < vgen.question_count; ++i) {
         if (strcmp(vgen.questions[i].question_id, question_id) == 0) {
@@ -1373,16 +1397,17 @@ int viva_export_candidate_json(const char *viva_id,
         snprintf(out_buf, max_len, "{\"error\":\"UNAUTHORIZED\"}");
         return -1;
     }
-    if (vgen.status != VIVA_STATUS_SUCCEEDED) {
+    if (vgen.status != VIVA_STATUS_SUCCEEDED &&
+        vgen.status != VIVA_STATUS_OFFLINE_FALLBACK) {
         snprintf(out_buf, max_len,
             "{\"viva_id\":\"%s\",\"status\":\"%s\",\"question_count\":0}",
             viva_id, vgen.status_str);
         return 0;
     }
     size_t off = (size_t)snprintf(out_buf, max_len,
-        "{\"viva_id\":\"%s\",\"exam_id\":\"%s\",\"status\":\"SUCCEEDED\","
+        "{\"viva_id\":\"%s\",\"exam_id\":\"%s\",\"status\":\"%s\","
         "\"question_count\":%d,\"questions\":[",
-        viva_id, vgen.exam_id, vgen.question_count);
+        viva_id, vgen.exam_id, vgen.status_str, vgen.question_count);
     for (int i=0; i<vgen.question_count && off+512<max_len; i++) {
         off += (size_t)snprintf(out_buf+off, max_len-off,
             "%s{\"question_id\":\"%s\",\"text\":\"%s\","

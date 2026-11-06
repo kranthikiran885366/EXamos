@@ -13,6 +13,9 @@ def main() -> int:
     schema = workspace / "schemas" / "p0-results-v1.schema.json"
     validator = workspace / "tests" / "p0" / "validate-results.py"
     checks = json.loads(schema.read_text(encoding="utf-8"))["properties"]["checks"]["required"]
+    if "enterprise_validation" not in checks:
+        print("FAIL: P0 result schema omits enterprise_validation", file=sys.stderr)
+        return 1
     values = {name: "PASS" for name in checks}
     values.update({
         "swtpm_ready": "NOT_REQUIRED",

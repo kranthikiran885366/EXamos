@@ -7,17 +7,23 @@ import {
   Field, Input, Select, Textarea, Alert, KeyValue, Tabs, useFlash, Flash, CopyField, Loading,
 } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
-import { ROLES, HUMAN_ROLES, roleLabel, roleInfo, permissionsOf, PERMISSION_GROUPS, isGlobal } from '../../core/security/rbac';
+import {
+  BACKEND_ADMIN_ROLES, ROLES, HUMAN_ROLES, roleLabel, roleInfo, permissionsOf,
+  PERMISSION_GROUPS, isGlobal,
+} from '../../core/security/rbac';
 import { usePerm } from '../../core/ui/hooks';
 import {
   createUser, setUserStatus, unlockUser, setUserRole, resetPassword,
   invite, resendInvitation, expireInvitation, effectivePermissions,
   createRole, updateRole, deleteRole,
 } from './service';
-import { KINDS as APPROVAL_KINDS, decide as decideApproval, cancel as cancelApproval } from '../../core/services/approvals';
+import {
+  KINDS as APPROVAL_KINDS, decide as decideApproval,
+  cancel as cancelApproval, pendingFor as listApprovals,
+} from '../../core/services/approvals';
 import * as Api from '../../core/api/services';
 
-const ROLE_OPTIONS = (actor) => Object.keys(ROLES)
+const ROLE_OPTIONS = (actor) => BACKEND_ADMIN_ROLES
   .filter((r) => r !== 'system' && r !== 'superadmin')
   .filter((r) => actor?.role === 'superadmin' || (roleInfo(r)?.rank || 0) < (roleInfo(actor?.role)?.rank || 0))
   .map((r) => ({ v: r, l: roleLabel(r) }));
@@ -525,26 +531,43 @@ export function RolesPage() {
 /* ------------------------------------------------------------------ approvals */
 export function ApprovalsPage() {
   const { user } = useAuth();
-  const { tenantId } = useTenant();
-  const approvals = useCol('approvals', false);
+  const [approvals, setApprovals] = useState([]);
+  const [loadError, setLoadError] = useState('');
   const [act, setAct] = useState(null);
   const [tab, setTab] = useState('pending');
   const flash = useFlash();
   const perms = usePerm();
 
-  const scoped = useMemo(() => approvals.filter((a) => !a.tenantId || a.tenantId === tenantId || user.role === 'superadmin'), [approvals, tenantId, user.role]);
-  const pending = scoped.filter((a) => a.status === 'pending');
-  const decided = scoped.filter((a) => a.status !== 'pending').sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0));
+  const refresh = async () => {
+    try {
+      setLoadError('');
+      setApprovals(await listApprovals());
+    } catch (error) {
+      setApprovals([]);
+      setLoadError(error.message || 'Unable to load approval requests.');
+    }
+  };
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 30000);
+    return () => clearInterval(timer);
+  }, []);
+  const pending = approvals.filter((a) => a.status === 'pending_review');
+  const decided = approvals.filter((a) => a.status !== 'pending_review').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const mine = (a) => a.requestedBy === user.id;
 
   return (
-    <Page title="Approvals" desc="Two-person approval requests. You cannot decide your own request.">
+    <Page title="Approvals" desc="Backend-enforced requests, decisions, conflict warnings, and execution state.">
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {loadError && <Alert tone="danger">{loadError}</Alert>}
+      <Alert tone="warn" title="Execution depends on the operation">
+        Elevated role changes and native ExamOS policy rollbacks execute on the backend only after authorized approval and fresh target validation. Other approval types are recorded but remain unexecuted until their resource-specific backend integrations are available; browser policy publication also requires a trusted server-side signing key.
+      </Alert>
       <StatGrid cols={4}>
         <Stat label="Pending" value={pending.length} icon="clock" tone="amber" />
-        <Stat label="Approved" value={decided.filter((a) => a.status === 'approved').length} icon="check" tone="green" />
+        <Stat label="Execution pending" value={decided.filter((a) => a.status === 'execution_pending').length} icon="clock" tone="amber" />
         <Stat label="Rejected" value={decided.filter((a) => a.status === 'rejected').length} icon="warn" tone="red" />
-        <Stat label="Total" value={scoped.length} icon="chart" />
+        <Stat label="Total visible" value={approvals.length} icon="chart" />
       </StatGrid>
       <Tabs value={tab} onChange={setTab} tabs={[
         { key: 'pending', label: 'Pending', count: pending.length },
@@ -552,15 +575,17 @@ export function ApprovalsPage() {
       ]} />
       {tab === 'pending' && (
         <DataTable
-          title="Pending approvals" desc="Requests awaiting a second privileged user."
+          title="Pending approvals" desc="Requests awaiting an independently authorized, tenant-scoped decision."
           rows={pending} search={(a) => `${a.kind} ${a.label} ${a.requestedBy} ${a.reason}`}
           filters={[{ key: 'kind', label: 'Type', options: Object.entries(APPROVAL_KINDS).map(([v, l]) => ({ v, l })) }]}
           defaultSort={{ key: 'createdAt', dir: 'asc' }}
           columns={[
             { key: 'kind', label: 'Type', render: (a) => <Badge value={APPROVAL_KINDS[a.kind] || a.kind} /> },
             { key: 'label', label: 'Subject', render: (a) => <><b>{a.label}</b>{a.targetId && <div className="muted sm mono">{a.targetId}</div>}</> },
-            { key: 'requestedBy', label: 'Requested by' },
+            { key: 'requestedBy', label: 'Requested by', render: (a) => <>{a.requesterName || a.requestedBy}<div className="muted sm">{a.requesterRole}</div></> },
             { key: 'reason', label: 'Reason', render: (a) => <span className="muted sm">{a.reason}</span> },
+            { key: 'requestDetails', label: 'Risk / changes', render: (a) => <><Badge value={a.riskLevel || 'unclassified'} />{a.data && <details><summary>Proposed data</summary><pre className="mono sm">{JSON.stringify(a.data, null, 2)}</pre></details>}<div className="muted sm">{a.tenantId || 'Platform scope'} · policy v{a.policyVersion} · {a.requiredApprovals} approval(s)</div></> },
+            { key: 'conflictStatus', label: 'Conflict check', render: (a) => <Badge value={a.conflictStatus || 'REQUIRES_REVIEW'} /> },
             { key: 'createdAt', label: 'Age', sortable: true, render: (a) => ago(a.createdAt) },
           ]}
           actions={(a) => {
@@ -576,37 +601,52 @@ export function ApprovalsPage() {
       {tab === 'history' && (
         <DataTable
           title="Decision history" desc="Previously decided requests, newest first."
-          rows={decided} search={(a) => `${a.kind} ${a.label} ${a.decidedBy} ${a.note}`}
-          filters={[{ key: 'status', label: 'Decision', options: ['approved', 'rejected', 'withdrawn', 'failed'].map((s) => ({ v: s, l: s })) }]}
-          defaultSort={{ key: 'decidedAt', dir: 'desc' }}
+          rows={decided} search={(a) => `${a.kind} ${a.label} ${a.status} ${a.decisions?.map((d) => `${d.actorName} ${d.reason}`).join(' ') || ''}`}
+          filters={[{ key: 'status', label: 'Decision', options: ['approved', 'execution_pending', 'executing', 'completed', 'rejected', 'changes_requested', 'withdrawn', 'expired', 'blocked', 'failed'].map((s) => ({ v: s, l: s })) }]}
+          defaultSort={{ key: 'createdAt', dir: 'desc' }}
           columns={[
             { key: 'kind', label: 'Type', render: (a) => APPROVAL_KINDS[a.kind] || a.kind },
             { key: 'label', label: 'Subject' },
             { key: 'status', label: 'Decision', render: (a) => <Badge value={a.status} /> },
-            { key: 'decidedBy', label: 'Decided by', render: (a) => a.decidedBy || '—' },
-            { key: 'note', label: 'Note', render: (a) => <span className="muted sm">{a.note || '—'}</span> },
-            { key: 'decidedAt', label: 'Time', sortable: true, render: (a) => fmt(a.decidedAt) },
+            { key: 'conflictStatus', label: 'Conflict check', render: (a) => <Badge value={a.conflictStatus || 'REQUIRES_REVIEW'} /> },
+            { key: 'executionStatus', label: 'Execution', render: (a) => a.executionStatus || 'not_started' },
+            { key: 'decisions', label: 'Decision history', render: (a) => (a.decisions || []).map((d) =>
+              <div key={`${a.id}-${d.actorId}`}><b>{d.actorName}</b> · {d.actorRole} · {d.decision}<div className="muted sm">{d.reason} · {fmt(d.occurredAt)}</div></div>) },
+            { key: 'events', label: 'Request history', render: (a) => (a.events || []).map((event, index) =>
+              <div key={`${a.id}-event-${index}`}><b>{event.eventType}</b> · {event.actorName || event.actorId}<div className="muted sm">{event.reason || ''} · {fmt(event.occurredAt)}</div></div>) },
+            { key: 'requestDetails', label: 'Risk / changes', render: (a) => <><Badge value={a.riskLevel || 'unclassified'} />{a.data && <details><summary>Proposed data</summary><pre className="mono sm">{JSON.stringify(a.data, null, 2)}</pre></details>}<div className="muted sm">{a.tenantId || 'Platform scope'} · policy v{a.policyVersion} · {a.requiredApprovals} approval(s)</div></> },
+            { key: 'createdAt', label: 'Submitted', sortable: true, render: (a) => fmt(a.createdAt) },
           ]}
         />
       )}
-
       {(act?.type === 'approve' || act?.type === 'reject') && (
         <ActionDialog
           title={act.type === 'approve' ? 'Approve request' : 'Reject request'}
           desc={`${APPROVAL_KINDS[act.row.kind] || act.row.kind}: ${act.row.label}`}
           danger={act.type === 'reject'}
-          confirmLabel={act.type === 'approve' ? 'Approve & apply' : 'Reject'}
+          confirmLabel={act.type === 'approve' ? 'Record approval' : 'Reject'}
           reasonLabel={act.type === 'approve' ? 'Approval note' : 'Rejection reason'}
           onClose={() => setAct(null)}
           onConfirm={(note) => flash.run(async () => {
             const r = await decideApproval(user, act.row, act.type === 'approve', note);
-            return r.status === 'approved' ? `Approved. ${r.result || ''}` : 'Request rejected.';
+            setAct(null);
+            await refresh();
+            return r.status === 'completed'
+              ? (r.message || 'Approval recorded and the operation was executed.')
+              : r.status === 'execution_pending'
+                ? 'Approval recorded. The operation has not been executed.'
+                : r.status === 'rejected' ? 'Request rejected.' : `Decision recorded: ${r.status}.`;
           })}
         />
       )}
       {act?.type === 'cancel' && (
         <ActionDialog title="Withdraw request" desc={act.row.label} danger confirmLabel="Withdraw"
-          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => cancelApproval(user, act.row, reason))} />
+          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(async () => {
+            const result = await cancelApproval(user, act.row, reason);
+            setAct(null);
+            await refresh();
+            return result;
+          })} />
       )}
     </Page>
   );

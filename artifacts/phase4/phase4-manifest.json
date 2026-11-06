@@ -1,42 +1,48 @@
 {
   "phase": "P4",
   "version": "0.5.0",
-  "timestamp": "2026-10-09T02:07:06Z",
+  "timestamp": "2026-10-24T00:41:38Z",
+  "source_commit": "UNBOUND",
+  "source_tree_state": "DIRTY",
   "components": {
     "examos_server": "native-c",
-    "examos_proctor": "native-cpp-vision",
+    "examos_proctor": "native-cpp-opencv-via-pkgconfig",
     "event_verifier": "native-c-cli",
-    "tamper_evidence": "sha256-hash-chain",
+    "tamper_evidence": "sha256-hmac-chain",
     "second_camera": "qr-token-pairing"
   },
   "gate_results": {
-    "tamper_matrix": "PASS",
-    "detection_quality": "PASS",
+    "detection_quality": "BLOCKED",
+    "tamper_evidence": "PASS",
     "concurrency_50_sessions": "PASS",
-    "regression_p0_p3": "PASS"
+    "browser_media_restriction": "BLOCKED",
+    "regression_p0_p3": "BLOCKED"
   },
   "detection_quality": {
-    "status": "PASS",
-    "artifact": "artifacts/phase4/detection-evaluation.json",
-    "per_clip_audit": "artifacts/phase4/detection-clips.csv",
-    "dataset": "coco-val2017-v1",
-    "dataset_note": "71 clips derived from real COCO val2017 photographs; dataset manifest records synthetic=false.",
-    "model": "yolox-s_yunet",
-    "model_version": "5",
-    "timestamp": "2026-10-24T00:41:38Z",
-    "clips": 71,
-    "clips_without_analysis": 0,
-    "targets": {
-      "multiple_face_recall_percent": 90.0,
-      "no_face_recall_percent": 100.0,
-      "false_positive_rate_percent": 0.0
-    },
-    "informational": {
-      "single_face_recall_percent": 96.0,
-      "phone_recall_percent": 58.33,
-      "book_recall_percent": 41.66,
-      "note": "Phone and book recall are measured but are not P4 gate targets; both are below a production-ready level."
-    }
+    "status": "BLOCKED",
+    "reason": "DNN model weight files (face_detection_yunet_2023mar.onnx, object_detection_yolox_2022nov.onnx, lbfmodel.yaml) are not downloaded to proctoring/models/. Run scripts/download-vision-models.sh. The Makefile DOES link OpenCV via pkg-config (previous audit claim that it did not was outdated). MODEL-MANIFEST.json is present with correct SHA-256 digests. No consented independently-labelled dataset exists in tests/p4/dataset/. Previous PASS claim used fabricated evidence (G-08) — invalidated.",
+    "clips": 0,
+    "clips_without_analysis": 0
   },
-  "overall_gate": "PASS"
+  "tamper_evidence": {
+    "status": "PASS",
+    "total": 9,
+    "passed": 9,
+    "failed": 0,
+    "note": "T0-T8 tamper matrix PASS. HMAC-SHA256 chain with checkpoint signing verified."
+  },
+  "concurrency": {
+    "status": "PASS",
+    "sessions": 50,
+    "events": 500,
+    "gaps": 0,
+    "verifier_failures": 0
+  },
+  "browser_media_restriction": {
+    "status": "BLOCKED",
+    "reason": "EXAM_URL was NOT_CONFIGURED in exam.conf (now fixed to staging URL). Camera policy previously listed loopback admin origin (127.0.0.1:8000) in VideoCaptureAllowedUrls — now fixed to staging exam origin. Re-run gate after confirming EXAM_URL matches policy."
+  },
+  "overall_gate": "BLOCKED",
+  "gate_reason": "P4.1 detection quality BLOCKED (DNN weights not downloaded, no real dataset). P4.4 browser media restriction BLOCKED (policy fixed but EXAM_URL needs verification). P4.5 P0-P3 regression BLOCKED (no fresh clean-tree P3 evidence). P4.2 tamper evidence PASS. P4.3 concurrency PASS.",
+  "_audit_note": "Corrected from previous INVALIDATED state. Key finding: proctoring/Makefile DOES link OpenCV via pkg-config — the previous audit claim that it did not was based on an outdated version. The actual blockers are missing DNN weight files and missing labelled dataset, not a build system defect."
 }

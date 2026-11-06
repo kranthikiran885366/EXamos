@@ -123,6 +123,7 @@ if [ -x "$SERVER_BIN" ]; then
     EXAMOS_VARIANT_STORE="$RUN_DIR/variant-store" \
     EXAMOS_EVENT_CHAIN_PATH="$RUN_DIR/events.log" \
     EXAMOS_DATA_DIR="$RUN_DIR/data" \
+    EXAMOS_LLM_MODEL="${EXAMOS_LLM_MODEL:-test-only-offline-fallback}" \
     EXAMOS_TPM_MODE="$TEST_TPM_MODE" \
     EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
     EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \

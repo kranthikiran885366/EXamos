@@ -62,44 +62,22 @@ jobs:
       - name: P4.2 — Tamper Evidence Test Matrix (T1-T8)
         run: |
           mkdir -p artifacts/phase4
-          bash tests/p4/p4-tamper-test.sh || TAMPER_RC=$?
-          echo "Tamper gate exit: ${TAMPER_RC:-0}"
-          if [ "${TAMPER_RC:-0}" -eq 1 ]; then
-            echo "FATAL: Tamper evidence gate FAILED" >&2
-            exit 1
-          fi
+          bash tests/p4/p4-tamper-test.sh
 
       - name: P4.3 — 50-Session Concurrency Test
         run: |
           mkdir -p artifacts/phase4
-          bash tests/p4/p4-concurrency-test.sh || CONC_RC=$?
-          echo "Concurrency gate exit: ${CONC_RC:-0}"
-          if [ "${CONC_RC:-0}" -eq 1 ]; then
-            echo "FATAL: Concurrency gate FAILED" >&2
-            exit 1
-          fi
+          bash tests/p4/p4-concurrency-test.sh
 
-      - name: P4.1 — Detection Quality Gate (may BLOCK if no dataset)
+      - name: P4.1 — Detection Quality Gate
         run: |
           mkdir -p artifacts/phase4
-          bash tests/p4/p4-detection-gate.sh || DETECT_RC=$?
-          echo "Detection gate exit: ${DETECT_RC:-0}"
-          # Exit 2 = BLOCKED (no dataset) — acceptable in CI for now
-          # Exit 1 = FAIL — must fail the workflow
-          if [ "${DETECT_RC:-0}" -eq 1 ]; then
-            echo "FATAL: Detection quality gate FAILED" >&2
-            exit 1
-          fi
+          bash tests/p4/p4-detection-gate.sh
 
       - name: P4 gate decision
         run: |
           mkdir -p artifacts/phase4
-          bash tests/p4/p4-gate.sh || GATE_RC=$?
-          echo "P4 gate exit: ${GATE_RC:-0}"
-          if [ "${GATE_RC:-0}" -eq 1 ]; then
-            echo "FATAL: P4 gate FAILED" >&2
-            exit 1
-          fi
+          bash tests/p4/p4-gate.sh
 
       - name: Show P4 results
         if: always()

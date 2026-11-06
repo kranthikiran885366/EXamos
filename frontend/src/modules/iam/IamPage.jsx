@@ -1,14 +1,14 @@
 import Crud from '../../core/ui/Crud';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useCol } from '../../core/db/tenant';
-import { ROLES } from '../../core/security/rbac';
+import { BACKEND_ADMIN_ROLES, ROLES } from '../../core/security/rbac';
 import { fmt } from '../../core/ui/format';
 import { createUser, setUserStatus, setUserRole, resetPassword } from './service';
 
 export default function IamPage() {
   const { user } = useAuth(); const allUsers = useCol('users', false);
   const users = user?.role === 'superadmin' ? allUsers : allUsers.filter((u) => u.tenantId === user?.tenantId);
-  const roleOpts = Object.entries(ROLES).map(([v, r]) => ({ v, l: r.label }));
+  const roleOpts = BACKEND_ADMIN_ROLES.map((v) => ({ v, l: ROLES[v].label }));
   return (
     <Crud title="IAM" desc="Users, roles and MFA. Passwords are PBKDF2-hashed; authenticator keys are shown once at creation." rows={users} search={(u) => `${u.id} ${u.name} ${u.role}`}
       columns={[{ label: 'User', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Role', render: (u) => ROLES[u.role]?.label }, { label: 'MFA', render: () => 'TOTP' }, { label: 'Last sign-in', render: (u) => fmt(u.lastLogin) }, { label: 'Status', key: 'status', badge: true }]}

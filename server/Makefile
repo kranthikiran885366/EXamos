@@ -36,6 +36,7 @@ SRCS = main.c \
        security/security.c \
        audit/audit.c \
        controllers/controller.c \
+       controllers/approvals_controller.c \
        controllers/auth_controller.c \
        controllers/institution_controller.c \
        controllers/exam_controller.c \
@@ -46,6 +47,8 @@ SRCS = main.c \
        controllers/release_controller.c \
        controllers/policy_controller.c \
        controllers/modules_controller.c \
+       controllers/support_controller.c \
+       controllers/reports_controller.c \
        controllers/registration_controller.c \
        controllers/exam_session_controller.c \
        controllers/device_trust_controller.c \
@@ -118,7 +121,10 @@ test-admin-rate-limit:
 		$(BUILD_DIR)/security/totp.o $(BUILD_DIR)/events/ledger.o $(LDFLAGS) -o "$$test_binary"; \
 	"$$test_binary"
 
+test-approval-governance:
+	bash ../tests/server/approval-governance-migration-test.sh
+
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit
+.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance

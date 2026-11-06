@@ -1,1 +1,10 @@
-{"phase":"P5","test":"behaviour","status":"BLOCKED"}
+{
+  "phase": "P5",
+  "test": "behaviour_engine",
+  "passed": 0,
+  "failed": 0,
+  "blocked": 6,
+  "overall": "BLOCKED",
+  "note": "PostgreSQL service is not running in this environment. p5-behaviour-test.sh exits 2 (BLOCKED) at the pg_isready check before any test runs. Previous artifact said BLOCKED with status field only — this corrected record uses the full schema with pass/fail/blocked counts.",
+  "timestamp": "2026-10-15T18:19:05Z"
+}

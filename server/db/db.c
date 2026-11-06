@@ -1267,6 +1267,27 @@ static void db_ensure_database_extensions(PGconn *conn) {
         "  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()"
         ");");
 
+    /* 7. Durable Session Tracking and User Invitations */
+    exec_sql_step(conn, "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64);");
+    exec_sql_step(conn, "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;");
+    exec_sql_step(conn, "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS last_seen_at BIGINT;");
+    exec_sql_step(conn, "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS revocation_reason TEXT;");
+    exec_sql_step(conn, "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS revoked_at BIGINT;");
+
+    exec_sql_step(conn,
+        "CREATE TABLE IF NOT EXISTS user_invitations ("
+        "  token VARCHAR(80) PRIMARY KEY,"
+        "  name VARCHAR(120) NOT NULL,"
+        "  email VARCHAR(120) NOT NULL,"
+        "  role VARCHAR(40) NOT NULL,"
+        "  tenant_id VARCHAR(64),"
+        "  status VARCHAR(20) DEFAULT 'pending',"
+        "  invited_by VARCHAR(64),"
+        "  created_at BIGINT NOT NULL,"
+        "  expires_at BIGINT NOT NULL,"
+        "  accepted_at BIGINT"
+        ");");
+
     fprintf(stderr, "[DB] Administrative schema verified.\n");
 }
 

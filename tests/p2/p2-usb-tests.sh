@@ -168,8 +168,24 @@ if [ "$HARDWARE_TEST" = "1" ]; then
             record "U-05" "FAIL" "USB device appeared but was not blocked by USBGuard"
         fi
     fi
-    # Verify no mass storage filesystem was mounted
-    STORAGE_MOUNTS=$(grep -E '^/dev/sd[b-z]|^/dev/sda[2-9]' /proc/mounts 2>/dev/null || true)
+    # Verify no USB mass-storage filesystem was mounted. Device names alone
+    # are not sufficient: a WSL/VM root disk can be /dev/sdX without being a
+    # USB device. Resolve the parent block device and require a USB sysfs
+    # ancestor before treating a mount as removable mass storage.
+    is_usb_block_device() {
+        local source="$1" parent="" sysfs=""
+        [[ "$source" = /dev/* ]] || return 1
+        parent=$(lsblk -no PKNAME "$source" 2>/dev/null | head -1 || true)
+        [ -n "$parent" ] || parent=$(basename "$source")
+        sysfs=$(readlink -f "/sys/class/block/${parent}" 2>/dev/null || true)
+        [[ "$sysfs" = *"/usb"* ]]
+    }
+    STORAGE_MOUNTS=""
+    while IFS=' ' read -r source target fstype options _; do
+        if is_usb_block_device "$source"; then
+            STORAGE_MOUNTS="${STORAGE_MOUNTS}${source} ${target} ${fstype} ${options}"$'\n'
+        fi
+    done < /proc/mounts
     if [ -z "$STORAGE_MOUNTS" ]; then
         record "U-05-MOUNT" "PASS" "No USB mass storage filesystem mounted"
     else

@@ -46,4 +46,29 @@ void auth_recovery_reset(int client_fd, const char *body,
 void auth_change_password(int client_fd, const char *body, const char *auth_header,
                           const char *origin, char *extra_headers, size_t extra_len);
 
+/* GET /api/v1/admin/sessions */
+void auth_admin_sessions_list(int client_fd, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len);
+
+/* DELETE /api/v1/admin/sessions/:id */
+void auth_admin_session_revoke(int client_fd, const char *sid, const char *auth_header,
+                               const char *origin, char *extra_headers, size_t extra_len);
+
+/* POST /api/v1/admin/sessions/others */
+void auth_admin_sessions_revoke_others(int client_fd, const char *auth_header,
+                                      const char *origin, char *extra_headers, size_t extra_len);
+
+/* POST /api/v1/admin/recovery/regenerate */
+void auth_recovery_regenerate(int client_fd, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len);
+
+/* PATCH or PUT /api/v1/admin/profile */
+void auth_update_profile(int client_fd, const char *body, const char *auth_header,
+                         const char *origin, char *extra_headers, size_t extra_len);
+
+/* Dispatcher for /api/v1/admin/users/:sub */
+void auth_admin_user_dispatch(int client_fd, const char *method, const char *sub_path,
+                              const char *body, const char *auth_header,
+                              const char *origin, char *extra_headers, size_t extra_len);
+
 #endif /* EXAMOS_AUTH_CONTROLLER_H */

@@ -1,34 +1,22 @@
 import { useEffect, useState } from 'react';
 import Crud, { useRun, Flash } from '../../core/ui/Crud';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useCol } from '../../core/db/tenant';
 import { can } from '../../core/security/rbac';
-import { createRelease, approveRelease, rollout, revokeRelease, recoverDevices, addAdvisory, advisories, STEPS, listReleases } from './service';
+import { createRelease, approveRelease, rollout, revokeRelease, recoverDevices, STEPS, listReleases } from './service';
 
-function Advisories() {
-  const { user } = useAuth(); const meta = useCol('meta', false); const [list, setList] = useState([]); const [f, setF] = useState({ name: '', below: '', cve: '', sev: 'high' }); const [msg, run, setMsg] = useRun();
-  useEffect(() => { advisories().then(setList); }, [meta]);
-  return (
-    <div className="card pad2"><b>Vulnerability advisories ({list.length})</b><p className="muted sm">New releases are scanned against this list; critical findings block approval.</p>
-      <div className="row wrap">{['name', 'below', 'cve'].map((k) => <input key={k} placeholder={k === 'below' ? 'fixed in 3.0.14' : k === 'cve' ? 'CVE-2024-0001' : 'package'} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />)}
-        <select value={f.sev} onChange={(e) => setF({ ...f, sev: e.target.value })}><option>high</option><option>critical</option></select>
-        <button className="btn" disabled={!can(user.role, 'release.manage')} onClick={() => run(() => addAdvisory(user, f))}>Add</button></div>
-      <Flash msg={msg} onClose={() => setMsg(null)} /><p className="sm muted">{list.map((a) => `${a.name}<${a.below} ${a.cve} (${a.sev})`).join(' · ')}</p></div>
-  );
-}
 export default function ReleasesPage() {
   const { user } = useAuth(); const [rels, setRels] = useState([]); const [msg, run, setMsg] = useRun();
   useEffect(() => { listReleases().then(setRels).catch(() => setRels([])); }, []);
   const latest = [...rels].sort((a, b) => b.createdAt - a.createdAt)[0];
   return (
-    <Crud title="Releases" desc="Signed builds with SBOM scanning, two-person approval, staged rollout, anti-downgrade and revocation." rows={[...rels].sort((a, b) => b.createdAt - a.createdAt)} search={(r) => `${r.version} ${r.status}`}
+    <Crud title="Releases" desc="Backend-persisted release drafts. Signing, vulnerability scanning, and device dispatch are not available." rows={[...rels].sort((a, b) => b.createdAt - a.createdAt)} search={(r) => `${r.version} ${r.status}`}
       head={<button className="btn" disabled={!can(user.role, 'release.manage')} onClick={() => run(() => recoverDevices(user))}>Recover devices from revoked</button>}
-      top={<><Flash msg={msg} onClose={() => setMsg(null)} /><Advisories /></>}
+      top={<Flash msg={msg} onClose={() => setMsg(null)} />}
       columns={[{ label: 'Version', key: 'version' }, { label: 'Digest', render: (r) => <span className="mono">{r.digest ? `${r.digest.slice(0, 12)}…` : 'Backend digest unavailable'}</span> }, { label: 'Backend status', render: (r) => r.backendStatus || r.status },
-        { label: 'SBOM', render: (r) => `${r.manifest.components.length} components` }, { label: 'CVEs', render: (r) => <span className={r.criticalCves ? 'redt' : ''} title={r.findings.map((f) => `${f.cve} ${f.component}`).join('\n')}>{r.criticalCves} critical / {r.findings.length}</span> },
-        { label: 'Rollout', render: (r) => `${r.rollout}%` }, { label: 'Built / approved', render: (r) => `${r.createdBy} / ${r.approvedBy || '—'}` }, { label: 'Status', key: 'status', badge: true }]}
-      create={{ label: 'New release', perm: 'release.manage', fields: [{ name: 'version', label: 'Version', placeholder: '2.19.0' }, { name: 'components', label: 'SBOM components (name@version per line)', type: 'textarea', rows: 6, default: latest ? latest.manifest.components.map((c) => `${c.name}@${c.version}`).join('\n') : '' }], submit: (v) => createRelease(user, v) }}
-      actions={[{ label: 'Approve', perm: 'release.approve', show: (r) => r.status === 'candidate', run: (r) => approveRelease(user, r) },
+        { label: 'Manifest components', render: (r) => r.manifest.components?.length ?? 'Unavailable' }, { label: 'CVEs', render: (r) => r.criticalCves === null ? 'Not scanned' : `${r.criticalCves} critical` },
+        { label: 'Configured target (not progress)', render: (r) => `${r.rollout}%` }, { label: 'Built / approved', render: (r) => `${r.createdBy || '—'} / ${r.approvedBy || '—'}` }, { label: 'Status', key: 'status', badge: true }]}
+      create={{ label: 'New release draft', perm: 'release.manage', fields: [{ name: 'version', label: 'Version', placeholder: '2.19.0' }, { name: 'components', label: 'Manifest component list (name@version per line)', type: 'textarea', rows: 6, default: latest ? latest.manifest.components?.map((c) => `${c.name}@${c.version}`).join('\n') : '' }], submit: (v) => createRelease(user, v) }}
+      actions={[{ label: 'Request approval', perm: 'release.approve', reason: true, show: (r) => r.status === 'candidate', run: (r, reason) => approveRelease(user, r, reason) },
         { label: 'Roll out', perm: 'release.manage', show: (r) => ['approved', 'rolling', 'stable'].includes(r.status) && r.rollout < 100, field: { label: 'Percent of fleet', options: STEPS.map((s) => ({ v: s, l: `${s}%` })) }, run: (r, _x, v) => rollout(user, r, v) },
         { label: 'Revoke', perm: 'release.manage', danger: true, reason: true, stepUp: true, show: (r) => r.status !== 'revoked', run: (r, why) => revokeRelease(user, r, why) }]} />
   );

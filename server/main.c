@@ -66,6 +66,7 @@
 #include "controllers/os_release_controller.h"
 #include "controllers/student_controller.h"
 #include "controllers/campus_controller.h"
+#include "controllers/reports_controller.h"
 #include "db/db.h"
 #include "security/security.h"
 #include "audit/audit.h"
@@ -1347,6 +1348,35 @@ static void* handle_client(void *arg) {
     else if ((strcmp(route_path, "/api/v1/admin/password/change") == 0 ||
               strcmp(route_path, "/api/v1/auth/password/change") == 0) && strcmp(method, "POST") == 0) {
         auth_change_password(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/sessions") == 0 ||
+              strcmp(route_path, "/api/v1/auth/sessions") == 0) && strcmp(method, "GET") == 0) {
+        auth_admin_sessions_list(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/sessions/others") == 0 ||
+              strcmp(route_path, "/api/v1/auth/sessions/others") == 0) && strcmp(method, "POST") == 0) {
+        auth_admin_sessions_revoke_others(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strncmp(route_path, "/api/v1/admin/sessions/", 23) == 0 ||
+              strncmp(route_path, "/api/v1/auth/sessions/", 22) == 0) &&
+             (strcmp(method, "DELETE") == 0 || strcmp(method, "POST") == 0)) {
+        const char *sid_part = strncmp(route_path, "/api/v1/admin/sessions/", 23) == 0
+            ? route_path + 23 : route_path + 22;
+        auth_admin_session_revoke(client_fd, sid_part, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/recovery/regenerate") == 0 ||
+              strcmp(route_path, "/api/v1/auth/recovery/regenerate") == 0) && strcmp(method, "POST") == 0) {
+        auth_recovery_regenerate(client_fd, auth_header, origin, extra, sizeof(extra));
+        goto client_done;
+    }
+    else if ((strcmp(route_path, "/api/v1/admin/profile") == 0 ||
+              strcmp(route_path, "/api/v1/auth/profile") == 0) &&
+             (strcmp(method, "PATCH") == 0 || strcmp(method, "PUT") == 0)) {
+        auth_update_profile(client_fd, req_body, auth_header, origin, extra, sizeof(extra));
         goto client_done;
     }
     else if ((strcmp(route_path, "/api/v1/audit/batch") == 0 ||
@@ -2675,10 +2705,39 @@ static void* handle_client(void *arg) {
             } else {
                 snprintf(u.password_hash, sizeof(u.password_hash), "%s", password_hash);
                 if (admin_auth_store_create_user(&u, sess.user_id) == 0) {
-                char resp[256];
-                snprintf(resp, sizeof(resp),
-                         "{\"status\":\"created\",\"username\":\"%s\"}", u.username);
-                send_http_response(client_fd, 200, "application/json", resp);
+                    PGconn *uconn = db_acquire();
+                    if (uconn) {
+                        unsigned char sbytes[16];
+                        RAND_bytes(sbytes, sizeof(sbytes));
+                        char shex[33] = {0};
+                        static const char hexc[] = "0123456789abcdef";
+                        for (int k = 0; k < 16; k++) {
+                            shex[k * 2] = hexc[sbytes[k] >> 4];
+                            shex[k * 2 + 1] = hexc[sbytes[k] & 0x0f];
+                        }
+                        char pbkdf2_hash[256] = {0};
+                        security_pbkdf2_hash(plaintext_password, shex, pbkdf2_hash, sizeof(pbkdf2_hash));
+                        char nowstr[32];
+                        snprintf(nowstr, sizeof(nowstr), "%ld", (long)time(NULL));
+                        const char *r_str = security_role_to_string(u.role);
+                        const char *upvals[9] = {
+                            u.user_id, u.username, u.full_name, r_str,
+                            u.institution_id, u.email, pbkdf2_hash, shex, nowstr
+                        };
+                        int uplens[9];
+                        for (int k = 0; k < 9; k++) uplens[k] = (int)strlen(upvals[k]);
+                        PGresult *uins = db_simple(uconn,
+                            "INSERT INTO users (id, username, name, role, tenant_id, email, password_hash, salt, status, created_at, mfa_enabled) "
+                            "VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, 'active', $9::bigint, 0) "
+                            "ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, salt = EXCLUDED.salt, role = EXCLUDED.role",
+                            9, upvals, uplens);
+                        if (uins) PQclear(uins);
+                        db_release(uconn, 0);
+                    }
+                    char resp[256];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"created\",\"username\":\"%s\",\"user_id\":\"%s\"}", u.username, u.user_id);
+                    send_http_response(client_fd, 200, "application/json", resp);
                 } else {
                     send_http_response(client_fd, 409, "application/json",
                                        "{\"error\":\"User creation failed (duplicate or authorization denied)\"}");
@@ -2689,6 +2748,12 @@ static void* handle_client(void *arg) {
             OPENSSL_cleanse(&u, sizeof(u));
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* Dispatch /api/v1/admin/users/:sub */
+    else if (strncmp(route_path, "/api/v1/admin/users/", 20) == 0) {
+        auth_admin_user_dispatch(client_fd, method, route_path + 20, req_body, auth_header,
+                                 origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* GET /api/v1/admin/telemetry -> Platform telemetry overview */
     else if (strcmp(route_path, "/api/v1/admin/telemetry") == 0 && strcmp(method, "GET") == 0) {
@@ -3150,12 +3215,9 @@ static void* handle_client(void *arg) {
             if (!exam_id[0] || target_version <= 0) {
                 send_http_response(client_fd, 400, "application/json",
                                    "{\"error\":\"exam_id and target_version required\"}");
-            } else if (platform_rollback_policy(exam_id, (unsigned int)target_version, sess.user_id) == 0) {
-                send_http_response(client_fd, 200, "application/json",
-                                   "{\"status\":\"rolled_back\"}");
             } else {
-                send_http_response(client_fd, 500, "application/json",
-                                   "{\"error\":\"Rollback failed\"}");
+                send_http_response(client_fd, 409, "application/json",
+                    "{\"error\":\"Direct policy rollback is disabled; submit a policy-rollback request through the centralized approval workflow\"}");
             }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
@@ -4622,6 +4684,15 @@ p5_score_done:
             if (strncmp(route_path, "/api/v1/admin/policies", 22) == 0) {
                 policy_handle(client_fd, method, route_path, req_body,
                               auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Reporting platform: must run before generic module routing so
+             * /api/v1/reports does not fall through to the console stub. */
+            if (strncmp(route_path, "/api/v1/reports", 15) == 0 &&
+                (route_path[15] == '\0' || route_path[15] == '/')) {
+                reports_handle(client_fd, method, path, req_body,
+                               auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 

@@ -155,7 +155,7 @@ echo "  Models staged at: $MODEL_DIR"
 # -----------------------------------------------------------------------
 # Start server for event collection
 # -----------------------------------------------------------------------
-SERVER_BIN="$WORKSPACE/server/examos-server"
+SERVER_BIN="${EXAMOS_P4_SERVER_BIN:-$WORKSPACE/server/examos-server}"
 SERVER_PID=""
 
 if [ -x "$SERVER_BIN" ]; then
@@ -626,4 +626,8 @@ EOF
 echo ""
 echo "=== [P4-DETECTION] $GATE ==="
 
-[ "$GATE" = "PASS" ]
+case "$GATE" in
+    PASS) exit 0 ;;
+    BLOCKED) exit 2 ;;
+    *) exit 1 ;;
+esac

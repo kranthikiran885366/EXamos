@@ -24,14 +24,14 @@
 set -euo pipefail
 
 WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
-DATASET_DIR="$WORKSPACE/tests/p4/dataset"
+DATASET_DIR="${EXAMOS_P4_TEST_DATASET_DIR:-$WORKSPACE/tests/p4/dataset}"
 mkdir -p "$DATASET_DIR"
 
 log() { echo "[dataset] $*"; }
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
-    log "FATAL: ffmpeg not found. Install: apt-get install ffmpeg"
-    exit 1
+    log "BLOCKED: ffmpeg not found. Install: apt-get install ffmpeg"
+    exit 2
 fi
 
 log "Generating 50 labelled test clips in $DATASET_DIR"

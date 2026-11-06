@@ -496,7 +496,7 @@ export function ExamDetailPage() {
           ['Require TPM', pol.config?.requireTpm ? 'Yes' : 'No'], ['Kiosk lockdown', pol.config?.kioskLockdown ? 'Yes' : 'No'],
           ['Allow USB', pol.config?.allowUsb ? 'Yes' : 'No'], ['On violation', pol.config?.onViolation || '—'],
           ['Allowed origins', (pol.config?.origins || []).join(', ') || '—'], ['Signature', pol.status === 'published' ? 'verified on publish' : 'not published'],
-        ]} /> : <Empty icon="policy" title="No policy assigned">Choose a published policy or create an exam-specific policy.</Empty>}
+        ]} /> : <Empty icon="policy" title="No policy assigned">Choose an existing published policy or create an exam-specific draft and request publication approval.</Empty>}
         {preview && <pre className="code">{JSON.stringify(preview, null, 2)}</pre>}
       </Card>}
 
@@ -1098,14 +1098,14 @@ export function ExamPoliciesPage() {
 
   const submit = async (ev) => {
     ev.preventDefault();
-    const ok = await run(() => configureExamPolicy(user, e, v, publish, reason), publish ? 'Policy published and attached to the exam.' : 'Policy draft saved.');
+    const ok = await run(() => configureExamPolicy(user, e, v, publish, reason), publish ? 'Policy publication approval requested. The live policy is unchanged.' : 'Policy draft saved.');
     if (ok) setReason('');
   };
 
   return (
     <Page
       title={`${e.code} · Policy`}
-      desc="Exam-specific network, kiosk and attestation controls. Publishing creates a signed policy version."
+      desc="Exam-specific network, kiosk and attestation controls. Publication requests require independent approval and do not change the live policy."
       breadcrumb={<div className="crumbs-inline"><Link to="/college/exams">Exams</Link><Icon name="arrow" size={12} /><Link to={`/college/exams/${e.id}`}>{e.code}</Link><Icon name="arrow" size={12} /><span>Policy</span></div>}
       actions={<Link className="btn" to={`/college/exams/${e.id}`}>Back to exam</Link>}
     >
@@ -1119,7 +1119,7 @@ export function ExamPoliciesPage() {
         ]} /> : <Empty icon="policy" title="No policy assigned">Create and publish an exam-specific policy below, or select one while editing the exam.</Empty>}
       </Card>
 
-      {may('exam.policy') ? <Card title="Configure exam policy" desc="A new policy version is created for this exam. Publishing signs it with the platform key.">
+      {may('exam.policy') ? <Card title="Configure exam policy" desc="A new policy version is saved as a draft. Requesting publication submits it for independent review.">
         <form className="stack" onSubmit={submit}>
           <div className="formgrid">
             <Field label="On violation"><Select value={v.onViolation} onChange={(e2) => set('onViolation', e2.target.value)} options={['Warn candidate & log', 'Lock the session', 'Terminate the session', 'Notify invigilator']} placeholder={false} /></Field>
@@ -1129,10 +1129,10 @@ export function ExamPoliciesPage() {
             <Checkbox label="Require TPM 2.0 attestation" checked={v.requireTpm} onChange={(e2) => set('requireTpm', e2.target.checked)} />
             <Checkbox label="Enforce kiosk lockdown" checked={v.kioskLockdown} onChange={(e2) => set('kioskLockdown', e2.target.checked)} />
             <Checkbox label="Allow USB storage" checked={v.allowUsb} onChange={(e2) => set('allowUsb', e2.target.checked)} />
-            <Checkbox label="Publish immediately" checked={publish} onChange={(e2) => setPublish(e2.target.checked)} />
+            <Checkbox label="Request publication approval" checked={publish} onChange={(e2) => setPublish(e2.target.checked)} />
           </div>
           {publish && <Field label="Publication reason"><Input value={reason} onChange={(e2) => setReason(e2.target.value)} maxLength={200} placeholder="Why this policy is being published" /></Field>}
-          <div className="form-actions"><button className="btn primary" disabled={busy}>{busy ? 'Saving…' : publish ? 'Publish policy' : 'Save draft'}</button></div>
+          <div className="form-actions"><button className="btn primary" disabled={busy}>{busy ? 'Saving…' : publish ? 'Request publication approval' : 'Save draft'}</button></div>
         </form>
       </Card> : <Alert tone="warn">Your role cannot configure exam policies.</Alert>}
     </Page>

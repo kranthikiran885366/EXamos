@@ -26,6 +26,7 @@ REQUIRED_FILES=(
     "image/overlay/etc/systemd/system/examos-dev-shm-hardening.service"
     "image/overlay/etc/systemd/system/examos-kiosk-readiness.service"
     "image/overlay/usr/local/bin/examos-kiosk-readiness"
+    "image/overlay/etc/apparmor.d/examos-kiosk"
     "image/scripts/p2-startup-validator.sh"
     "image/overlay/usr/lib/sysusers.d/examos.conf"
     "image/overlay/etc/apparmor.d/usr.bin.chromium"
@@ -67,6 +68,22 @@ grep -q "^Bootable=yes"     "$MKOSI" 2>/dev/null && pass "mkosi.conf: Bootable=y
 grep -Fq "PostInstallationScripts=scripts/03-p2-lockdown.sh" "$MKOSI" 2>/dev/null \
     && pass "mkosi.conf: P2 lockdown post-install script enabled" \
     || fail "mkosi.conf: P2 lockdown post-install script missing"
+
+# ── AppArmor profile syntax ──────────────────────────────────────────────────
+APPARMOR_PARSER=$(command -v apparmor_parser 2>/dev/null || true)
+if [ -z "$APPARMOR_PARSER" ]; then
+    blocked "apparmor_parser is unavailable; cannot validate kiosk confinement profiles"
+else
+    for profile in \
+        "$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk" \
+        "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"; do
+        if "$APPARMOR_PARSER" -Q "$profile" >/dev/null 2>&1; then
+            pass "AppArmor profile syntax valid: ${profile##*/}"
+        else
+            fail "AppArmor profile syntax invalid: ${profile##*/}"
+        fi
+    done
+fi
 
 # ── kiosk service: User=exam (not root) ───────────────────────────────────────
 KIOSK_SVC="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"

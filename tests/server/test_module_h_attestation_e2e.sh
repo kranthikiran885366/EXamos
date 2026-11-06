@@ -19,6 +19,7 @@ set -euo pipefail
 
 TMP_DIR=$(mktemp -d /tmp/examos-module-h-test-XXXXXX)
 mkdir -p "$TMP_DIR/log" "$TMP_DIR/data" "$TMP_DIR/state"
+WORKSPACE="$(cd "$(dirname "$0")/../.." && pwd)"
 
 export EXAMOS_AGENT_API_TOKEN='test_agent_token_32bytes_value_1234'
 export EXAMOS_PROCTOR_API_TOKEN='test_proctor_token_32bytes_12345'
@@ -34,7 +35,7 @@ export EXAMOS_DATA_DIR="$TMP_DIR/data"
 export EXAMOS_SERVER_PORT=8896
 export EXAMOS_DATABASE_URL_FILE="/etc/examos/secrets/test_db_url"
 
-cd "/mnt/d/SEB BRO"
+cd "$WORKSPACE"
 
 echo "=== Module H: TPM Attestation & Device Trust E2E Test Suite ==="
 

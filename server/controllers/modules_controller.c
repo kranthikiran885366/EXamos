@@ -8,6 +8,8 @@
  */
 
 #include "modules_controller.h"
+#include "approvals_controller.h"
+#include "support_controller.h"
 #include "../db/db.h"
 #include "../audit/audit.h"
 #include "../security/security.h"
@@ -36,7 +38,7 @@ static int console_collection_allowed(const char *collection) {
         "tenants", "campuses", "departments", "staff", "centers",
         "users", "invitations", "roles", "exams", "candidates", "sessions",
         "devices", "attestations", "compat", "usbs", "custody", "policies",
-        "approvals", "rules", "kiosks", "incidents", "securityEvents",
+        "rules", "kiosks", "incidents", "securityEvents",
         "vulnerabilities", "evidence", "releases", "releaseEvidence", "rollouts",
         "support", "notifications", "reports", "plans", "subscriptions", "invoices",
         "privacy", "retention", "features", "configs", "integrations", "services",
@@ -49,6 +51,7 @@ static int console_collection_allowed(const char *collection) {
 }
 
 static uint32_t console_write_permission(const char *collection) {
+    if (strcmp(collection, "policies") == 0) return AUTH_PERM_SECURITY_ADMIN;
     if (strcmp(collection, "users") == 0 || strcmp(collection, "invitations") == 0 ||
         strcmp(collection, "roles") == 0) return AUTH_PERM_USER_MANAGEMENT;
     if (strcmp(collection, "incidents") == 0) return AUTH_PERM_INCIDENT_MUTATION;
@@ -100,7 +103,16 @@ static void console_data_routes(int fd, const char *method, const char *path,
     auth_session_t sess;
     uint32_t permission = strcmp(method, "GET") == 0
         ? AUTH_PERM_READ : console_write_permission(collection);
-    if (!mod_authorize(auth_header, permission, &sess)) {
+    int authorized = 0;
+    if (strcmp(collection, "policies") == 0 && strcmp(method, "GET") != 0) {
+        authorized = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) == 0 &&
+            (security_role_has_permission(sess.role, AUTH_PERM_SECURITY_ADMIN) ||
+             security_role_has_permission(sess.role, AUTH_PERM_EXAM_MUTATION) ||
+             security_role_has_permission(sess.role, AUTH_PERM_FLEET_MUTATION));
+    } else {
+        authorized = mod_authorize(auth_header, permission, &sess);
+    }
+    if (!authorized) {
         mod_send_json(fd, 403, "{\"error\":\"Insufficient permission for this collection\"}",
                       origin, extra, extra_len);
         return;
@@ -169,6 +181,16 @@ static void console_data_routes(int fd, const char *method, const char *path,
                           origin, extra, extra_len);
             return;
         }
+        if (strcmp(collection, "policies") == 0) {
+            char status[32] = {0};
+            if (!ctrl_json_string(body, "status", status, sizeof(status)) ||
+                (strcmp(status, "draft") != 0 && strcmp(status, "discarded") != 0)) {
+                mod_send_json(fd, 409,
+                              "{\"error\":\"Policy records may only be saved as drafts or discarded\"}",
+                              origin, extra, extra_len);
+                return;
+            }
+        }
         const char *params[6] = { collection, record_id, institution_id, body,
                                   sess.user_id, sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
         PGresult *res = db_query(
@@ -177,7 +199,13 @@ static void console_data_routes(int fd, const char *method, const char *path,
             "(extract(epoch from clock_timestamp())*1000)::bigint) "
             "ON CONFLICT (collection,record_id) DO UPDATE SET institution_id=EXCLUDED.institution_id,"
             "data=EXCLUDED.data,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at "
-            "WHERE $6::boolean OR console_records.institution_id=EXCLUDED.institution_id "
+            "WHERE ($6::boolean OR console_records.institution_id=EXCLUDED.institution_id) "
+            "AND ($1 <> 'policies' OR (EXCLUDED.data->>'status' IN ('draft','discarded') "
+            "AND console_records.data->>'status' IN ('draft','discarded') "
+            "AND NOT EXISTS (SELECT 1 FROM approval_requests ar "
+            "WHERE ar.policy_key IN ('policy-publish','policy-rollback') "
+            "AND ar.resource_id=console_records.record_id "
+            "AND ar.status IN ('pending_review','approved','execution_pending','executing')))) "
             "RETURNING data::text", 6, params);
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
             char response[131072];
@@ -200,7 +228,13 @@ static void console_data_routes(int fd, const char *method, const char *path,
         }
         PGresult *res = db_query(
             "DELETE FROM console_records WHERE collection=$1 AND record_id=$2 "
-            "AND ($4::boolean OR institution_id=$3) RETURNING record_id",
+            "AND ($4::boolean OR institution_id=$3) "
+            "AND ($1 <> 'policies' OR (data->>'status' <> 'published' "
+            "AND NOT EXISTS (SELECT 1 FROM approval_requests ar "
+            "WHERE ar.policy_key IN ('policy-publish','policy-rollback') "
+            "AND ar.resource_id=console_records.record_id "
+            "AND ar.status IN ('pending_review','approved','execution_pending','executing')))) "
+            "RETURNING record_id",
             4, (const char *[]){ collection, record_id, sess.institution_id,
                 sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" });
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
@@ -461,6 +495,19 @@ static void ledger_routes(int fd, const char *method, const char *path,
 void modules_handle(int client_fd, const char *method, const char *path,
                     const char *body, const char *auth_header,
                     const char *origin, char *extra_headers, size_t extra_len) {
+    /* SPPIO Support platform — dedicated, server-enforced controller. */
+    if (strncmp(path, "/api/v1/support", 15) == 0 &&
+        (path[15] == '\0' || path[15] == '/')) {
+        support_handle(client_fd, method, path, body, auth_header, origin,
+                       extra_headers, extra_len);
+        return;
+    }
+    if (strncmp(path, "/api/v1/approvals", 17) == 0 &&
+        (path[17] == '\0' || path[17] == '/')) {
+        approvals_handle(client_fd, method, path, body, auth_header, origin,
+                         extra_headers, extra_len);
+        return;
+    }
     if (strncmp(path, "/api/v1/console/data/", 21) == 0) {
         console_data_routes(client_fd, method, path, body, auth_header, origin,
                             extra_headers, extra_len);

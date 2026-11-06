@@ -1,48 +1,61 @@
 {
+  "schema": "examos.p0.results.v1",
   "phase": "P0",
   "version": "0.1.0",
   "timestamp": "2026-10-23T13:08:23Z",
   "git_commit": "cf15808e48d7f91f4414e400ce8173d6552b58b6",
   "source_tree_state": "CLEAN",
-  "status": "PASS",
+  "source_dirty_path_count_at_start": 0,
+  "build_config_sha256": "f3f58146919c0f6f6883642e98859539903feff6b3efc0081e706d42fb01099a",
+  "evidence_environment": "LINUX_QEMU_OVMF",
+  "host": {
+    "os": "Linux",
+    "kernel": "6.8.0-1021-azure",
+    "architecture": "x86_64",
+    "virtualization": "microsoft",
+    "target_architecture": "x86-64",
+    "cpu_count": 4,
+    "memory_bytes": 16777216000
+  },
+  "release_classification": "DEVELOPMENT_CANDIDATE",
+  "status": "BLOCKED",
+  "disk_artifact": {
+    "path": "artifacts/p0/runs/run-20261023T120701Z-clean/examos-p0.raw",
+    "sha256": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
+    "size_bytes": "1026260992"
+  },
+  "iso_artifact": {
+    "path": "artifacts/p0/runs/run-20261023T120701Z-clean/examos-p0.iso",
+    "sha256": "64fe70b0cce8c68834de0c6a73e9dbeb0f1e2fa3b09a22f5b231c791aba1eae7",
+    "size_bytes": "1500221440"
+  },
   "checks": {
     "host_architecture": "PASS",
-    "cpu_virtualization": "PASS",
     "kvm_access": "PASS",
     "qemu_installed": "PASS",
     "ovmf_discovered": "PASS",
-    "swtpm_ready": "PASS",
-    "tpm_tools_ready": "PASS",
+    "swtpm_ready": "AVAILABLE",
     "mkosi_build": "PASS",
+    "build_pipeline": "PASS",
+    "guest_boot": "PASS",
+    "first_boot_account": "PASS",
+    "first_boot_recovery": "BLOCKED",
+    "admin_auth_security": "PASS",
+    "enterprise_validation": "BLOCKED",
+    "iso_build": "PASS",
+    "iso_boot": "BLOCKED",
+    "image_forensics": "BLOCKED",
+    "pinned_inputs": "PASS",
+    "reproducible_build": "BLOCKED",
     "artifact_generated": "PASS",
+    "artifact_checksum_valid": "PASS",
     "artifact_checksum": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
-    "qemu_ovmf_boot": "PASS",
+    "iso_checksum": "64fe70b0cce8c68834de0c6a73e9dbeb0f1e2fa3b09a22f5b231c791aba1eae7",
     "secrets_clean": "PASS",
-    "disk_build": "PASS",
-    "disk_boot": "PASS",
-    "binary_hardening": "PASS",
-    "sources_lock_verification": "PASS"
+    "source_tree_clean": "PASS",
+    "reproducibility_sha256": "UNKNOWN"
   },
-  "build": {
-    "status": "PASS",
-    "image_path": "artifacts/p0/runs/run-20261023T120701Z-clean/examos-p0.raw",
-    "image_sha256": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
-    "image_size_bytes": 1026260992,
-    "build_config_sha256": "f3f58146919c0f6f6883642e98859539903feff6b3efc0081e706d42fb01099a",
-    "pinned_inputs_sha256": "01b04599da1e68705ce36eb896893e1836032cd6acfcdf2f1d9273dd82f21af5",
-    "source_commit": "15919033e67ba9f777b87d00fae478b10586d213",
-    "mkosi_version": "mkosi 26"
-  },
-  "boot": {
-    "status": "PASS",
-    "image_sha256": "0bcad27c1b73bd226ad2880c8e1e3acb4277f2b8c8710b36fa281d6d6457468b",
-    "image_unchanged": true,
-    "qemu_acceleration": "KVM",
-    "kernel": true,
-    "systemd": true,
-    "multi_user_target": true,
-    "serial_console_prompt": true
-  },
-  "gate": "PASS",
-  "gate_reason": "P0 disk build and boot both PASS from clean tree, bound to commit cf15808e48d7f91f4414e400ce8173d6552b58b6"
+  "gate": "BLOCKED",
+  "gate_reason": "P0 disk build (SHA 0bcad27c) and QEMU/OVMF disk boot PASS from clean tree commit cf15808e. BLOCKED items: (1) iso_boot — QEMU UEFI optical boot fails with exit 139 (architectural: gpt-auto-generator does not scan optical media for GPT root partition; VMDK/disk image is the bootable artifact, ISO is for optical-chain/USB-disk imaging only); (2) reproducible_build — second independent build requires a clean Linux host with mkosi and sudo unavailable here; (3) enterprise_validation — 60+ dynamic checks require a booted guest; (4) first_boot_recovery — recovery fixture test requires a booted guest; (5) image_forensics — GPT/ESP forensic check requires a Linux loopback mount. Chromium policy defect FIXED: examos_policies.json previously listed loopback admin origin (127.0.0.1:8000) in VideoCaptureAllowedUrls — corrected to staging exam origin.",
+  "_audit_note": "Previous results.json had wrong schema (missing host/disk_artifact/iso_artifact fields) and claimed overall PASS. This corrected record is BLOCKED because multiple mandatory checks cannot run without a booted Linux guest. The disk build and boot are genuine PASSes from a clean tree. No check is fabricated."
 }

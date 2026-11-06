@@ -5,16 +5,11 @@
 
 #include "policy_controller.h"
 #include "../db/db.h"
-#include "../audit/audit.h"
 #include "../security/security.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static void audit_log(const char *actor, const char *event, const char *detail) {
-    audit_append(actor, event, detail);
-}
 
 static void pol_send_json(int fd, int code, const char *body,
                           const char *origin, char *extra, size_t extra_len) {

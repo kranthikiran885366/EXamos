@@ -1,0 +1,128 @@
+# ExamOS AppArmor Enforcement Profile — Chromium Kiosk
+# =============================================================================
+# Profile: examos-kiosk
+# Mode:    enforce
+#
+# Confines the Chromium browser process launched by the ExamOS kiosk launcher.
+# Designed for a read-only root filesystem (dm-verity) with an ephemeral
+# RAM-backed user profile under $XDG_RUNTIME_DIR or /tmp.
+#
+# Security posture:
+#   • Allows reads from standard system directories (/usr, /lib, /proc/self)
+#     that Chromium requires to initialise.
+#   • Explicitly DENIES:
+#       - sys_ptrace capability — prevents process inspection /
+#         memory scraping by a compromised renderer subprocess.
+#       - /proc/[0-9]*/mem — blocks direct process memory reads across PIDs.
+#   • Network is NOT granted here; nftables enforces kernel-level filtering at
+#     the packet layer. AppArmor network rules are omitted to avoid false
+#     positives on loopback/Wayland socket traffic.
+# =============================================================================
+
+#include <tunables/global>
+
+profile examos-kiosk /usr/bin/chromium flags=(enforce) {
+    #include <abstractions/base>
+    #include <abstractions/nameservice>
+    #include <abstractions/fonts>
+    #include <abstractions/dbus-session-strict>
+
+    # Allow unprivileged user namespace creation for Chromium Layer-1 sandbox
+    userns,
+
+    # -------------------------------------------------------------------------
+    # Filesystem reads — minimum required for Chromium to start
+    # -------------------------------------------------------------------------
+
+    # System binaries and libraries
+    /usr/bin/chromium          mr,
+    /usr/bin/chromium-*        mr,
+    /usr/lib/**                mr,
+    /usr/lib64/**              mr,
+    /usr/share/**              r,
+    /usr/share/chromium/**     r,
+    /usr/share/fonts/**        r,
+    /usr/share/ca-certificates/** r,
+
+    # Chromium sandbox helper
+    /usr/lib/chromium/chrome-sandbox rix,
+
+    # Locale and timezone data
+    /usr/share/locale/**       r,
+    /usr/share/zoneinfo/**     r,
+    /etc/localtime             r,
+    /etc/locale.conf           r,
+    /etc/timezone              r,
+
+    # NSS / crypto
+    /etc/ssl/certs/**          r,
+    /etc/ca-certificates/**    r,
+
+    # /proc/self — required by Chromium's zygote and sandbox machinery
+    /proc/self/                r,
+    /proc/self/**              r,
+
+    # /dev entries Chromium may probe
+    /dev/null                  rw,
+    /dev/urandom               r,
+    /dev/shm/                  rw,
+    /dev/shm/**                rw,
+
+    # Wayland socket (path varies; allow under /run)
+    /run/user/[0-9]*/wayland-[0-9]* rw,
+
+    # Ephemeral profile directory (under $XDG_RUNTIME_DIR or /tmp)
+    /run/user/[0-9]*/examos_kiosk_*/** rwkl,
+    /tmp/examos_kiosk_*/       rwkl,
+    /tmp/examos_kiosk_*/**     rwkl,
+
+    # -------------------------------------------------------------------------
+    # Explicit DENY rules
+    # -------------------------------------------------------------------------
+
+    # Deny reading memory of any other process by PID path
+    deny /proc/[0-9]*/mem      rw,
+    deny /proc/[0-9]*/maps     r,
+    deny /proc/[0-9]*/fd/      r,
+    deny /proc/[0-9]*/task/    r,
+
+    # Deny ptrace capability — prevents renderer process from tracing parent/
+    # sibling processes or attaching a debugger.
+    deny capability sys_ptrace,
+
+    # Deny acquiring elevated capabilities
+    deny capability sys_admin,
+    deny capability sys_rawio,
+    deny capability net_admin,
+    deny capability net_raw,
+
+    # Deny writing outside of explicitly allowed paths
+    deny /etc/**               w,
+    deny /usr/**               w,
+    deny /bin/**               w,
+    deny /sbin/**              w,
+    deny /root/**              rw,
+    deny /home/**              rw,
+
+    # Deny loading kernel modules
+    deny /sbin/modprobe        x,
+    deny /sbin/insmod          x,
+
+    # -------------------------------------------------------------------------
+    # Inherited and child processes
+    # -------------------------------------------------------------------------
+
+    # Allow Chromium to spawn its own sandboxed renderer/GPU sub-processes.
+    # Each sub-process re-exec's the same binary under the same profile.
+    /usr/bin/chromium          Px -> examos-kiosk,
+
+    # Zygote and GPU process helpers
+    /usr/bin/chromium-renderer  Px -> examos-kiosk,
+    /usr/bin/chromium-gpu       Px -> examos-kiosk,
+
+    # -------------------------------------------------------------------------
+    # Signal permissions (supervisor → Chromium)
+    # -------------------------------------------------------------------------
+    signal (receive) set=(term, kill, int) peer=unconfined,
+    signal (send)    set=(term, kill)      peer=examos-kiosk,
+}

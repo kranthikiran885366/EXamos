@@ -1,7 +1,7 @@
 import { all, get, put } from '../../core/db/db';
-import { sha256, canon, sign, verify } from '../../core/security/crypto';
+import { sha256, canon, verify } from '../../core/security/crypto';
 import { safeHttpsUrl, clean } from '../../core/security/sanitize';
-import { id, need, fail, log, ensureKey, inScope } from '../../core/services/common';
+import { id, need, fail, log, requireReason } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
 import { evaluate } from '../firewall/service';
 import { create as requestApproval } from '../../core/services/approvals';
@@ -33,21 +33,41 @@ export async function createPolicy(a, { tenantId, name, requireTpm, kioskLockdow
   await put('policies', p); await log(a, 'POLICY_DRAFTED', `${name} v${p.version}`);
   return p;
 }
-export async function publishPolicy(a, pid) {
-  need(a, 'policy.publish');
+export async function requestPolicyPublication(a, pid, reason) {
+  if (!can(a?.role, 'policy.publish') && !can(a?.role, 'exam.policy')) {
+    fail('Permission denied: your role cannot request policy publication.');
+  }
+  const justification = requireReason(reason, 8);
   const p = await get('policies', pid);
   if (!p || p.status !== 'draft') fail('Only drafts can be published.');
   const all_ = await all('policies');
   const rules = (await all('rules')).filter((r) => r.tenantId === p.tenantId);
   const errs = validateConfig(p.config, rules); if (errs.length) fail(errs.join(' '));
-  const prev = all_.find((x) => x.tenantId === p.tenantId && x.name === p.name && x.status === 'published');
+  const prev = all_.filter((x) => x.tenantId === p.tenantId && x.name === p.name && x.status === 'published')
+    .sort((a, b) => b.version - a.version)[0];
   if (prev && weakened(prev.config, p.config) && !can(a.role, 'policy.weaken')) fail('Weakening TPM, kiosk lockdown or USB rules needs a super admin.');
   if (prev && p.version <= prev.version) fail('Version must increase (anti-downgrade).');
-  const hash = await sha256(bodyOf(p)); const k = await ensureKey('policy-signer');
-  if (prev) await put('policies', { ...prev, status: 'superseded' });
-  const out = { ...p, status: 'published', hash, sig: await sign(k.priv, hash), publishedBy: a.id, publishedAt: Date.now() };
-  await put('policies', out); await log(a, 'POLICY_PUBLISHED', `${p.name} v${p.version} sha256=${hash.slice(0, 12)}`);
-  return out;
+  const request = await requestApproval(a, {
+    kind: 'policy-publish',
+    label: `Publish ${p.name} v${p.version}`,
+    targetId: p.id,
+    tenantId: p.tenantId,
+    reason: justification,
+    data: {
+      policyId: p.id,
+      policyName: p.name,
+      policyVersion: p.version,
+      replacesPolicyId: prev?.id || null,
+      config: p.config,
+    },
+  });
+  await log(a, 'POLICY_PUBLICATION_REQUESTED', `${p.name} v${p.version}: ${request.id}`);
+  return request;
+}
+
+export async function publishPolicy(a) {
+  need(a, 'policy.publish');
+  fail('Direct policy publication is disabled. Submit a policy-publish approval request instead.');
 }
 export async function verifyPolicy(p) {
   if (!p.sig || !p.hash || (await sha256(bodyOf(p))) !== p.hash) return false;
@@ -68,32 +88,10 @@ export async function requestRollback(a, target, reason) {
   await log(a, 'ROLLBACK_REQUESTED', `${target.name} v${target.version}: ${reason}`);
   return 'Rollback requested. A different approver must confirm it.';
 }
-export async function decideApproval(a, ap, approve) {
-  need(a, 'policy.rollback');
-  if (ap.status !== 'pending') fail('Already decided.');
-  if (ap.requestedBy === a.id) fail('You cannot decide your own request (two-person rule).');
-  if (!approve) { await put('approvals', { ...ap, status: 'rejected', decidedBy: a.id }); await log(a, 'ROLLBACK_REJECTED', ap.label); return 'Rejected.'; }
-  const out = await applyRollbackApproval(ap, a);
-  await put('approvals', { ...ap, status: 'approved', decidedBy: a.id });
-  return out;
-}
-
-/** Handler used by the shared approvals service. */
-export async function applyRollbackApproval(ap, approver) {
-  const t = await get('policies', ap.targetId);
-  if (!t) fail('The target policy version no longer exists.');
-  if (!inScope(approver, t.tenantId)) fail('This policy belongs to another institution.');
-  const draft = await createPolicy(approver, { tenantId: t.tenantId, name: t.name, ...t.config });
-  const pub = await publishPolicy(approver, draft.id);
-  await put('policies', { ...pub, rolledBackFrom: t.version });
-  await log(approver, 'ROLLBACK_APPROVED', `${ap.label} -> published as v${pub.version}`);
-  return `${t.name} rolled back; republished as v${pub.version}.`;
-}
 export const configDiff = (a, b) => {
   const out = [];
   for (const k of ['requireTpm', 'kioskLockdown', 'allowUsb', 'onViolation']) if (JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])) out.push({ key: k, from: a?.[k], to: b?.[k] });
   if (JSON.stringify(a?.origins) !== JSON.stringify(b?.origins)) out.push({ key: 'origins', from: (a?.origins || []).join(', '), to: (b?.origins || []).join(', ') });
   return out;
 };
-export { inScope };
 export const latestPublished = (policies, tenantId) => policies.filter((p) => p.tenantId === tenantId && p.status === 'published').sort((x, y) => y.createdAt - x.createdAt)[0];

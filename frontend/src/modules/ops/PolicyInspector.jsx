@@ -4,15 +4,17 @@ import { useTenant, useCol } from '../../core/db/tenant';
 import { can } from '../../core/security/rbac';
 import ReauthModal from '../../core/ui/ReauthModal';
 import { useRun, Flash } from '../../core/ui/Crud';
-import { createPolicy, publishPolicy, discardDraft, requestRollback, ACTIONS } from '../policies/service';
+import { createPolicy, requestPolicyPublication, requestRollback, ACTIONS } from '../policies/service';
 import { verifyRelease } from '../releases/service';
 import { cmpVer } from '../../core/services/common';
+import { useApprovalRequests } from '../../core/services/useApprovalRequests';
 
 const Switch = ({ on, onChange, disabled, label }) => <button role="switch" aria-checked={on} aria-label={label} disabled={disabled} className={'sw' + (on ? ' on' : '')} onClick={() => onChange(!on)}><i /></button>;
 
 export default function PolicyInspector() {
   const { user } = useAuth(); const { tenantId } = useTenant();
-  const pols = useCol('policies'), devices = useCol('devices'), rels = useCol('releases', false), approvals = useCol('approvals');
+  const pols = useCol('policies'), devices = useCol('devices'), rels = useCol('releases', false);
+  const approvalState = useApprovalRequests();
   const names = [...new Set(pols.filter((p) => p.status !== 'discarded').map((p) => p.name))];
   const [name, setName] = useState(''); const cur = name || names[0];
   const pub = pols.find((p) => p.name === cur && p.status === 'published');
@@ -25,13 +27,15 @@ export default function PolicyInspector() {
   const can_ = can(user.role, 'policy.publish'); const sa = can(user.role, 'policy.weaken');
   const mine = devices.filter((x) => x.status === 'enrolled'); const onNew = mine.filter((x) => x.policyId === pub.id).length;
   const old = pols.filter((p) => p.name === cur && p.status === 'superseded').sort((a, b) => b.version - a.version);
-  const pending = approvals.filter((a) => a.status === 'pending' && pols.find((p) => p.id === a.targetId)?.name === cur).length;
+  const pending = approvalState.requests.filter((a) => a.status === 'pending_review' &&
+    ['policy-publish', 'policy-rollback'].includes(a.kind) && pols.find((p) => p.id === a.targetId)?.name === cur).length;
   const set = (k) => (v) => setD({ ...d, [k]: v });
   const publish = async (reason) => {
     setModal(null);
     await run(async () => {
       const p = await createPolicy(user, { tenantId, name: cur, ...d });
-      try { const o = await publishPolicy(user, p.id); return `Published v${o.version} (${reason}). New sessions use it; devices converge over the next heartbeats.`; } catch (e) { await discardDraft(user, p); throw e; }
+      const request = await requestPolicyPublication(user, p.id, reason);
+      return `Publication approval requested (${request.id}). Policy v${p.version} remains a draft until a verified execution integration is available.`;
     });
   };
   return (
@@ -47,19 +51,20 @@ export default function PolicyInspector() {
         <div className="prow"><div><b>Allow USB storage</b><small>Exception requires supervisor approval</small></div><Switch label="Allow USB storage" on={d.allowUsb} onChange={set('allowUsb')} disabled={!sa} /></div>
         <label className="sel">On policy violation<select value={d.onViolation} onChange={(e) => set('onViolation')(e.target.value)} disabled={!can_}>{ACTIONS.map((a) => <option key={a}>{a}</option>)}</select></label>
         <label className="sel">Allowed origins<textarea rows={2} value={d.origins} onChange={(e) => set('origins')(e.target.value)} disabled={!can_} /></label>
-        <div className="warn">Changes apply to new sessions only. Active exams keep policy v{pub.version}.</div>
+        <div className="warn">A publication request does not change the live policy. Active exams keep policy v{pub.version}.</div>
         {!sa && ((!d.requireTpm && pub.config.requireTpm) || (!d.kioskLockdown && pub.config.kioskLockdown)) && <div className="err">Weakening a security control needs a super admin; publish will be refused.</div>}
         <h6>SBOM &amp; ARTIFACT SIGNER</h6>
         {stable ? <div className="sbom"><div className="split"><code>kiosk-agent:{stable.version}</code><span className={'badge ' + (sig ? 'g' : 'r')}><i />{sig === null ? 'Checking' : sig ? 'Verified' : 'Invalid'}</span></div>
           <small>SBOM · {stable.manifest.components.length} components · {stable.criticalCves} critical CVEs</small>
           <div className="signer"><span className="ok2">✓</span><div><b>release-signer · ECDSA P-256</b><small>Approved by {stable.approvedBy}</small></div></div><small className="mono">SHA256 {stable.digest.slice(0, 8)}…{stable.digest.slice(-8)}</small></div> : <p className="muted sm">No stable release.</p>}
         <h6>ROLLBACK CONTROL</h6>
+        {approvalState.error && <div className="err">Approval queue unavailable: {approvalState.error.message || 'backend request failed'}</div>}
         <select className="full" value={target} onChange={(e) => setTarget(e.target.value)}><option value="">Previous version…</option>{old.map((p) => <option key={p.id} value={p.id}>v{p.version} · superseded</option>)}</select>
-        <small className="muted">Two-person approval required. Every rollback is recorded in the audit log.{pending > 0 && ` ${pending} request(s) waiting in Policies.`}</small>
+        <small className="muted">Independent approval is required; approval does not execute the change.{pending > 0 && ` ${pending} request(s) waiting in Policies.`}</small>
         <button className="btn danger full" disabled={!target || !can(user.role, 'policy.rollback')} onClick={() => setModal('rollback')}>↺ Request rollback</button>
       </div>
       <div className="ifoot"><button className="btn" disabled={!dirty} onClick={() => setD({ ...pub.config, origins: pub.config.origins.join('\n') })}>Discard</button><button className="btn primary grow" disabled={!dirty || !can_} onClick={() => setModal('publish')}>→ Review &amp; publish</button></div>
-      {modal === 'publish' && <ReauthModal title={`Publish ${cur} v${pub.version + 1}`} text={`${dirty} change(s) will be signed and rolled out.`} confirmLabel="Publish policy" onClose={() => setModal(null)} onConfirm={publish} />}
+      {modal === 'publish' && <ReauthModal title={`Request publication of ${cur} v${pub.version + 1}`} text={`${dirty} change(s) will be submitted for independent review. This does not sign or roll out the policy.`} confirmLabel="Request approval" onClose={() => setModal(null)} onConfirm={publish} />}
       {modal === 'rollback' && <ReauthModal title="Request rollback" text="A different approver must confirm before anything changes." confirmLabel="Request" onClose={() => setModal(null)} onConfirm={async (r) => { setModal(null); await run(() => requestRollback(user, pols.find((p) => p.id === target), r)); setTarget(''); }} />}
     </aside>
   );

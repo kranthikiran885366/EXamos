@@ -5,7 +5,9 @@
 // in IndexedDB, localStorage, or sessionStorage. The server is the only
 // source of truth for identity, credentials, and roles.
 import { clean } from '../../core/security/sanitize';
-import { ROLES, roleInfo, roleLabel, permissionsOf, registerRoles } from '../../core/security/rbac';
+import {
+  BACKEND_ADMIN_ROLES, roleInfo, roleLabel, permissionsOf, registerRoles,
+} from '../../core/security/rbac';
 import { need, fail, log, assertScope, requireReason, id, isEmail } from '../../core/services/common';
 import { create as requestApproval } from '../../core/services/approvals';
 import * as Api from '../../core/api/services';
@@ -46,10 +48,8 @@ export async function createUser(a, { username, name, role, password, tenantId, 
     fail('Enter the full name.');
   if (email && !isEmail(email))
     fail('Enter a valid email address.');
-  if (!roleInfo(role))
-    fail('Pick a role.');
-  if (role === 'system' && a.role !== 'superadmin')
-    fail('Service identities can only be created by a platform super admin.');
+  if (!BACKEND_ADMIN_ROLES.includes(role))
+    fail('Pick a backend-supported administrative role.');
   if ((roleInfo(role)?.rank ?? 0) >= (roleInfo(a.role)?.rank ?? 0) && a.role !== 'superadmin')
     fail('You cannot create an account with equal or higher privilege.');
   if (a.role !== 'superadmin') { tenantId = a.tenantId; if (!tenantId) fail('Your account has no institution scope.'); }
@@ -109,7 +109,7 @@ export async function unlockUser(a, u, reason) {
 export async function setUserRole(a, u, role, reason) {
   need(a, 'user.manage'); guardTarget(a, u);
   if (u.id === a.id) fail('You cannot change your own role (no self-escalation).');
-  if (!roleInfo(role)) fail('Pick a role.');
+  if (!BACKEND_ADMIN_ROLES.includes(role)) fail('Pick a backend-supported administrative role.');
   const r      = requireReason(reason, 8);
   const tRank  = roleInfo(role)?.rank   ?? 0;
   const myRank = roleInfo(a.role)?.rank ?? 0;
@@ -154,7 +154,7 @@ export async function invite(a, { name, email, role, tenantId, expiresInDays = 7
   need(a, 'user.manage');
   if (clean(name, 60).length < 2) fail('Enter the full name.');
   if (!isEmail(email)) fail('Enter a valid email address.');
-  if (!roleInfo(role) || role === 'system') fail('Pick a human role.');
+  if (!BACKEND_ADMIN_ROLES.includes(role)) fail('Pick a backend-supported administrative role.');
   if (a.role !== 'superadmin') tenantId = a.tenantId;
   if (!tenantId) fail('Choose an institution.');
   if (!['superadmin', 'ops_admin'].includes(a.role) && tenantId !== a.tenantId)

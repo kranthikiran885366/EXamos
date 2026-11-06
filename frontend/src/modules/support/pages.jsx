@@ -11,8 +11,9 @@ import { useLoad, usePerm } from '../../core/ui/hooks';
 import { downloadJson } from '../../core/services/common';
 import {
   createRequest, addMessage, assignRequest, setStatus, escalateRequest, rateRequest,
+  initiateRecovery, listRequests, getRequest, listRecovery, getStats,
   CATEGORIES, PRIORITIES, STATUSES, supportStats, isOpen, isBreached, slaLeft,
-  diagnostics, statusOverview, initiateRecovery,
+  diagnostics as runDiagnostics, statusOverview,
 } from './service';
 
 const catLabel = (v) => CATEGORIES.find((c) => c.v === v)?.l || v;
@@ -55,11 +56,12 @@ function RequestModal({ tenantId, onClose, onDone }) {
 /* ------------------------------------------------------------------ home */
 export function SupportHomePage() {
   const { tenantId } = useTenant();
-  const tickets = useCol('support', false);
+  const { data, loading, error, reload } = useLoad(() => listRequests(), []);
+  const tickets = data || [];
   const [creating, setCreating] = useState(false);
   const flash = useFlash();
   const perms = usePerm();
-  const mine = useMemo(() => tickets.filter((t) => t.tenantId === tenantId), [tickets, tenantId]);
+  const mine = useMemo(() => tickets.filter((t) => !tenantId || t.tenantId === tenantId), [tickets, tenantId]);
   const stats = supportStats(mine);
   const open = mine.filter(isOpen).sort((a, b) => (a.slaDue || 0) - (b.slaDue || 0));
 
@@ -67,6 +69,8 @@ export function SupportHomePage() {
     <Page title="Support home" desc="Create and track support requests with SLA tracking."
       actions={perms('support.manage') ? <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" size={15} /> New request</button> : null}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {error && <Alert tone="danger" title="Could not load requests">{String(error.message || error)}</Alert>}
+      {loading && <Loading label="Loading support requests…" />}
       <StatGrid cols={5}>
         <Stat label="Open" value={stats.open} icon="ticket" tone="amber" to="/support/requests" />
         <Stat label="Critical" value={stats.critical} icon="warn" tone="red" />
@@ -94,7 +98,7 @@ export function SupportHomePage() {
             <li>Critical requests target a one-hour first response.</li>
             <li>High: 4 hours · Normal: 24 hours · Low: 72 hours.</li>
             <li>Requests can be escalated into a security incident.</li>
-            <li>Every message and status change is audited.</li>
+            <li>Every message and status change is audited server-side.</li>
           </ul>
           <div className="row wrap">
             <Link className="btn" to="/support/requests">All requests</Link>
@@ -104,7 +108,7 @@ export function SupportHomePage() {
           </div>
         </Card>
       </div>
-      {creating && <RequestModal tenantId={tenantId} onClose={() => setCreating(false)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
+      {creating && <RequestModal tenantId={tenantId} onClose={() => setCreating(false)} onDone={(m) => { flash.setMsg({ ok: true, text: m }); reload(); }} />}
     </Page>
   );
 }
@@ -114,20 +118,23 @@ export function SupportRequestsPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const navigate = useNavigate();
-  const tickets = useCol('support', false);
+  const { data, loading, error, reload } = useLoad(() => listRequests(), []);
+  const tickets = data || [];
   const users = useCol('users', false);
   const [creating, setCreating] = useState(false);
   const [act, setAct] = useState(null);
   const flash = useFlash();
   const perms = usePerm();
-  const rows = useMemo(() => tickets.filter((t) => t.tenantId === tenantId).sort((a, b) => b.createdAt - a.createdAt), [tickets, tenantId]);
+  const rows = useMemo(() => tickets.filter((t) => !tenantId || t.tenantId === tenantId).sort((a, b) => b.createdAt - a.createdAt), [tickets, tenantId]);
   const stats = supportStats(rows);
-  const assignees = users.filter((u) => u.tenantId === tenantId || !u.tenantId);
+  const assignees = users.filter((u) => !u.tenantId || u.tenantId === tenantId || !tenantId);
 
   return (
     <Page title="Requests" desc="Support tickets and their lifecycle."
       actions={perms('support.manage') ? <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" size={15} /> New request</button> : null}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {error && <Alert tone="danger" title="Could not load requests">{String(error.message || error)}</Alert>}
+      {loading && <Loading label="Loading requests…" />}
       <StatGrid cols={4}>
         <Stat label="Open" value={stats.open} icon="ticket" tone="amber" />
         <Stat label="Breached" value={stats.breached} icon="clock" tone={stats.breached ? 'red' : 'green'} />
@@ -136,7 +143,7 @@ export function SupportRequestsPage() {
       </StatGrid>
       <DataTable
         title="Tickets" desc="Open a ticket to see the conversation and take action."
-        rows={rows} search={(t) => `${t.no} ${t.subject} ${t.category} ${t.status} ${t.priority} ${t.assignee || ''}`}
+        rows={rows} search={(t) => `${t.no} ${t.subject} ${t.category} ${t.status} ${t.priority} ${t.assigneeName || t.assignee || ''}`}
         filters={[
           { key: 'status', label: 'Status', options: STATUSES.map((s) => ({ v: s, l: s })) },
           { key: 'priority', label: 'Priority', options: PRIORITIES },
@@ -149,7 +156,7 @@ export function SupportRequestsPage() {
           { key: 'category', label: 'Category', render: (t) => catLabel(t.category) },
           { key: 'priority', label: 'Priority', render: (t) => <Badge value={t.priority} /> },
           { key: 'status', label: 'Status', render: (t) => <Badge value={t.status} /> },
-          { key: 'assignee', label: 'Assignee', render: (t) => t.assignee || 'Unassigned' },
+          { key: 'assignee', label: 'Assignee', render: (t) => t.assigneeName || t.assignee || 'Unassigned' },
           { key: 'slaDue', label: 'SLA', sortable: true, render: (t) => <span className={isBreached(t) ? 'text-danger' : ''}>{slaText(t)}</span> },
           { key: 'createdAt', label: 'Created', sortable: true, render: (t) => ago(t.createdAt) },
         ]}
@@ -164,31 +171,30 @@ export function SupportRequestsPage() {
           return out;
         }}
       />
-      {creating && <RequestModal tenantId={tenantId} onClose={() => setCreating(false)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
+      {creating && <RequestModal tenantId={tenantId} onClose={() => setCreating(false)} onDone={(m) => { flash.setMsg({ ok: true, text: m }); reload(); }} />}
       {act?.type === 'assign' && (
         <ActionDialog title="Assign request" desc={act.row.subject} confirmLabel="Assign" requireReason={false}
-          field={{ label: 'Assignee', options: assignees.map((u) => ({ v: u.id, l: `${u.name} (${u.role})` })) }}
-          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(() => assignRequest(user, act.row, val))} />
+          field={{ label: 'Assignee', options: assignees.map((u) => ({ v: u.id, l: `${u.name || u.full_name || u.id} (${u.role})` })) }}
+          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(async () => { const m = await assignRequest(user, act.row, val); reload(); return m; })} />
       )}
       {act?.type === 'status' && (
         <ActionDialog title="Set status" desc={act.row.subject} confirmLabel="Update" reasonLabel="Note (required to resolve)"
           field={{ label: 'Status', options: STATUSES, default: act.row.status }}
-          onClose={() => setAct(null)} onConfirm={(reason, val) => flash.run(() => setStatus(user, act.row, val, reason))} />
+          onClose={() => setAct(null)} onConfirm={(reason, val) => flash.run(async () => { const m = await setStatus(user, act.row, val, reason); reload(); return m; })} />
       )}
       {act?.type === 'escalate' && (
         <ActionDialog title="Escalate to incident" desc={act.row.subject} danger confirmLabel="Escalate"
-          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => escalateRequest(user, act.row, reason))} />
+          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(async () => { const m = await escalateRequest(user, act.row, reason); reload(); return m; })} />
       )}
     </Page>
   );
 }
-
 /* ------------------------------------------------------------------ detail */
 export function SupportRequestDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const tickets = useCol('support', false);
+  const { data: t, loading, error, reload } = useLoad(() => getRequest(id), [id]);
   const users = useCol('users', false);
   const [msgText, setMsgText] = useState('');
   const [internal, setInternal] = useState(false);
@@ -196,14 +202,15 @@ export function SupportRequestDetailPage() {
   const flash = useFlash();
   const perms = usePerm();
 
-  const t = tickets.find((x) => x.id === id);
-  const assignees = users.filter((u) => (u.tenantId === t?.tenantId) || !u.tenantId);
-  if (!t) return <Page title="Request not found"><Empty icon="ticket" title="No such request" action={<Link className="btn" to="/support/requests">Back to requests</Link>} /></Page>;
+  const assignees = users.filter((u) => !t || !u.tenantId || u.tenantId === t.tenantId || t.tenantId === tenantId);
+
+  if (error) return <Page title="Request"><Alert tone="danger" title="Could not load request">{String(error.message || error)}</Alert><Link className="btn" to="/support/requests">Back to requests</Link></Page>;
+  if (loading || !t) return <Page title="Request"><Loading label="Loading request…" /></Page>;
 
   const send = async (e) => {
     e.preventDefault();
     if (msgText.trim().length < 2) return;
-    await flash.run(async () => { await addMessage(user, t, msgText, internal); setMsgText(''); setInternal(false); return 'Message added.'; });
+    await flash.run(async () => { await addMessage(user, t, msgText, internal); setMsgText(''); setInternal(false); reload(); return 'Message added.'; });
   };
 
   return (
@@ -219,7 +226,7 @@ export function SupportRequestDetailPage() {
         <Stat label="Status" value={t.status} icon="ticket" tone={isOpen(t) ? 'amber' : 'green'} />
         <Stat label="Priority" value={t.priority} icon="alert" tone={t.priority === 'critical' ? 'red' : 'blue'} />
         <Stat label="SLA" value={slaText(t)} icon="clock" tone={isBreached(t) ? 'red' : 'green'} />
-        <Stat label="Satisfaction" value={t.satisfaction ? `${t.satisfaction.score}/5` : '—'} icon="badge" />
+        <Stat label="Satisfaction" value={t.satisfactionScore ? `${t.satisfactionScore}/5` : '—'} icon="badge" />
       </StatGrid>
       {isBreached(t) && <Alert tone="danger" title="SLA breached">No first response was recorded before the deadline.</Alert>}
       <div className="two">
@@ -228,7 +235,7 @@ export function SupportRequestDetailPage() {
             ['Reference', <code key="r">{t.no}</code>],
             ['Category', catLabel(t.category)],
             ['Requester', t.requesterName],
-            ['Assignee', t.assignee || 'Unassigned'],
+            ['Assignee', t.assigneeName || t.assignee || 'Unassigned'],
             ['Created', fmt(t.createdAt)],
             ['SLA due', fmt(t.slaDue)],
             ['First response', t.firstResponseAt ? fmt(t.firstResponseAt) : 'Pending'],
@@ -241,12 +248,13 @@ export function SupportRequestDetailPage() {
           <p className="preserve">{t.description}</p>
           {t.resolution && <Alert tone="success" title="Resolution">{t.resolution}</Alert>}
           {t.escalationReason && <Alert tone="warn" title="Escalation">{t.escalationReason}</Alert>}
+          {t.recovery && <Alert tone="info" title={`Recovery · ${t.recovery.kind}`}>{`Target: ${t.recovery.target} · State: ${t.recovery.state}${t.recovery.approvalId ? ` · Approval: ${t.recovery.approvalId}` : ''}`}</Alert>}
         </Card>
       </div>
-      <Card title="Conversation" desc="Internal notes are visible only to support staff.">
+      <Card title="Conversation" desc="Internal notes are visible only to support staff (enforced server-side).">
         {t.messages?.length ? (
           <Timeline items={t.messages.map((m) => ({
-            id: m.id, title: `${m.by}${m.internal ? ' · internal' : ''}`, meta: fmt(m.at), body: m.text,
+            id: m.id, title: `${m.authorName || m.by}${m.internal ? ' · internal' : ''}`, meta: fmt(m.at), body: m.text,
             tone: m.internal ? 'a' : '',
           }))} />
         ) : <Empty icon="ticket" title="No messages yet" />}
@@ -261,7 +269,12 @@ export function SupportRequestDetailPage() {
           </form>
         )}
       </Card>
-      {t.status === 'resolved' && !t.satisfaction && (
+      {t.events?.length > 0 && (
+        <Card title="Audit timeline" desc="Append-only server-side event history.">
+          <Timeline items={t.events.map((e) => ({ id: e.at, title: e.event, meta: fmt(e.at), body: e.detail }))} />
+        </Card>
+      )}
+      {t.status === 'resolved' && !t.satisfactionScore && (
         <Card title="Rate support" desc="Your feedback helps improve response quality.">
           <button className="btn" onClick={() => setAct({ type: 'rate' })}>Rate this request</button>
         </Card>
@@ -269,22 +282,22 @@ export function SupportRequestDetailPage() {
 
       {act?.type === 'assign' && (
         <ActionDialog title="Assign request" desc={t.no} confirmLabel="Assign" requireReason={false}
-          field={{ label: 'Assignee', options: assignees.map((u) => ({ v: u.id, l: `${u.name} (${u.role})` })) }}
-          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(() => assignRequest(user, t, val))} />
+          field={{ label: 'Assignee', options: assignees.map((u) => ({ v: u.id, l: `${u.name || u.full_name || u.id} (${u.role})` })) }}
+          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(async () => { const m = await assignRequest(user, t, val); reload(); return m; })} />
       )}
       {act?.type === 'status' && (
         <ActionDialog title="Set status" desc={t.no} confirmLabel="Update" reasonLabel="Note (required to resolve)"
           field={{ label: 'Status', options: STATUSES, default: t.status }}
-          onClose={() => setAct(null)} onConfirm={(reason, val) => flash.run(() => setStatus(user, t, val, reason))} />
+          onClose={() => setAct(null)} onConfirm={(reason, val) => flash.run(async () => { const m = await setStatus(user, t, val, reason); reload(); return m; })} />
       )}
       {act?.type === 'escalate' && (
         <ActionDialog title="Escalate to incident" desc={t.no} danger confirmLabel="Escalate"
-          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => escalateRequest(user, t, reason))} />
+          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(async () => { const m = await escalateRequest(user, t, reason); reload(); return m; })} />
       )}
       {act?.type === 'rate' && (
         <ActionDialog title="Rate support" desc={t.no} confirmLabel="Submit rating" requireReason={false}
           field={{ label: 'Score (1–5)', type: 'number', default: '5' }}
-          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(() => rateRequest(user, t, val))} />
+          onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(async () => { const m = await rateRequest(user, t, val); reload(); return m; })} />
       )}
     </Page>
   );
@@ -292,52 +305,35 @@ export function SupportRequestDetailPage() {
 
 /* ------------------------------------------------------------------ diagnostics */
 export function DiagnosticsPage() {
-  const { tenantId } = useTenant();
-  const devices = useCol('devices', false);
-  const attestations = useCol('attestations', false);
-  const incidents = useCol('incidents', false);
-  const services = useCol('services', false);
-  const usbs = useCol('usbs', false);
-  const releases = useCol('releases', false);
-  const { data: diag, loading, error, reload } = useLoad(
-    () => diagnostics(tenantId, { devices, attestations, incidents, services, usbs, releases }),
-    [tenantId, devices, attestations, incidents, services, usbs, releases],
-  );
+  const { data: diag, loading, error, reload } = useLoad(() => runDiagnostics(), []);
+
+  const checks = diag?.checks || [];
+  const warn = checks.filter((c) => c.status === 'WARN').length;
+  const fail = checks.filter((c) => c.status === 'FAIL').length;
 
   return (
-    <Page title="Diagnostics" desc="Institution-scoped diagnostic bundle for support cases."
+    <Page title="Diagnostics" desc="Live, read-only health checks executed against PostgreSQL by the backend."
       actions={<>
         {diag && <button className="btn" onClick={() => downloadJson(`examos-diagnostics-${Date.now()}.json`, diag)}><Icon name="download" size={15} /> Download JSON</button>}
         <button className="btn primary" onClick={reload} disabled={loading}><Icon name="refresh" size={15} /> Re-run</button>
       </>}>
-      {error && <Alert tone="danger" title="Diagnostics failed">{error.message}</Alert>}
+      {error && <Alert tone="danger" title="Diagnostics failed">{String(error.message || error)}</Alert>}
       {loading || !diag ? <Loading label="Collecting diagnostics…" /> : (
         <>
           <StatGrid cols={5}>
-            <Stat label="Devices" value={diag.devices} icon="device" sub={`${diag.online} online`} />
-            <Stat label="Attested" value={diag.attested} icon="shield" tone="green" />
-            <Stat label="Failed attestations" value={diag.failedAttestations} icon="warn" tone={diag.failedAttestations ? 'red' : 'green'} />
-            <Stat label="Open incidents" value={diag.openIncidents} icon="alert" tone={diag.openIncidents ? 'amber' : 'green'} />
-            <Stat label="Stale USBs" value={diag.staleUsbs} icon="usb" tone={diag.staleUsbs ? 'amber' : 'green'} />
+            <Stat label="Database" value={diag.database ? 'Healthy' : 'Unavailable'} icon="server" tone={diag.database ? 'green' : 'red'} />
+            <Stat label="Checks" value={checks.length} icon="check" />
+            <Stat label="Warnings" value={warn} icon="alert" tone={warn ? 'amber' : 'green'} />
+            <Stat label="Failures" value={fail} icon="warn" tone={fail ? 'red' : 'green'} />
+            <Stat label="Mode" value="Read-only" icon="shield" tone="blue" />
           </StatGrid>
-          <div className="two">
-            <Card title="Checks">
-              <DataTable rows={diag.checks} dense columns={[
-                { key: 'label', label: 'Check' },
-                { key: 'status', label: 'Result', render: (c) => <Badge value={c.status} /> },
-                { key: 'detail', label: 'Detail' },
-              ]} />
-            </Card>
-            <Card title="Environment" pad>
-              <KeyValue cols={2} items={[
-                ['Devices', diag.devices], ['Online', diag.online],
-                ['Isolated', diag.isolated], ['Offline', diag.offline],
-                ['Degraded services', diag.degradedServices], ['USB assets', diag.usbs],
-                ['Revoked releases', diag.revokedReleases], ['Generated', fmt(Date.now())],
-              ]} />
-              <Alert tone="info" title="Privacy">Bundles exclude candidate answers and personal data. Review before sharing externally.</Alert>
-            </Card>
-          </div>
+          <Card title="Checks" desc={diag.note || ''}>
+            <DataTable rows={checks} dense search={(c) => `${c.key} ${c.label} ${c.status} ${c.detail}`} columns={[
+              { key: 'label', label: 'Check' },
+              { key: 'status', label: 'Result', render: (c) => <Badge value={c.status} /> },
+              { key: 'detail', label: 'Detail' },
+            ]} empty={<Empty icon="check" title="No checks available" />} />
+          </Card>
         </>
       )}
     </Page>
@@ -347,25 +343,26 @@ export function DiagnosticsPage() {
 /* ------------------------------------------------------------------ status */
 export function StatusPage() {
   const services = useCol('services', false);
-  const { data: overview, loading, error, reload } = useLoad(() => statusOverview({ services }), [services]);
+  const { data: overview, loading, error, reload } = useLoad(() => statusOverview(), [services.length]);
 
   return (
     <Page title="Service status" desc="Current status of platform services and recent alerts."
       actions={<button className="btn" onClick={reload} disabled={loading}><Icon name="refresh" size={15} /> Refresh</button>}>
-      {error && <Alert tone="danger" title="Could not load status">{error.message}</Alert>}
+      {error && <Alert tone="danger" title="Could not load status">{String(error.message || error)}</Alert>}
       {loading || !overview ? <Loading label="Loading status…" /> : (
         <>
           <Alert tone={overview.overall === 'operational' ? 'success' : overview.overall === 'outage' ? 'danger' : 'warn'}
             title={`Overall: ${overview.overall}`}>
             {overview.services} services · {overview.down} down · {overview.degraded} degraded · {overview.alerts} open alerts
-            {overview.lastBackup && ` · last backup ${fmt(overview.lastBackup.at)}`}
+            {` · database ${overview.database || 'unknown'}`}
           </Alert>
           <StatGrid cols={4}>
             <Stat label="Services" value={overview.services} icon="server" />
             <Stat label="Down" value={overview.down} icon="warn" tone={overview.down ? 'red' : 'green'} />
             <Stat label="Degraded" value={overview.degraded} icon="alert" tone={overview.degraded ? 'amber' : 'green'} />
-            <Stat label="Open alerts" value={overview.alerts} icon="bell" tone={overview.alerts ? 'amber' : 'green'} />
+            <Stat label="Uptime" value={overview.uptime === 'insufficient-data' ? 'N/A' : overview.uptime} icon="clock" tone="blue" />
           </StatGrid>
+          {overview.uptime === 'insufficient-data' && <Alert tone="info" title="Uptime unavailable">No monitoring history is configured, so uptime cannot be reported. Current status reflects live service records and a database health check only — no figure is fabricated.</Alert>}
           <DataTable
             title="Services" desc={overview.regions?.length ? `Regions: ${overview.regions.join(', ')}` : 'Platform services'}
             rows={services} search={(s) => `${s.name} ${s.status} ${s.region || ''}`}
@@ -390,22 +387,22 @@ export function StatusPage() {
 export function RecoveryPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
-  const tickets = useCol('support', false);
+  const { data, loading, error, reload } = useLoad(() => listRecovery(), []);
+  const recovery = data || [];
   const [v, setV] = useState({ kind: 'account-access', target: '', reason: '' });
   const flash = useFlash();
   const perms = usePerm();
-  const recovery = tickets.filter((t) => t.tenantId === tenantId && t.recovery).sort((a, b) => b.createdAt - a.createdAt);
 
   const submit = async (e) => {
     e.preventDefault();
-    await flash.run(async () => { const m = await initiateRecovery(user, { tenantId, ...v }); setV({ kind: 'account-access', target: '', reason: '' }); return m; });
+    await flash.run(async () => { const m = await initiateRecovery(user, { tenantId, ...v }); setV({ kind: 'account-access', target: '', reason: '' }); reload(); return m; });
   };
 
   return (
-    <Page title="Recovery" desc="Gated account, device, USB and exam-session recovery, fully audited.">
+    <Page title="Recovery" desc="Gated account, device, USB and exam-session recovery. High-risk cases require centralized approval.">
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
       <div className="two">
-        <Card title="Initiate recovery" desc="Recovery opens a support case and requires approval where applicable.">
+        <Card title="Initiate recovery" desc="Recovery opens a support case and creates an approval request.">
           {perms('support.manage') ? (
             <form onSubmit={submit} className="formgrid">
               <Field label="Scenario" required className="span2">
@@ -427,14 +424,16 @@ export function RecoveryPage() {
         </Card>
         <Card title="Recovery safeguards" desc="What protects these operations.">
           <ul className="checklist">
-            <li>Every recovery case is linked to a support ticket.</li>
-            <li>Account and MFA recovery revoke existing sessions.</li>
-            <li>Device trust recovery requires re-attestation.</li>
-            <li>USB custody changes are recorded against the asset.</li>
-            <li>Data restore follows the retention policy and approval.</li>
+            <li>Every recovery case is linked to a support ticket and audited server-side.</li>
+            <li>High-risk recovery creates a centralized approval request (policy: support-recovery).</li>
+            <li>Requester and approver are separate; the approver is not the requester.</li>
+            <li>Execution requires the approval to be granted and re-validates authorization.</li>
+            <li>Device recovery never modifies disk, EFI, firmware, TPM or Secure Boot.</li>
           </ul>
         </Card>
       </div>
+      {error && <Alert tone="danger" title="Could not load recovery cases">{String(error.message || error)}</Alert>}
+      {loading && <Loading label="Loading recovery cases…" />}
       <DataTable
         title="Recovery cases" desc="Newest first."
         rows={recovery} search={(t) => `${t.no} ${t.subject} ${t.recovery?.kind} ${t.recovery?.state}`}

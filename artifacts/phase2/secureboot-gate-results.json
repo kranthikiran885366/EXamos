@@ -1,0 +1,18 @@
+{
+  "phase": "P2-SB",
+  "timestamp": "2026-11-05T06:55:00Z",
+  "started_at": "2026-11-05T06:55:00Z",
+  "checks": {
+    "SB-01_uki_signature_valid":         "see_log",
+    "SB-02_unsigned_binary_rejected":    "see_log",
+    "SB-03_lockdown_in_cmdline":         "see_log",
+    "SB-04_root_hash_in_uki":            "see_log",
+    "SB-05_clean_squashfs_verified":     "see_log",
+    "SB-06_corrupted_squashfs_rejected": "see_log"
+  },
+  "pass": 1,
+  "fail": 0,
+  "blocked": 5,
+  "overall": "BLOCKED",
+  "log": "/mnt/d/SEB BRO/artifacts/phase2/secureboot-gate.log"
+}

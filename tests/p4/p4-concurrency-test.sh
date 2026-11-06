@@ -37,7 +37,7 @@ echo ""
 # -----------------------------------------------------------------------
 # Start server
 # -----------------------------------------------------------------------
-SERVER_BIN="$WORKSPACE/server/examos-server"
+SERVER_BIN="${EXAMOS_P4_SERVER_BIN:-$WORKSPACE/server/examos-server}"
 SERVER_PID=""
 if [ -x "$SERVER_BIN" ]; then
     PROCTOR_TOKEN="$(openssl rand -hex 32)"

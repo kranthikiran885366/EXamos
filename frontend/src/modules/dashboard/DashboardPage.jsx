@@ -7,6 +7,7 @@ import { can, roleLabel, isGlobal } from '../../core/security/rbac';
 import { Page, Card, Stat, StatGrid, Alert, Badge, DataTable, Icon, Progress, SectionTitle, Empty } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
 import * as Api from '../../core/api/services';
+import { useApprovalRequests } from '../../core/services/useApprovalRequests';
 
 const greeting = () => {
   const h = new Date().getHours();
@@ -25,7 +26,7 @@ export default function DashboardPage() {
   const sessions = useCol('sessions');
   const incidents = useCol('incidents');
   const usbs = useCol('usbs');
-  const approvals = useCol('approvals');
+  const approvalState = useApprovalRequests();
   const support = useCol('support');
   const releases = useCol('releases', false);
   const invoices = useCol('invoices');
@@ -104,7 +105,7 @@ export default function DashboardPage() {
   const live = exams.filter((e) => e.status === 'live');
   const upcoming = exams.filter((e) => e.status === 'published').sort((a, b) => a.startAt - b.startAt).slice(0, 5);
   const openInc = incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status));
-  const pending = approvals.filter((a) => a.status === 'pending');
+  const pending = approvalState.requests.filter((a) => a.status === 'pending_review');
   const openTickets = support.filter((s) => ['new', 'assigned', 'waiting', 'in-progress', 'reopened'].includes(s.status));
 
   // Device posture is authoritative only when the live fleet API responds.
@@ -154,6 +155,7 @@ export default function DashboardPage() {
     >
       {/* Live Production Telemetry Banner */}
       {telemetryError && <Alert tone="danger" title="Live dashboard data unavailable">{telemetryError} Retry after confirming the backend session and dependency health.</Alert>}
+      {approvalState.error && <Alert tone="danger" title="Approval data unavailable">{approvalState.error.message || 'Approval requests could not be loaded from the backend.'}</Alert>}
       <div
         style={{
           background: '#ffffff',

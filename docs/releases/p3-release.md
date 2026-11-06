@@ -49,6 +49,10 @@ These values are **test constants**, not from a real measured boot. See `artifac
 
 ## Known Limitations
 
+- The Admin Releases UI can persist a release draft and server-computed manifest digest, but no trusted signing service currently verifies or signs that manifest. Drafts cannot be approved or offered to devices.
+- The entered package list is not a complete SBOM, and the backend has no configured vulnerability feed or scan worker; CVE status is therefore unknown, not clean.
+- Validation evidence submitted through the UI is stored with a digest, but user-submitted records are not automated test results and do not satisfy release validation gates.
+- Deployment groups are persisted as plans only. Device assignments, rollout dispatch, pause/resume, and authenticated device-agent telemetry are not implemented; no rollout progress is reported.
 - The release has not been validated on an enrolled physical TPM or trusted EK manufacturer chain
 - The checked-in device and release registries are development-only and cannot authorize production devices
 - A physical TPM enrollment request is not trusted until EK-chain validation, MakeCredential/ActivateCredential, and signed registry approval complete

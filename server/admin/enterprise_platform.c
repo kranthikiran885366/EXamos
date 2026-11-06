@@ -1038,8 +1038,9 @@ int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
     enterprise_exam_t exam;
     if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
 
-    /* Configuration must be VALIDATED prior to APPROVAL */
-    if (exam.state != EXAM_STATE_VALIDATED && exam.state != EXAM_STATE_DRAFT) return -1;
+    if (exam.state != EXAM_STATE_VALIDATED) return -1;
+    if (exam.owner_user_id[0] &&
+        strcmp(exam.owner_user_id, approver_user_id) == 0) return -1;
 
     char sig[65];
     /*

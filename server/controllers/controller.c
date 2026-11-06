@@ -6,6 +6,8 @@
 #include "controller.h"
 #include "../include/candidate_login.h"
 #include <stdlib.h>
+#include <stdint.h>
+#include <ctype.h>
 #include <time.h>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -27,6 +29,7 @@ static const char *status_text(int code) {
         case 415: return "Unsupported Media Type";
         case 429: return "Too Many Requests";
         case 500: return "Internal Server Error";
+        case 501: return "Not Implemented";
         case 503: return "Service Unavailable";
         default: return "Internal Server Error";
     }
@@ -101,26 +104,108 @@ int ctrl_extract_bearer(const char *auth_header, char *out, size_t out_len) {
     return 0;
 }
 
+static int json_hex4(const char **cursor, uint32_t *value) {
+    uint32_t result = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)(*cursor)[i];
+        unsigned int digit;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else return 0;
+        result = (result << 4) | digit;
+    }
+    *cursor += 4;
+    *value = result;
+    return 1;
+}
+
+static int json_append_codepoint(char *out, size_t out_len, size_t *pos, uint32_t cp) {
+    unsigned char encoded[4];
+    size_t count;
+    if (cp == 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return 0;
+    if (cp <= 0x7f) {
+        encoded[0] = (unsigned char)cp;
+        count = 1;
+    } else if (cp <= 0x7ff) {
+        encoded[0] = (unsigned char)(0xc0 | (cp >> 6));
+        encoded[1] = (unsigned char)(0x80 | (cp & 0x3f));
+        count = 2;
+    } else if (cp <= 0xffff) {
+        encoded[0] = (unsigned char)(0xe0 | (cp >> 12));
+        encoded[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        encoded[2] = (unsigned char)(0x80 | (cp & 0x3f));
+        count = 3;
+    } else {
+        encoded[0] = (unsigned char)(0xf0 | (cp >> 18));
+        encoded[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+        encoded[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        encoded[3] = (unsigned char)(0x80 | (cp & 0x3f));
+        count = 4;
+    }
+    if (*pos + count >= out_len) return 0;
+    memcpy(out + *pos, encoded, count);
+    *pos += count;
+    return 1;
+}
+
 int ctrl_json_string(const char *body, const char *key, char *out, size_t out_len) {
     if (!body || !key || !out || out_len == 0) return 0;
     out[0] = '\0';
-    /* Search for "key":"value" or "key": "value" */
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
     const char *p = strstr(body, search);
     if (!p) return 0;
     p += strlen(search);
-    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    while (isspace((unsigned char)*p)) p++;
+    if (*p != ':') return 0;
+    p++;
+    while (isspace((unsigned char)*p)) p++;
     if (*p != '"') return 0;
     p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < out_len) {
-        if (*p == '\\' && p[1]) { p++; out[i++] = *p; }
-        else out[i++] = *p;
-        p++;
+    size_t pos = 0;
+    while (*p && *p != '"') {
+        unsigned char c = (unsigned char)*p++;
+        if (c < 0x20) {
+            out[0] = '\0';
+            return 0;
+        }
+        if (c == '\\') {
+            uint32_t cp;
+            switch (*p++) {
+                case '"': c = '"'; break;
+                case '\\': c = '\\'; break;
+                case '/': c = '/'; break;
+                case 'b': c = '\b'; break;
+                case 'f': c = '\f'; break;
+                case 'n': c = '\n'; break;
+                case 'r': c = '\r'; break;
+                case 't': c = '\t'; break;
+                case 'u':
+                    if (!json_hex4(&p, &cp)) { out[0] = '\0'; return 0; }
+                    if (cp >= 0xd800 && cp <= 0xdbff) {
+                        uint32_t low;
+                        if (p[0] != '\\' || p[1] != 'u') { out[0] = '\0'; return 0; }
+                        p += 2;
+                        if (!json_hex4(&p, &low) || low < 0xdc00 || low > 0xdfff) {
+                            out[0] = '\0';
+                            return 0;
+                        }
+                        cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+                    }
+                    if (!json_append_codepoint(out, out_len, &pos, cp)) { out[0] = '\0'; return 0; }
+                    continue;
+                default:
+                    out[0] = '\0';
+                    return 0;
+            }
+        }
+        if (pos + 1 >= out_len) { out[0] = '\0'; return 0; }
+        out[pos++] = (char)c;
     }
-    out[i] = '\0';
-    return i > 0;
+    if (*p != '"') { out[0] = '\0'; return 0; }
+    out[pos] = '\0';
+    return 1;
 }
 
 int ctrl_json_int(const char *body, const char *key, int *out) {

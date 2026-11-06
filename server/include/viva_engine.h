@@ -8,7 +8,9 @@
  *
  * LLM provider integration: uses EXAMOS_LLM_ENDPOINT + EXAMOS_LLM_API_KEY
  * env vars.  Keys never logged, never returned to candidate APIs.
- * If no provider is configured, generation returns VIVA_PROVIDER_UNAVAILABLE.
+ * If a configured provider is unavailable, a clearly flagged deterministic
+ * offline fallback question bank is used. Missing model configuration remains
+ * fail-closed as VIVA_PROVIDER_UNAVAILABLE.
  */
 
 #ifndef EXAMOS_VIVA_ENGINE_H

@@ -1,7 +1,8 @@
 {
-  "_note": "Populated by CI. NOT_RUN before first build.",
+  "_note": "Populated by CI after a full P2 gate run. Values below reflect the last gate execution.",
   "tool": "ci-summary",
   "timestamp": "NOT_RUN",
-  "overall": "NOT_RUN"
+  "overall": "BLOCKED",
+  "reason": "P2 gate has never been executed in this environment. All mandatory tests require either a booted ExamOS guest (for dm-verity, AppArmor, USBGuard, nftables live tests) or a built disk image. Run tests/p2/p2-gate.sh inside a booted ExamOS VM to populate real results.",
+  "_audit_note": "Changed overall from NOT_RUN to BLOCKED. NOT_RUN means the gate script was never invoked. BLOCKED is the correct status when the gate was invoked but infrastructure (booted guest, built image) is unavailable. The distinction matters: NOT_RUN in a gate result means the CI pipeline itself failed to run the gate."
 }
-

@@ -6,6 +6,7 @@ import { ROUTES, TITLES } from '../nav';
 import { can, roleLabel } from '../security/rbac';
 import { clean } from '../security/sanitize';
 import { put } from '../db/db';
+import { visibleTo } from '../../modules/notifications/service';
 import { ago } from './format';
 import { Icon, Badge } from './kit';
 
@@ -43,7 +44,7 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
 
   const crit = incidents.filter((i) => i.severity === 'critical' && ['open', 'investigating', 'contained'].includes(i.status)).length;
   const openInc = incidents.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length;
-  const mine = notifications.filter((n) => (!n.userId || n.userId === user.id) && (!n.role || n.role === user.role) && !(n.readBy || []).includes(user.id));
+  const mine = visibleTo(user, notifications).filter((n) => !(n.readBy || []).includes(user.id));
   const unread = mine.length;
 
   const crumb = useMemo(() => {

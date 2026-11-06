@@ -1,11 +1,15 @@
 {
+  "schema": "examos.p5.results.v1",
   "phase": "P5",
   "timestamp": "2026-10-15T18:19:05Z",
+  "source_commit": "UNBOUND",
+  "source_tree_state": "DIRTY",
   "gate_results": {
-    "behaviour_engine": "PASS",
-    "variant_engine": "PASS",
+    "behaviour_engine": "BLOCKED",
+    "variant_engine": "BLOCKED",
     "viva_engine": "BLOCKED"
   },
   "gate": "BLOCKED",
-  "gate_reason": "P5.3 blocked"
+  "gate_reason": "All three P5 engines are BLOCKED: PostgreSQL is not running in this environment (behaviour and variant tests require it), and the LLM viva provider is unavailable. Previous manifest.json had no source_commit binding and reported behaviour/variant as PASS from a run that used in-memory state without PostgreSQL — those results are not reproducible in the current environment. P5-F/G/H remain blocked on the viva provider. P5-I remains blocked on fresh P0-P4 regression evidence.",
+  "_audit_note": "Root causes: (1) p5-behaviour-test.sh and p5-variant-test.sh now require PostgreSQL (sudo -u postgres pg_isready) — they exit 2 (BLOCKED) when it is unavailable. (2) p5-viva-test.sh correctly returns BLOCKED when no server-held submitted exam exists and when the LLM provider is unavailable. (3) Previous variant-results.json said BLOCKED but the test logic actually passes when PostgreSQL is available — the BLOCKED was from a missing PostgreSQL service, not a code defect."
 }

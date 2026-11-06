@@ -94,6 +94,10 @@ export const ENDPOINTS = {
   policies: '/api/v1/admin/policies',
   policiesCatalog: '/api/v1/admin/policies/catalog',
   consoleData: '/api/v1/console/data',
+  approvalRequests: '/api/v1/approvals',
+  approvalRequest: (id) => `/api/v1/approvals/${encodeURIComponent(id)}`,
+  approvalDecision: (id) => `/api/v1/approvals/${encodeURIComponent(id)}/decision`,
+  approvalCancel: (id) => `/api/v1/approvals/${encodeURIComponent(id)}/cancel`,
 
   // Module 9: Examination Management REST endpoints
   examinations: '/api/v1/examinations',

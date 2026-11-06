@@ -552,7 +552,8 @@ export async function postponeExam(a, ex, startAt, reason) {
 
 export async function configureExamPolicy(a, ex, config, publish = false, reason = '') {
   need(a, 'exam.policy'); assertScope(a, ex.tenantId);
-  const { createPolicy, publishPolicy, validateConfig } = await import('../policies/service');
+  const publicationReason = publish ? requireReason(reason, 8) : '';
+  const { createPolicy, requestPolicyPublication, validateConfig } = await import('../policies/service');
   const rules = (await all('rules')).filter((r) => r.tenantId === ex.tenantId);
   const normalized = {
     requireTpm: !!config.requireTpm, kioskLockdown: !!config.kioskLockdown, allowUsb: !!config.allowUsb,
@@ -569,10 +570,10 @@ export async function configureExamPolicy(a, ex, config, publish = false, reason
     await put('exams', next); await log(a, 'EXAM_POLICY_DRAFTED', `${ex.code} ${name} v${draft.version}`);
     return draft;
   }
-  const pub = await publishPolicy(a, draft.id);
-  const next = { ...ex, policyId: pub.id, updatedAt: Date.now(), history: [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, note: `Exam policy v${pub.version} published`, reason: clean(reason, 200) }] };
-  await put('exams', next); await log(a, 'EXAM_POLICY_PUBLISHED', `${ex.code} ${name} v${pub.version}`);
-  return pub;
+  const request = await requestPolicyPublication(a, draft.id, publicationReason);
+  const next = { ...ex, draftPolicyId: draft.id, policyApprovalRequestId: request.id, updatedAt: Date.now(), history: [...(ex.history || []), { at: Date.now(), by: a.id, to: ex.status, note: `Exam policy v${draft.version} publication requested`, reason: clean(reason, 200) }] };
+  await put('exams', next); await log(a, 'EXAM_POLICY_PUBLICATION_REQUESTED', `${ex.code} ${name} v${draft.version}: ${request.id}`);
+  return { ...draft, status: 'pending_approval', approvalRequestId: request.id };
 }
 
 export async function policyPreview(ex, draft) {

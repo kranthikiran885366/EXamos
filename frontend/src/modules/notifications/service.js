@@ -91,7 +91,9 @@ export async function remove(a, n) {
 }
 
 export function visibleTo(user, list) {
-  return list.filter((n) => !n.deleted && (!n.tenantId || !user.tenantId || n.tenantId === user.tenantId || ['superadmin', 'auditor', 'release_engineer'].includes(user.role))
+  const globalRoles = ['superadmin', 'auditor', 'release_engineer'];
+  return list.filter((n) => !n.deleted &&
+    (!n.tenantId || n.tenantId === user.tenantId || globalRoles.includes(user.role))
     && (!n.userId || n.userId === user.id) && (!n.role || n.role === user.role) && !(n.archivedBy || []).includes(user.id)
     && (!n.scheduledAt || n.scheduledAt <= Date.now() || n.status !== 'scheduled'));
 }

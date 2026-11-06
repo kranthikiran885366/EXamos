@@ -2,4 +2,8 @@
 [NETWORK-CHECK] PASS: Firewall implements strict default-deny (policy drop)
 [NETWORK-CHECK] PASS: HTTPS port 443 outbound allowed for exam server
 [NETWORK-CHECK] PASS: DNS resolution (UDP 53) allowed
+[NETWORK-CHECK] PASS: No broad inbound accept rules found
+[NETWORK-CHECK] PASS: No IPv6 accept rules in nftables
+[NETWORK-CHECK] PASS: Admin port 8000 not exposed externally in nftables
+[NETWORK-CHECK] PASS: nftables has 6 policy drop chains
 [P1-NETWORK] PASS: Firewall and network security definitions verified

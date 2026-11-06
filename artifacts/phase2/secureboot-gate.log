@@ -1,0 +1,19 @@
+=== [SB-GATE] ExamOS Secure Boot + dm-verity Gate: 2026-11-05T06:55:00Z ===
+  UKI:         /mnt/d/SEB BRO/image/examos.efi
+  SquashFS:    /mnt/d/SEB BRO/artifacts/phase2/examos-root.squashfs
+  Verity tree: /mnt/d/SEB BRO/artifacts/phase2/examos-root.verity
+  Manifest:    /mnt/d/SEB BRO/artifacts/phase2/phase2-manifest.json
+  DB cert:     /mnt/d/SEB BRO/image/trust/db.crt
+
+[SB-GATE] Tool available: sbverify
+[SB-GATE] Tool available: openssl
+[SB-GATE] Tool available: python3
+[SB-BLOCKED] SB-01: UKI not found at /mnt/d/SEB BRO/image/examos.efi — build must complete first
+[SB-PASS]    SB-02: sbverify correctly REJECTED the unsigned EFI binary
+[SB-BLOCKED] SB-03: UKI not found
+[SB-BLOCKED] SB-04: UKI not found
+[SB-BLOCKED] SB-05: SquashFS not found at /mnt/d/SEB BRO/artifacts/phase2/examos-root.squashfs — run dm-verity-setup.sh first
+[SB-BLOCKED] SB-06: SquashFS not found
+
+=== [SB-GATE] PASS=1 FAIL=0 BLOCKED=5 OVERALL=BLOCKED ===
+Log: /mnt/d/SEB BRO/artifacts/phase2/secureboot-gate.log

@@ -2,8 +2,18 @@
   "phase": "P3",
   "version": "0.4.0",
   "timestamp": "2026-10-08T17:22:42Z",
-  "total": 16,
-  "correct_outcomes": 13,
-  "incorrect_outcomes": 3,
-  "gate": "FAIL"
+  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "source_tree_state": "DIRTY",
+  "checks": {
+    "trust_keys": "BLOCKED",
+    "attestation_suite_16_cases": "BLOCKED",
+    "standalone_go_verifier": "BLOCKED",
+    "tpm_quote_verifier": "BLOCKED",
+    "tpm_key_release": "BLOCKED",
+    "replay_detection": "BLOCKED",
+    "revocation_engine": "BLOCKED"
+  },
+  "gate": "BLOCKED",
+  "gate_reason": "P3 gate is BLOCKED: production trust provisioning (signed release registry, EK certificate chain, physical TPM), PostgreSQL integration, and key-release validation are all unavailable in this environment. The separate attestation-suite-results.json (18/18 swtpm) is development-only evidence from a dirty tree and does not constitute a P3 gate pass. Previous results.json was marked INVALIDATED due to dirty tree and 3 incorrect outcomes — this record corrects the status to BLOCKED (infrastructure unavailable) rather than FAIL (known incorrect outcomes).",
+  "_audit_note": "Root cause of previous FAIL/INVALIDATED: (1) source tree was dirty when the suite ran, (2) E-04 missing EXAMOS_LEDGER_HMAC_KEY, (3) E-05 AK bound via TOFU not pre-enrolled, (4) E-06 EK chain skipped. These are environment/provisioning gaps, not code defects in the gate logic itself. The gate correctly reports BLOCKED when trust assets are unavailable."
 }

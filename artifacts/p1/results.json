@@ -2,14 +2,18 @@
   "phase": "P1",
   "version": "0.2.0",
   "timestamp": "2026-10-08T16:26:14Z",
-  "status": "PASS",
+  "source_commit": "UNBOUND",
+  "source_tree_state_at_start": "DIRTY",
+  "status": "FAIL",
   "checks": {
+    "source_validation": "PASS",
     "kiosk": "PASS",
     "network": "PASS",
-    "admin_dashboard": "PASS",
-    "candidate_login": "PASS",
-    "sysusers_exam": "PASS"
+    "boot": "BLOCKED",
+    "performance": "BLOCKED",
+    "chromium_policy": "PASS"
   },
-  "gate": "PASS",
-  "gate_reason": "All mandatory P1 checks passed."
+  "gate": "FAIL",
+  "gate_reason": "boot check BLOCKED (no built disk image at image/examos.raw — run 'cd image && sudo mkosi build' first); performance BLOCKED (requires boot-result.json from a successful boot). Static checks (source_validation, kiosk, network, chromium_policy) all PASS. Gate is FAIL because BLOCKED counts as FAIL per gate rules when the infrastructure to run the check is absent.",
+  "_audit_note": "Root causes: (1) P1 image was never built in this environment — tests/p1/boot.sh looks for image/examos.raw which does not exist. (2) Previous artifact claimed PASS with artifact_exists=FAIL and guest_boot=FAIL — contradictory. (3) Chromium policy defect (loopback admin in VideoCaptureAllowedUrls) is now fixed. (4) EXAM_URL is now set to staging URL. Re-run tests/p1/gate.sh after building the image."
 }

@@ -3,7 +3,7 @@
 # ExamOS F2 — Chromium Managed Policy Generator
 #
 # Reads /etc/examos/exam.conf, validates EXAM_URL, and generates a Chromium
-# managed-policy JSON file allowing only the configured origin plus loopback.
+# managed-policy JSON file allowing only the configured origin.
 #
 # The policy file is written atomically to both Chromium and Chrome policy
 # paths so the kiosk cannot launch with a stale or hardcoded domain.

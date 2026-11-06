@@ -15,7 +15,7 @@ import {
   SEVERITIES, EVENT_TYPES, VULN_STATUSES, EVIDENCE_KINDS, EVIDENCE_CLASS,
   securityOverview, bootIntegrity, evidenceStats, vulnStats,
 } from './service';
-import { createPolicy, publishPolicy, discardDraft, requestRollback, ACTIONS } from '../policies/service';
+import { createPolicy, requestPolicyPublication, discardDraft, requestRollback, ACTIONS } from '../policies/service';
 import { raise, move, addNote, assign, falsePositive, promote, FLOW } from '../incidents/service';
 
 const NEXT_LABEL = { investigating: 'Start investigating', contained: 'Contain', resolved: 'Resolve', closed: 'Close', open: 'Reopen' };
@@ -276,8 +276,8 @@ export function SecurityPoliciesPage() {
         </Modal>
       )}
       {act?.type === 'publish' && (
-        <ActionDialog title="Publish policy" desc={`${act.row.name} v${act.row.version} becomes the live policy.`} confirmLabel="Publish" password requireReason={false}
-          onClose={() => setAct(null)} onConfirm={() => flash.run(async () => { const p = await publishPolicy(user, act.row.id); return `Published v${p.version}.`; })} />
+        <ActionDialog title="Request policy publication" desc={`${act.row.name} v${act.row.version} will remain a draft until a separate execution integration is available.`} confirmLabel="Request approval" password requireReason
+          onClose={() => setAct(null)} onConfirm={(reason) => flash.run(async () => { const request = await requestPolicyPublication(user, act.row.id, reason); return `Approval requested (${request.id}). The policy remains a draft.`; })} />
       )}
       {act?.type === 'discard' && (
         <ActionDialog title="Discard draft" desc={`${act.row.name} v${act.row.version}`} danger confirmLabel="Discard" requireReason={false}

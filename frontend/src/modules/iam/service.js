@@ -3,8 +3,9 @@
 // Every user-management operation is executed against the real ExamOS C server.
 // No credentials, password hashes, TOTP secrets, or user records are stored
 // locally in IndexedDB, sessionStorage, or localStorage.
-import { ROLES } from '../../core/security/rbac';
+import { BACKEND_ADMIN_ROLES, ROLES } from '../../core/security/rbac';
 import { need, fail } from '../../core/services/common';
+import { create as requestApproval } from '../../core/services/approvals';
 import * as Api from '../../core/api/services';
 
 export const pwIssues = (p) => {
@@ -25,7 +26,7 @@ export async function createUser(a, { username, name, role, password, email = ''
     fail('Username: 3–32 characters, start with a letter; letters, digits . _ - only.');
   if (!name || String(name).trim().length < 2)
     fail('Enter the full name.');
-  if (!Object.hasOwn(ROLES, role))
+  if (!BACKEND_ADMIN_ROLES.includes(role))
     fail('Pick a valid role.');
   if (role === 'superadmin' && a.role !== 'superadmin')
     fail('Only a super admin can create a super admin.');
@@ -53,9 +54,24 @@ export async function setUserStatus(a, userId, status, reason) {
 // Change user role on the backend.
 export async function setUserRole(a, userId, role, reason) {
   need(a, 'user.manage');
-  if (!Object.hasOwn(ROLES, role)) fail('Pick a valid role.');
+  if (!BACKEND_ADMIN_ROLES.includes(role)) fail('Pick a backend-supported administrative role.');
   if (role === 'superadmin' && a.role !== 'superadmin')
     fail('Only a super admin can grant super admin.');
+  if (ROLES[role].rank >= 60 && a.role !== 'superadmin') {
+    if (ROLES[role].rank >= (ROLES[a.role]?.rank ?? 0))
+      fail('You cannot grant a role at or above your own privilege.');
+    const why = String(reason || '').trim();
+    if (why.length < 8) fail('Provide a reason of at least 8 characters.');
+    const request = await requestApproval(a, {
+      kind: 'role-change',
+      label: `${userId} → ${role}`,
+      targetId: userId,
+      tenantId: a.tenantId,
+      reason: why,
+      data: { role },
+    });
+    return `Approval requested (${request.id}). A platform super admin must approve it.`;
+  }
   if (typeof Api.setUserRole !== 'function')
     fail('setUserRole is not available on the backend service.');
   return Api.setUserRole(userId, role, reason);

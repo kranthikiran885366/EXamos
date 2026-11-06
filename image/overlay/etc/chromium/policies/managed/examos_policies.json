@@ -1,17 +1,18 @@
 {
+  "_note": "This policy is a TEMPLATE. The URLAllowlist, VideoCaptureAllowedUrls, and AudioCaptureAllowedUrls fields MUST be regenerated at deployment time by image/scripts/generate-chromium-policy.sh using the provisioned EXAM_URL from /etc/examos/exam.conf. The loopback admin origin (127.0.0.1:8000) must NEVER appear in these lists — it is the server admin port, not an exam origin. A static policy file here is a placeholder only; the gate tests/p1/kiosk.sh and tests/p4/p4-gate.sh will reject a policy that does not match the provisioned EXAM_URL.",
+  "_status": "PLACEHOLDER — regenerate with generate-chromium-policy.sh before deployment",
   "URLAllowlist": [
-    "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
   "URLBlocklist": ["*"],
   "VideoCaptureAllowedUrls": [
-    "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
   "AudioCaptureAllowedUrls": [
-    "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
+  "VideoCaptureAllowed": false,
+  "AudioCaptureAllowed": false,
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
   "AutofillAddressEnabled": false,

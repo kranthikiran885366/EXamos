@@ -16,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 static void os_audit_log(const char *actor, const char *event, const char *detail) {
@@ -33,6 +34,89 @@ static void os_send_error(int fd, int code, const char *msg,
     char buf[1024];
     snprintf(buf, sizeof(buf), "{\"error\":\"%.512s\"}", msg ? msg : "Unknown error");
     os_send_json(fd, code, buf, origin, extra, extra_len);
+}
+
+static void os_json_escape(const char *input, char *output, size_t output_len) {
+    size_t pos = 0;
+    if (!input || !output || output_len == 0) return;
+    for (size_t i = 0; input[i] && pos + 2 < output_len; i++) {
+        unsigned char c = (unsigned char)input[i];
+        if (c == '"' || c == '\\') {
+            output[pos++] = '\\';
+            output[pos++] = (char)c;
+        } else if (c == '\n' || c == '\r' || c == '\t') {
+            output[pos++] = '\\';
+            output[pos++] = c == '\n' ? 'n' : c == '\r' ? 'r' : 't';
+        } else if (c >= 32) {
+            output[pos++] = (char)c;
+        }
+    }
+    output[pos] = '\0';
+}
+
+static void os_sha256_hex(const unsigned char *data, size_t data_len, char *output) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(data, data_len, digest);
+    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        snprintf(output + i * 2, 3, "%02x", digest[i]);
+    }
+}
+
+static int os_evidence_digest(const char *test_type, const char *title,
+                              const char *classification, const char *details,
+                              const char *link, char *output, size_t output_len) {
+    const char *fields[] = { test_type, title, classification, details, link };
+    if (!output || output_len < SHA256_DIGEST_LENGTH * 2 + 8) return -1;
+    output[0] = '\0';
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return -1;
+    int ok = EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1;
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        if (!ok) break;
+        size_t field_len = strlen(fields[i]);
+        char length[32];
+        int length_len = snprintf(length, sizeof(length), "%zu:", field_len);
+        ok = length_len > 0 && (size_t)length_len < sizeof(length) &&
+             EVP_DigestUpdate(ctx, length, (size_t)length_len) == 1 &&
+             EVP_DigestUpdate(ctx, fields[i], field_len) == 1;
+    }
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    if (!ok || EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1 ||
+        digest_len != SHA256_DIGEST_LENGTH) {
+        EVP_MD_CTX_free(ctx);
+        return -1;
+    }
+    EVP_MD_CTX_free(ctx);
+
+    memcpy(output, "sha256:", 7);
+    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        snprintf(output + 7 + i * 2, output_len - 7 - i * 2, "%02x", digest[i]);
+    }
+    return 0;
+}
+
+static void os_rollback_transaction(PGconn *conn) {
+    PGresult *result = PQexec(conn, "ROLLBACK");
+    if (result) PQclear(result);
+}
+
+static int os_valid_evidence_kind(const char *value) {
+    static const char *allowed[] = {
+        "test-plan", "test-report", "security-review", "sbom", "signature",
+        "rollback-plan", "performance", "accessibility", "other",
+        "boot_integrity", "tpm_attestation", "data_preservation_windows", "network_boot"
+    };
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        if (strcmp(value, allowed[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static int os_valid_evidence_classification(const char *value) {
+    return strcmp(value, "internal") == 0 || strcmp(value, "confidential") == 0 ||
+           strcmp(value, "restricted") == 0 || strcmp(value, "auditor-only") == 0;
 }
 
 /* Helper to compare semver-like strings (e.g., "2.0.0" vs "1.0.0") */
@@ -79,30 +163,24 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char rel_id[64] = {0}, version[64] = {0}, commit_id[64] = {0}, manifest_sig[4096] = {0};
+        char rel_id[64] = {0}, version[64] = {0}, commit_id[64] = {0};
+        char manifest_json[16384] = {0};
         char build_cfg[256] = "mkosi-debian-secure-uefi", toolchain[64] = "Debian 12 / mkosi 14.1";
         char kernel_v[64] = "6.6.0-examos", min_v[64] = "1.0.0", pol_v[64] = "1.0";
-        char signing_key_id[64] = "examos-prod-signing-key-v2";
 
         ctrl_json_string(body, "release_id", rel_id, sizeof(rel_id));
         ctrl_json_string(body, "version", version, sizeof(version));
+        ctrl_json_string(body, "manifest_json", manifest_json, sizeof(manifest_json));
         ctrl_json_string(body, "source_commit", commit_id, sizeof(commit_id));
         ctrl_json_string(body, "build_config", build_cfg, sizeof(build_cfg));
         ctrl_json_string(body, "toolchain_version", toolchain, sizeof(toolchain));
         ctrl_json_string(body, "kernel_version", kernel_v, sizeof(kernel_v));
         ctrl_json_string(body, "minimum_supported_version", min_v, sizeof(min_v));
         ctrl_json_string(body, "policy_version", pol_v, sizeof(pol_v));
-        ctrl_json_string(body, "signing_key_id", signing_key_id, sizeof(signing_key_id));
-        ctrl_json_string(body, "signature", manifest_sig, sizeof(manifest_sig));
 
-        if (!version[0]) {
+        if (!version[0] || !manifest_json[0]) {
             db_release(conn, 0);
-            os_send_error(client_fd, 400, "Release version is required", origin, extra_headers, extra_len);
-            return;
-        }
-        if (!manifest_sig[0]) {
-            db_release(conn, 0);
-            os_send_error(client_fd, 400, "A release manifest signature is required",
+            os_send_error(client_fd, 400, "Release version and manifest JSON are required",
                           origin, extra_headers, extra_len);
             return;
         }
@@ -115,76 +193,129 @@ void os_release_handle(int client_fd, const char *method, const char *path,
 
         const char *creator = sess.username[0] ? sess.username : "system";
 
-        const char *p[10] = {
+        char digest_value[80] = {0};
+
+        const char *p[11] = {
             pk_id, rel_id, version, commit_id, build_cfg, toolchain,
-            kernel_v, min_v, pol_v, creator
+            kernel_v, min_v, pol_v, creator, digest_value
         };
-        int l[10];
-        for (int i = 0; i < 10; i++) l[i] = p[i] ? (int)strlen(p[i]) : 0;
+        int l[11];
+        for (int i = 0; i < 11; i++) l[i] = p[i] ? (int)strlen(p[i]) : 0;
+
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Release draft transaction could not start",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
 
         PGresult *ins_r = db_simple(conn,
             "INSERT INTO os_releases (id, release_id, version, source_commit, build_config, "
             "toolchain_version, kernel_version, minimum_supported_version, policy_version, "
-            "status, signing_key_id, created_by, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 'examos-prod-signing-key-v2', $10, "
+            "status, manifest_digest, created_by, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $11, $10, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-            "ON CONFLICT (release_id) DO NOTHING", 10, p, l);
+            "ON CONFLICT (release_id) DO NOTHING", 11, p, l);
 
-        if (!ins_r || PQresultStatus(ins_r) != PGRES_COMMAND_OK) {
+        if (!ins_r || PQresultStatus(ins_r) != PGRES_COMMAND_OK ||
+            strcmp(PQcmdTuples(ins_r), "0") == 0) {
             if (ins_r) PQclear(ins_r);
+            os_rollback_transaction(conn);
             db_release(conn, 0);
             os_send_error(client_fd, 409, "Release ID or version already exists", origin, extra_headers, extra_len);
             return;
         }
         PQclear(ins_r);
 
-        /* Optional Rootfs / UKI Artifact registration if present */
-        char rootfs_hash[128] = {0}, uki_hash[128] = {0};
-        ctrl_json_string(body, "rootfs_hash", rootfs_hash, sizeof(rootfs_hash));
-        ctrl_json_string(body, "uki_hash", uki_hash, sizeof(uki_hash));
-        if (uki_hash[0]) {
-            const char *mp[3] = { uki_hash, manifest_sig, pk_id };
-            int ml[3] = { (int)strlen(uki_hash), (int)strlen(manifest_sig), (int)strlen(pk_id) };
-            PGresult *mr = db_simple(conn,
-                "UPDATE os_releases SET manifest_digest = $1, manifest_signature = $2 WHERE id = $3", 3, mp, ml);
+        const char *mp[3] = { pk_id, manifest_json, digest_value };
+        int ml[3] = { (int)strlen(pk_id), (int)strlen(manifest_json), (int)strlen(digest_value) };
+        PGresult *mr = db_simple(conn,
+            "INSERT INTO os_release_manifests "
+            "(id, release_id, manifest_json, manifest_digest, signature_algorithm, signature_value, verified, created_at) "
+            "VALUES ($1, $1, $2::jsonb, $3, 'rsa-sha256', NULL, FALSE, "
+            "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 3, mp, ml);
+        if (!mr || PQresultStatus(mr) != PGRES_COMMAND_OK) {
             if (mr) PQclear(mr);
-        } else {
-            const char *mp[2] = { manifest_sig, pk_id };
-            int ml[2] = { (int)strlen(manifest_sig), (int)strlen(pk_id) };
-            PGresult *mr = db_simple(conn,
-                "UPDATE os_releases SET manifest_signature = $1 WHERE id = $2", 2, mp, ml);
-            if (mr) PQclear(mr);
+            os_rollback_transaction(conn);
+            db_release(conn, 0);
+            os_send_error(client_fd, 400, "Release manifest JSON is invalid or could not be stored",
+                          origin, extra_headers, extra_len);
+            return;
         }
+        PQclear(mr);
 
-        if (rootfs_hash[0]) {
-            char art_id[64];
-            snprintf(art_id, sizeof(art_id), "art_%ld_rf", (long)time(NULL));
-            const char *ap[4] = { art_id, pk_id, "rootfs", rootfs_hash };
-            int al[4] = { (int)strlen(art_id), (int)strlen(pk_id), 6, (int)strlen(rootfs_hash) };
-            PGresult *ar = db_simple(conn,
-                "INSERT INTO os_release_artifacts (id, release_id, artifact_name, artifact_type, sha256_digest) "
-                "VALUES ($1, $2, $3, 'image', $4)", 4, ap, al);
-            if (ar) PQclear(ar);
+        const char *manifest_id_params[1] = { pk_id };
+        int manifest_id_lengths[1] = { (int)strlen(pk_id) };
+        PGresult *canonical = db_simple(conn,
+            "SELECT manifest_json::text FROM os_release_manifests WHERE release_id = $1",
+            1, manifest_id_params, manifest_id_lengths);
+        if (!canonical || PQresultStatus(canonical) != PGRES_TUPLES_OK ||
+            PQntuples(canonical) != 1) {
+            if (canonical) PQclear(canonical);
+            os_rollback_transaction(conn);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Persisted release manifest could not be read for digest calculation",
+                          origin, extra_headers, extra_len);
+            return;
         }
-        if (uki_hash[0]) {
-            char art_id[64];
-            snprintf(art_id, sizeof(art_id), "art_%ld_uk", (long)time(NULL));
-            const char *ap[4] = { art_id, pk_id, "uki", uki_hash };
-            int al[4] = { (int)strlen(art_id), (int)strlen(pk_id), 3, (int)strlen(uki_hash) };
-            PGresult *ar = db_simple(conn,
-                "INSERT INTO os_release_artifacts (id, release_id, artifact_name, artifact_type, sha256_digest) "
-                "VALUES ($1, $2, $3, 'binary', $4)", 4, ap, al);
-            if (ar) PQclear(ar);
+        char canonical_digest[SHA256_DIGEST_LENGTH * 2 + 1];
+        os_sha256_hex((const unsigned char *)PQgetvalue(canonical, 0, 0),
+                      (size_t)PQgetlength(canonical, 0, 0), canonical_digest);
+        PQclear(canonical);
+        snprintf(digest_value, sizeof(digest_value), "sha256:%s", canonical_digest);
+        const char *digest_params[2] = { digest_value, pk_id };
+        int digest_lengths[2] = { (int)strlen(digest_value), (int)strlen(pk_id) };
+        PGresult *digest_update = db_simple(conn,
+            "UPDATE os_releases SET manifest_digest = $1 WHERE id = $2",
+            2, digest_params, digest_lengths);
+        if (!digest_update || PQresultStatus(digest_update) != PGRES_COMMAND_OK) {
+            if (digest_update) PQclear(digest_update);
+            os_rollback_transaction(conn);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Release manifest digest could not be persisted",
+                          origin, extra_headers, extra_len);
+            return;
         }
+        PQclear(digest_update);
+        digest_update = db_simple(conn,
+            "UPDATE os_release_manifests SET manifest_digest = $1 WHERE release_id = $2",
+            2, digest_params, digest_lengths);
+        if (!digest_update || PQresultStatus(digest_update) != PGRES_COMMAND_OK) {
+            if (digest_update) PQclear(digest_update);
+            os_rollback_transaction(conn);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Manifest digest record could not be persisted",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(digest_update);
+
+        PGresult *commit = PQexec(conn, "COMMIT");
+        if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+            if (commit) PQclear(commit);
+            os_rollback_transaction(conn);
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Release draft transaction could not commit",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(commit);
 
         os_audit_log(creator, "OS_RELEASE_CREATED", rel_id);
         db_release(conn, 0);
 
-        char resp[512];
+        char resp[768], escaped_rel[128], escaped_version[128], escaped_kernel[128];
+        os_json_escape(rel_id, escaped_rel, sizeof(escaped_rel));
+        os_json_escape(version, escaped_version, sizeof(escaped_version));
+        os_json_escape(kernel_v, escaped_kernel, sizeof(escaped_kernel));
         snprintf(resp, sizeof(resp),
             "{\"status\":\"created\",\"id\":\"%s\",\"release_id\":\"%s\",\"version\":\"%s\","
-            "\"lifecycle_status\":\"draft\",\"kernel_version\":\"%s\"}",
-            pk_id, rel_id, version, kernel_v);
+            "\"lifecycle_status\":\"draft\",\"manifest_digest\":\"%s\",\"manifest_verified\":false,"
+            "\"kernel_version\":\"%s\"}",
+            pk_id, escaped_rel, escaped_version, digest_value, escaped_kernel);
         os_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
         return;
     }
@@ -199,8 +330,10 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             "COALESCE((SELECT MAX(CASE WHEN g.rollout_stage IN ('stable','general') THEN 100 "
             "WHEN g.rollout_stage LIKE 'stage-%' THEN NULLIF(substring(g.rollout_stage FROM 7), '')::int "
             "ELSE 0 END) FROM os_deployment_groups g WHERE g.target_release_id = r.id), 0) "
-            "FROM os_releases r "
-            "ORDER BY created_at DESC");
+            ", COALESCE(r.manifest_digest, ''), COALESCE(m.manifest_json::text, '{}'), "
+            "COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+            "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+            "ORDER BY r.created_at DESC");
 
         if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
             if (res) PQclear(res);
@@ -222,16 +355,29 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         int n = PQntuples(res);
         for (int i = 0; i < n; i++) {
             if (i > 0) pos += snprintf(json + pos, 131072 - pos, ",");
+            char escaped[7][512];
+            for (int j = 0; j < 6; j++) {
+                os_json_escape(PQgetvalue(res, i, j), escaped[j], sizeof(escaped[j]));
+            }
+            os_json_escape(PQgetvalue(res, i, 7), escaped[6], sizeof(escaped[6]));
+            char approved_by[512];
+            os_json_escape(PQgetvalue(res, i, 8), approved_by, sizeof(approved_by));
+            char signature[512];
+            os_json_escape(PQgetvalue(res, i, 15), signature, sizeof(signature));
             pos += snprintf(json + pos, 131072 - pos,
                 "{\"id\":\"%s\",\"release_id\":\"%s\",\"version\":\"%s\",\"kernel_version\":\"%s\","
                 "\"status\":\"%s\",\"minimum_supported_version\":\"%s\",\"rollback_permitted\":%s,"
-                "\"created_by\":\"%s\",\"approved_by\":\"%s\",\"approved_at\":%s,\"created_at\":%s,\"rollout_percentage\":%s}",
-                PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
-                PQgetvalue(res, i, 3), PQgetvalue(res, i, 4), PQgetvalue(res, i, 5),
+                "\"created_by\":\"%s\",\"approved_by\":\"%s\",\"approved_at\":%s,\"created_at\":%s,"
+                "\"rollout_percentage\":%s,\"manifest_digest\":\"%s\",\"manifest\":%s,"
+                "\"manifest_verified\":%s,\"manifest_signature\":\"%s\"}",
+                escaped[0], escaped[1], escaped[2], escaped[3], escaped[4], escaped[5],
                 strcmp(PQgetvalue(res, i, 6), "t") == 0 ? "true" : "false",
-                PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
+                escaped[6], approved_by,
                 PQgetvalue(res, i, 9)[0] ? PQgetvalue(res, i, 9) : "null",
-                PQgetvalue(res, i, 10), PQgetvalue(res, i, 11));
+                PQgetvalue(res, i, 10), PQgetvalue(res, i, 11),
+                PQgetvalue(res, i, 12), PQgetvalue(res, i, 13),
+                strcmp(PQgetvalue(res, i, 14), "t") == 0 ? "true" : "false",
+                signature);
         }
         pos += snprintf(json + pos, 131072 - pos, "]}");
         PQclear(res);
@@ -265,10 +411,12 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         const char *qp[1] = { id_or_rel };
         int ql[1] = { (int)strlen(id_or_rel) };
         PGresult *r_res = db_simple(conn,
-            "SELECT id, release_id, version, kernel_version, status, minimum_supported_version, "
-            "rollback_permitted, created_by, approved_by, approved_at, source_commit, toolchain_version, "
-            "manifest_digest, manifest_signature "
-            "FROM os_releases WHERE id = $1 OR release_id = $1", 1, qp, ql);
+            "SELECT r.id, r.release_id, r.version, r.kernel_version, r.status, r.minimum_supported_version, "
+            "r.rollback_permitted, r.created_by, r.approved_by, r.approved_at, r.source_commit, r.toolchain_version, "
+            "r.manifest_digest, r.manifest_signature, COALESCE(m.manifest_json::text, '{}'), "
+            "COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+            "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+            "WHERE r.id = $1 OR r.release_id = $1", 1, qp, ql);
 
         if (!r_res || PQntuples(r_res) == 0) {
             if (r_res) PQclear(r_res);
@@ -277,7 +425,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64], r_creator[64], r_digest[128], r_sig[4096];
+        char r_pk[64], r_id[64], r_ver[64], r_kern[64], r_stat[32], r_min[64];
+        char r_creator[64], r_digest[128], r_manifest[16384], r_verified[8], r_manifest_sig[4096];
         int r_rollback = 0;
         strncpy(r_pk, PQgetvalue(r_res, 0, 0), sizeof(r_pk) - 1);
         strncpy(r_id, PQgetvalue(r_res, 0, 1), sizeof(r_id) - 1);
@@ -288,7 +437,9 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         r_rollback = (strcmp(PQgetvalue(r_res, 0, 6), "t") == 0);
         strncpy(r_creator, PQgetvalue(r_res, 0, 7), sizeof(r_creator) - 1);
         strncpy(r_digest, PQgetvalue(r_res, 0, 12), sizeof(r_digest) - 1);
-        strncpy(r_sig, PQgetvalue(r_res, 0, 13), sizeof(r_sig) - 1);
+        strncpy(r_manifest, PQgetvalue(r_res, 0, 14), sizeof(r_manifest) - 1);
+        strncpy(r_verified, PQgetvalue(r_res, 0, 15), sizeof(r_verified) - 1);
+        strncpy(r_manifest_sig, PQgetvalue(r_res, 0, 16), sizeof(r_manifest_sig) - 1);
         PQclear(r_res);
 
         /* ---------------- GET /api/v1/os/releases/:id (Details) ---------------- */
@@ -317,18 +468,43 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             const char *test_p[1] = { r_pk };
             int test_l[1] = { (int)strlen(r_pk) };
             PGresult *test_res = db_simple(conn,
-                "SELECT test_type, status, details, executed_at FROM os_release_test_results "
+                "SELECT id, test_type, status, details, executed_at, title, classification, "
+                "evidence_link, evidence_digest, evidence_source FROM os_release_test_results "
                 "WHERE release_id = $1 ORDER BY executed_at DESC", 1, test_p, test_l);
-            char tests_json[8192] = "[";
+            char tests_json[32768] = "[";
             if (test_res) {
                 int n_tests = PQntuples(test_res);
                 for (int i = 0; i < n_tests; i++) {
                     if (i > 0) strncat(tests_json, ",", sizeof(tests_json) - strlen(tests_json) - 1);
-                    char item[512];
+                    char digest[80] = {0};
+                    if (os_evidence_digest(PQgetvalue(test_res, i, 1), PQgetvalue(test_res, i, 5),
+                                           PQgetvalue(test_res, i, 6), PQgetvalue(test_res, i, 3),
+                                           PQgetvalue(test_res, i, 7), digest, sizeof(digest)) != 0) {
+                        PQclear(test_res);
+                        db_release(conn, 0);
+                        os_send_error(client_fd, 500, "Could not verify persisted evidence digest",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    const char *source = PQgetvalue(test_res, i, 9);
+                    int integrity_valid = strcmp(source, "user_submitted") == 0 &&
+                                          strcmp(digest, PQgetvalue(test_res, i, 8)) == 0;
+                    char item[3072], escaped[7][384];
+                    const int escape_columns[] = { 0, 1, 2, 7, 5, 6 };
+                    for (int j = 0; j < 6; j++) {
+                        os_json_escape(PQgetvalue(test_res, i, escape_columns[j]),
+                                       escaped[j], sizeof(escaped[j]));
+                    }
+                    os_json_escape(source, escaped[6], sizeof(escaped[6]));
+                    char evidence_hash[128];
+                    os_json_escape(PQgetvalue(test_res, i, 8), evidence_hash, sizeof(evidence_hash));
                     snprintf(item, sizeof(item),
-                        "{\"test_type\":\"%s\",\"status\":\"%s\",\"details\":\"%s\",\"executed_at\":%s}",
-                        PQgetvalue(test_res, i, 0), PQgetvalue(test_res, i, 1),
-                        PQgetvalue(test_res, i, 2), PQgetvalue(test_res, i, 3));
+                        "{\"id\":\"%s\",\"test_type\":\"%s\",\"status\":\"%s\",\"title\":\"%s\","
+                        "\"classification\":\"%s\",\"link\":\"%s\",\"evidence_digest\":\"%s\","
+                        "\"evidence_source\":\"%s\",\"integrity_valid\":%s,\"executed_at\":%s}",
+                        escaped[0], escaped[1], escaped[2], escaped[4], escaped[5], escaped[3],
+                        evidence_hash, escaped[6], integrity_valid ? "true" : "false",
+                        PQgetvalue(test_res, i, 4));
                     strncat(tests_json, item, sizeof(tests_json) - strlen(tests_json) - 1);
                 }
                 PQclear(test_res);
@@ -336,101 +512,113 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             strncat(tests_json, "]", sizeof(tests_json) - strlen(tests_json) - 1);
 
             db_release(conn, 0);
-            char resp[4096];
+            char escaped_id[128], escaped_release_id[128], escaped_version[128], escaped_kernel[128];
+            char escaped_status[64], escaped_min[128], escaped_creator[128], escaped_digest[160];
+            char escaped_signature[8192];
+            os_json_escape(r_pk, escaped_id, sizeof(escaped_id));
+            os_json_escape(r_id, escaped_release_id, sizeof(escaped_release_id));
+            os_json_escape(r_ver, escaped_version, sizeof(escaped_version));
+            os_json_escape(r_kern, escaped_kernel, sizeof(escaped_kernel));
+            os_json_escape(r_stat, escaped_status, sizeof(escaped_status));
+            os_json_escape(r_min, escaped_min, sizeof(escaped_min));
+            os_json_escape(r_creator, escaped_creator, sizeof(escaped_creator));
+            os_json_escape(r_digest, escaped_digest, sizeof(escaped_digest));
+            os_json_escape(r_manifest_sig, escaped_signature, sizeof(escaped_signature));
+            char resp[49152];
             snprintf(resp, sizeof(resp),
                 "{\"release\":{\"id\":\"%s\",\"release_id\":\"%s\",\"version\":\"%s\",\"kernel_version\":\"%s\","
                 "\"status\":\"%s\",\"minimum_supported_version\":\"%s\",\"rollback_permitted\":%s,"
-                "\"created_by\":\"%s\",\"manifest_digest\":\"%s\",\"artifacts\":%s,\"tests\":%s}}",
-                r_pk, r_id, r_ver, r_kern, r_stat, r_min, r_rollback ? "true" : "false",
-                r_creator, r_digest, art_json, tests_json);
+                "\"created_by\":\"%s\",\"manifest_digest\":\"%s\",\"manifest\":%s,"
+                "\"manifest_verified\":%s,\"manifest_signature\":\"%s\","
+                "\"artifacts\":%s,\"tests\":%s}}",
+                escaped_id, escaped_release_id, escaped_version, escaped_kernel, escaped_status,
+                escaped_min, r_rollback ? "true" : "false", escaped_creator, escaped_digest,
+                r_manifest, strcmp(r_verified, "t") == 0 ? "true" : "false",
+                escaped_signature, art_json, tests_json);
             os_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
 
         /* ---------------- POST /api/v1/os/releases/:id/validate (Validation Results) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/validate") == 0) {
-            char test_type[64] = "boot_integrity", test_stat[32] = "passed", details[256] = "All automated checks passed";
+            char test_type[64] = {0}, title[121] = {0}, classification[33] = "internal";
+            char details[4097] = {0}, link[301] = {0}, digest[80] = {0};
             ctrl_json_string(body, "test_type", test_type, sizeof(test_type));
-            ctrl_json_string(body, "status", test_stat, sizeof(test_stat));
             ctrl_json_string(body, "details", details, sizeof(details));
+            ctrl_json_string(body, "title", title, sizeof(title));
+            ctrl_json_string(body, "classification", classification, sizeof(classification));
+            ctrl_json_string(body, "link", link, sizeof(link));
+
+            if (!test_type[0] || !title[0] || !os_valid_evidence_kind(test_type) ||
+                !os_valid_evidence_classification(classification)) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 400, "A title, supported evidence type, and valid classification are required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (os_evidence_digest(test_type, title, classification, details, link,
+                                   digest, sizeof(digest)) != 0) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 500, "Could not compute evidence digest",
+                              origin, extra_headers, extra_len);
+                return;
+            }
 
             char tid[64];
             snprintf(tid, sizeof(tid), "tst_%ld_%d", (long)time(NULL), rand() % 10000);
-
-            const char *tp[5] = { tid, r_pk, test_type, test_stat, details };
-            int tl[5];
-            for (int i = 0; i < 5; i++) tl[i] = tp[i] ? (int)strlen(tp[i]) : 0;
+            const char *tp[9] = { tid, r_pk, test_type, details, title, classification, link, digest, "user_submitted" };
+            int tl[9];
+            for (int i = 0; i < 9; i++) tl[i] = (int)strlen(tp[i]);
 
             PGresult *tr = db_simple(conn,
-                "INSERT INTO os_release_test_results (id, release_id, test_type, status, details, executed_at) "
-                "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, tp, tl);
-            if (tr) PQclear(tr);
-
-            /* If test is passed and release is draft/built, advance status to validated */
-            if (strcmp(test_stat, "passed") == 0 && (strcmp(r_stat, "draft") == 0 || strcmp(r_stat, "built") == 0)) {
-                const char *up[2] = { "validated", r_pk };
-                int ul[2] = { 9, (int)strlen(r_pk) };
-                PGresult *ur = db_simple(conn,
-                    "UPDATE os_releases SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up, ul);
-                if (ur) PQclear(ur);
-                strncpy(r_stat, "validated", sizeof(r_stat) - 1);
+                "INSERT INTO os_release_test_results "
+                "(id, release_id, test_type, status, details, title, classification, evidence_link, "
+                "evidence_digest, evidence_source, executed_at) "
+                "VALUES ($1, $2, $3, 'submitted', $4, $5, $6, $7, $8, $9, "
+                "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 9, tp, tl);
+            if (!tr || PQresultStatus(tr) != PGRES_COMMAND_OK) {
+                if (tr) PQclear(tr);
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Evidence could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
             }
+            PQclear(tr);
 
-            os_audit_log(sess.username, "OS_RELEASE_VALIDATED", test_type);
+            os_audit_log(sess.username, "OS_RELEASE_EVIDENCE_SUBMITTED", test_type);
             db_release(conn, 0);
 
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"validated\",\"release_id\":\"%s\",\"test_status\":\"%s\"}", r_id, test_stat);
+            char resp[768], escaped_id[128], escaped_type[128], escaped_digest[128];
+            os_json_escape(r_id, escaped_id, sizeof(escaped_id));
+            os_json_escape(test_type, escaped_type, sizeof(escaped_type));
+            os_json_escape(digest, escaped_digest, sizeof(escaped_digest));
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"submitted\",\"release_id\":\"%s\",\"evidence_id\":\"%s\","
+                "\"test_type\":\"%s\",\"evidence_digest\":\"%s\","
+                "\"message\":\"User-submitted evidence is not an automated test result.\"}",
+                escaped_id, tid, escaped_type, escaped_digest);
             os_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
 
         /* ---------------- POST /api/v1/os/releases/:id/approve (Multi-Person Approval) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/approve") == 0) {
-            /* Separation of duties: Creator cannot approve their own release unless platform owner override */
-            const char *reviewer = sess.username[0] ? sess.username : "reviewer";
-            if (!is_owner && r_creator[0] && strcmp(reviewer, r_creator) == 0) {
-                db_release(conn, 0);
-                os_send_error(client_fd, 403, "Separation of duties violation: creator cannot approve own release", origin, extra_headers, extra_len);
-                return;
-            }
-            if (!r_digest[0] || !r_sig[0]) {
-                db_release(conn, 0);
-                os_send_error(client_fd, 409, "Release manifest is not signed",
-                              origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Record Approval */
-            char app_id[64];
-            snprintf(app_id, sizeof(app_id), "app_%ld_%d", (long)time(NULL), rand() % 10000);
-            const char *ap[3] = { app_id, r_pk, reviewer };
-            int al[3] = { (int)strlen(app_id), (int)strlen(r_pk), (int)strlen(reviewer) };
-
-            PGresult *ar = db_simple(conn,
-                "INSERT INTO os_release_approvals (id, release_id, reviewer_id, decision, created_at) "
-                "VALUES ($1, $2, $3, 'approved', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 3, ap, al);
-            if (ar) PQclear(ar);
-
-            /* Sign Manifest and Advance to Approved */
-            const char *up[2] = { reviewer, r_pk };
-            int ul[2] = { (int)strlen(reviewer), (int)strlen(r_pk) };
-            PGresult *ur = db_simple(conn,
-                "UPDATE os_releases SET approved_by = $1, approved_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "status = 'approved', updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up, ul);
-            if (ur) PQclear(ur);
-
-            os_audit_log(reviewer, "OS_RELEASE_APPROVED", r_id);
             db_release(conn, 0);
-
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"approved\",\"release_id\":\"%s\",\"approved_by\":\"%s\"}", r_id, reviewer);
-            os_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+            os_send_error(client_fd, 409,
+                          "Direct release approval is disabled; submit and review this action through the centralized approval workflow",
+                          origin, extra_headers, extra_len);
             return;
         }
 
         /* ---------------- POST /api/v1/os/releases/:id/activate (Make Active for Rollout) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/activate") == 0) {
+            if (strcmp(r_stat, "approved") != 0 || strcmp(r_verified, "t") != 0 ||
+                !r_manifest_sig[0]) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 409, "Only a trusted, approved release can be activated",
+                              origin, extra_headers, extra_len);
+                return;
+            }
             int rollback_ok = 1;
             ctrl_json_bool(body, "rollback_permitted", &rollback_ok);
 
@@ -537,8 +725,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         ctrl_json_int(body, "max_concurrent_updates", &max_conc);
         ctrl_json_string(body, "maintenance_window_start", win_start, sizeof(win_start));
         ctrl_json_string(body, "maintenance_window_end", win_end, sizeof(win_end));
+        if (max_conc < 1 || max_conc > 100) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 400, "Maximum concurrent updates must be between 1 and 100",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
-        int rollout_percent = 0;
         if (strncmp(stage, "stage-", 6) == 0) {
             char *end = NULL;
             long parsed = strtol(stage + 6, &end, 10);
@@ -548,9 +741,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                               origin, extra_headers, extra_len);
                 return;
             }
-            rollout_percent = (int)parsed;
         } else if (strcmp(stage, "stable") == 0 || strcmp(stage, "general") == 0) {
-            rollout_percent = 100;
+            /* Full rollout stages are valid deployment targets, but do not dispatch devices. */
         } else {
             db_release(conn, 0);
             os_send_error(client_fd, 400, "Unsupported rollout stage",
@@ -577,16 +769,21 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         /* Resolve target release PK */
         const char *rp[1] = { target_rel };
         int rl[1] = { (int)strlen(target_rel) };
-        PGresult *r_chk = db_simple(conn, "SELECT id, status FROM os_releases WHERE id = $1 OR release_id = $1", 1, rp, rl);
+        PGresult *r_chk = db_simple(conn,
+            "SELECT r.id, r.status, COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+            "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+            "WHERE r.id = $1 OR r.release_id = $1", 1, rp, rl);
         if (!r_chk || PQntuples(r_chk) == 0) {
             if (r_chk) PQclear(r_chk);
             db_release(conn, 0);
             os_send_error(client_fd, 404, "Target release does not exist", origin, extra_headers, extra_len);
             return;
         }
-        char rel_pk[64], rel_stat[32];
+        char rel_pk[64], rel_stat[32], rel_verified[8], rel_signature[4096];
         strncpy(rel_pk, PQgetvalue(r_chk, 0, 0), sizeof(rel_pk) - 1);
         strncpy(rel_stat, PQgetvalue(r_chk, 0, 1), sizeof(rel_stat) - 1);
+        strncpy(rel_verified, PQgetvalue(r_chk, 0, 2), sizeof(rel_verified) - 1);
+        strncpy(rel_signature, PQgetvalue(r_chk, 0, 3), sizeof(rel_signature) - 1);
         PQclear(r_chk);
 
         if (strcmp(rel_stat, "revoked") == 0) {
@@ -594,10 +791,11 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             os_send_error(client_fd, 403, "Cannot create deployment for revoked release", origin, extra_headers, extra_len);
             return;
         }
-        if (strcmp(rel_stat, "approved") != 0 && strcmp(rel_stat, "active") != 0 &&
-            strcmp(rel_stat, "staged") != 0) {
+        if ((strcmp(rel_stat, "approved") != 0 && strcmp(rel_stat, "active") != 0 &&
+             strcmp(rel_stat, "staged") != 0) || strcmp(rel_verified, "t") != 0 ||
+            !rel_signature[0]) {
             db_release(conn, 0);
-            os_send_error(client_fd, 409, "Release must be approved before deployment",
+            os_send_error(client_fd, 409, "A trusted, verified release must be approved before deployment",
                           origin, extra_headers, extra_len);
             return;
         }
@@ -607,14 +805,15 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         char max_str[16];
         snprintf(max_str, sizeof(max_str), "%d", max_conc);
 
-        const char *dp[7] = { dep_id, inst_id, gname, rel_pk, stage, max_str, win_start };
-        int dl[7];
-        for (int i = 0; i < 7; i++) dl[i] = dp[i] ? (int)strlen(dp[i]) : 0;
+        const char *dp[8] = { dep_id, inst_id, gname, rel_pk, stage, max_str, win_start, win_end };
+        int dl[8];
+        for (int i = 0; i < 8; i++) dl[i] = dp[i] ? (int)strlen(dp[i]) : 0;
 
         PGresult *ins_dep = db_simple(conn,
             "INSERT INTO os_deployment_groups (id, institution_id, group_name, target_release_id, rollout_stage, "
-            "max_concurrent_updates, maintenance_window_start, maintenance_window_end, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6::int, $7, '23:59', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 7, dp, dl);
+            "max_concurrent_updates, maintenance_window_start, maintenance_window_end, status, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6::int, $7, $8, 'planned', "
+            "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 8, dp, dl);
         if (!ins_dep || PQresultStatus(ins_dep) != PGRES_COMMAND_OK) {
             if (ins_dep) PQclear(ins_dep);
             db_release(conn, 0);
@@ -624,43 +823,93 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         }
         PQclear(ins_dep);
 
-        const char *release_status = rollout_percent >= 100 ? "active" : "staged";
-        const char *rel_up[2] = { release_status, rel_pk };
-        int rel_ul[2] = { (int)strlen(release_status), (int)strlen(rel_pk) };
-        PGresult *rel_update = db_simple(conn,
-            "UPDATE os_releases SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2",
-            2, rel_up, rel_ul);
-        if (!rel_update || PQresultStatus(rel_update) != PGRES_COMMAND_OK) {
-            if (rel_update) PQclear(rel_update);
-            db_release(conn, 0);
-            os_send_error(client_fd, 503, "Release rollout state could not be updated",
-                          origin, extra_headers, extra_len);
-            return;
-        }
-        PQclear(rel_update);
-
         os_audit_log(sess.username, "OS_DEPLOYMENT_CREATED", gname);
         db_release(conn, 0);
 
-        char resp[512];
+        char resp[1024], escaped_inst[128], escaped_name[256], escaped_target[128], escaped_stage[64];
+        os_json_escape(inst_id, escaped_inst, sizeof(escaped_inst));
+        os_json_escape(gname, escaped_name, sizeof(escaped_name));
+        os_json_escape(target_rel, escaped_target, sizeof(escaped_target));
+        os_json_escape(stage, escaped_stage, sizeof(escaped_stage));
         snprintf(resp, sizeof(resp),
             "{\"status\":\"created\",\"deployment_id\":\"%s\",\"institution_id\":\"%s\",\"group_name\":\"%s\","
-            "\"target_release_id\":\"%s\",\"rollout_stage\":\"%s\"}",
-            dep_id, inst_id, gname, target_rel, stage);
+            "\"target_release_id\":\"%s\",\"rollout_stage\":\"%s\",\"deployment_status\":\"planned\","
+            "\"devices_assigned\":0,\"dispatched\":false}",
+            dep_id, escaped_inst, escaped_name, escaped_target, escaped_stage);
         os_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
         return;
     }
 
     /* =========================================================================
-     * 5. GET /api/v1/os/deployments/:id: View Deployment Status
+     * 5. GET /api/v1/os/deployments: List persisted deployment groups
      * ========================================================================= */
     const char *dep_pfx = "/api/v1/os/deployments/";
     size_t dep_plen = strlen(dep_pfx);
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/v1/os/deployments") == 0) {
+        const char *params[2] = { is_owner ? "TRUE" : "FALSE", sess.institution_id };
+        int lengths[2] = { is_owner ? 4 : 5, (int)strlen(sess.institution_id) };
+        PGresult *groups = db_simple(conn,
+            "SELECT g.id, g.institution_id, g.group_name, r.release_id, r.version, "
+            "g.rollout_stage, g.status, g.max_concurrent_updates, g.created_at, "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id), "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id "
+            "AND a.status IN ('installed','verified')), "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id "
+            "AND a.status = 'failed') "
+            "FROM os_deployment_groups g JOIN os_releases r ON g.target_release_id = r.id "
+            "WHERE ($1 = TRUE OR g.institution_id = $2) ORDER BY g.created_at DESC", 2, params, lengths);
+        if (!groups || PQresultStatus(groups) != PGRES_TUPLES_OK) {
+            if (groups) PQclear(groups);
+            db_release(conn, 0);
+            os_send_error(client_fd, 500, "Failed to load deployment groups", origin, extra_headers, extra_len);
+            return;
+        }
+        char *json = malloc(131072);
+        if (!json) {
+            PQclear(groups);
+            db_release(conn, 0);
+            os_send_error(client_fd, 500, "Out of memory", origin, extra_headers, extra_len);
+            return;
+        }
+        size_t pos = (size_t)snprintf(json, 131072, "{\"deployments\":[");
+        for (int i = 0; i < PQntuples(groups) && pos < 131072; i++) {
+            if (i) pos += (size_t)snprintf(json + pos, 131072 - pos, ",");
+            char fields[7][256];
+            for (int j = 0; j < 7; j++) {
+                os_json_escape(PQgetvalue(groups, i, j), fields[j], sizeof(fields[j]));
+            }
+            pos += (size_t)snprintf(json + pos, 131072 - pos,
+                "{\"id\":\"%s\",\"institution_id\":\"%s\",\"group_name\":\"%s\","
+                "\"target_release_id\":\"%s\",\"target_version\":\"%s\","
+                "\"rollout_stage\":\"%s\",\"status\":\"%s\","
+                "\"max_concurrent_updates\":%s,\"created_at\":%s,"
+                "\"devices_assigned\":%s,\"devices_completed\":%s,\"devices_failed\":%s,"
+                "\"dispatched\":false}",
+                fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6],
+                PQgetvalue(groups, i, 7), PQgetvalue(groups, i, 8),
+                PQgetvalue(groups, i, 9), PQgetvalue(groups, i, 10), PQgetvalue(groups, i, 11));
+        }
+        if (pos < 131072) pos += (size_t)snprintf(json + pos, 131072 - pos, "]}");
+        PQclear(groups);
+        db_release(conn, 0);
+        os_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+        free(json);
+        return;
+    }
+
+    /* =========================================================================
+     * 6. GET /api/v1/os/deployments/:id: View Deployment Status
+     * ========================================================================= */
     if (strncmp(path, dep_pfx, dep_plen) == 0 && strcmp(method, "GET") == 0) {
         const char *dep_id = path + dep_plen;
         PGresult *dr = db_simple(conn,
             "SELECT g.id, g.institution_id, g.group_name, r.release_id, r.version, g.rollout_stage, g.status, "
-            "g.max_concurrent_updates, g.created_at "
+            "g.max_concurrent_updates, g.created_at, "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id), "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id "
+            "AND a.status IN ('installed','verified')), "
+            "(SELECT COUNT(*) FROM os_deployment_assignments a WHERE a.group_id = g.id "
+            "AND a.status = 'failed') "
             "FROM os_deployment_groups g JOIN os_releases r ON g.target_release_id = r.id "
             "WHERE g.id = $1 AND ($2 = TRUE OR g.institution_id = $3)", 3,
             (const char *[]){ dep_id, is_owner ? "TRUE" : "FALSE", sess.institution_id },
@@ -673,14 +922,19 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char resp[1024];
+        char resp[3072], fields[7][256];
+        for (int i = 0; i < 7; i++) {
+            os_json_escape(PQgetvalue(dr, 0, i), fields[i], sizeof(fields[i]));
+        }
         snprintf(resp, sizeof(resp),
             "{\"deployment\":{\"id\":\"%s\",\"institution_id\":\"%s\",\"group_name\":\"%s\","
             "\"target_release_id\":\"%s\",\"target_version\":\"%s\",\"rollout_stage\":\"%s\","
-            "\"status\":\"%s\",\"max_concurrent_updates\":%s,\"created_at\":%s}}",
-            PQgetvalue(dr, 0, 0), PQgetvalue(dr, 0, 1), PQgetvalue(dr, 0, 2),
-            PQgetvalue(dr, 0, 3), PQgetvalue(dr, 0, 4), PQgetvalue(dr, 0, 5),
-            PQgetvalue(dr, 0, 6), PQgetvalue(dr, 0, 7), PQgetvalue(dr, 0, 8));
+            "\"status\":\"%s\",\"max_concurrent_updates\":%s,\"created_at\":%s,"
+            "\"devices_assigned\":%s,\"devices_completed\":%s,\"devices_failed\":%s,"
+            "\"dispatched\":false}}",
+            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6],
+            PQgetvalue(dr, 0, 7), PQgetvalue(dr, 0, 8),
+            PQgetvalue(dr, 0, 9), PQgetvalue(dr, 0, 10), PQgetvalue(dr, 0, 11));
         PQclear(dr);
 
         db_release(conn, 0);
@@ -707,6 +961,15 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         device_id[len] = '\0';
         const char *action = slash ? slash : "";
 
+        if (strcmp(method, "POST") == 0 &&
+            (strcmp(action, "/update-events") == 0 || strcmp(action, "/verify-release") == 0)) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 501,
+                          "Authenticated device-agent event and post-boot attestation ingestion is not configured",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
         /* Load Device */
         const char *dev_p[1] = { device_id };
         int dev_l[1] = { (int)strlen(device_id) };
@@ -720,7 +983,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        char d_inst[64], cur_release[64], d_sb[32], d_status[32];
+        char d_inst[64] = {0}, cur_release[64] = {0}, d_sb[32] = {0}, d_status[32] = {0};
         int d_tpm = 1;
         strncpy(d_inst, PQgetvalue(d_res, 0, 1), sizeof(d_inst) - 1);
         strncpy(cur_release, PQgetvalue(d_res, 0, 2), sizeof(cur_release) - 1);
@@ -728,6 +991,13 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         d_tpm = (strcmp(PQgetvalue(d_res, 0, 4), "t") == 0);
         strncpy(d_status, PQgetvalue(d_res, 0, 5), sizeof(d_status) - 1);
         PQclear(d_res);
+
+        if (!is_owner && (!sess.institution_id[0] || strcmp(sess.institution_id, d_inst) != 0)) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 403, "Device is outside the authenticated institution scope",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
         /* ---------------- GET /api/v1/os/devices/:id/update (Check Update Eligibility) ---------------- */
         if (strcmp(method, "GET") == 0 && strcmp(action, "/update") == 0) {
@@ -766,12 +1036,20 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             }
 
             /* 4. Find Latest Active Release */
+            const char *candidate_params[1] = { device_id };
+            int candidate_lengths[1] = { (int)strlen(device_id) };
             PGresult *rel_r = db_simple(conn,
                 "SELECT r.id, r.release_id, r.version, r.kernel_version, r.status, r.minimum_supported_version, "
                 "r.signing_key_id, r.manifest_signature "
                 "FROM os_releases r "
-                "WHERE r.status = 'active' "
-                "ORDER BY r.created_at DESC LIMIT 1", 0, NULL, NULL);
+                "JOIN os_release_manifests m ON m.release_id = r.id AND m.verified = TRUE "
+                "WHERE r.status = 'active' AND m.signature_value IS NOT NULL AND m.signature_value <> '' "
+                "AND EXISTS (SELECT 1 FROM os_deployment_assignments a "
+                "JOIN os_deployment_groups g ON g.id = a.group_id "
+                "WHERE a.device_id = $1 AND a.target_release_id = r.id AND g.status = 'active' "
+                "AND a.status IN ('assigned','downloading','staged')) "
+                "AND r.signing_key_id IS NOT NULL "
+                "ORDER BY r.created_at DESC LIMIT 1", 1, candidate_params, candidate_lengths);
 
             if (!rel_r || PQntuples(rel_r) == 0) {
                 if (rel_r) PQclear(rel_r);
@@ -969,8 +1247,10 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             const char *rp[1] = { rec_rel };
             int rl[1] = { (int)strlen(rec_rel) };
             PGresult *rel_r = db_simple(conn,
-                "SELECT id, release_id, status, rollback_permitted, minimum_supported_version, version "
-                "FROM os_releases WHERE id = $1 OR release_id = $1", 1, rp, rl);
+                "SELECT r.id, r.release_id, r.status, r.rollback_permitted, r.minimum_supported_version, "
+                "r.version, COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+                "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+                "WHERE r.id = $1 OR r.release_id = $1", 1, rp, rl);
 
             if (!rel_r || PQntuples(rel_r) == 0) {
                 if (rel_r) PQclear(rel_r);
@@ -979,7 +1259,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            char r_pk[64], r_id[64], r_stat[32], r_min[64], r_ver[64];
+            char r_pk[64] = {0}, r_id[64] = {0}, r_stat[32] = {0}, r_min[64] = {0}, r_ver[64] = {0};
+            char target_verified[8] = {0}, target_signature[4096] = {0};
             int rollback_ok = 0;
             strncpy(r_pk, PQgetvalue(rel_r, 0, 0), sizeof(r_pk) - 1);
             strncpy(r_id, PQgetvalue(rel_r, 0, 1), sizeof(r_id) - 1);
@@ -987,6 +1268,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             rollback_ok = (strcmp(PQgetvalue(rel_r, 0, 3), "t") == 0);
             strncpy(r_min, PQgetvalue(rel_r, 0, 4), sizeof(r_min) - 1);
             strncpy(r_ver, PQgetvalue(rel_r, 0, 5), sizeof(r_ver) - 1);
+            strncpy(target_verified, PQgetvalue(rel_r, 0, 6), sizeof(target_verified) - 1);
+            strncpy(target_signature, PQgetvalue(rel_r, 0, 7), sizeof(target_signature) - 1);
             PQclear(rel_r);
 
             /* Anti-Downgrade Violation 1: Release is revoked */
@@ -1021,32 +1304,41 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            /* Record Successful Rollback Event */
+            if (strcmp(target_verified, "t") != 0 || !target_signature[0] ||
+                (strcmp(r_stat, "active") != 0 && strcmp(r_stat, "approved") != 0 &&
+                 strcmp(r_stat, "retired") != 0)) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 409, "Recovery target is not a trusted verified release",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            /* Persist the request; only an authenticated device agent can confirm recovery. */
             char rec_id[64];
             snprintf(rec_id, sizeof(rec_id), "rec_%ld_%d", (long)time(NULL), rand() % 10000);
-            const char *rec_p[6] = { rec_id, device_id, d_inst, cur_release, r_pk, "RESTORED" };
-            int rec_l[6];
-            for (int i = 0; i < 6; i++) rec_l[i] = rec_p[i] ? (int)strlen(rec_p[i]) : 0;
+            const char *rec_p[7] = { rec_id, device_id, d_inst, cur_release, r_pk, reason, "INITIATED" };
+            int rec_l[7];
+            for (int i = 0; i < 7; i++) rec_l[i] = (int)strlen(rec_p[i]);
             PGresult *rec_r = db_simple(conn,
                 "INSERT INTO os_recovery_events (id, device_id, institution_id, failed_release_id, recovery_release_id, reason, status, authorized, occurred_at) "
-                "VALUES ($1, $2, $3, $4, $5, 'Approved rollback', $6, TRUE, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 6, rec_p, rec_l);
-            if (rec_r) PQclear(rec_r);
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 7, rec_p, rec_l);
+            if (!rec_r || PQresultStatus(rec_r) != PGRES_COMMAND_OK) {
+                if (rec_r) PQclear(rec_r);
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Recovery request could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(rec_r);
 
-            /* Rollback device to recovery release */
-            const char *dev_up[2] = { r_id, device_id };
-            int dev_upl[2] = { (int)strlen(r_id), (int)strlen(device_id) };
-            PGresult *dur = db_simple(conn,
-                "UPDATE devices SET os_release_id = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, dev_up, dev_upl);
-            if (dur) PQclear(dur);
-
-            os_audit_log(sess.username, "OS_ROLLBACK_COMPLETED", r_id);
+            os_audit_log(sess.username, "OS_RECOVERY_REQUESTED", r_id);
             db_release(conn, 0);
 
             char resp[512];
             snprintf(resp, sizeof(resp),
-                "{\"status\":\"ROLLBACK_AUTHORIZED\",\"device_id\":\"%s\",\"recovery_release_id\":\"%s\","
-                "\"active_release\":\"%s\"}",
-                device_id, r_pk, r_id);
+                "{\"status\":\"INITIATED\",\"device_id\":\"%s\",\"recovery_release_id\":\"%s\","
+                "\"dispatched\":false,\"message\":\"Device completion requires authenticated agent acknowledgement\"}",
+                device_id, r_pk);
             os_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
