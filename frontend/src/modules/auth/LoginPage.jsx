@@ -151,12 +151,13 @@ export default function LoginPage({ candidateOnly = false }) {
 
   const handleAdminSubmit = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (busy || !u || !p) return;
+    const username = u.trim();
+    if (busy || !username || !p) return;
     setBusy(true);
     setErr('');
     setInfo('');
     try {
-      const res = await backendLogin({ username: u, password: p });
+      const res = await backendLogin({ username, password: p });
       if (res?.mfaSetupRequired) {
         setInfo('First-time login: Please set up Google Authenticator to secure your management account.');
         openQrSetup();
@@ -177,14 +178,17 @@ export default function LoginPage({ candidateOnly = false }) {
       setErr('ACCESS_DENIED: Candidate examinations require the secure ExamOS bootable kiosk operating system.');
       return;
     }
-    if (busy || !candId || (!candPin && !candExamToken)) return;
+    const candidateId = candId.trim();
+    const pin = candPin.trim();
+    const examToken = candExamToken.trim();
+    if (busy || !candidateId || (!pin && !examToken)) return;
     setBusy(true);
     setErr('');
     try {
       const res = await backendCandidateLogin({
-        candidateId: candId,
-        pin: candPin,
-        examToken: candExamToken,
+        candidateId,
+        pin,
+        examToken,
         onPending: () => setInfo('Identity submitted. Waiting for an invigilator to verify you at the desk…'),
       });
       if (res?.ok) {
@@ -413,6 +417,7 @@ export default function LoginPage({ candidateOnly = false }) {
                         className="polished-input with-icon"
                         value={u}
                         onChange={(e) => setU(e.target.value)}
+                        onBlur={() => setU((value) => value.trim())}
                         autoComplete="username"
                         maxLength={64}
                         placeholder="admin or root"
@@ -481,7 +486,7 @@ export default function LoginPage({ candidateOnly = false }) {
 
                   <button
                     className="polished-submit-btn"
-                    disabled={busy || !u || !p}
+                    disabled={busy || !u.trim() || !p}
                   >
                     {busy ? (
                       <span className="btn-loading">
@@ -534,7 +539,8 @@ export default function LoginPage({ candidateOnly = false }) {
                       id="cand-id"
                       className="polished-input"
                       value={candId}
-                      onChange={(e) => setCandId(e.target.value.trim())}
+                      onChange={(e) => setCandId(e.target.value)}
+                      onBlur={() => setCandId((value) => value.trim())}
                       maxLength={64}
                       placeholder="e.g. CAND-001 or roll number"
                       autoFocus
@@ -549,6 +555,7 @@ export default function LoginPage({ candidateOnly = false }) {
                       type="password"
                       value={candPin}
                       onChange={(e) => setCandPin(e.target.value)}
+                      onBlur={() => setCandPin((value) => value.trim())}
                       maxLength={32}
                       placeholder="Enter your candidate PIN"
                     />
@@ -561,7 +568,8 @@ export default function LoginPage({ candidateOnly = false }) {
                       className="polished-input"
                       type="password"
                       value={candExamToken}
-                      onChange={(e) => setCandExamToken(e.target.value.trim())}
+                      onChange={(e) => setCandExamToken(e.target.value)}
+                      onBlur={() => setCandExamToken((value) => value.trim())}
                       maxLength={128}
                       autoComplete="off"
                       placeholder="Enter token issued by the invigilator"
@@ -579,7 +587,7 @@ export default function LoginPage({ candidateOnly = false }) {
 
                   <button
                     className="polished-submit-btn"
-                    disabled={busy || !candId || (!candPin && !candExamToken) || !isInsideExamOS}
+                    disabled={busy || !candId.trim() || (!candPin.trim() && !candExamToken.trim()) || !isInsideExamOS}
                   >
                     {!isInsideExamOS
                       ? 'ExamOS Kiosk Runtime Required'

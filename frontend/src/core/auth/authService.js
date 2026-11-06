@@ -36,8 +36,11 @@ export class AuthService {
   /* ─────────────────────────── Admin auth ──────────────────────────── */
 
   async adminLogin({ username, password, mfaCode }) {
+    const normalizedUsername = String(username ?? '').trim();
+    if (!normalizedUsername) throw new ApiError(400, 'Enter your username.');
+    if (typeof password !== 'string' || password.length === 0) throw new ApiError(400, 'Enter your password.');
     const res = await api.post(ENDPOINTS.adminLogin, {
-      username,
+      username: normalizedUsername,
       password,
       mfa_code: mfaCode || null,
     }, { actor: 'admin', sign: true });
@@ -47,14 +50,14 @@ export class AuthService {
     if (data.status === 'MFA_SETUP_REQUIRED' || data.mfa_setup_required) {
       return {
         mfaSetupRequired: true,
-        username: data.username || username,
+        username: data.username || normalizedUsername,
         enrollmentToken: data.enrollment_token || null,
         message: data.message,
       };
     }
 
     if (data.status === 'MFA_REQUIRED') {
-      return { mfaRequired: true, username: data.username || username };
+      return { mfaRequired: true, username: data.username || normalizedUsername };
     }
 
     if (data.status !== 'AUTHENTICATED') {
@@ -72,16 +75,16 @@ export class AuthService {
     } catch {
       this.adminProfile = {
         user_id: data.user_id,
-        username: data.username || username,
+        username: data.username || normalizedUsername,
         role: data.role,
         institution_id: data.institution_id || '',
-        name: data.name || username,
+        name: data.name || normalizedUsername,
       };
     }
 
     await audit.record({
       actor: 'admin', event: 'ADMIN_LOGIN',
-      detail: `user=${username}`, resource: ENDPOINTS.adminLogin, severity: 'info',
+      detail: `user=${normalizedUsername}`, resource: ENDPOINTS.adminLogin, severity: 'info',
     });
     return { ok: true, profile: this.adminProfile };
   }
@@ -166,8 +169,15 @@ export class AuthService {
   /* ─────────────────────────── Candidate auth ──────────────────────── */
 
   async candidateLogin({ candidateId, pin, examToken, onPending }) {
+    const normalizedCandidateId = String(candidateId ?? '').trim();
+    const normalizedPin = String(pin ?? '').trim();
+    const normalizedExamToken = String(examToken ?? '').trim();
+    if (!normalizedCandidateId) throw new ApiError(400, 'Enter your candidate registration ID.');
+    if (!normalizedPin && !normalizedExamToken) throw new ApiError(400, 'Enter your candidate PIN or exam token.');
     const res = await api.post(ENDPOINTS.candidateLogin, {
-      candidate_id: candidateId, pin: pin || '', exam_token: examToken || '',
+      candidate_id: normalizedCandidateId,
+      pin: normalizedPin,
+      exam_token: normalizedExamToken,
     }, { useCandidateToken: true, actor: 'candidate', sign: true });
 
     let data = res.data;

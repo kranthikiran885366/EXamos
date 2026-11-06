@@ -51,20 +51,35 @@ export default function DashboardPage() {
   const fetchLiveTelemetry = useCallback(async () => {
     setIsRefreshing(true);
     try {
+      const isPlatformOwner = user?.role === 'superadmin';
       const [h, s, t, l, f, apps, insts] = await Promise.allSettled([
         Api.health(),
         Api.status(),
         Api.getTelemetry(),
         Api.getLedger(),
         Api.listFleet(),
-        Api.listInstitutionApplications(),
-        Api.listInstitutions(),
+        isPlatformOwner ? Api.listInstitutionApplications() : Promise.resolve(null),
+        isPlatformOwner ? Api.listInstitutions() : Promise.resolve(null),
       ]);
 
-      const failed = [h, s, t, l, f, apps, insts].filter((result) => result.status === 'rejected');
-      setTelemetryError(failed.length ? 'One or more live dashboard data sources are unavailable.' : '');
+      const sources = [
+        ['health', h],
+        ['server status', s],
+        ['telemetry', t],
+        ['audit ledger', l],
+        ['device fleet', f],
+        ...(isPlatformOwner ? [['institution applications', apps], ['institutions', insts]] : []),
+      ];
+      const failed = sources
+        .filter(([, result]) => result.status === 'rejected')
+        .map(([name, result]) => `${name}: ${result.reason?.message || 'request failed'}`);
+      setTelemetryError(failed.length ? `Unavailable data sources: ${failed.join('; ')}` : '');
       if (apps.status === 'fulfilled' && apps.value?.applications) setBackendApps(apps.value.applications);
       if (insts.status === 'fulfilled' && (insts.value?.institutions || Array.isArray(insts.value))) setBackendInsts(insts.value.institutions || insts.value);
+      if (!isPlatformOwner) {
+        setBackendApps([]);
+        setBackendInsts([]);
+      }
 
       if (h.status === 'fulfilled') setServerHealth(h.value);
       if (s.status === 'fulfilled') setServerStatus(s.value);
@@ -77,7 +92,7 @@ export default function DashboardPage() {
     } finally {
       setIsRefreshing(false);
     }
-  }, []);
+  }, [user?.role]);
 
   useEffect(() => {
     fetchLiveTelemetry();

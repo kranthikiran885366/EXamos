@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { all, onChange, watchCollection } from './db';
 import { useAuth } from '../auth/AuthContext';
 import { isGlobal } from '../security/rbac';
-import { listInstitutions } from '../api/services';
+import { getInstitution, listInstitutions } from '../api/services';
 
 const TENANT_STORAGE_KEY = 'examos_selected_tenant_id';
 
@@ -43,9 +43,21 @@ export function TenantProvider({ children }) {
     setLoading(true);
     setError('');
     try {
-      const response = await listInstitutions();
-      const rows = response?.institutions || response;
-      if (!Array.isArray(rows)) throw new Error('The institution endpoint returned an unexpected response.');
+      let rows;
+      if (user.role === 'superadmin') {
+        const response = await listInstitutions();
+        rows = response?.institutions || response;
+        if (!Array.isArray(rows)) throw new Error('The institution endpoint returned an unexpected response.');
+      } else if (user.tenantId) {
+        const response = await getInstitution(user.tenantId);
+        const institution = response?.institution || response;
+        if (!institution || (institution.id || institution.institution_id) !== user.tenantId) {
+          throw new Error("The backend did not return the signed-in user's institution.");
+        }
+        rows = [institution];
+      } else {
+        rows = [];
+      }
       const records = rows.map((row) => ({
         ...row,
         id: row.id || row.institution_id,

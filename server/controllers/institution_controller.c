@@ -709,11 +709,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
 
         PGresult *res = PQexec(conn,
-            "SELECT id, legal_name, display_name, entity_type, registration_number, "
-            "       country, state, address, domain, rep_name, "
-            "       rep_role, rep_email, rep_phone, campus_count, student_count, "
-            "       device_count, deployment_model, hardware_profile, plan, status, "
-            "       review_notes, reviewed_by, reviewed_at, institution_id, created_at, updated_at, "
+            "SELECT a.id, a.legal_name, a.display_name, a.entity_type, a.registration_number, "
+            "       a.country, a.state, a.address, a.domain, a.rep_name, "
+            "       a.rep_role, a.rep_email, a.rep_phone, a.campus_count, a.student_count, "
+            "       a.device_count, a.deployment_model, a.hardware_profile, a.plan, a.status, "
+            "       a.review_notes, a.reviewed_by, a.reviewed_at, a.institution_id, a.created_at, a.updated_at, "
             "       COALESCE(t.status, ''), "
             "       CASE WHEN EXISTS ("
             "         SELECT 1 FROM institution_onboarding o "

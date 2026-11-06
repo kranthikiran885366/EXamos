@@ -45,14 +45,14 @@ function InstitutionSwitcher({ inst, institutions, onSelect }) {
   );
 }
 
-function useInstitutionStats(institutions) {
+function useInstitutionStats(institutions, enabled = true) {
   const [statsByInstitution, setStatsByInstitution] = useState({});
   const [loadingStats, setLoadingStats] = useState(false);
   const [statsError, setStatsError] = useState('');
   const institutionIds = institutions.map((institution) => institution.id).filter(Boolean).join(',');
 
   useEffect(() => {
-    const ids = institutionIds ? institutionIds.split(',') : [];
+    const ids = enabled && institutionIds ? institutionIds.split(',') : [];
     if (!ids.length) {
       setStatsByInstitution({});
       setStatsError('');
@@ -85,7 +85,7 @@ function useInstitutionStats(institutions) {
       });
 
     return () => { active = false; };
-  }, [institutionIds]);
+  }, [enabled, institutionIds]);
 
   return { statsByInstitution, loadingStats, statsError };
 }
@@ -95,24 +95,40 @@ function useInstitutionStats(institutions) {
 ===================================================================== */
 export function PlatformInstitutionsOverviewPage() {
   const nav = useNavigate();
+  const { user } = useAuth();
+  const isPlatformOwner = user?.role === 'superadmin';
   const { tenants: institutions, loading: institutionsLoading, error: institutionsError } = useTenant();
-  const { statsByInstitution, loadingStats, statsError } = useInstitutionStats(institutions);
+  const { statsByInstitution, loadingStats, statsError } = useInstitutionStats(institutions, isPlatformOwner);
   const [apps, setApps] = useState([]);
   const [loadingApps, setLoadingApps] = useState(true);
   const [appsError, setAppsError] = useState('');
 
   useEffect(() => {
+    if (!isPlatformOwner) {
+      setApps([]);
+      setAppsError('Platform owner authorization is required to review institution applications.');
+      setLoadingApps(false);
+      return undefined;
+    }
+    let active = true;
     fetchInstitutionApplications()
       .then((data) => {
         if (!Array.isArray(data)) throw new Error('The backend returned an unexpected applications response.');
-        setApps(data);
+        if (active) setApps(data);
       })
       .catch((error) => {
-        setApps([]);
-        setAppsError(error?.message || 'Failed to load institution applications.');
+        if (active) {
+          setApps([]);
+          setAppsError(error?.message || 'Failed to load institution applications.');
+        }
       })
-      .finally(() => setLoadingApps(false));
-  }, []);
+      .finally(() => { if (active) setLoadingApps(false); });
+    return () => { active = false; };
+  }, [isPlatformOwner]);
+
+  if (!isPlatformOwner) {
+    return <Page title="Platform Institutions Overview"><Alert tone="danger" title="Access restricted">Platform owner authorization is required for this page.</Alert></Page>;
+  }
 
   const pendingApps = apps.filter((a) => ['pending', 'submitted'].includes(a.status?.toLowerCase()));
   const awaitingVerification = apps.filter((a) => ['under_review', 'pending'].includes(a.status?.toLowerCase()));
@@ -143,7 +159,11 @@ export function PlatformInstitutionsOverviewPage() {
         <Stat label="Awaiting Verification" value={loadingApps ? '…' : appsError ? 'Unavailable' : awaitingVerification.length} tone="blue" icon="shield" sub="Identity & Domain Checks" />
         <Stat label="Operational Alerts" value={loadingStats ? '…' : statsError ? 'Unavailable' : openAlerts} tone={openAlerts ? 'red' : 'green'} icon="alert" sub="Open incidents reported by institution APIs" />
       </StatGrid>
-      {(institutionsError || statsError || appsError) && <Alert tone="danger" title="Platform data unavailable">{institutionsError || statsError || appsError}</Alert>}
+      {(institutionsError || statsError || appsError) && (
+        <Alert tone="danger" title="Platform data unavailable">
+          {[institutionsError, statsError, appsError].filter(Boolean).join(' ')}
+        </Alert>
+      )}
       {institutionsLoading && <Loading label="Loading institutions from backend..." />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', margin: '20px 0' }}>
@@ -280,6 +300,7 @@ export function PlatformInstitutionsDirectoryPage() {
 export function PlatformApplicationsPage() {
   const nav = useNavigate();
   const { user } = useAuth();
+  const isPlatformOwner = user?.role === 'superadmin';
   const { msg, setMsg, run, busy } = useFlash();
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -289,6 +310,12 @@ export function PlatformApplicationsPage() {
   const [decisionResult, setDecisionResult] = useState(null); // { action, app }
 
   const loadApps = async () => {
+    if (!isPlatformOwner) {
+      setApps([]);
+      setAppsError('Platform owner authorization is required to review institution applications.');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setAppsError('');
     try {
@@ -303,7 +330,17 @@ export function PlatformApplicationsPage() {
     }
   };
 
-  useEffect(() => { loadApps(); }, []);
+  useEffect(() => {
+    if (isPlatformOwner) loadApps();
+    else {
+      setAppsError('Platform owner authorization is required to review institution applications.');
+      setLoading(false);
+    }
+  }, [isPlatformOwner]);
+
+  if (!isPlatformOwner) {
+    return <Page title="Onboarding Applications"><Alert tone="danger" title="Access restricted">Platform owner authorization is required to review institution applications.</Alert></Page>;
+  }
 
   const handleDecision = async (action) => {
     if (!selectedApp) return;
