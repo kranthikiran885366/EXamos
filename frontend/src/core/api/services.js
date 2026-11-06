@@ -675,6 +675,12 @@ export const assignExaminationStudent = wrap(async (id, student) => {
   return res.data;
 });
 
+export const listExaminationStudents = wrap(async (id) => {
+  const res = await api.get(ENDPOINTS.examinationStudents(id), { actor: ACTOR });
+  if (!Array.isArray(res?.data?.assignments)) throw new Error('The examination roster endpoint returned an invalid response.');
+  return res.data.assignments;
+});
+
 export const unassignExaminationStudent = wrap(async (id, studentId) => {
   const res = await api.del(ENDPOINTS.examinationStudent(id, studentId), { actor: ACTOR, sign: true });
   return res.data;

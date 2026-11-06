@@ -48,6 +48,7 @@ static const migration_t migrations[] = {
     {"026_mfa_enrollment_table.sql",                        "admin_auth",               10},
     {"027_console_record_store.sql",                        "console_record_store",      1},
     {"028_candidate_authentication_workflows.sql",          "candidate_authentication",  1},
+    {"029_student_import_profile_fields.sql",               "students",                  2},
 };
 
 /*

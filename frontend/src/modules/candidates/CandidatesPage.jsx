@@ -1,6 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../core/auth/AuthContext';
-import { put } from '../../core/db/db';
 import { useTenant, useCol } from '../../core/db/tenant';
 import { usePerm, useLoad } from '../../core/ui/hooks';
 import * as Api from '../../core/api/services';
@@ -30,7 +29,7 @@ function ImportPanel({ tenantId, onDone }) {
     r.readAsText(f);
   };
   return (
-    <Card title="Bulk import" desc="CSV header: rollNo,name,email. Rows are validated and duplicates rejected before anything is saved.">
+    <Card title="Bulk import" desc="CSV header: rollNo,name,email,course,batch,semester,section. Rows are validated by the backend before confirmation.">
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <div className="row wrap gap">
         <label className="btn filebtn">Choose CSV<input type="file" accept=".csv,text/csv" onChange={readFile} hidden /></label>
@@ -41,8 +40,8 @@ function ImportPanel({ tenantId, onDone }) {
           setPrev(await previewImport(tenantId, text));
           return 'Preview ready.';
         })}>Preview</button>
-        {prev && <button className="btn primary" disabled={!prev.valid.length || busy || !may('candidate.manage')} onClick={() => run(async () => {
-          const m = await commitImport(user, tenantId, prev.valid);
+        {prev && <button className="btn primary" disabled={!prev.valid.length || !prev.jobId || busy || !may('candidate.manage')} onClick={() => run(async () => {
+          const m = await commitImport(user, tenantId, prev);
           setPrev(null); setText(''); onDone?.();
           return m;
         })}>Import {prev.valid.length} valid</button>}
@@ -58,11 +57,9 @@ function ImportPanel({ tenantId, onDone }) {
   );
 }
 
-function AssignPanel({ tenantId, onDone }) {
+function AssignPanel({ tenantId, exams, candidates, rosterLoading, rosterError, onDone }) {
   const { user } = useAuth();
   const may = usePerm();
-  const exams = useCol('exams').filter((e) => ['draft', 'review', 'approved', 'published'].includes(e.status));
-  const candidates = useCol('candidates');
   const [centers, setCenters] = useState([]);
   const [centersLoading, setCentersLoading] = useState(true);
   const [centersError, setCentersError] = useState('');
@@ -98,9 +95,14 @@ function AssignPanel({ tenantId, onDone }) {
         <Field label="Exam"><Select value={examId} onChange={(e) => { setExamId(e.target.value); setCenterId(''); }} options={exams.map((e) => ({ v: e.id, l: `${e.code} · ${e.status}` }))} placeholder="Choose an exam" /></Field>
         <Field label="Centre"><Select value={centerId} onChange={(e) => setCenterId(e.target.value)} options={availableCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder={centersLoading ? 'Loading centres…' : 'Choose a centre'} /></Field>
         <Field label="How many" help={`${free} unassigned candidate(s) available`}><Input type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} placeholder="Blank = all" /></Field>
-        <div className="field"><span className="field-label">&nbsp;</span><button className="btn primary" disabled={!examId || !centerId || busy || !may('candidate.manage')} onClick={() => run(async () => {
-          const m = await assignToExam(user, { tenantId, examId, centerId, count });
-          onDone?.(); return m;
+        <div className="field"><span className="field-label">&nbsp;</span><button className="btn primary" disabled={!examId || !centerId || busy || rosterLoading || !!rosterError || !may('candidate.manage')} onClick={() => run(async () => {
+          try {
+            const m = await assignToExam(user, { tenantId, examId, centerId, count });
+            onDone?.(); return m;
+          } catch (error) {
+            onDone?.();
+            throw error;
+          }
         })}>Assign candidates</button></div>
       </div>
     </Card>
@@ -112,7 +114,7 @@ function AddCandidate({ tenantId, onClose, onDone }) {
   const { msg, setMsg, run, busy } = useFlash();
   const [v, setV] = useState({
     rollNo: '', name: '', email: '', personalEmail: '', phoneNumber: '',
-    course: 'B.Tech Computer Science and Engineering', batch: '2026', semester: 1, section: 'A',
+    course: '', batch: '', semester: '', section: '',
     accommodations: '', notes: ''
   });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
@@ -130,10 +132,10 @@ function AddCandidate({ tenantId, onClose, onDone }) {
         <Field label="Institutional email" required><Input type="email" value={v.email} onChange={(e) => set('email', e.target.value)} maxLength={120} placeholder="aarav@vignan.ac.in" /></Field>
         <Field label="Personal email"><Input type="email" value={v.personalEmail} onChange={(e) => set('personalEmail', e.target.value)} maxLength={120} placeholder="aarav.personal@gmail.com" /></Field>
         <Field label="Phone number"><Input value={v.phoneNumber} onChange={(e) => set('phoneNumber', e.target.value)} maxLength={20} placeholder="+919876543210" /></Field>
-        <Field label="Course / Program"><Input value={v.course} onChange={(e) => set('course', e.target.value)} maxLength={80} /></Field>
-        <Field label="Batch"><Input value={v.batch} onChange={(e) => set('batch', e.target.value)} maxLength={20} placeholder="2026" /></Field>
-        <Field label="Semester"><Input type="number" min={1} max={12} value={v.semester} onChange={(e) => set('semester', e.target.value)} /></Field>
-        <Field label="Section"><Input value={v.section} onChange={(e) => set('section', e.target.value)} maxLength={10} /></Field>
+        <Field label="Course / Program" required><Input value={v.course} onChange={(e) => set('course', e.target.value)} maxLength={128} /></Field>
+        <Field label="Batch" required><Input value={v.batch} onChange={(e) => set('batch', e.target.value)} maxLength={64} /></Field>
+        <Field label="Semester" required><Input type="number" min={1} max={12} value={v.semester} onChange={(e) => set('semester', e.target.value)} /></Field>
+        <Field label="Section" required><Input value={v.section} onChange={(e) => set('section', e.target.value)} maxLength={32} /></Field>
         <Field label="Accommodations"><Input value={v.accommodations} onChange={(e) => set('accommodations', e.target.value)} maxLength={250} placeholder="e.g. Extra 15 mins for visual fatigue" /></Field>
         <div className="full-width"><Field label="Administrative notes"><Textarea rows={2} value={v.notes} onChange={(e) => set('notes', e.target.value)} placeholder="e.g. Dean honors list, transfer credits verified" /></Field></div>
       </form>
@@ -146,9 +148,10 @@ function CandidateDetail({ c, exams, centers, devices, policies, releases, onClo
   const checks = readinessFor(c, { devices, exams, policies, releases });
   const exam = exams.find((e) => e.id === c.examId);
   const center = centers.find((x) => x.id === c.centerId);
-  const { data: s360, loading } = useLoad(() => getStudent360(c), [c?.id]);
+  const { data: s360, loading, error: detailError } = useLoad(() => getStudent360(c), [c?.id]);
 
-  const p = s360?.profile || c;
+  const p = s360?.profile;
+  const detailErrors = Object.entries(s360?.errors || {}).map(([section, message]) => `${section}: ${message}`);
 
   return (
     <Modal title={`${c.rollNo} · ${c.name}`} desc="Student 360: canonical profile, multi-semester enrollments, eligibility, device trust & sessions." onClose={onClose} wide footer={<button className="btn" onClick={onClose}>Close</button>}>
@@ -164,23 +167,25 @@ function CandidateDetail({ c, exams, centers, devices, policies, releases, onClo
           { key: 'history', label: 'Audit Trail', count: s360?.history?.length || 0 },
         ]}
       />
+      {detailError && <Alert tone="danger" title="Student details unavailable">{detailError.message || String(detailError)}</Alert>}
+      {detailErrors.length > 0 && <Alert tone="danger" title="Some student details could not be loaded">{detailErrors.join(' ')}</Alert>}
 
       {tab === 'overview' && (
         <div className="stack gap">
           <KeyValue cols={3} items={[
-            ['Roll number', p.roll_no || p.rollNo || c.rollNo],
-            ['Full name', p.name || c.name],
-            ['Display name', p.display_name || p.name || c.name],
-            ['Institutional email', p.email || c.email],
-            ['Personal email', p.personal_email || p.personalEmail || '—'],
-            ['Phone number', p.phone_number || p.phoneNumber || '—'],
-            ['Program / Course', p.course || 'B.Tech CSE'],
-            ['Batch', p.batch || '2026'],
-            ['Current semester', `Sem ${p.semester || 1} (${p.section || 'A'})`],
-            ['Academic status', <Badge key="stat" value={p.academic_status || p.status || 'active'} tone={p.academic_status === 'suspended' ? 'red' : 'green'} />],
-            ['Administrative hold', p.administrative_hold ? <Badge key="hold" value="ON HOLD" tone="red" /> : <Badge key="nohold" value="CLEAR" tone="green" />],
-            ['Verification status', <Badge key="ver" value={p.verification_status || c.verification_status || c.identity || 'UNVERIFIED'} tone={p.verification_status === 'VERIFIED' ? 'green' : 'amber'} />],
-            ['Accommodations', p.accommodations || 'None requested'],
+            ['Roll number', p?.roll_no || '—'],
+            ['Full name', p?.name || '—'],
+            ['Display name', p?.display_name || '—'],
+            ['Institutional email', p?.email || '—'],
+            ['Personal email', p?.personal_email || '—'],
+            ['Phone number', p?.phone_number || '—'],
+            ['Program / Course', p?.course || '—'],
+            ['Batch', p?.batch || '—'],
+            ['Current semester', p?.semester != null ? `Sem ${p.semester} (${p.section || '—'})` : '—'],
+            ['Academic status', p?.academic_status ? <Badge key="stat" value={p.academic_status} tone={p.academic_status === 'suspended' ? 'red' : 'green'} /> : '—'],
+            ['Administrative hold', p ? (p.administrative_hold ? <Badge key="hold" value="ON HOLD" tone="red" /> : <Badge key="nohold" value="CLEAR" tone="green" />) : '—'],
+            ['Verification status', p?.verification_status ? <Badge key="ver" value={p.verification_status} tone={p.verification_status === 'VERIFIED' ? 'green' : 'amber'} /> : '—'],
+            ['Accommodations', p?.accommodations || '—'],
             ['Assigned exam', exam ? `${exam.code} · ${exam.title}` : '—'],
             ['Assigned seat', c.seat ? `${center?.code || 'Centre'} · Seat ${c.seat}` : '—'],
           ]} />
@@ -312,30 +317,62 @@ export default function CandidatesPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const may = usePerm();
-  const localCandidates = useCol('candidates');
+  const {
+    data: backendExams,
+    loading: examsLoading,
+    error: examsError,
+  } = useLoad(async () => {
+    const response = await Api.listExaminations();
+    const rows = response?.examinations || response;
+    if (!Array.isArray(rows)) throw new Error('The examination-list endpoint returned an invalid response.');
+    return rows
+      .filter((exam) => exam.institution_id === tenantId)
+      .map((exam) => {
+        let config = exam.exam_config || exam.exam_config_json || {};
+        if (typeof config === 'string') {
+          try { config = JSON.parse(config); } catch { config = {}; }
+        }
+        return {
+          ...exam,
+          id: exam.exam_id || exam.id,
+          tenantId: exam.institution_id,
+          code: exam.code,
+          title: exam.name || exam.title,
+          status: exam.status,
+          centerIds: Array.isArray(exam.center_ids) ? exam.center_ids : Array.isArray(config.centerIds) ? config.centerIds : [],
+          policyId: exam.policy_id || config.policyId || null,
+        };
+      });
+  }, [tenantId]);
+  const exams = backendExams || [];
   const [backendCandidates, setBackendCandidates] = useState(null);
   const [loadingBackend, setLoadingBackend] = useState(false);
-  const [fetchError, setFetchError] = useState(false);
+  const [fetchError, setFetchError] = useState('');
 
   const fetchCandidates = useCallback(async () => {
+    if (!backendExams) return;
     try {
       setLoadingBackend(true);
+      setFetchError('');
       const res = await Api.listStudents();
-      const list = res?.students || (Array.isArray(res) ? res : []);
-      const localMap = new Map((localCandidates || []).map((c) => [c.rollNo || c.id, c]));
+      if (!Array.isArray(res?.students)) throw new Error('The student-directory endpoint returned an invalid response.');
+      const list = res.students.filter((student) => student.institution_id === tenantId);
+      const assignments = (await Promise.all(exams.map((exam) => Api.listExaminationStudents(exam.id))))
+        .flat();
+      const assignmentByStudent = new Map(assignments.map((assignment) => [assignment.student_id, assignment]));
       const mapped = list.map((s) => {
-        const local = localMap.get(s.roll_no) || localMap.get(s.id) || {};
+        const assignment = assignmentByStudent.get(s.id);
         return {
           id: s.id,
-          tenantId: s.institution_id || tenantId,
+          tenantId: s.institution_id,
           rollNo: s.roll_no,
           name: s.name,
           displayName: s.display_name || s.name,
           email: s.email,
-          course: s.course || 'B.Tech CSE',
-          batch: s.batch || '2026',
-          semester: s.semester || 1,
-          section: s.section || 'A',
+          course: s.course || '',
+          batch: s.batch || '',
+          semester: s.semester ?? null,
+          section: s.section || '',
           academic_status: s.academic_status || 'active',
           attendance_pct: s.attendance_pct ?? 100,
           administrative_hold: !!s.administrative_hold,
@@ -344,34 +381,33 @@ export default function CandidatesPage() {
             ? 'verified'
             : (s.verification_status || '').toLowerCase() === 'rejected'
               ? 'rejected'
-              : (local.identity || 'pending'),
-          examId: local.examId || null,
-          centerId: local.centerId || null,
-          seat: local.seat || null,
-          personalEmail: s.personal_email || local.personalEmail || '',
-          phoneNumber: s.phone_number || local.phoneNumber || '',
-          accommodations: s.accommodations || local.accommodations || '',
-          notes: s.notes || local.notes || '',
-          createdAt: s.created_at || local.createdAt || Date.now(),
+              : (s.verification_status || '').toLowerCase() === 'exempt'
+                ? 'exempt'
+                : 'pending',
+          examId: assignment?.exam_id || null,
+          centerId: assignment?.center_id || null,
+          seat: assignment?.seat_no || null,
+          personalEmail: s.personal_email || '',
+          phoneNumber: s.phone_number || '',
+          accommodations: s.accommodations || '',
+          notes: s.notes || '',
+          createdAt: s.created_at || null,
         };
       });
       setBackendCandidates(mapped);
-      for (const c of mapped) {
-        await put('candidates', c).catch(() => {});
-      }
-    } catch {
-      setFetchError(true);
+    } catch (error) {
+      setBackendCandidates([]);
+      setFetchError(error.message || 'Unable to load candidates from the backend.');
     } finally {
       setLoadingBackend(false);
     }
-  }, [localCandidates, tenantId]);
+  }, [backendExams, exams, tenantId]);
 
   useEffect(() => {
-    fetchCandidates();
-  }, [fetchCandidates]);
+    if (backendExams && !examsLoading && !examsError) fetchCandidates();
+  }, [backendExams, examsError, examsLoading, fetchCandidates]);
 
-  const candidates = backendCandidates ?? localCandidates;
-  const exams = useCol('exams');
+  const candidates = backendCandidates || [];
   const centers = useCol('centers');
   const devices = useCol('devices');
   const policies = useCol('policies');
@@ -394,7 +430,7 @@ export default function CandidatesPage() {
       title="Candidates"
       desc="Enrolment, seat allocation, identity verification and readiness for every candidate."
       actions={<>
-        <button className="btn" disabled={busy || loadingBackend} onClick={fetchCandidates}>
+        <button className="btn" disabled={busy || loadingBackend || examsLoading || !!examsError} onClick={fetchCandidates}>
           <Icon name="refresh" size={14} /> Refresh
         </button>
         <button className="btn" disabled={busy || !may('candidate.verify')} onClick={() => run(async () => {
@@ -409,11 +445,10 @@ export default function CandidatesPage() {
       </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
-      {fetchError && !backendCandidates && (
-        <Alert tone="warn" title="Using cached candidate roster">
-          Live student directory from backend server could not be reached. Showing local cached candidates.
-        </Alert>
-      )}
+      {examsError && <Alert tone="danger" title="Live examination list unavailable">{examsError.message || 'Unable to load examinations from the backend.'}</Alert>}
+      {examsLoading && <Loading />}
+      {fetchError && <Alert tone="danger" title="Live candidate roster unavailable">{fetchError}</Alert>}
+      {loadingBackend && <Loading />}
       <StatGrid cols={4}>
         <Stat label="Candidates" value={stats.total} icon="candidate" />
         <Stat label="Assigned" value={stats.assigned} icon="exam" sub={`${stats.total - stats.assigned} unassigned`} />
@@ -423,7 +458,7 @@ export default function CandidatesPage() {
 
       <div className="two">
         <ImportPanel tenantId={tenantId} onDone={fetchCandidates} />
-        <AssignPanel tenantId={tenantId} onDone={fetchCandidates} />
+        <AssignPanel tenantId={tenantId} exams={exams.filter((exam) => ['draft', 'configured', 'pending_approval', 'approved'].includes(exam.status))} candidates={candidates} rosterLoading={loadingBackend || examsLoading} rosterError={fetchError || examsError?.message} onDone={fetchCandidates} />
       </div>
 
       <Card title="Candidate register">

@@ -1,6 +1,5 @@
-import { all, get, put, putMany } from '../../core/db/db';
 import { clean } from '../../core/security/sanitize';
-import { id, need, fail, log, seatLabel, assertScope, requireReason } from '../../core/services/common';
+import { need, fail, log, seatLabel, assertScope, requireReason } from '../../core/services/common';
 import { verifyPolicy } from '../policies/service';
 import * as Api from '../../core/api/services';
 import { listCenters } from '../centers/service';
@@ -18,7 +17,7 @@ export function parseCsv(text) {
   if (cell || row.length) { row.push(cell); rows.push(row); }
   return rows.filter((r) => r.some((x) => x.trim()));
 }
-export const CSV_TEMPLATE = 'rollNo,name,email\nNQT26100001,Aarav Sharma,aarav.sharma@example.edu\nNQT26100002,Diya Nair,diya.nair@example.edu';
+export const CSV_TEMPLATE = 'rollNo,name,email,course,batch,semester,section\nNQT26100001,Aarav Sharma,aarav.sharma@example.edu,BSc Computer Science,2026,1,A\nNQT26100002,Diya Nair,diya.nair@example.edu,BSc Mathematics,2026,1,B';
 export const validate = ({ rollNo, name, email }) => {
   const e = [];
   if (!/^[A-Z0-9]{6,14}$/.test(rollNo)) e.push('roll number must be 6–14 letters/digits');
@@ -30,54 +29,96 @@ export async function previewImport(tenantId, text) {
   if (text.length > 1_000_000) fail('File is larger than 1 MB.');
   const rows = parseCsv(text); if (rows.length < 2) fail('The CSV needs a header and at least one row.');
   const head = rows[0].map((h) => h.trim().toLowerCase()); const ix = (k) => head.indexOf(k);
-  if (['rollno', 'name', 'email'].some((k) => ix(k) < 0)) fail('Header must contain rollNo, name, email.');
+  if (['rollno', 'name', 'email', 'course', 'batch', 'semester', 'section'].some((k) => ix(k) < 0)) {
+    fail('Header must contain rollNo, name, email, course, batch, semester, and section.');
+  }
   if (rows.length > 5001) fail('Import up to 5,000 rows at a time.');
-  const have = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.rollNo));
-  const emails = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.email));
-  const valid = [], invalid = [], seen = new Set();
+  const valid = [], invalid = [], seen = new Set(), seenEmails = new Set();
   rows.slice(1).forEach((r, i) => {
-    const c = { rollNo: clean(r[ix('rollno')], 20).toUpperCase(), name: clean(r[ix('name')], 80), email: clean(r[ix('email')], 120).toLowerCase() };
+    const c = {
+      line: i + 2,
+      rollNo: clean(r[ix('rollno')], 20).toUpperCase(),
+      name: clean(r[ix('name')], 80),
+      email: clean(r[ix('email')], 120).toLowerCase(),
+      course: clean(r[ix('course')], 128),
+      batch: clean(r[ix('batch')], 64),
+      semester: clean(r[ix('semester')], 8),
+      section: clean(r[ix('section')], 32),
+    };
     const errs = validate(c);
-    if (have.has(c.rollNo) || seen.has(c.rollNo)) errs.push('duplicate roll number');
-    if (c.email && emails.has(c.email)) errs.push('duplicate email');
+    if (!c.course) errs.push('course is required');
+    if (!c.batch) errs.push('batch is required');
+    if (!/^[1-9]\d?$/.test(c.semester) || Number(c.semester) > 12) errs.push('semester must be 1–12');
+    if (!c.section) errs.push('section is required');
+    if (seen.has(c.rollNo)) errs.push('duplicate roll number in this file');
+    if (seenEmails.has(c.email)) errs.push('duplicate email in this file');
     seen.add(c.rollNo);
+    seenEmails.add(c.email);
     errs.length ? invalid.push({ line: i + 2, ...c, errs }) : valid.push(c);
   });
-  return { valid, invalid, total: rows.length - 1 };
+  if (!valid.length) return { valid, invalid, total: rows.length - 1, jobId: '' };
+  const preview = await Api.previewStudentImport({
+    institution_id: tenantId,
+    filename: 'bulk_import.csv',
+    rows: valid.map(({ rollNo, name, email, course, batch, semester, section }) => ({
+      roll_no: rollNo,
+      name,
+      email,
+      course,
+      batch,
+      semester,
+      section,
+    })),
+  });
+  if (!preview?.job_id) fail('Backend did not create an import preview.');
+  const results = await Api.getStudentImportResults(preview.job_id);
+  if (!Array.isArray(results?.results)) fail('Backend returned invalid import preview results.');
+  const serverValid = [];
+  for (const result of results.results) {
+    const candidate = valid[result.row - 1];
+    if (!candidate) continue;
+    if (result.status === 'CREATED') serverValid.push(candidate);
+    else invalid.push({
+      ...candidate,
+      errs: [result.error_reason || 'Rejected by the backend import validator.'],
+    });
+  }
+  return { valid: serverValid, invalid, total: rows.length - 1, jobId: preview.job_id };
 }
 export async function commitImport(a, tenantId, valid) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
+  if (!valid?.jobId || !valid.valid?.length) fail('A valid backend import preview is required before importing.');
+  let result;
   try {
-    const csvLines = ['roll_no,name,email,course,semester,section'];
-    valid.forEach((v) => {
-      csvLines.push(`${v.rollNo},${v.name},${v.email},B.Tech CSE,1,A`);
-    });
-    const previewRes = await Api.previewStudentImport({
-      institution_id: tenantId,
-      filename: 'bulk_import.csv',
-      csv_data: csvLines.join('\n'),
-    });
-    if (previewRes?.job_id) {
-      await Api.confirmStudentImport(previewRes.job_id);
-    }
+    result = await Api.confirmStudentImport(valid.jobId);
   } catch (err) {
     fail(err.message || 'Backend bulk import failed.');
-  }  const have = new Set((await all('candidates')).filter((c) => c.tenantId === tenantId).map((c) => c.rollNo));
-  const fresh = valid.filter((c) => !have.has(c.rollNo));
-  await putMany('candidates', fresh.map((c) => ({ id: id('cnd'), tenantId, ...c, examId: null, centerId: null, seat: null, identity: 'pending', status: 'registered', verification_status: 'UNVERIFIED', exceptions: [], corrections: [], createdAt: Date.now() })));
-  await log(a, 'CANDIDATES_IMPORTED', `${fresh.length} of ${valid.length}`);
-  return `${fresh.length} candidate(s) imported.`;
+  }
+  const imported = Number(result?.imported_count);
+  const skipped = Number(result?.duplicate_count);
+  if (result?.status !== 'completed' || !Number.isInteger(imported) || !Number.isInteger(skipped) ||
+      imported < 0 || skipped < 0 || imported + skipped !== valid.valid.length) {
+    fail('The backend returned an incomplete import outcome. Refresh the roster and review the import results.');
+  }
+  await log(a, 'CANDIDATES_IMPORTED', `${imported} imported; ${skipped} skipped after preview`);
+  return skipped
+    ? `${imported} candidate(s) imported; ${skipped} skipped because a duplicate appeared after preview.`
+    : `${imported} candidate(s) imported.`;
 }
 
 export async function addCandidate(a, input) {
   need(a, 'candidate.manage'); assertScope(a, input.tenantId);
-  const { tenantId, rollNo, name, email, personalEmail = '', phoneNumber = '', course = 'B.Tech CSE', batch = '2026', semester = 1, section = 'A', accommodations = '', notes = '' } = input;
+  const { tenantId, rollNo, name, email, personalEmail = '', phoneNumber = '', course, batch, semester, section, accommodations = '', notes = '' } = input;
   const c = { rollNo: clean(rollNo, 20).toUpperCase(), name: clean(name, 80), email: clean(email, 120).toLowerCase() };
   const errs = validate(c); if (errs.length) fail('Fix: ' + errs.join('; ') + '.');
-  if ((await all('candidates')).some((x) => x.tenantId === tenantId && x.rollNo === c.rollNo)) fail('That roll number already exists.');
-  if ((await all('candidates')).some((x) => x.tenantId === tenantId && x.email === c.email)) fail('That email is already registered.');
-
-  let backendStudentId = null;
+  const courseValue = clean(course, 128);
+  const batchValue = clean(batch, 64);
+  const sectionValue = clean(section, 32);
+  if (!courseValue) fail('Enter the candidate course or program.');
+  if (!batchValue) fail('Enter the candidate batch.');
+  if (!Number.isInteger(Number(semester)) || Number(semester) < 1 || Number(semester) > 12) fail('Semester must be 1–12.');
+  if (!sectionValue) fail('Enter the candidate section.');
+  let backendStudentId;
   try {
     const res = await Api.createStudent({
       institution_id: tenantId,
@@ -87,10 +128,10 @@ export async function addCandidate(a, input) {
       email: c.email,
       personal_email: personalEmail,
       phone_number: phoneNumber,
-      course,
-      batch,
-      semester: Number(semester) || 1,
-      section,
+      course: courseValue,
+      batch: batchValue,
+      semester: Number(semester),
+      section: sectionValue,
       accommodations,
       notes,
     });
@@ -100,100 +141,127 @@ export async function addCandidate(a, input) {
     fail(err.message || 'Backend student creation failed. Candidate not saved.');
   }
 
-  const candRecord = {
-    id: backendStudentId || id('cnd'),
-    tenantId,
-    ...c,
-    personalEmail,
-    phoneNumber,
-    course,
-    batch,
-    semester: Number(semester) || 1,
-    section,
-    accommodations,
-    notes,
-    examId: null,
-    centerId: null,
-    seat: null,
-    identity: 'pending',
-    status: 'registered',
-    verification_status: 'UNVERIFIED',
-    exceptions: [],
-    corrections: [],
-    createdAt: Date.now()
-  };
-  await put('candidates', candRecord);
-  await put('students', candRecord).catch(() => {});
   await log(a, 'CANDIDATE_ADDED', c.rollNo);
   return `${c.rollNo} added.`;
 }
 export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
-  const ex = await get('exams', examId);
-  const ce = (await listCenters(tenantId)).find((center) => center.id === centerId);
-  if (!ex || ex.tenantId !== tenantId) fail('Pick an exam.');
-  if (!['draft', 'review', 'approved', 'published'].includes(ex.status)) fail(`Exam is ${ex.status}; assignments are locked.`);
-  if (!ce || !ex.centerIds.includes(centerId)) fail('That center is not part of this exam.');
-  if (ce.status !== 'active') fail('Center is inactive.');
-  const cands = (await all('candidates')).filter((c) => c.tenantId === tenantId);
-  const used = new Set(cands.filter((c) => c.examId === examId && c.centerId === centerId).map((c) => c.seat));
-  const free = []; for (let i = 0; i < ce.capacity; i++) { const s = seatLabel(i); if (!used.has(s)) free.push(s); }
-  const pool = cands.filter((c) => !c.examId); const n = Math.min(Number(count) || pool.length, pool.length);
+  const { ex, ce, students, assignedRows, freeSeats } = await assignmentContext(tenantId, examId, centerId);
+  const assignmentsByStudent = new Map(assignedRows.map((assignment) => [assignment.student_id, assignment]));
+  const pool = students.map((student) => ({
+    ...student,
+    assignment: assignmentsByStudent.get(student.id),
+  })).filter((student) => !student.assignment);
+  const requested = count === '' || count == null ? pool.length : Number(count);
+  if (!Number.isInteger(requested) || requested < 1) fail('Enter a positive whole number of candidates.');
+  if (requested > pool.length) fail(`Only ${pool.length} unassigned candidate(s) are available.`);
+  const n = requested;
   if (n < 1) fail('There are no unassigned candidates.');
-  if (n > free.length) fail(`Only ${free.length} free seat(s) at ${ce.code}.`);
+  if (n > freeSeats.length) fail(`Only ${freeSeats.length} free seat(s) at ${ce.code}.`);
   const selected = pool.slice(0, n);
-  try {
-    for (let i = 0; i < selected.length; i += 1) {
-      await Api.assignExaminationStudent(examId, {
-        student_id: selected[i].id, roll_no: selected[i].rollNo, name: selected[i].name,
-        center_id: centerId, seat_no: free[i],
-      });
-    }
-  } catch (err) {
-    fail(err.message || 'Backend candidate assignment failed. Local roster was not updated.');
-  }
-  await putMany('candidates', selected.map((c, i) => ({ ...c, examId, centerId, seat: free[i], status: 'assigned', assignedAt: Date.now() })));
-  await log(a, 'CANDIDATES_ASSIGNED', `${n} -> ${ex.code} @ ${ce.code}`); return `${n} candidate(s) seated at ${ce.code}.`;
+  await persistAssignments(examId, selected, freeSeats, centerId, ex, ce);
+  await log(a, 'CANDIDATES_ASSIGNED', `${n} -> ${ex.code} @ ${ce.code}`);
+  return `${n} candidate(s) seated at ${ce.code}.`;
 }
 
 export async function assignCandidates(a, { tenantId, examId, centerId, candidateIds }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
-  const ex = await get('exams', examId);
-  const ce = (await listCenters(tenantId)).find((center) => center.id === centerId);
-  if (!ex || ex.tenantId !== tenantId) fail('Pick an exam.');
-  if (!['draft', 'review', 'approved', 'published'].includes(ex.status)) fail(`Exam is ${ex.status}; assignments are locked.`);
-  if (!ce || !ex.centerIds.includes(centerId)) fail('That center is not part of this exam.');
   if (!Array.isArray(candidateIds) || !candidateIds.length) fail('Select at least one candidate.');
-  const cands = (await all('candidates')).filter((c) => c.tenantId === tenantId);
-  const used = new Set(cands.filter((c) => c.examId === examId && c.centerId === centerId).map((c) => c.seat));
-  const free = []; for (let i = 0; i < ce.capacity; i++) { const s = seatLabel(i); if (!used.has(s)) free.push(s); }
-  const pool = cands.filter((c) => candidateIds.includes(c.id));
-  if (pool.length > free.length) fail(`Only ${free.length} free seat(s) at ${ce.code}.`);
-  try {
-    for (let i = 0; i < pool.length; i += 1) {
-      await Api.assignExaminationStudent(examId, {
-        student_id: pool[i].id, roll_no: pool[i].rollNo, name: pool[i].name,
-        center_id: centerId, seat_no: free[i],
-      });
-    }
-  } catch (err) {
-    fail(err.message || 'Backend candidate assignment failed. Local roster was not updated.');
-  }
-  await putMany('candidates', pool.map((c, i) => ({ ...c, examId, centerId, seat: free[i], status: 'assigned', assignedAt: Date.now() })));
+  const { ex, ce, students, assignedRows, freeSeats } = await assignmentContext(tenantId, examId, centerId);
+  const assignmentsByStudent = new Map(assignedRows.map((assignment) => [assignment.student_id, assignment]));
+  const studentsById = new Map(students.map((student) => [student.id, student]));
+  const uniqueIds = [...new Set(candidateIds)];
+  if (uniqueIds.length !== candidateIds.length) fail('The selected candidate list contains duplicates.');
+  const pool = uniqueIds.map((id) => studentsById.get(id));
+  if (pool.some((student) => !student)) fail('One or more selected candidates are not in this institution’s live roster.');
+  if (pool.some((student) => assignmentsByStudent.has(student.id))) fail('One or more selected candidates are already assigned to this examination.');
+  if (pool.length > freeSeats.length) fail(`Only ${freeSeats.length} free seat(s) at ${ce.code}.`);
+  await persistAssignments(examId, pool, freeSeats, centerId, ex, ce);
   await log(a, 'CANDIDATES_ASSIGNED', `${pool.length} -> ${ex.code} @ ${ce.code}`);
   return `${pool.length} candidate(s) assigned to ${ce.code}.`;
+}
+
+async function assignmentContext(tenantId, examId, centerId) {
+  const [examResponse, centerRows, studentResponse, assignedRows] = await Promise.all([
+    Api.getExamination(examId),
+    listCenters(tenantId),
+    Api.listStudents(),
+    Api.listExaminationStudents(examId),
+  ]);
+  const rawExam = examResponse?.examination || examResponse;
+  if (!rawExam || (rawExam.id || rawExam.exam_id) !== examId || rawExam.institution_id !== tenantId) {
+    fail('The selected exam is not available in this institution.');
+  }
+  let config = rawExam.exam_config || rawExam.exam_config_json || {};
+  if (typeof config === 'string') {
+    try { config = JSON.parse(config); } catch { config = {}; }
+  }
+  const ex = {
+    ...rawExam,
+    id: rawExam.id || rawExam.exam_id,
+    tenantId: rawExam.institution_id,
+    code: rawExam.code || rawExam.name || examId,
+    status: rawExam.status,
+    centerIds: Array.isArray(rawExam.center_ids)
+      ? rawExam.center_ids
+      : Array.isArray(config.centerIds) ? config.centerIds : [],
+  };
+  if (!['draft', 'configured', 'pending_approval', 'approved'].includes(ex.status)) {
+    fail(`Exam is ${ex.status || 'unknown'}; assignments are locked.`);
+  }
+  const ce = centerRows.find((center) => center.id === centerId);
+  if (!ce || !ex.centerIds.includes(centerId)) fail('That center is not part of this exam.');
+  if (ce.status !== 'active') fail('Center is inactive.');
+  if (!Number.isInteger(Number(ce.capacity)) || Number(ce.capacity) < 1) fail('The selected center has no valid seat capacity.');
+  if (!Array.isArray(studentResponse?.students)) fail('The live student roster is unavailable.');
+  const students = studentResponse.students.filter((student) => student.institution_id === tenantId);
+  const occupied = new Set(assignedRows.filter((assignment) => assignment.center_id === centerId).map((assignment) => assignment.seat_no));
+  const freeSeats = [];
+  for (let i = 0; i < Number(ce.capacity); i += 1) {
+    const seat = seatLabel(i);
+    if (!occupied.has(seat)) freeSeats.push(seat);
+  }
+  return { ex, ce, students, assignedRows, freeSeats };
+}
+
+async function persistAssignments(examId, students, seats, centerId, exam, center) {
+  const assigned = [];
+  try {
+    for (let i = 0; i < students.length; i += 1) {
+      const student = students[i];
+      await Api.assignExaminationStudent(examId, {
+        student_id: student.id,
+        roll_no: student.roll_no,
+        name: student.name,
+        center_id: centerId,
+        seat_no: seats[i],
+      });
+      assigned.push(student.id);
+    }
+  } catch (err) {
+    const rollbackErrors = [];
+    for (const studentId of [...assigned].reverse()) {
+      try {
+        await Api.unassignExaminationStudent(examId, studentId);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message || String(rollbackError));
+      }
+    }
+    if (rollbackErrors.length) {
+      fail(`Assignment stopped after ${assigned.length} successful request(s); rollback was incomplete (${rollbackErrors.length} error(s)). Refresh and reconcile the live roster before retrying.`);
+    }
+    fail(err.message || `Backend assignment failed for ${exam.code} at ${center.code}; earlier assignments were rolled back.`);
+  }
 }
 
 export async function unassign(a, c, reason) {
   need(a, 'candidate.manage'); assertScope(a, c.tenantId);
   const r = requireReason(reason, 8);
-  if ((await all('sessions')).some((s) => s.candidateId === c.id && s.status === 'in_progress')) fail('The candidate has a session in progress.');
   try {
-    await Api.unassignExaminationStudent(c.examId, c.rollNo);
+    await Api.unassignExaminationStudent(c.examId, c.id);
   } catch (err) {
     fail(err.message || 'Backend candidate unassignment failed. Local roster was not updated.');
   }
-  await put('candidates', { ...c, examId: null, centerId: null, seat: null, status: 'registered' });
   await log(a, 'CANDIDATE_UNASSIGNED', `${c.rollNo}: ${r}`);
   return `${c.rollNo} removed from the exam.`;
 }
@@ -203,18 +271,13 @@ export async function setIdentity(a, c, outcome, reason) {
   const r = requireReason(reason || (outcome === 'verified' ? 'Photo ID matched' : ''), 5);
   try {
     await Api.verifyStudentIdentity(c.id, {
-      status: outcome === 'verified' ? 'VERIFIED' : 'REJECTED',
-      method: 'document',
-      verified_by: a.username || a.name || 'Registrar',
-      evidence_reference: r,
+      status: outcome.toUpperCase(),
+      verification_type: 'document',
       notes: r,
     });
   } catch (err) {
     fail(err.message || 'Backend identity verification failed. Update not saved.');
   }
-  const next = { ...c, identity: outcome, verification_status: outcome === 'verified' ? 'VERIFIED' : 'REJECTED', identityBy: a.id, identityAt: Date.now(), identityNote: r };
-  await put('candidates', next);
-  await put('students', next).catch(() => {});
   await log(a, 'IDENTITY_' + outcome.toUpperCase(), `${c.rollNo}: ${r}`);
   return `${c.rollNo} identity marked ${outcome}.`;
 }
@@ -241,9 +304,6 @@ export async function correctName(a, c, newName, reason) {
   } catch (err) {
     fail(err.message || 'Backend correction request failed.');
   }
-  const next = { ...c, name: nm, corrections: [...(c.corrections || []), { at: Date.now(), by: a.id, from: c.name, to: nm, reason: r }] };
-  await put('candidates', next);
-  await put('students', next).catch(() => {});
   await log(a, 'CANDIDATE_NAME_CORRECTED', `${c.rollNo}: ${r}`);
   return 'Name corrected and the change was recorded.';
 }
@@ -256,9 +316,6 @@ export async function suspendStudent(a, c, reason) {
   } catch (err) {
     fail(err.message || 'Backend suspension failed.');
   }
-  const next = { ...c, academic_status: 'suspended', administrative_hold: true, hold_reason: r };
-  await put('candidates', next);
-  await put('students', next).catch(() => {});
   await log(a, 'STUDENT_SUSPENDED', `${c.rollNo}: ${r}`);
   return `${c.rollNo} suspended.`;
 }
@@ -271,9 +328,6 @@ export async function reactivateStudent(a, c, reason) {
   } catch (err) {
     fail(err.message || 'Backend reactivation failed.');
   }
-  const next = { ...c, academic_status: 'active', administrative_hold: false, hold_reason: '' };
-  await put('candidates', next);
-  await put('students', next).catch(() => {});
   await log(a, 'STUDENT_REACTIVATED', `${c.rollNo}: ${r}`);
   return `${c.rollNo} reactivated.`;
 }
@@ -293,34 +347,44 @@ export async function progressSemester(a, c, newSemester, section = 'A', academi
   } catch (err) {
     fail(err.message || 'Backend semester progression failed.');
   }
-  const next = { ...c, semester: sem, section, academic_year: academicYear };
-  await put('candidates', next);
-  await put('students', next).catch(() => {});
   await log(a, 'STUDENT_PROGRESSED', `${c.rollNo} -> Sem ${sem}`);
   return `${c.rollNo} progressed to Semester ${sem}.`;
 }
 
 export async function getStudent360(c) {
-  try {
-    const [profile, enrollments, eligibility, devices, sessions, history] = await Promise.allSettled([
-      Api.getStudentById(c.id),
-      Api.getStudentEnrollments(c.id),
-      Api.getStudentEligibilityProfile(c.id),
-      Api.getStudentAssignedDevices(c.id),
-      Api.getStudentExamSessions(c.id),
-      Api.getStudentAuditHistory(c.id),
-    ]);
-    return {
-      profile: profile.status === 'fulfilled' ? profile.value?.student : c,
-      enrollments: enrollments.status === 'fulfilled' ? enrollments.value?.enrollments || [] : [],
-      eligibility: eligibility.status === 'fulfilled' ? eligibility.value?.eligibility_records || [] : [],
-      devices: devices.status === 'fulfilled' ? devices.value?.assigned_devices || [] : [],
-      sessions: sessions.status === 'fulfilled' ? sessions.value?.exam_sessions || [] : [],
-      history: history.status === 'fulfilled' ? history.value?.history || [] : [],
-    };
-  } catch (err) {
-    return { profile: c, enrollments: [], eligibility: [], devices: [], sessions: [], history: [] };
-  }
+  const [profile, enrollments, eligibility, devices, sessions, history] = await Promise.allSettled([
+    Api.getStudentById(c.id),
+    Api.getStudentEnrollments(c.id),
+    Api.getStudentEligibilityProfile(c.id),
+    Api.getStudentAssignedDevices(c.id),
+    Api.getStudentExamSessions(c.id),
+    Api.getStudentAuditHistory(c.id),
+  ]);
+  const values = { profile, enrollments, eligibility, devices, sessions, history };
+  const value = (key, field) => {
+    const result = values[key];
+    if (result.status === 'rejected') return null;
+    const records = result.value?.[field];
+    return Array.isArray(records) ? records : null;
+  };
+  const errors = Object.fromEntries(Object.entries(values)
+    .filter(([, result]) => result.status === 'rejected')
+    .map(([key, result]) => [key, result.reason?.message || 'Backend request failed.']));
+  if (profile.status === 'fulfilled' && !profile.value?.student) errors.profile = 'Backend returned no canonical student profile.';
+  if (enrollments.status === 'fulfilled' && !value('enrollments', 'enrollments')) errors.enrollments = 'Backend returned an invalid enrollment response.';
+  if (eligibility.status === 'fulfilled' && !value('eligibility', 'eligibility_records')) errors.eligibility = 'Backend returned an invalid eligibility response.';
+  if (devices.status === 'fulfilled' && !value('devices', 'assigned_devices')) errors.devices = 'Backend returned an invalid device response.';
+  if (sessions.status === 'fulfilled' && !value('sessions', 'exam_sessions')) errors.sessions = 'Backend returned an invalid session response.';
+  if (history.status === 'fulfilled' && !value('history', 'history')) errors.history = 'Backend returned an invalid audit response.';
+  return {
+    profile: profile.status === 'fulfilled' ? profile.value?.student || null : null,
+    enrollments: value('enrollments', 'enrollments') || [],
+    eligibility: value('eligibility', 'eligibility_records') || [],
+    devices: value('devices', 'assigned_devices') || [],
+    sessions: value('sessions', 'exam_sessions') || [],
+    history: value('history', 'history') || [],
+    errors,
+  };
 }
 
 export function readinessFor(c, ctx = {}) {

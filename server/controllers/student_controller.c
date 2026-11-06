@@ -51,24 +51,18 @@ static void stu_send_error(int fd, int code, const char *msg,
     stu_send_json(fd, code, buf, origin, extra, extra_len);
 }
 
-/* Helper to ensure institution exists in tenants table */
-static void ensure_tenant_exists(PGconn *conn, const char *inst_id) {
-    if (!inst_id || !inst_id[0]) return;
+static int tenant_exists(PGconn *conn, const char *inst_id) {
+    if (!conn || !inst_id || !inst_id[0]) return 0;
     const char *tp[1] = { inst_id };
     int tl[1] = { (int)strlen(inst_id) };
-    PGresult *tchk = db_simple(conn, "SELECT id FROM tenants WHERE id = $1", 1, tp, tl);
-    if (!tchk || PQntuples(tchk) == 0) {
-        char t_code[64];
-        snprintf(t_code, sizeof(t_code), "T_%ld_%d", (long)time(NULL), rand() % 10000);
-        const char *t_ins[3] = { inst_id, inst_id, t_code };
-        int t_len[3] = { (int)strlen(inst_id), (int)strlen(inst_id), (int)strlen(t_code) };
-        PGresult *ti = db_simple(conn,
-            "INSERT INTO tenants (id, name, code, domains, branding, notification_prefs, exam_defaults, security, history, created_at) "
-            "VALUES ($1, $2, $3, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-            "ON CONFLICT (id) DO NOTHING", 3, t_ins, t_len);
-        if (ti) PQclear(ti);
+    PGresult *result = db_simple(conn, "SELECT 1 FROM tenants WHERE id = $1", 1, tp, tl);
+    if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
+        if (result) PQclear(result);
+        return -1;
     }
-    if (tchk) PQclear(tchk);
+    int exists = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1;
+    if (result) PQclear(result);
+    return exists;
 }
 
 void student_handle(int client_fd, const char *method, const char *path,
@@ -84,9 +78,21 @@ void student_handle(int client_fd, const char *method, const char *path,
         stu_send_error(client_fd, 401, "Authentication required", origin, extra_headers, extra_len);
         return;
     }
-    int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
-                    strcmp(sess.username, "admin") == 0 ||
-                    strcmp(sess.username, "root") == 0));
+    int is_owner = auth_rc == 0 && sess.role == ROLE_PLATFORM_OWNER;
+    if (is_candidate &&
+        (strcmp(method, "GET") != 0 ||
+         strcmp(path, "/api/v1/students") == 0 ||
+         strcmp(path, "/api/v1/admin/students") == 0 ||
+         strncmp(path, "/api/v1/student-imports", 23) == 0)) {
+        stu_send_error(client_fd, 403, "Candidates cannot manage or enumerate the institutional roster", origin, extra_headers, extra_len);
+        return;
+    }
+    if (!is_candidate && strcmp(method, "GET") != 0 &&
+        sess.role != ROLE_PLATFORM_OWNER && sess.role != ROLE_INSTITUTION_ADMIN &&
+        sess.role != ROLE_EXAM_MANAGER) {
+        stu_send_error(client_fd, 403, "Student management permission required", origin, extra_headers, extra_len);
+        return;
+    }
 
     PGconn *conn = db_acquire();
     if (!conn) {
@@ -146,8 +152,32 @@ void student_handle(int client_fd, const char *method, const char *path,
             stu_send_error(client_fd, 400, "roll_no and name are required", origin, extra_headers, extra_len);
             return;
         }
+        if (email[0]) {
+            PGresult *email_check = db_simple(conn,
+                "SELECT 1 FROM students WHERE institution_id=$1 AND lower(email)=lower($2) LIMIT 1",
+                2, (const char *[]){ inst_id, email },
+                (int[]){ (int)strlen(inst_id), (int)strlen(email) });
+            int email_query_ok = email_check && PQresultStatus(email_check) == PGRES_TUPLES_OK;
+            int email_exists = email_query_ok && PQntuples(email_check) > 0;
+            if (email_check) PQclear(email_check);
+            if (!email_query_ok || email_exists) {
+                db_release(conn, 0);
+                stu_send_error(client_fd, email_query_ok ? 409 : 503,
+                    email_query_ok ? "A student with this email already exists in this institution" :
+                                     "Student email lookup failed",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+        }
 
-        ensure_tenant_exists(conn, inst_id);
+        int tenant_status = tenant_exists(conn, inst_id);
+        if (tenant_status != 1) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, tenant_status < 0 ? 503 : 404,
+                tenant_status < 0 ? "Institution lookup failed" : "Institution does not exist",
+                origin, extra_headers, extra_len);
+            return;
+        }
 
         if (!sid[0]) {
             snprintf(sid, sizeof(sid), "stu_%ld_%d", (long)time(NULL), rand() % 10000);
@@ -175,18 +205,11 @@ void student_handle(int client_fd, const char *method, const char *path,
             "created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::int, $14, $15, $16::int, $17, $18, $19, $20, $21, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-            "ON CONFLICT (institution_id, roll_no) DO UPDATE SET "
-            "name = EXCLUDED.name, display_name = EXCLUDED.display_name, email = EXCLUDED.email, "
-            "personal_email = EXCLUDED.personal_email, phone_number = EXCLUDED.phone_number, course = EXCLUDED.course, "
-            "department_id = EXCLUDED.department_id, campus_id = EXCLUDED.campus_id, batch = EXCLUDED.batch, "
-            "semester = EXCLUDED.semester, section = EXCLUDED.section, academic_status = EXCLUDED.academic_status, "
-            "attendance_pct = EXCLUDED.attendance_pct, prerequisites_completed = EXCLUDED.prerequisites_completed, "
-            "administrative_hold = EXCLUDED.administrative_hold, hold_reason = EXCLUDED.hold_reason, "
-            "accommodations = EXCLUDED.accommodations, notes = EXCLUDED.notes, "
-            "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
+            "ON CONFLICT (institution_id, roll_no) DO NOTHING "
             "RETURNING id", 21, p, l);
 
         int ok = (r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0);
+        int duplicate = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 0;
         if (ok) {
             strncpy(sid, PQgetvalue(r, 0, 0), sizeof(sid) - 1);
         }
@@ -194,7 +217,9 @@ void student_handle(int client_fd, const char *method, const char *path,
 
         if (!ok) {
             db_release(conn, 0);
-            stu_send_error(client_fd, 500, "Failed to provision student record", origin, extra_headers, extra_len);
+            stu_send_error(client_fd, duplicate ? 409 : 500,
+                duplicate ? "A student with this roll number already exists" : "Failed to provision student record",
+                origin, extra_headers, extra_len);
             return;
         }
 
@@ -238,13 +263,15 @@ void student_handle(int client_fd, const char *method, const char *path,
 
         if (is_owner) {
             res = PQexec(conn,
-                "SELECT id, institution_id, roll_no, name, display_name, email, course, batch, semester, "
-                "section, academic_status, attendance_pct, administrative_hold, verification_status "
+                "SELECT id, institution_id, roll_no, name, display_name, email, personal_email, phone_number, "
+                "course, batch, semester, section, academic_status, attendance_pct, administrative_hold, "
+                "verification_status, accommodations, notes, created_at "
                 "FROM students ORDER BY roll_no ASC");
         } else {
             res = db_simple(conn,
-                "SELECT id, institution_id, roll_no, name, display_name, email, course, batch, semester, "
-                "section, academic_status, attendance_pct, administrative_hold, verification_status "
+                "SELECT id, institution_id, roll_no, name, display_name, email, personal_email, phone_number, "
+                "course, batch, semester, section, academic_status, attendance_pct, administrative_hold, "
+                "verification_status, accommodations, notes, created_at "
                 "FROM students WHERE institution_id = $1 ORDER BY roll_no ASC", 1, pvals, lens);
         }
 
@@ -261,18 +288,21 @@ void student_handle(int client_fd, const char *method, const char *path,
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
             int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
+                char escaped[18][512];
+                for (int j = 0; j < 18; j++) ctrl_json_escape(PQgetvalue(res, i, j), escaped[j], sizeof(escaped[j]));
                 if (i > 0) pos += snprintf(json + pos, 262144 - pos, ",");
                 pos += snprintf(json + pos, 262144 - pos,
                     "{\"id\":\"%s\",\"institution_id\":\"%s\",\"roll_no\":\"%s\",\"name\":\"%s\","
-                    "\"display_name\":\"%s\",\"email\":\"%s\",\"course\":\"%s\",\"batch\":\"%s\","
-                    "\"semester\":%s,\"section\":\"%s\",\"academic_status\":\"%s\",\"attendance_pct\":%s,"
-                    "\"administrative_hold\":%s,\"verification_status\":\"%s\"}",
-                    PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
-                    PQgetvalue(res, i, 3), PQgetvalue(res, i, 4), PQgetvalue(res, i, 5),
-                    PQgetvalue(res, i, 6), PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
-                    PQgetvalue(res, i, 9), PQgetvalue(res, i, 10), PQgetvalue(res, i, 11),
-                    strcmp(PQgetvalue(res, i, 12), "t") == 0 ? "true" : "false",
-                    PQgetvalue(res, i, 13));
+                    "\"display_name\":\"%s\",\"email\":\"%s\",\"personal_email\":\"%s\","
+                    "\"phone_number\":\"%s\",\"course\":\"%s\",\"batch\":\"%s\",\"semester\":%s,"
+                    "\"section\":\"%s\",\"academic_status\":\"%s\",\"attendance_pct\":%s,"
+                    "\"administrative_hold\":%s,\"verification_status\":\"%s\","
+                    "\"accommodations\":\"%s\",\"notes\":\"%s\",\"created_at\":%s}",
+                    escaped[0], escaped[1], escaped[2], escaped[3], escaped[4], escaped[5],
+                    escaped[6], escaped[7], escaped[8], escaped[9], PQgetvalue(res, i, 10),
+                    escaped[11], escaped[12], PQgetvalue(res, i, 13),
+                    strcmp(PQgetvalue(res, i, 14), "t") == 0 ? "true" : "false",
+                    escaped[15], escaped[16], escaped[17], PQgetvalue(res, i, 18));
             }
         }
         if (res) PQclear(res);
@@ -372,7 +402,7 @@ void student_handle(int client_fd, const char *method, const char *path,
         PQclear(s_res);
 
         /* Multi-tenant isolation check */
-        if (!is_owner && sess.institution_id[0] && strcmp(s_inst, sess.institution_id) != 0) {
+        if (!is_owner && (!sess.institution_id[0] || strcmp(s_inst, sess.institution_id) != 0)) {
             db_release(conn, 0);
             stu_send_error(client_fd, 403, "Access to other institution's student records is prohibited", origin, extra_headers, extra_len);
             return;
@@ -450,15 +480,36 @@ void student_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "status", v_stat, sizeof(v_stat));
             ctrl_json_string(body, "verification_type", v_type, sizeof(v_type));
             ctrl_json_string(body, "notes", notes, sizeof(notes));
+            if ((strcmp(v_stat, "VERIFIED") != 0 && strcmp(v_stat, "REJECTED") != 0 &&
+                 strcmp(v_stat, "EXEMPT") != 0) || !v_type[0]) {
+                db_release(conn, 0);
+                stu_send_error(client_fd, 400, "A supported verification status and verification_type are required",
+                               origin, extra_headers, extra_len);
+                return;
+            }
 
-            /* Update student verification_status */
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Unable to begin identity verification", origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
             const char *up[2] = { v_stat, s_pk };
             int ul[2] = { (int)strlen(v_stat), (int)strlen(s_pk) };
             PGresult *ur = db_simple(conn,
                 "UPDATE students SET verification_status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up, ul);
+            int student_updated = ur && PQresultStatus(ur) == PGRES_COMMAND_OK &&
+                                  strcmp(PQcmdTuples(ur), "1") == 0;
             if (ur) PQclear(ur);
+            if (!student_updated) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Student verification status could not be updated", origin, extra_headers, extra_len);
+                return;
+            }
 
-            /* Insert verification record */
             char vid[64];
             snprintf(vid, sizeof(vid), "vrf_%ld_%d", (long)time(NULL), rand() % 10000);
             const char *vp[5] = { vid, s_pk, v_type, v_stat, sess.username };
@@ -467,7 +518,23 @@ void student_handle(int client_fd, const char *method, const char *path,
             PGresult *vr = db_simple(conn,
                 "INSERT INTO student_verification_records (id, student_id, verification_type, status, verifier_id, verified_at) "
                 "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, vp, vl);
+            int verification_saved = vr && PQresultStatus(vr) == PGRES_COMMAND_OK;
             if (vr) PQclear(vr);
+            if (!verification_saved) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Identity verification evidence could not be saved", origin, extra_headers, extra_len);
+                return;
+            }
+            PGresult *commit = PQexec(conn, "COMMIT");
+            int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!committed) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 1);
+                stu_send_error(client_fd, 503, "Identity verification transaction failed", origin, extra_headers, extra_len);
+                return;
+            }
 
             stu_audit_log(conn, s_pk, s_inst, sess.username, "STUDENT_VERIFIED", v_stat);
             db_release(conn, 0);
@@ -856,49 +923,120 @@ void student_handle(int client_fd, const char *method, const char *path,
         char decision[32] = "approved", review_notes[256] = "";
         ctrl_json_string(body, "decision", decision, sizeof(decision));
         ctrl_json_string(body, "review_notes", review_notes, sizeof(review_notes));
+        if (strcasecmp(decision, "approved") != 0 && strcasecmp(decision, "rejected") != 0) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, 400, "Decision must be approved or rejected", origin, extra_headers, extra_len);
+            return;
+        }
 
-        /* Load Correction Request */
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 0);
+            stu_send_error(client_fd, 503, "Unable to begin correction review", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
         const char *rp[1] = { req_id };
         int rl[1] = { (int)strlen(req_id) };
         PGresult *cr = db_simple(conn,
-            "SELECT student_id, field_name, proposed_value FROM student_correction_requests WHERE id = $1", 1, rp, rl);
+            "SELECT institution_id, student_id, field_name, proposed_value, status "
+            "FROM student_correction_requests WHERE id = $1 FOR UPDATE", 1, rp, rl);
 
-        if (!cr || PQntuples(cr) == 0) {
+        if (!cr || PQresultStatus(cr) != PGRES_TUPLES_OK || PQntuples(cr) == 0) {
             if (cr) PQclear(cr);
+            PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             stu_send_error(client_fd, 404, "Correction request not found", origin, extra_headers, extra_len);
             return;
         }
 
-        char stu_id[64], field[64], prop_val[256];
-        snprintf(stu_id, sizeof(stu_id), "%s", PQgetvalue(cr, 0, 0));
-        snprintf(field, sizeof(field), "%s", PQgetvalue(cr, 0, 1));
-        snprintf(prop_val, sizeof(prop_val), "%s", PQgetvalue(cr, 0, 2));
+        char request_institution[64], stu_id[64], field[64], prop_val[256], request_status[32];
+        snprintf(request_institution, sizeof(request_institution), "%s", PQgetvalue(cr, 0, 0));
+        snprintf(stu_id, sizeof(stu_id), "%s", PQgetvalue(cr, 0, 1));
+        snprintf(field, sizeof(field), "%s", PQgetvalue(cr, 0, 2));
+        snprintf(prop_val, sizeof(prop_val), "%s", PQgetvalue(cr, 0, 3));
+        snprintf(request_status, sizeof(request_status), "%s", PQgetvalue(cr, 0, 4));
         PQclear(cr);
+        if (!is_owner && (!sess.institution_id[0] ||
+                          strcmp(request_institution, sess.institution_id) != 0)) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            stu_send_error(client_fd, 403, "Correction request belongs to another institution", origin, extra_headers, extra_len);
+            return;
+        }
+        if (strcmp(request_status, "pending") != 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            stu_send_error(client_fd, 409, "Correction request has already been reviewed", origin, extra_headers, extra_len);
+            return;
+        }
 
-        /* Update request status */
-        const char *up[3] = { decision, sess.username, req_id };
-        int ul[3] = { (int)strlen(decision), (int)strlen(sess.username), (int)strlen(req_id) };
+        const char *up[4] = { decision, sess.username, review_notes, req_id };
+        int ul[4] = { (int)strlen(decision), (int)strlen(sess.username),
+                      (int)strlen(review_notes), (int)strlen(req_id) };
         PGresult *ur = db_simple(conn,
-            "UPDATE student_correction_requests SET status = $1, reviewed_by = $2, "
-            "reviewed_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $3", 3, up, ul);
+            "UPDATE student_correction_requests SET status = lower($1), reviewed_by = $2, review_notes = $3, "
+            "reviewed_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
+            "WHERE id = $4 AND status = 'pending'", 4, up, ul);
+        int request_updated = ur && PQresultStatus(ur) == PGRES_COMMAND_OK &&
+                              strcmp(PQcmdTuples(ur), "1") == 0;
         if (ur) PQclear(ur);
+        if (!request_updated) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            stu_send_error(client_fd, 503, "Correction request could not be updated", origin, extra_headers, extra_len);
+            return;
+        }
 
-        /* If approved, update the field on the student record! */
         if (strcasecmp(decision, "approved") == 0) {
-            if (strcmp(field, "display_name") == 0 || strcmp(field, "name") == 0 ||
-                strcmp(field, "email") == 0 || strcmp(field, "personal_email") == 0 ||
-                strcmp(field, "phone_number") == 0 || strcmp(field, "accommodations") == 0 ||
-                strcmp(field, "notes") == 0) {
+            const char *column = NULL;
+            if (strcmp(field, "display_name") == 0) column = "display_name";
+            else if (strcmp(field, "name") == 0) column = "name";
+            else if (strcmp(field, "email") == 0) column = "email";
+            else if (strcmp(field, "personal_email") == 0) column = "personal_email";
+            else if (strcmp(field, "phone_number") == 0) column = "phone_number";
+            else if (strcmp(field, "accommodations") == 0) column = "accommodations";
+            else if (strcmp(field, "notes") == 0) column = "notes";
+            if (!column) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 400, "This student field cannot be corrected through this workflow", origin, extra_headers, extra_len);
+                return;
+            }
+            {
                 char sql[512];
                 snprintf(sql, sizeof(sql),
-                    "UPDATE students SET %s = '%s', updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = '%s'",
-                    field, prop_val, stu_id);
-                PGresult *sur = PQexec(conn, sql);
+                    "UPDATE students SET %s = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
+                    "WHERE id = $2 AND institution_id = $3", column);
+                const char *sp[3] = { prop_val, stu_id, request_institution };
+                int sl[3] = { (int)strlen(prop_val), (int)strlen(stu_id),
+                              (int)strlen(request_institution) };
+                PGresult *sur = db_simple(conn, sql, 3, sp, sl);
+                int student_updated = sur && PQresultStatus(sur) == PGRES_COMMAND_OK &&
+                                      strcmp(PQcmdTuples(sur), "1") == 0;
                 if (sur) PQclear(sur);
+                if (!student_updated) {
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    stu_send_error(client_fd, 503, "Corrected student profile could not be saved", origin, extra_headers, extra_len);
+                    return;
+                }
             }
         }
 
+        PGresult *commit = PQexec(conn, "COMMIT");
+        int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+        if (commit) PQclear(commit);
+        if (!committed) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 1);
+            stu_send_error(client_fd, 503, "Correction review transaction failed", origin, extra_headers, extra_len);
+            return;
+        }
+        stu_audit_log(conn, stu_id, request_institution, sess.username,
+                      strcasecmp(decision, "approved") == 0 ? "CORRECTION_APPROVED" : "CORRECTION_REJECTED",
+                      field);
         db_release(conn, 0);
         char resp[256];
         snprintf(resp, sizeof(resp), "{\"status\":\"%s\",\"request_id\":\"%s\"}", decision, req_id);
@@ -914,18 +1052,44 @@ void student_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "institution_id", inst_id, sizeof(inst_id));
         ctrl_json_string(body, "filename", filename, sizeof(filename));
 
-        if (!inst_id[0]) {
-            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id[0] ? sess.institution_id : "inst_vignan");
+        if (!is_owner || !inst_id[0]) {
+            snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
         }
-        ensure_tenant_exists(conn, inst_id);
+        if (!inst_id[0]) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, 400, "A valid institution scope is required for student imports", origin, extra_headers, extra_len);
+            return;
+        }
+        int tenant_status = tenant_exists(conn, inst_id);
+        if (tenant_status != 1) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, tenant_status < 0 ? 503 : 404,
+                tenant_status < 0 ? "Institution lookup failed" : "Institution does not exist",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *rows_pos = strstr(body, "\"rows\"");
+        if (!rows_pos || !strstr(rows_pos, "{\"roll_no\"")) {
+            db_release(conn, 0);
+            stu_send_error(client_fd, 400, "A non-empty rows array is required for student imports", origin, extra_headers, extra_len);
+            return;
+        }
 
         char jid[64];
         snprintf(jid, sizeof(jid), "imp_%ld_%d", (long)time(NULL), rand() % 10000);
 
-        /* Parse rows from JSON payload: {"rows":[{"roll_no":"...","name":"...","email":"..."},...]} or csv_data */
         int total = 0, valid = 0, invalid = 0, duplicates = 0;
         int row_num = 1;
-        const char *rows_pos = strstr(body, "\"rows\"");
+        int storage_failed = 0;
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 0);
+            stu_send_error(client_fd, 503, "Unable to begin student import preview", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(begin);
 
         const char *jp[4] = { jid, inst_id, sess.username, filename };
         int jl[4];
@@ -934,55 +1098,101 @@ void student_handle(int client_fd, const char *method, const char *path,
         PGresult *jr = db_simple(conn,
             "INSERT INTO student_import_jobs (id, institution_id, uploaded_by, filename, status, created_at) "
             "VALUES ($1, $2, $3, $4, 'preview', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 4, jp, jl);
-        if (jr) PQclear(jr);
+        if (!jr || PQresultStatus(jr) != PGRES_COMMAND_OK) {
+            if (jr) PQclear(jr);
+            db_release(conn, 0);
+            stu_send_error(client_fd, 503, "Unable to create student import job", origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(jr);
 
         if (rows_pos) {
             const char *p = rows_pos;
             while ((p = strstr(p, "{\"roll_no\"")) != NULL) {
                 total++;
-                char r_roll[64] = {0}, r_name[128] = {0};
+                char r_roll[64] = {0}, r_name[128] = {0}, r_email[128] = {0};
+                char r_course[128] = {0}, r_batch[64] = {0}, r_semester[16] = {0}, r_section[32] = {0};
                 ctrl_json_string(p, "roll_no", r_roll, sizeof(r_roll));
                 ctrl_json_string(p, "name", r_name, sizeof(r_name));
+                ctrl_json_string(p, "email", r_email, sizeof(r_email));
+                ctrl_json_string(p, "course", r_course, sizeof(r_course));
+                ctrl_json_string(p, "batch", r_batch, sizeof(r_batch));
+                ctrl_json_string(p, "semester", r_semester, sizeof(r_semester));
+                ctrl_json_string(p, "section", r_section, sizeof(r_section));
+                int parsed_semester = atoi(r_semester);
+                const char *semester_value = parsed_semester >= 1 && parsed_semester <= 12
+                    ? r_semester : "1";
 
                 char row_id[64], rnum_str[16];
-                snprintf(row_id, sizeof(row_id), "impr_%ld_%d", (long)time(NULL), row_num);
+                snprintf(row_id, sizeof(row_id), "%.48s_%d", jid, row_num);
                 snprintf(rnum_str, sizeof(rnum_str), "%d", row_num);
 
-                if (!r_roll[0] || !r_name[0]) {
+                if (!r_roll[0] || !r_name[0] || !r_email[0] ||
+                    !strchr(r_email, '@') || !strchr(strchr(r_email, '@') + 1, '.') ||
+                    !r_course[0] || !r_batch[0] || !r_semester[0] ||
+                    parsed_semester < 1 || parsed_semester > 12 ||
+                    strspn(r_semester, "0123456789") != strlen(r_semester) ||
+                    strlen(r_semester) > 2 || !r_section[0]) {
                     invalid++;
-                    const char *rp[5] = { row_id, jid, rnum_str, r_roll, "Missing required roll_no or name" };
-                    int rl[5];
-                    for (int i = 0; i < 5; i++) rl[i] = (int)strlen(rp[i]);
+                    const char *rp[11] = { row_id, jid, rnum_str, r_roll, r_name, r_email,
+                        r_course, r_batch, semester_value, r_section,
+                        "Candidate identity, contact, and academic fields are required" };
+                    int rl[11];
+                    for (int i = 0; i < 11; i++) rl[i] = (int)strlen(rp[i]);
                     PGresult *irr = db_simple(conn,
-                        "INSERT INTO student_import_row_results (id, job_id, row_number, roll_no, name, status, error_reason, created_at) "
-                        "VALUES ($1, $2, $3::int, $4, '', 'REJECTED', $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, rp, rl);
+                        "INSERT INTO student_import_row_results "
+                        "(id, job_id, row_number, roll_no, name, email, course, batch, semester, section, status, error_reason, created_at) "
+                        "VALUES ($1, $2, $3::int, $4, $5, $6, $7, $8, $9::int, $10, 'REJECTED', $11, "
+                        "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 11, rp, rl);
+                    if (!irr || PQresultStatus(irr) != PGRES_COMMAND_OK) storage_failed = 1;
                     if (irr) PQclear(irr);
                 } else {
-                    /* Check duplicate in DB */
-                    const char *dp[2] = { inst_id, r_roll };
-                    int dl[2] = { (int)strlen(inst_id), (int)strlen(r_roll) };
-                    PGresult *dchk = db_simple(conn, "SELECT id FROM students WHERE institution_id = $1 AND roll_no = $2", 2, dp, dl);
-                    if (dchk && PQntuples(dchk) > 0) {
-                        duplicates++;
-                        const char *rp[4] = { row_id, jid, rnum_str, r_roll };
-                        int rl[4] = { (int)strlen(row_id), (int)strlen(jid), (int)strlen(rnum_str), (int)strlen(r_roll) };
-                        PGresult *irr = db_simple(conn,
-                            "INSERT INTO student_import_row_results (id, job_id, row_number, roll_no, name, status, error_reason, created_at) "
-                            "VALUES ($1, $2, $3::int, $4, '', 'SKIPPED_DUPLICATE', 'Student roll number already exists', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 4, rp, rl);
-                        if (irr) PQclear(irr);
-                        PQclear(dchk);
-                    } else {
+                    const char *dp[4] = { inst_id, r_roll, r_email, jid };
+                    int dl[4] = { (int)strlen(inst_id), (int)strlen(r_roll),
+                                  (int)strlen(r_email), (int)strlen(jid) };
+                    PGresult *dchk = db_simple(conn,
+                        "SELECT 1 FROM students WHERE institution_id=$1 "
+                        "AND (roll_no=$2 OR (email<>'' AND lower(email)=lower($3))) "
+                        "UNION ALL SELECT 1 FROM student_import_row_results "
+                        "WHERE job_id=$4 AND (roll_no=$2 OR (email<>'' AND lower(email)=lower($3))) "
+                        "AND status IN ('CREATED','SKIPPED_DUPLICATE') LIMIT 1",
+                        4, dp, dl);
+                    if (!dchk || PQresultStatus(dchk) != PGRES_TUPLES_OK) {
                         if (dchk) PQclear(dchk);
-                        valid++;
-                        const char *rp[5] = { row_id, jid, rnum_str, r_roll, r_name };
-                        int rl[5];
-                        for (int i = 0; i < 5; i++) rl[i] = (int)strlen(rp[i]);
+                        storage_failed = 1;
+                        break;
+                    }
+                    if (PQntuples(dchk) > 0) {
+                        duplicates++;
+                        const char *rp[10] = { row_id, jid, rnum_str, r_roll, r_name, r_email,
+                                               r_course, r_batch, r_semester, r_section };
+                        int rl[10];
+                        for (int i = 0; i < 10; i++) rl[i] = (int)strlen(rp[i]);
                         PGresult *irr = db_simple(conn,
-                            "INSERT INTO student_import_row_results (id, job_id, row_number, roll_no, name, status, error_reason, created_at) "
-                            "VALUES ($1, $2, $3::int, $4, $5, 'CREATED', '', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, rp, rl);
+                            "INSERT INTO student_import_row_results "
+                            "(id, job_id, row_number, roll_no, name, email, course, batch, semester, section, status, error_reason, created_at) "
+                            "VALUES ($1, $2, $3::int, $4, $5, $6, $7, $8, $9::int, $10, 'SKIPPED_DUPLICATE', "
+                            "'Student roll number or email already exists in this institution or import', "
+                            "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 10, rp, rl);
+                        if (!irr || PQresultStatus(irr) != PGRES_COMMAND_OK) storage_failed = 1;
+                        if (irr) PQclear(irr);
+                    } else {
+                        valid++;
+                        const char *rp[10] = { row_id, jid, rnum_str, r_roll, r_name, r_email,
+                                               r_course, r_batch, r_semester, r_section };
+                        int rl[10];
+                        for (int i = 0; i < 10; i++) rl[i] = (int)strlen(rp[i]);
+                        PGresult *irr = db_simple(conn,
+                            "INSERT INTO student_import_row_results "
+                            "(id, job_id, row_number, roll_no, name, email, course, batch, semester, section, status, error_reason, created_at) "
+                            "VALUES ($1, $2, $3::int, $4, $5, $6, $7, $8, $9::int, $10, 'CREATED', '', "
+                            "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 10, rp, rl);
+                        if (!irr || PQresultStatus(irr) != PGRES_COMMAND_OK) storage_failed = 1;
                         if (irr) PQclear(irr);
                     }
+                    PQclear(dchk);
                 }
+                if (storage_failed) break;
                 row_num++;
                 p += 10;
             }
@@ -1084,7 +1294,24 @@ void student_handle(int client_fd, const char *method, const char *path,
         PGresult *ur = db_simple(conn,
             "UPDATE student_import_jobs SET total_rows = $1::int, valid_rows = $2::int, invalid_rows = $3::int, "
             "duplicate_rows = $4::int WHERE id = $5", 5, up, ul);
+        int counts_saved = ur && PQresultStatus(ur) == PGRES_COMMAND_OK &&
+                           strcmp(PQcmdTuples(ur), "1") == 0;
         if (ur) PQclear(ur);
+        if (storage_failed || total == 0 || !counts_saved) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            stu_send_error(client_fd, 503, "Student import preview failed; no preview was saved", origin, extra_headers, extra_len);
+            return;
+        }
+        PGresult *commit = PQexec(conn, "COMMIT");
+        int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+        if (commit) PQclear(commit);
+        if (!committed) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 1);
+            stu_send_error(client_fd, 503, "Student import preview transaction failed", origin, extra_headers, extra_len);
+            return;
+        }
 
         db_release(conn, 0);
         char resp[512];
@@ -1116,59 +1343,184 @@ void student_handle(int client_fd, const char *method, const char *path,
         const char *action = slash ? slash : "";
 
         if (strcmp(method, "POST") == 0 && strcmp(action, "/confirm") == 0) {
-            /* Load Job */
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Unable to begin import confirmation", origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
             const char *jp[1] = { job_id };
             int jl[1] = { (int)strlen(job_id) };
-            PGresult *jr = db_simple(conn, "SELECT institution_id, status FROM student_import_jobs WHERE id = $1", 1, jp, jl);
-            if (!jr || PQntuples(jr) == 0) {
+            PGresult *jr = db_simple(conn,
+                "SELECT institution_id, status FROM student_import_jobs WHERE id = $1 FOR UPDATE",
+                1, jp, jl);
+            if (!jr || PQresultStatus(jr) != PGRES_TUPLES_OK || PQntuples(jr) == 0) {
                 if (jr) PQclear(jr);
+                PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 stu_send_error(client_fd, 404, "Import job not found", origin, extra_headers, extra_len);
                 return;
             }
             char inst_id[64];
-            strncpy(inst_id, PQgetvalue(jr, 0, 0), sizeof(inst_id) - 1);
+            snprintf(inst_id, sizeof(inst_id), "%s", PQgetvalue(jr, 0, 0));
+            int preview_state = strcmp(PQgetvalue(jr, 0, 1), "preview") == 0;
             PQclear(jr);
-
-            /* Fetch all CREATED rows */
-            PGresult *rr = db_simple(conn,
-                "SELECT roll_no, name FROM student_import_row_results WHERE job_id = $1 AND status = 'CREATED'", 1, jp, jl);
-
-            int imported = 0;
-            if (rr) {
-                int n = PQntuples(rr);
-                for (int i = 0; i < n; i++) {
-                    const char *r_roll = PQgetvalue(rr, i, 0);
-                    const char *r_name = PQgetvalue(rr, i, 1);
-                    char sid[64];
-                    snprintf(sid, sizeof(sid), "stu_imp_%ld_%d", (long)time(NULL), i);
-
-                    const char *sp[4] = { sid, inst_id, r_roll, r_name };
-                    int sl[4] = { (int)strlen(sid), (int)strlen(inst_id), (int)strlen(r_roll), (int)strlen(r_name) };
-                    PGresult *ins = db_simple(conn,
-                        "INSERT INTO students (id, institution_id, roll_no, name, display_name, course, semester, academic_status, "
-                        "attendance_pct, administrative_hold, record_source, created_at, updated_at) "
-                        "VALUES ($1, $2, $3, $4, $4, 'B.Tech', 1, 'active', 100, false, 'bulk_import', "
-                        "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-                        "ON CONFLICT (institution_id, roll_no) DO NOTHING", 4, sp, sl);
-                    if (ins) {
-                        imported++;
-                        PQclear(ins);
-                    }
-                }
-                PQclear(rr);
+            if (!is_owner && (!sess.institution_id[0] || strcmp(inst_id, sess.institution_id) != 0)) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 403, "Import job belongs to another institution", origin, extra_headers, extra_len);
+                return;
+            }
+            if (!preview_state) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 409, "Import job is not awaiting confirmation", origin, extra_headers, extra_len);
+                return;
             }
 
-            /* Update Job Status */
+            PGresult *rr = db_simple(conn,
+                "SELECT row_number, roll_no, name, email, course, batch, semester, section "
+                "FROM student_import_row_results "
+                "WHERE job_id = $1 AND status = 'CREATED' ORDER BY row_number FOR UPDATE",
+                1, jp, jl);
+            if (!rr || PQresultStatus(rr) != PGRES_TUPLES_OK) {
+                if (rr) PQclear(rr);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Unable to load import rows", origin, extra_headers, extra_len);
+                return;
+            }
+
+            int imported = 0;
+            int skipped = 0;
+            int import_failed = 0;
+            int n = PQntuples(rr);
+            for (int i = 0; i < n; i++) {
+                char sid[64], row_num[16];
+                snprintf(sid, sizeof(sid), "stu_%s_%s", job_id, PQgetvalue(rr, i, 0));
+                snprintf(row_num, sizeof(row_num), "%s", PQgetvalue(rr, i, 0));
+                const char *sp[9] = {
+                    sid, inst_id, PQgetvalue(rr, i, 1), PQgetvalue(rr, i, 2),
+                    PQgetvalue(rr, i, 3), PQgetvalue(rr, i, 4), PQgetvalue(rr, i, 5),
+                    PQgetvalue(rr, i, 6), PQgetvalue(rr, i, 7)
+                };
+                int sl[9];
+                for (int j = 0; j < 9; j++) sl[j] = (int)strlen(sp[j]);
+                PGresult *ins = db_simple(conn,
+                    "INSERT INTO students "
+                    "(id, institution_id, roll_no, name, display_name, email, course, batch, semester, section, "
+                    "academic_status, attendance_pct, administrative_hold, record_source, created_at, updated_at) "
+                    "VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8::int, $9, 'active', 100, false, 'bulk_import', "
+                    "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
+                    "ON CONFLICT (institution_id, roll_no) DO NOTHING RETURNING id",
+                    9, sp, sl);
+                if (!ins || PQresultStatus(ins) != PGRES_TUPLES_OK) {
+                    if (ins) PQclear(ins);
+                    import_failed = 1;
+                    break;
+                }
+                int inserted = PQntuples(ins) == 1;
+                PQclear(ins);
+                if (inserted) {
+                    imported++;
+                    char enrollment_id[96];
+                    snprintf(enrollment_id, sizeof(enrollment_id), "enr_%s", sid);
+                    const char *ep[7] = {
+                        enrollment_id, sid, inst_id, PQgetvalue(rr, i, 4),
+                        PQgetvalue(rr, i, 5), PQgetvalue(rr, i, 6), PQgetvalue(rr, i, 7)
+                    };
+                    int el[7];
+                    for (int j = 0; j < 7; j++) el[j] = (int)strlen(ep[j]);
+                    PGresult *enrollment = db_simple(conn,
+                        "INSERT INTO student_enrollments "
+                        "(id, student_id, institution_id, campus_id, department_id, program_id, batch, semester, section, status, start_date) "
+                        "VALUES ($1, $2, $3, '', '', $4, $5, $6::int, $7, 'current', "
+                        "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
+                        7, ep, el);
+                    int enrollment_saved = enrollment &&
+                                           PQresultStatus(enrollment) == PGRES_COMMAND_OK;
+                    if (enrollment) PQclear(enrollment);
+                    if (!enrollment_saved) { import_failed = 1; break; }
+                    char audit_id[96];
+                    snprintf(audit_id, sizeof(audit_id), "staud_%s_%s", job_id, row_num);
+                    const char *audit_params[5] = {
+                        audit_id, sid, inst_id, sess.user_id, PQgetvalue(rr, i, 1)
+                    };
+                    int audit_lengths[5];
+                    for (int j = 0; j < 5; j++) audit_lengths[j] = (int)strlen(audit_params[j]);
+                    PGresult *audit = db_simple(conn,
+                        "INSERT INTO student_audit_events "
+                        "(id, student_id, institution_id, actor_id, action, details, occurred_at) "
+                        "VALUES ($1, $2, $3, $4, 'STUDENT_IMPORTED', $5, "
+                        "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
+                        5, audit_params, audit_lengths);
+                    int audit_saved = audit && PQresultStatus(audit) == PGRES_COMMAND_OK;
+                    if (audit) PQclear(audit);
+                    if (!audit_saved) { import_failed = 1; break; }
+                    const char *up[2] = { job_id, row_num };
+                    int ul[2] = { (int)strlen(job_id), (int)strlen(row_num) };
+                    PGresult *updated_row = db_simple(conn,
+                        "UPDATE student_import_row_results SET status='IMPORTED' "
+                        "WHERE job_id=$1 AND row_number=$2::int AND status='CREATED'",
+                        2, up, ul);
+                    int update_ok = updated_row && PQresultStatus(updated_row) == PGRES_COMMAND_OK &&
+                                    strcmp(PQcmdTuples(updated_row), "1") == 0;
+                    if (updated_row) PQclear(updated_row);
+                    if (!update_ok) { import_failed = 1; break; }
+                } else {
+                    skipped++;
+                    const char *up[2] = { job_id, row_num };
+                    int ul[2] = { (int)strlen(job_id), (int)strlen(row_num) };
+                    PGresult *updated_row = db_simple(conn,
+                        "UPDATE student_import_row_results SET status='SKIPPED_DUPLICATE', "
+                        "error_reason='Student roll number was registered after preview' "
+                        "WHERE job_id=$1 AND row_number=$2::int AND status='CREATED'",
+                        2, up, ul);
+                    int update_ok = updated_row && PQresultStatus(updated_row) == PGRES_COMMAND_OK &&
+                                    strcmp(PQcmdTuples(updated_row), "1") == 0;
+                    if (updated_row) PQclear(updated_row);
+                    if (!update_ok) { import_failed = 1; break; }
+                }
+            }
+            PQclear(rr);
+            if (import_failed) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Import confirmation failed; no rows were committed", origin, extra_headers, extra_len);
+                return;
+            }
+
             const char *uj[1] = { job_id };
             int ujl[1] = { (int)strlen(job_id) };
             PGresult *ur = db_simple(conn,
                 "UPDATE student_import_jobs SET status = 'completed', completed_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1", 1, uj, ujl);
+            int job_updated = ur && PQresultStatus(ur) == PGRES_COMMAND_OK &&
+                              strcmp(PQcmdTuples(ur), "1") == 0;
             if (ur) PQclear(ur);
+            if (!job_updated) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Import job status could not be committed", origin, extra_headers, extra_len);
+                return;
+            }
+            PGresult *commit = PQexec(conn, "COMMIT");
+            int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!committed) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 1);
+                stu_send_error(client_fd, 503, "Import confirmation transaction failed", origin, extra_headers, extra_len);
+                return;
+            }
 
             db_release(conn, 0);
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"completed\",\"job_id\":\"%s\",\"processed_rows\":%d,\"imported_count\":%d}", job_id, imported, imported);
+            char resp[320];
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"completed\",\"job_id\":\"%s\",\"processed_rows\":%d,"
+                "\"imported_count\":%d,\"duplicate_count\":%d}",
+                job_id, n, imported, skipped);
             stu_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
@@ -1177,23 +1529,55 @@ void student_handle(int client_fd, const char *method, const char *path,
         if (strcmp(method, "GET") == 0 && strcmp(action, "/results") == 0) {
             const char *jp[1] = { job_id };
             int jl[1] = { (int)strlen(job_id) };
+            PGresult *job = db_simple(conn,
+                "SELECT institution_id FROM student_import_jobs WHERE id=$1", 1, jp, jl);
+            if (!job || PQresultStatus(job) != PGRES_TUPLES_OK || PQntuples(job) == 0) {
+                if (job) PQclear(job);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 404, "Import job not found", origin, extra_headers, extra_len);
+                return;
+            }
+            char job_institution[64];
+            snprintf(job_institution, sizeof(job_institution), "%s", PQgetvalue(job, 0, 0));
+            PQclear(job);
+            if (!is_owner && (!sess.institution_id[0] ||
+                              strcmp(job_institution, sess.institution_id) != 0)) {
+                db_release(conn, 0);
+                stu_send_error(client_fd, 403, "Import job belongs to another institution", origin, extra_headers, extra_len);
+                return;
+            }
             PGresult *rr = db_simple(conn,
                 "SELECT row_number, roll_no, name, status, error_reason FROM student_import_row_results WHERE job_id = $1 ORDER BY row_number ASC", 1, jp, jl);
 
             char *json = malloc(65536);
+            if (!json) {
+                if (rr) PQclear(rr);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Out of memory", origin, extra_headers, extra_len);
+                return;
+            }
+            if (!rr || PQresultStatus(rr) != PGRES_TUPLES_OK) {
+                if (rr) PQclear(rr);
+                free(json);
+                db_release(conn, 0);
+                stu_send_error(client_fd, 503, "Import results are unavailable", origin, extra_headers, extra_len);
+                return;
+            }
             size_t pos = 0;
             pos += snprintf(json + pos, 65536 - pos, "{\"job_id\":\"%s\",\"results\":[", job_id);
-            if (rr) {
-                int n = PQntuples(rr);
-                for (int i = 0; i < n; i++) {
-                    if (i > 0) pos += snprintf(json + pos, 65536 - pos, ",");
-                    pos += snprintf(json + pos, 65536 - pos,
-                        "{\"row\":%s,\"roll_no\":\"%s\",\"name\":\"%s\",\"status\":\"%s\",\"error_reason\":\"%s\"}",
-                        PQgetvalue(rr, i, 0), PQgetvalue(rr, i, 1), PQgetvalue(rr, i, 2),
-                        PQgetvalue(rr, i, 3), PQgetvalue(rr, i, 4));
-                }
-                PQclear(rr);
+            int n = PQntuples(rr);
+            for (int i = 0; i < n; i++) {
+                char escaped_roll[384], escaped_name[768], escaped_status[192], escaped_error[1024];
+                ctrl_json_escape(PQgetvalue(rr, i, 1), escaped_roll, sizeof(escaped_roll));
+                ctrl_json_escape(PQgetvalue(rr, i, 2), escaped_name, sizeof(escaped_name));
+                ctrl_json_escape(PQgetvalue(rr, i, 3), escaped_status, sizeof(escaped_status));
+                ctrl_json_escape(PQgetvalue(rr, i, 4), escaped_error, sizeof(escaped_error));
+                if (i > 0) pos += snprintf(json + pos, 65536 - pos, ",");
+                pos += snprintf(json + pos, 65536 - pos,
+                    "{\"row\":%s,\"roll_no\":\"%s\",\"name\":\"%s\",\"status\":\"%s\",\"error_reason\":\"%s\"}",
+                    PQgetvalue(rr, i, 0), escaped_roll, escaped_name, escaped_status, escaped_error);
             }
+            PQclear(rr);
             pos += snprintf(json + pos, 65536 - pos, "]}");
             db_release(conn, 0);
 

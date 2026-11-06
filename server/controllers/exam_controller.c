@@ -1227,6 +1227,55 @@ void exam_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
+        /* ---------------- GET /api/v1/examinations/:id/students (Assigned roster) ---------------- */
+        if (strcmp(method, "GET") == 0 && strcmp(suffix, "/students") == 0) {
+            PGresult *assigned = db_simple(conn,
+                "SELECT student_id, roll_no, name, COALESCE(campus_id, ''), COALESCE(seat_no, '') "
+                "FROM exam_student_assignments WHERE exam_id=$1 AND institution_id=$2 "
+                "ORDER BY roll_no ASC",
+                2, (const char *[]){ eid, ex_inst_id },
+                (int[]){ (int)strlen(eid), (int)strlen(ex_inst_id) });
+            if (!assigned || PQresultStatus(assigned) != PGRES_TUPLES_OK) {
+                if (assigned) PQclear(assigned);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Assigned roster is unavailable", origin, extra_headers, extra_len);
+                return;
+            }
+
+            size_t capacity = 128 + (size_t)PQntuples(assigned) * 2800;
+            char *json = malloc(capacity);
+            if (!json) {
+                PQclear(assigned);
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 503, "Out of memory", origin, extra_headers, extra_len);
+                return;
+            }
+            size_t offset = (size_t)snprintf(json, capacity, "{\"assignments\":[");
+            for (int i = 0; i < PQntuples(assigned); i++) {
+                char escaped_id[160], escaped_roll[160], escaped_name[320];
+                char escaped_center[160], escaped_seat[96];
+                json_escape(PQgetvalue(assigned, i, 0), escaped_id, sizeof(escaped_id));
+                json_escape(PQgetvalue(assigned, i, 1), escaped_roll, sizeof(escaped_roll));
+                json_escape(PQgetvalue(assigned, i, 2), escaped_name, sizeof(escaped_name));
+                json_escape(PQgetvalue(assigned, i, 3), escaped_center, sizeof(escaped_center));
+                json_escape(PQgetvalue(assigned, i, 4), escaped_seat, sizeof(escaped_seat));
+                offset += (size_t)snprintf(json + offset, capacity - offset,
+                    "%s{\"exam_id\":\"%s\",\"student_id\":\"%s\",\"roll_no\":\"%s\",\"name\":\"%s\","
+                    "\"center_id\":\"%s\",\"seat_no\":\"%s\"}",
+                    i ? "," : "", eid, escaped_id, escaped_roll, escaped_name,
+                    escaped_center, escaped_seat);
+            }
+            snprintf(json + offset, capacity - offset, "]}");
+            PQclear(assigned);
+            PQclear(exam_res);
+            db_release(conn, 0);
+            ex_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+            free(json);
+            return;
+        }
+
         /* ---------------- GET /api/v1/examinations/:id/status (Monitoring Breakdown) ---------------- */
         if (strcmp(method, "GET") == 0 && strcmp(suffix, "/status") == 0) {
             PGresult *cnt_res = db_simple(conn,
@@ -1446,10 +1495,15 @@ void exam_handle(int client_fd, const char *method, const char *path,
             PQclear(begin);
 
             PGresult *exam_lock = db_simple(conn,
-                "SELECT id FROM examinations WHERE id=$1 FOR UPDATE",
+                "SELECT id, status FROM examinations WHERE id=$1 FOR UPDATE",
                 1, (const char *[]){ eid }, (int[]){ (int)strlen(eid) });
             int lock_ok = exam_lock && PQresultStatus(exam_lock) == PGRES_TUPLES_OK &&
                           PQntuples(exam_lock) == 1;
+            int locked_status_ok = lock_ok &&
+                (strcmp(PQgetvalue(exam_lock, 0, 1), "draft") == 0 ||
+                 strcmp(PQgetvalue(exam_lock, 0, 1), "configured") == 0 ||
+                 strcmp(PQgetvalue(exam_lock, 0, 1), "pending_approval") == 0 ||
+                 strcmp(PQgetvalue(exam_lock, 0, 1), "approved") == 0);
             if (exam_lock) PQclear(exam_lock);
             if (!lock_ok) {
                 PQexec(conn, "ROLLBACK");
@@ -1458,7 +1512,66 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 ex_send_error(client_fd, 503, "Could not lock examination roster for assignment", origin, extra_headers, extra_len);
                 return;
             }
+            if (!locked_status_ok) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 409, "Candidate assignments are locked for this examination status", origin, extra_headers, extra_len);
+                return;
+            }
+            PGresult *student_lock = db_simple(conn,
+                "SELECT id FROM students WHERE institution_id=$1 AND id=$2 AND roll_no=$3 "
+                "AND academic_status='active' AND administrative_hold=false FOR UPDATE",
+                3, (const char *[]){ ex_inst_id, student_id, roll_no },
+                (int[]){ (int)strlen(ex_inst_id), (int)strlen(student_id), (int)strlen(roll_no) });
+            int student_lock_ok = student_lock && PQresultStatus(student_lock) == PGRES_TUPLES_OK;
+            int student_still_eligible = student_lock_ok && PQntuples(student_lock) == 1;
+            if (student_lock) PQclear(student_lock);
+            if (!student_lock_ok || !student_still_eligible) {
+                PQexec(conn, "ROLLBACK");
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, student_lock_ok ? 409 : 503,
+                    student_lock_ok ? "Student is no longer eligible for examination assignment" :
+                                      "Student eligibility could not be revalidated",
+                    origin, extra_headers, extra_len);
+                return;
+            }
             if (center_id[0]) {
+                PGresult *capacity_check = db_simple(conn,
+                    "SELECT c.capacity, (SELECT COUNT(*)::integer FROM exam_student_assignments a "
+                    "WHERE a.exam_id=$2 AND a.institution_id=c.tenant_id AND a.campus_id=c.id "
+                    "AND a.student_id<>$4) "
+                    "FROM centers c "
+                    "WHERE c.tenant_id=$1 AND c.id=$3 AND c.status='active' "
+                    "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+                    "COALESCE((SELECT exam_config->'centerIds' FROM examinations WHERE id=$2), '[]'::jsonb) "
+                    ") AS configured(center_id) WHERE configured.center_id=c.id) FOR UPDATE OF c",
+                    4, (const char *[]){ ex_inst_id, eid, center_id, student_id },
+                    (int[]){ (int)strlen(ex_inst_id), (int)strlen(eid),
+                             (int)strlen(center_id), (int)strlen(student_id) });
+                int capacity_query_ok = capacity_check &&
+                                        PQresultStatus(capacity_check) == PGRES_TUPLES_OK &&
+                                        PQntuples(capacity_check) == 1;
+                int center_capacity = capacity_query_ok ? atoi(PQgetvalue(capacity_check, 0, 0)) : 0;
+                int center_occupied = capacity_query_ok ? atoi(PQgetvalue(capacity_check, 0, 1)) : 0;
+                if (capacity_check) PQclear(capacity_check);
+                if (!capacity_query_ok || center_capacity <= 0) {
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, capacity_query_ok ? 409 : 503,
+                        capacity_query_ok ? "Center has no valid seat capacity" : "Center capacity lookup failed",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                if (center_occupied >= center_capacity) {
+                    PQexec(conn, "ROLLBACK");
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 409, "Center capacity has been reached", origin, extra_headers, extra_len);
+                    return;
+                }
                 PGresult *seat_check = db_simple(conn,
                     "SELECT 1 FROM exam_student_assignments WHERE exam_id=$1 AND campus_id=$2 "
                     "AND seat_no=$3 AND student_id<>$4 LIMIT 1",

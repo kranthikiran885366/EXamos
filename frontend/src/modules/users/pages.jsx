@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant, useCol } from '../../core/db/tenant';
@@ -15,9 +15,10 @@ import {
   createRole, updateRole, deleteRole,
 } from './service';
 import { KINDS as APPROVAL_KINDS, decide as decideApproval, cancel as cancelApproval } from '../../core/services/approvals';
+import * as Api from '../../core/api/services';
 
 const ROLE_OPTIONS = (actor) => Object.keys(ROLES)
-  .filter((r) => r !== 'system')
+  .filter((r) => r !== 'system' && r !== 'superadmin')
   .filter((r) => actor?.role === 'superadmin' || (roleInfo(r)?.rank || 0) < (roleInfo(actor?.role)?.rank || 0))
   .map((r) => ({ v: r, l: roleLabel(r) }));
 
@@ -43,18 +44,17 @@ function CreateUserModal({ onClose, onDone }) {
   };
   if (result) {
     return (
-      <Modal title="Account created" desc="Share the one-time credentials through a secure channel." onClose={onClose}
+      <Modal title="Account created" desc="Share the username and temporary password through a secure channel." onClose={onClose}
         footer={<button className="btn primary" onClick={onClose}>Done</button>}>
-        <Alert tone="success" title="Save these now">The TOTP secret and recovery codes are shown only once.</Alert>
-        <CopyField label="Authenticator secret (TOTP)" value={result.totp} />
-        <Card title="Recovery codes" desc="Each code works once. Store them offline." pad>
-          <div className="codegrid">{result.recovery.map((c) => <code key={c}>{c}</code>)}</div>
-        </Card>
+        <Alert tone="success" title="Account provisioned">
+          The backend created this account. MFA status is controlled by the account’s server-side enrollment state.
+        </Alert>
+        <CopyField label="Username" value={result.username || v.username} />
       </Modal>
     );
   }
   return (
-    <Modal title="Add user" desc="Creates an account with a temporary password and MFA secret." onClose={onClose}
+    <Modal title="Add user" desc="Creates an account with a temporary password." onClose={onClose}
       footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" type="submit" form="create-user" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button></>}>
       <form id="create-user" onSubmit={submit} className="formgrid">
         <Field label="Username" required help="3–32 characters, starts with a letter.">
@@ -123,7 +123,9 @@ export function UsersPage() {
   const { user } = useAuth();
   const { tenantId, allTenants } = useTenant();
   const perms = usePerm();
-  const allUsers = useCol('users', false);
+  const [allUsers, setAllUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersError, setUsersError] = useState('');
   const allInvites = useCol('invitations', false);
   const [creating, setCreating] = useState(false);
   const [inviting, setInviting] = useState(false);
@@ -132,12 +134,57 @@ export function UsersPage() {
   const flash = useFlash();
 
   const global = isGlobal(user.role);
-  const users = useMemo(() => (global ? allUsers : allUsers.filter((u) => u.tenantId === user.tenantId)), [allUsers, global, user.tenantId]);
+  const loadUsers = useCallback(async () => {
+    setUsersLoading(true);
+    setUsersError('');
+    try {
+      const response = await Api.listUsers(global ? undefined : (user.tenantId || tenantId));
+      if (!Array.isArray(response?.users)) throw new Error('The user-management endpoint returned an invalid response.');
+      const roleKeys = {
+        'Platform Owner': 'superadmin',
+        'Institution Admin': 'inst_admin',
+        'Exam Manager': 'exam_controller',
+        'Security Admin': 'security_engineer',
+        Invigilator: 'invigilator',
+        'Technical Operator': 'it_admin',
+        'Incident Investigator': 'auditor',
+        'Read-only Auditor': 'readonly_auditor',
+        'Support Engineer': 'support',
+      };
+      setAllUsers(response.users.map((account) => ({
+        id: account.user_id,
+        username: account.username,
+        name: account.full_name || account.username,
+        email: account.email || '',
+        tenantId: account.institution_id || '',
+        role: roleKeys[account.role] || account.role,
+        mfaEnabled: account.mfa_enabled === true,
+        status: account.active === true ? 'active' : 'deactivated',
+        createdAt: Number(account.created_at || 0) * 1000,
+        lastLogin: Number(account.last_login_at || 0) * 1000 || null,
+      })));
+    } catch (error) {
+      setUsersError(error.message || 'Unable to load users from the backend.');
+      setAllUsers([]);
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [global, tenantId, user.tenantId]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  const users = useMemo(() => (global ? allUsers : allUsers.filter((u) => u.tenantId === (user.tenantId || tenantId))), [allUsers, global, tenantId, user.tenantId]);
   const invites = useMemo(() => (global ? allInvites : allInvites.filter((i) => i.tenantId === user.tenantId)), [allInvites, global, user.tenantId]);
   const tenantName = (id) => (id ? (allTenants.find((t) => t.id === id)?.name || id) : 'Platform');
   const pending = invites.filter((i) => i.status === 'pending');
 
-  const run = (fn, ok) => flash.run(fn, ok);
+  const run = (fn, ok) => flash.run(async () => {
+    const result = await fn();
+    await loadUsers();
+    return result;
+  }, ok);
   const closeAct = () => setAct(null);
 
   return (
@@ -147,6 +194,8 @@ export function UsersPage() {
         {perms('user.manage') && <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" size={15} /> Add user</button>}
       </>}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {usersError && <Alert tone="danger" title="Could not load user accounts">{usersError}</Alert>}
+      {usersLoading && <Loading />}
       <StatGrid cols={4}>
         <Stat label="Accounts" value={users.length} icon="users" />
         <Stat label="Active" value={users.filter((u) => u.status === 'active').length} icon="check" />
@@ -220,7 +269,10 @@ export function UsersPage() {
         />
       )}
 
-      {creating && <CreateUserModal onClose={() => setCreating(false)} onDone={() => flash.setMsg({ ok: true, text: 'Account created.' })} />}
+      {creating && <CreateUserModal onClose={() => setCreating(false)} onDone={() => {
+        flash.setMsg({ ok: true, text: 'Account created.' });
+        loadUsers();
+      }} />}
       {inviting && <InviteModal onClose={() => setInviting(false)} onDone={() => flash.setMsg({ ok: true, text: 'Invitation created.' })} />}
 
       {act?.type === 'status' && (

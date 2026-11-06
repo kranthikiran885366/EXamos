@@ -11,6 +11,7 @@ import {
   Progress, Steps,
 } from '../../core/ui/kit';
 import { fmt } from '../../core/ui/format';
+import { listCenters as listBackendCenters } from '../centers/service';
 import {
   createExam, updateExam, transition, nextSteps, duplicateExam, readiness, conflicts,
   configureExamPolicy, policyPreview, postponeExam, TYPES, LIFECYCLE, LIFECYCLE_LABEL,
@@ -668,33 +669,54 @@ export function ExamCandidatesPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const may = usePerm();
-  // Backend-first: fetch exam detail from API, fall back to local cache.
-  const { rows: localExams, loaded } = useColLoaded('exams');
   const [backendExam, setBackendExam] = useState(null);
+  const [examLoading, setExamLoading] = useState(true);
+  const [examError, setExamError] = useState(null);
   useEffect(() => {
-    if (!id) return;
+    if (!id) {
+      setExamLoading(false);
+      setExamError(new Error('An examination ID is required.'));
+      return;
+    }
     let cancelled = false;
+    setExamLoading(true);
+    setExamError(null);
     Api.getExamination(id).then((res) => {
       const exam = res?.examination || res;
-      if (exam && !cancelled) {
+      if (!exam || (exam.id || exam.exam_id) !== id) {
+        throw new Error('The examination endpoint returned no matching exam.');
+      }
+      if (!cancelled) {
         const config = examConfigFromApi(exam.exam_config);
         const mapped = {
-          id: exam.id, tenantId: exam.institution_id, code: exam.code,
+          id: exam.id || exam.exam_id, tenantId: exam.institution_id, code: exam.code,
           title: exam.name || exam.title, status: exam.status,
           startAt: config.startAt || exam.scheduled_start || 0,
           durationMin: config.durationMin || exam.duration_minutes || 60,
           examUrl: config.examUrl || exam.exam_url || '',
           authMode: config.authMode || exam.auth_mode || 'candidate-login',
+          centerIds: Array.isArray(config.centerIds)
+            ? config.centerIds
+            : Array.isArray(exam.center_ids) ? exam.center_ids : [],
         };
         setBackendExam(mapped);
-        put('exams', mapped).catch(() => {});
       }
-    }).catch(() => {}).finally(() => { if (!cancelled) {} });
+    }).catch((error) => {
+      if (!cancelled) setExamError(error);
+    }).finally(() => {
+      if (!cancelled) setExamLoading(false);
+    });
     return () => { cancelled = true; };
   }, [id]);
-  const exams = backendExam ? [backendExam, ...localExams.filter(x => x.id !== backendExam.id)] : localExams;
-  const candidates = useCol('candidates');
-  const centers = useCol('centers');
+  const exams = backendExam ? [backendExam] : [];
+  const {
+    data: backendCenters,
+    error: centersError,
+    reload: reloadCenters,
+  } = useLoad(async () => (
+    backendExam?.tenantId ? listBackendCenters(backendExam.tenantId) : []
+  ), [backendExam?.tenantId]);
+  const centers = backendCenters || [];
   const devices = useCol('devices');
   const policies = useCol('policies');
   const releases = useCol('releases');
@@ -710,17 +732,54 @@ export function ExamCandidatesPage() {
   // Module 10: Eligibility state from backend API
   const { data: rules, reload: reloadRules } = useLoad(async () => (id ? listEligibilityRules(id) : []), [id]);
   const { data: liveSessions, reload: reloadSessions } = useLoad(async () => (id ? listExaminationSessions(id) : []), [id]);
+  const {
+    data: candidateDirectory,
+    loading: rosterLoading,
+    error: rosterError,
+    reload: reloadRoster,
+  } = useLoad(async () => {
+    if (!id || !backendExam?.tenantId) return [];
+    const [studentResponse, assignments] = await Promise.all([
+      Api.listStudents(),
+      Api.listExaminationStudents(id),
+    ]);
+    if (!Array.isArray(studentResponse?.students)) throw new Error('The student-directory endpoint returned an invalid response.');
+    const assignmentsByStudent = new Map(assignments.map((assignment) => [assignment.student_id, assignment]));
+    const institutionStudents = studentResponse.students.filter((student) => student.institution_id === backendExam.tenantId);
+    const studentIds = new Set(institutionStudents.map((student) => student.id));
+    for (const assignment of assignments) {
+      if (!studentIds.has(assignment.student_id)) throw new Error(`Assigned student ${assignment.student_id} is missing from the institutional roster.`);
+    }
+    return institutionStudents.map((student) => {
+      const assignment = assignmentsByStudent.get(student.id);
+      return {
+        id: student.id,
+        tenantId: student.institution_id,
+        rollNo: student.roll_no,
+        name: student.name,
+        email: student.email,
+        identity: (student.verification_status || '').toLowerCase(),
+        verification_status: student.verification_status,
+        examId: assignment?.exam_id || null,
+        centerId: assignment?.center_id || null,
+        seat: assignment?.seat_no || null,
+      };
+    });
+  }, [id, backendExam?.tenantId]);
   const [newRule, setNewRule] = useState({ rule_type: 'min_attendance', rule_value: '75', is_strict: true });
 
   const e = exams.find((x) => x.id === id);
-  const rows = candidates.filter((c) => c.examId === id);
-  const examCenters = e ? (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid)).filter(Boolean) : [];
+  const candidates = candidateDirectory || [];
+  const rows = candidates.filter((c) => c.examId === id && c.tenantId === e?.tenantId);
+  const examCenters = e ? (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid && c.status === 'active')).filter(Boolean) : [];
 
-  if (!loaded) return <Page title="Candidates"><Loading /></Page>;
+  if (examLoading) return <Page title="Candidates"><Loading /></Page>;
+  if (examError) return <Page title="Candidates"><Alert tone="danger" title="Examination unavailable">{examError.message || 'The examination could not be loaded from the backend.'}</Alert></Page>;
   if (!e) return <Page title="Candidates"><Empty icon="exam" title="Exam not found" /></Page>;
 
   const assign = async () => {
     const ok = await run(() => assignToExam(user, { tenantId: e.tenantId, examId: e.id, centerId, count }), 'Candidates seated.');
+    await reloadRoster();
     if (ok) { setCount(''); }
   };
 
@@ -771,7 +830,7 @@ export function ExamCandidatesPage() {
       desc="Seat allocation, eligibility rules (Module 10) and runtime live sessions (Module 11)."
       breadcrumb={<div className="crumbs-inline"><Link to="/college/exams">Exams</Link><Icon name="arrow" size={12} /><Link to={`/college/exams/${e.id}`}>{e.code}</Link><Icon name="arrow" size={12} /><span>Candidates</span></div>}
       actions={<>
-        <button className="btn" disabled={busy} onClick={() => { reloadRules(); reloadSessions(); }}>Refresh</button>
+        <button className="btn" disabled={busy} onClick={() => { reloadRoster(); reloadCenters(); reloadRules(); reloadSessions(); }}>Refresh</button>
         {/* Fix: gate the roster publish button — require seated candidates. */}
         {rows.length > 0
           ? <button className="btn primary" disabled={busy || !may('exam.manage')} onClick={handlePublishRoster}>Publish official roster</button>
@@ -783,6 +842,9 @@ export function ExamCandidatesPage() {
       </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {centersError && <Alert tone="danger" title="Center directory unavailable">{centersError.message || 'Centers could not be loaded from the backend.'}</Alert>}
+      {rosterError && <Alert tone="error" title="Candidate roster unavailable">{rosterError.message || 'The backend candidate roster could not be loaded.'}</Alert>}
+      {rosterLoading && <Loading />}
       <StatGrid cols={4}>
         <Stat label="Seated" value={rows.length} icon="candidate" />
         <Stat label="Identity verified" value={rows.filter((c) => c.identity === 'verified').length} icon="check" tone="green" />
@@ -967,6 +1029,7 @@ export function ExamCandidatesPage() {
         onClose={() => setPending(null)}
         onConfirm={async (reason) => {
           await run(() => pending.kind === 'unassign' ? unassign(user, pending.c, reason) : setIdentity(user, pending.c, pending.outcome, reason));
+          await reloadRoster();
           setPending(null);
         }}
       />}
