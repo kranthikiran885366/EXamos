@@ -12,6 +12,7 @@
 #include "../include/ledger.h"
 #include <openssl/sha.h>
 #include <openssl/rand.h>
+#include <strings.h>
 
 static void inst_generate_id(const char *prefix, char *out, size_t out_len) {
     unsigned char rnd[6];
@@ -339,6 +340,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         int campus_count = 0, student_count = 0, device_count = 0;
         char deployment_model[40] = {0}, hardware_profile[60] = {0}, plan[40] = {0};
         char docs_raw[4096] = {0}, decl_raw[2048] = {0};
+        char target_exam_url[4096] = {0};
 
         ctrl_json_string(body, "legalName", legal_name, sizeof(legal_name));
         ctrl_json_string(body, "displayName", display_name, sizeof(display_name));
@@ -349,6 +351,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "state", state, sizeof(state));
         ctrl_json_string(body, "address", address, sizeof(address));
         ctrl_json_string(body, "domain", domain, sizeof(domain));
+        ctrl_json_string(body, "targetExamUrl", target_exam_url, sizeof(target_exam_url));
         ctrl_json_string(body, "repName", rep_name, sizeof(rep_name));
         ctrl_json_string(body, "repRole", rep_role, sizeof(rep_role));
         ctrl_json_string(body, "repEmail", rep_email, sizeof(rep_email));
@@ -416,6 +419,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
         sanitize_utf8(reg_num);
         sanitize_utf8(address);
         sanitize_utf8(domain);
+        sanitize_utf8(target_exam_url);
+        if (strlen(target_exam_url) > 2048) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 400, "Assessment URL must not exceed 2048 characters", origin, extra_headers, extra_len);
+            return;
+        }
         sanitize_utf8(rep_name);
         sanitize_utf8(rep_email);
         sanitize_utf8(rep_phone);
@@ -457,6 +466,25 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 db_release(conn, 0);
                 inst_send_error(client_fd, 400, "A valid official domain is required", origin, extra_headers, extra_len);
                 return;
+            }
+            if (target_exam_url[0]) {
+                size_t scheme_len = strncasecmp(target_exam_url, "https://", 8) == 0 ? 8
+                    : strncasecmp(target_exam_url, "http://", 7) == 0 ? 7 : 0;
+                if (!scheme_len || !target_exam_url[scheme_len] ||
+                    target_exam_url[scheme_len] == '/' ||
+                    target_exam_url[scheme_len] == '?' ||
+                    target_exam_url[scheme_len] == '#') {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Assessment URL must be an absolute http or https URL", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+            for (const unsigned char *p = (const unsigned char *)target_exam_url; *p; p++) {
+                if (*p <= 0x20 || *p == 0x7f) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Assessment URL cannot contain whitespace or control characters", origin, extra_headers, extra_len);
+                    return;
+                }
             }
         }
 
@@ -505,7 +533,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
         snprintf(h_vol, sizeof(h_vol), "%d", hiring_volume);
         snprintf(a_exam, sizeof(a_exam), "%d", annual_exam_count);
 
-        const char *ins_vals[37] = {
+        const char *ins_vals[38] = {
             app_id, legal_name, display_name, entity_type, reg_num,
             country, state, address, domain, rep_name,
             rep_role, rep_email, rep_phone, coord_name, coord_email,
@@ -523,10 +551,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
             a_exam,
             job_roles_targeted[0] ? job_roles_targeted : "",
             docs_raw,
-            decl_raw
+            decl_raw,
+            target_exam_url
         };
-        int ins_lens[37];
-        for (int i = 0; i < 37; i++) ins_lens[i] = (int)strlen(ins_vals[i]);
+        int ins_lens[38];
+        for (int i = 0; i < 38; i++) ins_lens[i] = (int)strlen(ins_vals[i]);
 
         PGresult *ins = db_simple(conn,
             "INSERT INTO institution_applications ("
@@ -537,22 +566,22 @@ void institution_handle(int client_fd, const char *method, const char *path,
             "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
             "  documents, declarations,"
             "  company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email,"
-            "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted"
+            "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted, target_exam_url"
             ") VALUES ("
             "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
             "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
             "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
             "  $36::jsonb, $37::jsonb,"
             "  NULLIF($26,''), NULLIF($27,''), $28::integer, NULLIF($29,''), NULLIF($30,''),"
-            "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,'')"
-            ")", 37, ins_vals, ins_lens);
+            "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,''), $38"
+            ")", 38, ins_vals, ins_lens);
 
         int ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
         if (ins) PQclear(ins);
 
         /* Schema Self-Heal: if corporate columns are missing, apply schema update and retry */
         if (!ok) {
-            fprintf(stderr, "[INST APPLICATION] Primary 37-col insert failed (%s). Attempting schema self-heal...\n", PQerrorMessage(conn));
+            fprintf(stderr, "[INST APPLICATION] Primary application insert failed (%s). Attempting schema self-heal...\n", PQerrorMessage(conn));
             PGresult *alt = db_simple(conn,
                 "ALTER TABLE institution_applications "
                 "ADD COLUMN IF NOT EXISTS company_size VARCHAR(30), "
@@ -564,7 +593,9 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255), "
                 "ADD COLUMN IF NOT EXISTS website_url VARCHAR(255), "
                 "ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0, "
-                "ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;", 0, NULL, NULL);
+                "ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT, "
+                "ADD COLUMN IF NOT EXISTS target_exam_url TEXT NOT NULL DEFAULT '';",
+                0, NULL, NULL);
             if (alt) PQclear(alt);
 
             ins = db_simple(conn,
@@ -576,24 +607,24 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
                 "  documents, declarations,"
                 "  company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email,"
-                "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted"
+                "  tech_stack, linkedin_url, website_url, annual_exam_count, job_roles_targeted, target_exam_url"
                 ") VALUES ("
                 "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
                 "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
                 "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
                 "  $36::jsonb, $37::jsonb,"
                 "  NULLIF($26,''), NULLIF($27,''), $28::integer, NULLIF($29,''), NULLIF($30,''),"
-                "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,'')"
-                ")", 37, ins_vals, ins_lens);
+                "  NULLIF($31,''), NULLIF($32,''), NULLIF($33,''), $34::integer, NULLIF($35,''), $38"
+                ")", 38, ins_vals, ins_lens);
             ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
             if (ins) PQclear(ins);
         }
 
-        /* Fallback: insert using 25 standard base columns if extended columns are not available */
+        /* Retain the assessment URL even when only base application fields are available. */
         if (!ok) {
             fprintf(stderr, "[INST APPLICATION] Retrying with base columns... (%s)\n", PQerrorMessage(conn));
-            const char *base_vals[27];
-            int base_lens[27];
+            const char *base_vals[28];
+            int base_lens[28];
             for (int k = 0; k < 25; k++) {
                 base_vals[k] = ins_vals[k];
                 base_lens[k] = ins_lens[k];
@@ -602,6 +633,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
             base_lens[25] = (int)strlen(docs_raw);
             base_vals[26] = decl_raw;
             base_lens[26] = (int)strlen(decl_raw);
+            base_vals[27] = target_exam_url;
+            base_lens[27] = (int)strlen(target_exam_url);
             ins = db_simple(conn,
                 "INSERT INTO institution_applications ("
                 "  id, legal_name, display_name, entity_type, registration_number,"
@@ -609,13 +642,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  rep_role, rep_email, rep_phone, coord_name, coord_email,"
                 "  tech_name, tech_email, campus_count, student_count, device_count,"
                 "  deployment_model, hardware_profile, plan, status, created_at, updated_at,"
-                "  documents, declarations"
+                "  documents, declarations, target_exam_url"
                 ") VALUES ("
                 "  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
                 "  $11,$12,$13,$14,$15,$16,$17,$18::integer,$19::integer,$20::integer,"
                 "  $21,$22,$23,'SUBMITTED',$24::bigint,$25::bigint,"
-                "  $26::jsonb, $27::jsonb"
-                ")", 27, base_vals, base_lens);
+                "  $26::jsonb, $27::jsonb, $28"
+                ")", 28, base_vals, base_lens);
             ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
             if (ins) PQclear(ins);
         }
@@ -658,13 +691,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "         WHERE o.institution_id = a.institution_id "
                 "           AND u.status = 'active' "
                 "           AND COALESCE(u.totp_secret, '') <> ''"
-                "       ) THEN TRUE ELSE FALSE END "
+                "       ) THEN TRUE ELSE FALSE END, "
+                "       COALESCE(a.review_notes, '') "
                 "FROM institution_applications a LEFT JOIN tenants t ON t.id = a.institution_id "
                 "WHERE a.id = $1", 1, pvals, plens);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
                 char id_esc[128] = {0}, l_name[256] = {0}, d_name[256] = {0}, st[64] = {0};
                 char dom_esc[128] = {0}, plan_esc[64] = {0}, mod_esc[64] = {0};
-                char institution_id[128] = {0}, institution_status[64] = {0};
+                char institution_id[128] = {0}, institution_status[64] = {0}, review_notes[3072] = {0};
                 escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
                 escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
                 escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
@@ -674,20 +708,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 escape_json_str(PQgetvalue(res, 0, 9), mod_esc, sizeof(mod_esc));
                 escape_json_str(PQgetvalue(res, 0, 11), institution_id, sizeof(institution_id));
                 escape_json_str(PQgetvalue(res, 0, 12), institution_status, sizeof(institution_status));
+                escape_json_str(PQgetvalue(res, 0, 14), review_notes, sizeof(review_notes));
 
-                char resp[1024];
+                char resp[4096];
                 snprintf(resp, sizeof(resp),
                     "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
                     "\"status\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,\"updatedAt\":%s,"
                     "\"institutionId\":\"%s\",\"institutionStatus\":\"%s\",\"adminSetupComplete\":%s,"
-                    "\"domain\":\"%s\",\"plan\":\"%s\",\"deploymentModel\":\"%s\"}",
+                    "\"domain\":\"%s\",\"plan\":\"%s\",\"deploymentModel\":\"%s\",\"reviewNotes\":\"%s\"}",
                     id_esc, l_name, d_name, PQgetvalue(res, 0, 3), st,
                     PQgetvalue(res, 0, 5)[0] ? PQgetvalue(res, 0, 5) : "0",
                     PQgetvalue(res, 0, 6)[0] ? PQgetvalue(res, 0, 6) : "null",
                     PQgetvalue(res, 0, 10)[0] ? PQgetvalue(res, 0, 10) : "0",
                     institution_id, institution_status,
                     PQgetvalue(res, 0, 13)[0] == 't' ? "true" : "false",
-                    dom_esc, plan_esc, mod_esc);
+                    dom_esc, plan_esc, mod_esc, review_notes);
                 PQclear(res);
                 db_release(conn, 0);
                 inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
@@ -722,7 +757,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
             "         WHERE o.institution_id = a.institution_id "
             "           AND u.status = 'active' "
             "           AND COALESCE(u.totp_secret, '') <> ''"
-            "       ) THEN TRUE ELSE FALSE END "
+            "       ) THEN TRUE ELSE FALSE END, "
+            "       COALESCE(a.target_exam_url, ''), "
+            "       CASE WHEN a.review_checklist @> "
+            "'{\"identity\":true,\"domain\":true,\"accreditation\":true,\"representative\":true,\"datacenter\":true}'::jsonb "
+            "THEN TRUE ELSE FALSE END "
             "FROM institution_applications a "
             "LEFT JOIN tenants t ON t.id = a.institution_id "
             "ORDER BY a.created_at DESC");
@@ -742,7 +781,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
             char id_esc[64] = {0}, l_name[256] = {0}, d_name[256] = {0}, reg[64] = {0};
             char dom[128] = {0}, r_email[128] = {0}, st[64] = {0}, ins_id[64] = {0};
-            char institution_status[64] = {0};
+            char institution_status[64] = {0}, target_url[4096] = {0};
             char notes[512] = {0};
 
             escape_json_str(PQgetvalue(res, i, 0), id_esc, sizeof(id_esc));
@@ -755,6 +794,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             escape_json_str(PQgetvalue(res, i, 20), notes, sizeof(notes));
             escape_json_str(PQgetvalue(res, i, 23), ins_id, sizeof(ins_id));
             escape_json_str(PQgetvalue(res, i, 26), institution_status, sizeof(institution_status));
+            escape_json_str(PQgetvalue(res, i, 28), target_url, sizeof(target_url));
 
             pos += snprintf(json + pos, sizeof(json) - pos,
                 "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
@@ -762,14 +802,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"repEmail\":\"%s\",\"campusCount\":%s,\"studentCount\":%s,\"deviceCount\":%s,"
                 "\"deploymentModel\":\"%s\",\"plan\":\"%s\",\"status\":\"%s\",\"reviewNotes\":\"%s\","
                 "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,"
-                "\"institutionStatus\":\"%s\",\"adminSetupComplete\":%s}",
+                "\"institutionStatus\":\"%s\",\"adminSetupComplete\":%s,\"targetExamUrl\":\"%s\",\"verificationComplete\":%s}",
                 id_esc, l_name, d_name, PQgetvalue(res, i, 3),
                 reg, PQgetvalue(res, i, 5), PQgetvalue(res, i, 6), dom,
                 r_email, PQgetvalue(res, i, 13), PQgetvalue(res, i, 14), PQgetvalue(res, i, 15),
                 PQgetvalue(res, i, 16), PQgetvalue(res, i, 18), st, notes,
                 ins_id, PQgetvalue(res, i, 24),
                 PQgetvalue(res, i, 22)[0] ? PQgetvalue(res, i, 22) : "null",
-                institution_status, PQgetvalue(res, i, 27)[0] == 't' ? "true" : "false");
+                institution_status, PQgetvalue(res, i, 27)[0] == 't' ? "true" : "false",
+                target_url, PQgetvalue(res, i, 29)[0] == 't' ? "true" : "false");
         }
         snprintf(json + pos, sizeof(json) - pos, "]}");
         if (res) PQclear(res);
@@ -797,12 +838,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "       country, state, address, domain, rep_name, "
                 "       rep_role, rep_email, rep_phone, campus_count, student_count, "
                 "       device_count, deployment_model, hardware_profile, plan, status, "
-                "       COALESCE(review_notes, ''), reviewed_by, reviewed_at, institution_id, created_at, updated_at "
+                "       COALESCE(review_notes, ''), reviewed_by, reviewed_at, institution_id, created_at, updated_at, "
+                "       COALESCE(target_exam_url, ''), COALESCE(review_checklist, '{}'::jsonb)::text "
                 "FROM institution_applications WHERE id = $1", 1, pvals, plens);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
                 char id_esc[64] = {0}, l_name[256] = {0}, d_name[256] = {0}, reg[64] = {0};
                 char dom[128] = {0}, r_name[128] = {0}, r_role[128] = {0}, r_email[128] = {0}, r_phone[64] = {0};
                 char addr[512] = {0}, hw_prof[128] = {0}, st[64] = {0}, ins_id[64] = {0}, notes[512] = {0};
+                char target_url[4096] = {0};
                 escape_json_str(PQgetvalue(res, 0, 0), id_esc, sizeof(id_esc));
                 escape_json_str(PQgetvalue(res, 0, 1), l_name, sizeof(l_name));
                 escape_json_str(PQgetvalue(res, 0, 2), d_name, sizeof(d_name));
@@ -817,22 +860,24 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 escape_json_str(PQgetvalue(res, 0, 19), st, sizeof(st));
                 escape_json_str(PQgetvalue(res, 0, 20), notes, sizeof(notes));
                 escape_json_str(PQgetvalue(res, 0, 23), ins_id, sizeof(ins_id));
+                escape_json_str(PQgetvalue(res, 0, 26), target_url, sizeof(target_url));
 
-                char json[4096];
+                char json[8192];
                 snprintf(json, sizeof(json),
                     "{\"id\":\"%s\",\"legalName\":\"%s\",\"displayName\":\"%s\",\"entityType\":\"%s\","
                     "\"registrationNumber\":\"%s\",\"country\":\"%s\",\"state\":\"%s\",\"address\":\"%s\",\"domain\":\"%s\","
                     "\"repName\":\"%s\",\"repRole\":\"%s\",\"repEmail\":\"%s\",\"repPhone\":\"%s\","
                     "\"campusCount\":%s,\"studentCount\":%s,\"deviceCount\":%s,"
                     "\"deploymentModel\":\"%s\",\"hardwareProfile\":\"%s\",\"plan\":\"%s\",\"status\":\"%s\",\"reviewNotes\":\"%s\","
-                    "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s}",
+                    "\"institutionId\":\"%s\",\"createdAt\":%s,\"reviewedAt\":%s,\"targetExamUrl\":\"%s\",\"reviewChecklist\":%s}",
                     id_esc, l_name, d_name, PQgetvalue(res, 0, 3),
                     reg, PQgetvalue(res, 0, 5), PQgetvalue(res, 0, 6), addr, dom,
                     r_name, r_role, r_email, r_phone,
                     PQgetvalue(res, 0, 13), PQgetvalue(res, 0, 14), PQgetvalue(res, 0, 15),
                     PQgetvalue(res, 0, 16), hw_prof, PQgetvalue(res, 0, 18), st, notes,
                     ins_id, PQgetvalue(res, 0, 24),
-                    PQgetvalue(res, 0, 22)[0] ? PQgetvalue(res, 0, 22) : "null");
+                    PQgetvalue(res, 0, 22)[0] ? PQgetvalue(res, 0, 22) : "null",
+                    target_url, PQgetvalue(res, 0, 27)[0] ? PQgetvalue(res, 0, 27) : "{}");
                 PQclear(res);
                 db_release(conn, 0);
                 inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
@@ -853,9 +898,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
             }
 
             char action_val[64] = {0}, review_notes[512] = {0};
+            char review_checklist[1024] = "{}";
             ctrl_json_string(body, "action", action_val, sizeof(action_val));
             ctrl_json_string(body, "reviewNotes", review_notes, sizeof(review_notes));
             if (!review_notes[0]) ctrl_json_string(body, "notes", review_notes, sizeof(review_notes));
+            int identity_checked = 0, domain_checked = 0, accreditation_checked = 0;
+            int representative_checked = 0, datacenter_checked = 0;
 
             for (size_t ai = 0; action_val[ai]; ai++) {
                 if (action_val[ai] >= 'a' && action_val[ai] <= 'z') action_val[ai] -= 32;
@@ -874,14 +922,48 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
+            size_t notes_len = strlen(review_notes);
+            while (notes_len && (review_notes[notes_len - 1] == ' ' || review_notes[notes_len - 1] == '\t' ||
+                                 review_notes[notes_len - 1] == '\r' || review_notes[notes_len - 1] == '\n')) {
+                review_notes[--notes_len] = '\0';
+            }
+            size_t notes_start = 0;
+            while (review_notes[notes_start] == ' ' || review_notes[notes_start] == '\t' ||
+                   review_notes[notes_start] == '\r' || review_notes[notes_start] == '\n') notes_start++;
+            if (notes_start) {
+                memmove(review_notes, review_notes + notes_start, notes_len - notes_start + 1);
+                notes_len -= notes_start;
+            }
+            if (notes_len < 8) {
+                db_release(conn, 0);
+                inst_send_error(client_fd, 400, "Reviewer notes must contain at least 8 non-whitespace characters", origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (strcmp(action_val, "APPROVED") == 0) {
+                if (!ctrl_json_raw(body, "reviewChecklist", review_checklist, sizeof(review_checklist)) ||
+                    !ctrl_json_bool(review_checklist, "identity", &identity_checked) || !identity_checked ||
+                    !ctrl_json_bool(review_checklist, "domain", &domain_checked) || !domain_checked ||
+                    !ctrl_json_bool(review_checklist, "accreditation", &accreditation_checked) || !accreditation_checked ||
+                    !ctrl_json_bool(review_checklist, "representative", &representative_checked) || !representative_checked ||
+                    !ctrl_json_bool(review_checklist, "datacenter", &datacenter_checked) || !datacenter_checked) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 400, "Complete all five verification checks before approving the application", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
-            const char *u_vals[5] = { action_val, review_notes, sess.user_id, now, app_id };
-            int u_lens[5]; for (int i = 0; i < 5; i++) u_lens[i] = (int)strlen(u_vals[i]);
+            const char *u_vals[6] = { action_val, review_notes, review_checklist, sess.user_id, now, app_id };
+            int u_lens[6]; for (int i = 0; i < 6; i++) u_lens[i] = (int)strlen(u_vals[i]);
 
             PGresult *u_res = db_simple(conn,
                 "UPDATE institution_applications SET status = $1, review_notes = $2, "
-                "reviewed_by = $3, reviewed_at = $4::bigint, updated_at = $4::bigint "
-                "WHERE id = $5", 5, u_vals, u_lens);
+                "review_checklist = CASE WHEN $1 = 'APPROVED' THEN $3::jsonb ELSE '{}'::jsonb END, "
+                "reviewed_by = $4, reviewed_at = $5::bigint, updated_at = $5::bigint "
+                "WHERE id = $6 AND (status IN ('SUBMITTED','UNDER_REVIEW','VERIFICATION_PENDING','MORE_INFORMATION_REQUIRED') "
+                "OR ($1 = 'UNDER_REVIEW' AND status = 'APPROVED'))",
+                6, u_vals, u_lens);
             int ok = u_res && PQresultStatus(u_res) == PGRES_COMMAND_OK;
             int u_rows = ok ? atoi(PQcmdTuples(u_res)) : 0;
             if (u_res) PQclear(u_res);
@@ -891,12 +973,26 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
             if (u_rows == 0) {
+                PGresult *status_res = db_simple(conn,
+                    "SELECT status FROM institution_applications WHERE id = $1",
+                    1, &u_vals[5], &u_lens[5]);
+                int exists = status_res && PQresultStatus(status_res) == PGRES_TUPLES_OK &&
+                    PQntuples(status_res) > 0;
+                if (status_res) PQclear(status_res);
                 db_release(conn, 0);
-                inst_send_error(client_fd, 404, "Application not found", origin, extra_headers, extra_len);
+                inst_send_error(client_fd, exists ? 409 : 404,
+                    exists ? "This application is no longer in a reviewable state" : "Application not found",
+                    origin, extra_headers, extra_len);
                 return;
             }
 
-            audit_and_ledger(sess.user_id, "INSTITUTION_APPLICATION_REVIEWED", app_id, action_val);
+            char review_audit_detail[1600];
+            snprintf(review_audit_detail, sizeof(review_audit_detail),
+                     "%s; reviewer_notes=%s%s%s",
+                     action_val, review_notes,
+                     strcmp(action_val, "APPROVED") == 0 ? "; checklist=" : "",
+                     strcmp(action_val, "APPROVED") == 0 ? review_checklist : "");
+            audit_and_ledger(sess.user_id, "INSTITUTION_APPLICATION_REVIEWED", app_id, review_audit_detail);
             db_release(conn, 0);
 
             char resp[256];
@@ -916,6 +1012,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *pvals[1] = { app_id };
             int plens[1] = { (int)strlen(app_id) };
 
+            PGresult *begin_res = PQexec(conn, "BEGIN");
+            if (!begin_res || PQresultStatus(begin_res) != PGRES_COMMAND_OK) {
+                if (begin_res) PQclear(begin_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to begin institution provisioning transaction", origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin_res);
+
             /* Read application data — now including entity_type and corporate fields */
             PGresult *a_res = db_simple(conn,
                 "SELECT display_name, registration_number, country, state, address, domain, "
@@ -924,11 +1029,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "       COALESCE(company_size,''), COALESCE(industry_sector,''), "
                 "       COALESCE(hiring_volume::text,'0'), COALESCE(hr_contact_name,''), "
                 "       COALESCE(hr_contact_email,''), COALESCE(tech_stack,''), "
-                "       COALESCE(website_url,'') "
-                "FROM institution_applications WHERE id = $1", 1, pvals, plens);
+                "       COALESCE(website_url,''), "
+                "       CASE WHEN review_checklist @> "
+                "'{\"identity\":true,\"domain\":true,\"accreditation\":true,\"representative\":true,\"datacenter\":true}'::jsonb "
+                "THEN TRUE ELSE FALSE END "
+                "FROM institution_applications WHERE id = $1 FOR UPDATE", 1, pvals, plens);
 
             if (!a_res || PQresultStatus(a_res) != PGRES_TUPLES_OK || PQntuples(a_res) == 0) {
                 if (a_res) PQclear(a_res);
+                PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 inst_send_error(client_fd, 404, "Application not found", origin, extra_headers, extra_len);
                 return;
@@ -938,10 +1047,31 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(existing_inst, sizeof(existing_inst), "%s", PQgetvalue(a_res, 0, 14));
             if (existing_inst[0]) {
                 PQclear(a_res);
+                PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 char err_msg[256];
                 snprintf(err_msg, sizeof(err_msg), "Application already provisioned as institution %s", existing_inst);
-                inst_send_error(client_fd, 400, err_msg, origin, extra_headers, extra_len);
+                inst_send_error(client_fd, 409, err_msg, origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (strcmp(PQgetvalue(a_res, 0, 15), "APPROVED") != 0) {
+                char application_status[64] = {0};
+                snprintf(application_status, sizeof(application_status), "%s", PQgetvalue(a_res, 0, 15));
+                PQclear(a_res);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                char err_msg[160];
+                snprintf(err_msg, sizeof(err_msg), "Application must be approved before provisioning (current status: %s)", application_status);
+                inst_send_error(client_fd, 409, err_msg, origin, extra_headers, extra_len);
+                return;
+            }
+
+            if (PQgetvalue(a_res, 0, 24)[0] != 't') {
+                PQclear(a_res);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                inst_send_error(client_fd, 409, "Application cannot be provisioned until all five verification checks are recorded", origin, extra_headers, extra_len);
                 return;
             }
 
@@ -982,6 +1112,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
             {
                 unsigned char rnd[15];
                 if (RAND_bytes(rnd, sizeof(rnd)) != 1) {
+                    PQclear(a_res);
+                    PQexec(conn, "ROLLBACK");
                     db_release(conn, 0);
                     inst_send_error(client_fd, 503, "Secure ID generation unavailable", origin, extra_headers, extra_len);
                     return;
@@ -1002,6 +1134,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (strlen(pfx) < 3) snprintf(pfx, sizeof(pfx), "INS");
             inst_generate_code(pfx, code, sizeof(code));
             if (!code[0]) {
+                PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 inst_send_error(client_fd, 503, "Secure institution code generation unavailable", origin, extra_headers, extra_len);
                 return;
@@ -1012,8 +1145,6 @@ void institution_handle(int client_fd, const char *method, const char *path,
             snprintf(valid_until_ms, sizeof(valid_until_ms), "%ld000", now_sec + 31536000L); /* 1 year */
 
             /* Transactional multi-table provisioning */
-            PQexec(conn, "BEGIN");
-
             /* 1. Insert Tenant */
             char dom_json[256];
             snprintf(dom_json, sizeof(dom_json), "[\"%s\"]", dom);
@@ -1044,7 +1175,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "region, timezone, plan, status, max_centers, max_candidates, "
                 "deployment_model, created_at, created_by, domains, exam_defaults, security, notification_prefs, history,"
                 "entity_type, company_size, industry_sector, hiring_volume, hr_contact_name, hr_contact_email, tech_stack, website_url) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9::integer,$10::integer,$11,$12::bigint,$13::varchar,$14::jsonb,"
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pilot',$9::integer,$10::integer,$11,$12::bigint,$13::varchar,$14::jsonb,"
                 "'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, "
                 "jsonb_build_array(jsonb_build_object('at',$12::bigint,'by',$13::varchar,'action','Provisioned from Application')),"
                 "$15, NULLIF($16,''), NULLIF($17,''), $18::integer, NULLIF($19,''), NULLIF($20,''), NULLIF($21,''), NULLIF($22,''))",
@@ -1077,7 +1208,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "INSERT INTO institution_licenses (id, institution_id, agreement_id, plan, plan_version, status, "
                 "valid_from, valid_until, grace_period_days, max_campuses, max_devices, max_candidates, max_exams, "
                 "allowed_channels, enabled_modules, usage_current, created_at, updated_at) "
-                "VALUES ($1, $2, $3, $4, '2026.1', 'ACTIVE', $5::bigint, $6::bigint, 0, $7::integer, $8::integer, $9::integer, 0, "
+                "VALUES ($1, $2, $3, $4, '2026.1', 'PENDING', $5::bigint, $6::bigint, 0, $7::integer, $8::integer, $9::integer, 0, "
                 "'[]'::jsonb, '[]'::jsonb, "
                 "'{\"campuses\":0,\"devices\":0,\"candidates\":0,\"exams\":0}'::jsonb, $5::bigint, $5::bigint)",
                 9, lic_vals, lic_lens);
@@ -1135,7 +1266,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (app_u_res) PQclear(app_u_res);
 
             if (all_ok) {
-                PQexec(conn, "COMMIT");
+                PGresult *commit_res = PQexec(conn, "COMMIT");
+                int committed = commit_res && PQresultStatus(commit_res) == PGRES_COMMAND_OK;
+                if (commit_res) PQclear(commit_res);
+                if (!committed) {
+                    char commit_error[512] = {0};
+                    snprintf(commit_error, sizeof(commit_error), "%s", PQerrorMessage(conn));
+                    for (size_t ei = 0; commit_error[ei]; ei++) {
+                        if (commit_error[ei] == '\r' || commit_error[ei] == '\n') commit_error[ei] = ' ';
+                    }
+                    PQexec(conn, "ROLLBACK");
+                    fprintf(stderr, "[INST PROVISION COMMIT FAILED] %s\n", commit_error);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 503, "Institution provisioning could not be committed; no success was recorded", origin, extra_headers, extra_len);
+                    return;
+                }
                 audit_and_ledger(sess.user_id, "INSTITUTION_TRANSACTIONALLY_PROVISIONED", new_inst_id, d_name);
                 db_release(conn, 0);
 
@@ -1635,6 +1780,65 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 if (c_live) PQclear(c_live);
             }
 
+            if (strcmp(st, "active") == 0) {
+                PGresult *begin_res = PQexec(conn, "BEGIN");
+                int begin_ok = begin_res && PQresultStatus(begin_res) == PGRES_COMMAND_OK;
+                if (begin_res) PQclear(begin_res);
+                if (!begin_ok) {
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Failed to begin institution activation transaction", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
+            int activating = strcmp(st, "active") == 0;
+            if (activating) {
+                const char *gate_vals[1] = { inst_id };
+                int gate_lens[1] = { (int)strlen(inst_id) };
+                PGresult *gate_res = db_simple(conn,
+                    "SELECT "
+                    "  EXISTS (SELECT 1 FROM institution_agreements "
+                    "          WHERE institution_id = $1 AND status = 'EXECUTED') AS agreement_executed, "
+                    "  EXISTS (SELECT 1 FROM institution_onboarding o "
+                    "          JOIN users u ON u.tenant_id = o.institution_id "
+                    "            AND LOWER(u.email) = LOWER(o.first_admin_email) "
+                    "          WHERE o.institution_id = $1 AND u.status = 'active' "
+                    "            AND COALESCE(u.totp_secret, '') <> '') AS admin_mfa_complete, "
+                    "  EXISTS (SELECT 1 FROM institution_licenses "
+                    "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid, "
+                    "  (SELECT COUNT(*) > 0 FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS has_devices, "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE trust = 'attested' OR tpm_status = 'VERIFIED') = COUNT(*) "
+                    "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_attested, "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') = COUNT(*) "
+                    "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_locked, "
+                    "  EXISTS (SELECT 1 FROM exams WHERE (tenant_id = $1 OR institution_id = $1) "
+                    "          AND exam_url IS NOT NULL AND exam_url <> '') AS has_exam_url, "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev <> '') >= COUNT(*) - 1 "
+                    "   FROM audit WHERE institution_id = $1) AS audit_chain_ready",
+                    1, gate_vals, gate_lens);
+                if (!gate_res || PQresultStatus(gate_res) != PGRES_TUPLES_OK || PQntuples(gate_res) == 0) {
+                    if (gate_res) PQclear(gate_res);
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Failed to verify institution activation requirements", origin, extra_headers, extra_len);
+                    return;
+                }
+                int gates_passed = 1;
+                for (int gate = 0; gate < PQnfields(gate_res); gate++) {
+                    if (PQgetvalue(gate_res, 0, gate)[0] != 't') {
+                        gates_passed = 0;
+                        break;
+                    }
+                }
+                PQclear(gate_res);
+                if (!gates_passed) {
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "Institution activation requires an executed agreement, completed primary administrator MFA, a valid license, and all pilot readiness checks", origin, extra_headers, extra_len);
+                    return;
+                }
+            }
+
             char now[32]; snprintf(now, sizeof(now), "%ld000", (long)time(NULL));
             const char *u_vals[5] = { st, now, sess.user_id, reason, inst_id };
             int u_lens[5];
@@ -1648,14 +1852,33 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int rows = ok ? atoi(PQcmdTuples(u_res)) : 0;
             if (u_res) PQclear(u_res);
             if (!ok) {
+                if (activating) PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Failed to update institution status", origin, extra_headers, extra_len);
                 return;
             }
             if (rows == 0) {
+                if (activating) PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
                 return;
+            }
+
+            if (activating) {
+                const char *license_vals[2] = { now, inst_id };
+                int license_lens[2] = { (int)strlen(now), (int)strlen(inst_id) };
+                PGresult *license_res = db_simple(conn,
+                    "UPDATE institution_licenses SET status = 'ACTIVE', updated_at = $1::bigint "
+                    "WHERE institution_id = $2 AND status = 'PENDING'",
+                    2, license_vals, license_lens);
+                int license_ok = license_res && PQresultStatus(license_res) == PGRES_COMMAND_OK;
+                if (license_res) PQclear(license_res);
+                if (!license_ok) {
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Failed to activate institution license", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             const char *s_vals[2] = { strcmp(st, "active") == 0 ? "true" : "false", inst_id };
@@ -1664,9 +1887,22 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int s_ok = s_res && PQresultStatus(s_res) == PGRES_COMMAND_OK;
             if (s_res) PQclear(s_res);
             if (!s_ok) {
+                if (activating) PQexec(conn, "ROLLBACK");
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Status saved but the institution registry mirror could not be synchronized", origin, extra_headers, extra_len);
                 return;
+            }
+
+            if (activating) {
+                PGresult *commit_res = PQexec(conn, "COMMIT");
+                int commit_ok = commit_res && PQresultStatus(commit_res) == PGRES_COMMAND_OK;
+                if (commit_res) PQclear(commit_res);
+                if (!commit_ok) {
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 500, "Institution activation transaction could not be committed", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             char evt[64]; snprintf(evt, sizeof(evt), "TENANT_%s", st);
@@ -2347,7 +2583,31 @@ void institution_handle(int client_fd, const char *method, const char *path,
             }
             PQclear(onb_res);
 
-            /* 6. Institution info */
+            /* 6. Contract and primary-administrator requirements for activation */
+            PGresult *activation_res = db_simple(conn,
+                "SELECT "
+                "  EXISTS (SELECT 1 FROM institution_agreements "
+                "          WHERE institution_id = $1 AND status = 'EXECUTED') AS agreement_executed, "
+                "  EXISTS (SELECT 1 FROM institution_onboarding o "
+                "          JOIN users u ON u.tenant_id = o.institution_id "
+                "            AND LOWER(u.email) = LOWER(o.first_admin_email) "
+                "          WHERE o.institution_id = $1 AND u.status = 'active' "
+                "            AND COALESCE(u.totp_secret, '') <> '') AS admin_mfa_complete, "
+                "  EXISTS (SELECT 1 FROM institution_licenses "
+                "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid",
+                1, pv, pl);
+            if (!activation_res || PQresultStatus(activation_res) != PGRES_TUPLES_OK || PQntuples(activation_res) == 0) {
+                if (activation_res) PQclear(activation_res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Failed to query institution activation requirements", origin, extra_headers, extra_len);
+                return;
+            }
+            int agreement_executed = PQgetvalue(activation_res, 0, 0)[0] == 't';
+            int admin_mfa_complete = PQgetvalue(activation_res, 0, 1)[0] == 't';
+            int license_valid = PQgetvalue(activation_res, 0, 2)[0] == 't';
+            PQclear(activation_res);
+
+            /* 7. Institution info */
             PGresult *inst_res = db_simple(conn,
                 "SELECT name, status, plan, contact_email FROM tenants WHERE id = $1",
                 1, pv, pl);
@@ -2375,7 +2635,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int gate_lock = (dev_total > 0 && dev_locked == dev_total);
             int gate_url = (url_count > 0);
             int gate_chain = chain_ok;
-            int all_pass = gate_fleet && gate_tpm && gate_lock && gate_url && gate_chain;
+            int gate_agreement = agreement_executed;
+            int gate_admin_mfa = admin_mfa_complete;
+            int gate_license = license_valid;
+            int all_pass = gate_fleet && gate_tpm && gate_lock && gate_url && gate_chain
+                && gate_agreement && gate_admin_mfa && gate_license;
 
             db_release(conn, 0);
 
@@ -2412,7 +2676,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
                   "{\"key\":\"url\",\"check\":\"Assessment Portal URLs Configured\","
                     "\"pass\":%s,\"detail\":\"%d exam URL(s) are configured; URL reachability is not checked\"},"
                   "{\"key\":\"chain\",\"check\":\"Audit Event Predecessor References Present\","
-                    "\"pass\":%s,\"detail\":\"%d of %d audit event(s) have predecessor references; cryptographic hashes are not verified here\"}"
+                    "\"pass\":%s,\"detail\":\"%d of %d audit event(s) have predecessor references; cryptographic hashes are not verified here\"},"
+                  "{\"key\":\"agreement\",\"check\":\"Agreement Executed\","
+                    "\"pass\":%s,\"detail\":\"An institution agreement must be executed before live activation\"},"
+                  "{\"key\":\"admin_mfa\",\"check\":\"Primary Administrator MFA Complete\","
+                    "\"pass\":%s,\"detail\":\"The primary administrator account must be active with MFA configured\"},"
+                  "{\"key\":\"license\",\"check\":\"Institution License Valid\","
+                    "\"pass\":%s,\"detail\":\"A pending or active institution license must exist before live activation\"}"
                 "],"
                 "\"allPassed\":%s"
                 "}",
@@ -2427,6 +2697,9 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 gate_lock ? "true" : "false", dev_locked, dev_total,
                 gate_url ? "true" : "false", url_count,
                 gate_chain ? "true" : "false", chain_linked, chain_total,
+                gate_agreement ? "true" : "false",
+                gate_admin_mfa ? "true" : "false",
+                gate_license ? "true" : "false",
                 all_pass ? "true" : "false");
 
             inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);

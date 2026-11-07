@@ -45,19 +45,19 @@ export function getApplicationLifecycle(status, institutionStatus, adminSetupCom
   };
   const isLive = String(institutionStatus || '').toLowerCase() === 'active';
 
+  if (key === 'PROVISIONED' && adminSetupComplete !== true) {
+    return {
+      stage: 'Admin setup pending',
+      nextAction: 'Platform operations and the institution must finish primary administrator account setup and multi-factor authentication before live operations can be authorized.',
+      owner: 'Institution administrator and platform operations',
+    };
+  }
+
   if (key === 'PROVISIONED' && isLive) {
     return {
       stage: 'Authorized for live operations',
       nextAction: 'Your institution is active. Contact your institution administrator for account and exam setup.',
       owner: 'Institution administrator',
-    };
-  }
-
-  if (key === 'PROVISIONED' && adminSetupComplete === false) {
-    return {
-      stage: 'Admin setup pending',
-      nextAction: 'Platform operations and the institution must finish primary administrator account setup and multi-factor authentication before live operations can be authorized.',
-      owner: 'Institution administrator and platform operations',
     };
   }
 

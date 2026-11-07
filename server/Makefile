@@ -127,6 +127,9 @@ test-approval-governance:
 test-device-trust-policy-governance:
 	bash ../tests/server/device-trust-policy-governance-test.sh
 
+test-institution-application-assessment-url:
+	bash ../tests/server/institution-application-assessment-url-migration-test.sh
+
 test-session-store:
 	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-session-store-test.XXXXXX"); \
 	trap 'rm -f -- "$$test_binary"' EXIT; \
@@ -137,4 +140,4 @@ test-session-store:
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-session-store
+.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store

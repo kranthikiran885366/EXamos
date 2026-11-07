@@ -129,7 +129,7 @@ export const Skeleton = ({ rows = 4 }) => <div className="skeleton" aria-hidden=
 export function Tabs({ tabs, value, onChange, right }) {
   const items = tabs.map((t) => (typeof t === 'string' ? { key: t, label: t } : t));
   return <div className="tabsbar"><div className="tabs" role="tablist">
-    {items.map((t) => <button key={t.key} role="tab" aria-selected={value === t.key} className={value === t.key ? 'on' : ''} onClick={() => onChange(t.key)} disabled={t.disabled}>
+    {items.map((t) => <button key={t.key} type="button" role="tab" aria-selected={value === t.key} className={value === t.key ? 'on' : ''} onClick={() => onChange(t.key)} disabled={t.disabled}>
       {t.label}{t.count !== undefined && <em>{t.count}</em>}
     </button>)}
   </div>{right && <div className="tabs-right">{right}</div>}</div>;

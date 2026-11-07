@@ -86,7 +86,13 @@ function Denied() { return <div className="pad"><div className="card denied"><h2
 
 function PublicOnly({ children }) {
   const { user } = useAuth();
+  const loc = useLocation();
   if (!user) return children;
+  const from = loc.state?.from;
+  if (typeof from === 'string' && from.startsWith('/') && !from.startsWith('//') && !from.includes('\\')
+    && !['/login', '/candidate-login', '/mfa', '/recovery'].includes(from.split(/[?#]/, 1)[0])) {
+    return <Navigate to={from} replace />;
+  }
   if (user.role && ROLE_HOME[user.role]) {
     return <Navigate to={ROLE_HOME[user.role]} replace />;
   }

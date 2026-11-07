@@ -244,7 +244,7 @@ export class AuthService {
   /* ─────────────────────────── Utilities ───────────────────────────── */
 
   async health() {
-    return api.get(ENDPOINTS.health, { actor: 'console', sign: false });
+    return api.get(ENDPOINTS.health, { actor: 'console', sign: false, audit: false });
   }
 
   async status() {

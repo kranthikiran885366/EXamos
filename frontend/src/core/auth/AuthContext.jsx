@@ -65,6 +65,7 @@ function publicUser(u) {
 export function AuthProvider({ children }) {
   // ── React state (in-memory only, no persistence) ──────────────────────────
   const [user,               setUser]               = useState(null);
+  const [authReady,          setAuthReady]          = useState(false);
   const [pending,            setPending]            = useState(null);   // username waiting for MFA
   const [pendingCredentials, setPendingCredentials] = useState(null);   // {username,password} during MFA
   const enrollmentRef                               = useRef(null);     // single-use enrollment token
@@ -110,7 +111,8 @@ export function AuthProvider({ children }) {
 
         if (!restored) {
           restored = true;
-          authService.getAdminProfile().then((profile) => {
+          try {
+            const profile = await authService.getAdminProfile();
             if (profile?.username && !cancelled) {
               setUser(publicUser({
                 id:           profile.user_id || profile.username,
@@ -123,10 +125,14 @@ export function AuthProvider({ children }) {
               }));
               setBackendMode('admin');
             }
-          }).catch(() => {});
+          } catch {
+            // An absent or expired server session leaves the user signed out.
+          }
         }
       } catch {
         if (!cancelled) setBackendReady(false);
+      } finally {
+        if (!cancelled) setAuthReady(true);
       }
     };
 
@@ -432,7 +438,7 @@ export function AuthProvider({ children }) {
 
   return (
     <Ctx.Provider value={{
-      user, pending, pendingCredentials, locked, backendMode, backendReady,
+      user, pending, pendingCredentials, locked, backendMode, backendReady, authReady,
       verifyMfa, cancelPending,
       backendLogin, backendLogout,
       backendCandidateLogin, backendCandidateLogout,

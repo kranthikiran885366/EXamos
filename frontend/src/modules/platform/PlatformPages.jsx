@@ -305,9 +305,6 @@ export function PlatformApplicationsPage() {
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [appsError, setAppsError] = useState('');
-  const [selectedApp, setSelectedApp] = useState(null);
-  const [decisionNotes, setDecisionNotes] = useState('');
-  const [decisionResult, setDecisionResult] = useState(null); // { action, app }
 
   const loadApps = async () => {
     if (!isPlatformOwner) {
@@ -341,23 +338,6 @@ export function PlatformApplicationsPage() {
   if (!isPlatformOwner) {
     return <Page title="Onboarding Applications"><Alert tone="danger" title="Access restricted">Platform owner authorization is required to review institution applications.</Alert></Page>;
   }
-
-  const handleDecision = async (action) => {
-    if (!selectedApp) return;
-    if (decisionNotes.trim().length < 8) {
-      setMsg('Add at least 8 characters of reviewer notes or an evidence reference.');
-      return;
-    }
-    await run(async () => {
-      await reviewApplication(user, selectedApp.id, action, decisionNotes.trim());
-      const appSnapshot = { ...selectedApp };
-      setSelectedApp(null);
-      setDecisionNotes('');
-      await loadApps();
-      setDecisionResult({ action, app: appSnapshot });
-      return `Application ${appSnapshot.legalName || appSnapshot.institution_name} updated: ${action.toUpperCase()}`;
-    }, 'Review recorded.');
-  };
 
   return (
     <Page
@@ -400,16 +380,17 @@ export function PlatformApplicationsPage() {
               { key: 'status', label: 'Lifecycle stage', render: (a) => {
                 const lifecycle = getApplicationLifecycle(a.status, a.institutionStatus, a.adminSetupComplete);
                 const status = String(a.status || '').toUpperCase();
-                return <Badge value={lifecycle.stage} tone={status === 'REJECTED' ? 'red' : status === 'PROVISIONED' && String(a.institutionStatus || '').toLowerCase() === 'active' ? 'green' : 'amber'} />;
+                return <Badge value={lifecycle.stage} tone={status === 'REJECTED' ? 'red' : lifecycle.stage === 'Authorized for live operations' ? 'green' : 'amber'} />;
               } },
               { key: 'created_at', label: 'Submitted', render: (a) => fmt(a.createdAt || a.created_at) },
             ]}
             actions={(a) => {
-              const acts = [
-                { label: 'Review & Verify', onClick: () => nav(`/platform/institutions/${a.id}/verification`) },
-                { label: 'Quick Decision', onClick: () => setSelectedApp(a) }
-              ];
-              if (['APPROVED', 'approved'].includes(a.status)) {
+              const status = String(a.status || '').toUpperCase();
+              const acts = ['PROVISIONED', 'REJECTED'].includes(status) ||
+                (status === 'APPROVED' && a.verificationComplete)
+                ? []
+                : [{ label: 'Review & Verify', onClick: () => nav(`/platform/institutions/${a.id}/verification`) }];
+              if (status === 'APPROVED' && a.verificationComplete) {
                 acts.push({ label: 'Provision Tenant', onClick: () => nav(`/platform/institutions/${a.institutionId || a.id}/provisioning`) });
               }
               return acts;
@@ -419,103 +400,6 @@ export function PlatformApplicationsPage() {
         )}
       </Card>
 
-      {selectedApp && (
-        <Modal title={`Review Application: ${selectedApp.legalName || selectedApp.displayName || selectedApp.institution_name}`} onClose={() => setSelectedApp(null)} desc="Official representative and domain verification checklist">
-          <div className="formgrid">
-            <Field label="Institution Legal Name"><Input value={selectedApp.legalName || selectedApp.displayName || selectedApp.institution_name} readOnly /></Field>
-            <Field label="Official Domain"><Input value={selectedApp.domain || selectedApp.official_domain || ''} readOnly /></Field>
-            <Field label="Representative"><Input value={`${selectedApp.repName || selectedApp.representative_name || ''} (${selectedApp.repEmail || selectedApp.representative_email || ''})`} readOnly /></Field>
-            <Field label="Registration / Accreditation / CIN ID"><Input value={selectedApp.registrationNumber || 'Unspecified'} readOnly /></Field>
-            <Field label="Reviewer Notes" className="span2">
-              <Textarea rows={3} value={decisionNotes} onChange={(e) => setDecisionNotes(e.target.value)} placeholder="Provide compliance rationale, registrar ticket, or explain corrections required..." />
-            </Field>
-          </div>
-          <div className="row end" style={{ marginTop: '16px', gap: '8px' }}>
-            <button className="btn" onClick={() => setSelectedApp(null)}>Cancel</button>
-            <button className="btn" disabled={busy} onClick={() => handleDecision('MORE_INFORMATION_REQUIRED')}>Request Corrections</button>
-            <button className="btn danger" disabled={busy} onClick={() => handleDecision('REJECTED')}>Reject Application</button>
-            <button className="btn primary" disabled={busy} onClick={() => handleDecision('APPROVED')}>Approve Application</button>
-          </div>
-        </Modal>
-      )}
-
-      {/* Success popup after approve / reject decision */}
-      {decisionResult && (
-        <Modal
-          title={
-            decisionResult.action === 'APPROVED' ? '✅ Application Approved' :
-            decisionResult.action === 'REJECTED' ? '❌ Application Rejected' :
-            '📋 Corrections Requested'
-          }
-          onClose={() => setDecisionResult(null)}
-          desc={`Decision recorded for: ${decisionResult.app?.legalName || decisionResult.app?.displayName || 'Institution'}`}
-        >
-          <div style={{ padding: '16px 0' }}>
-            {decisionResult.action === 'APPROVED' && (
-              <div style={{ background: 'var(--gbg, #edf7f1)', border: '1px solid var(--gline, #b9e3cc)', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '36px', marginBottom: '8px' }}>🎉</div>
-                <h3 style={{ color: 'var(--g, #1b7a4b)', margin: '0 0 8px', fontSize: '16px' }}>Application Approved!</h3>
-                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  <b>{decisionResult.app?.legalName || decisionResult.app?.displayName || 'This application'}</b> was approved by the reviewer. Tenant provisioning is a separate backend action.
-                </p>
-              </div>
-            )}
-            {decisionResult.action === 'REJECTED' && (
-              <div style={{ background: 'var(--rbg, #fdf2f2)', border: '1px solid var(--rline, #f8c9c6)', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '36px', marginBottom: '8px' }}>✗</div>
-                <h3 style={{ color: 'var(--r, #c0392b)', margin: '0 0 8px', fontSize: '16px' }}>Application Rejected</h3>
-                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  The application status was updated to rejected by the backend.
-                </p>
-              </div>
-            )}
-            {decisionResult.action === 'MORE_INFORMATION_REQUIRED' && (
-              <div style={{ background: '#EEF4FF', border: '1px solid #BFDBFE', borderRadius: '10px', padding: '20px', marginBottom: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '36px', marginBottom: '8px' }}>📋</div>
-                <h3 style={{ color: '#2563EB', margin: '0 0 8px', fontSize: '16px' }}>Corrections Requested</h3>
-                <p style={{ color: 'var(--ink2, #48394F)', margin: 0, fontSize: '13.5px', lineHeight: 1.55 }}>
-                  The backend status was updated to request additional information. Notification delivery is not confirmed here.
-                </p>
-              </div>
-            )}
-
-            <div style={{ background: '#F8F6FF', border: '1px solid #C4B5FD', borderRadius: '8px', padding: '14px 16px', fontSize: '13px' }}>
-              <b>What happens next:</b>
-              <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
-                {decisionResult.action === 'APPROVED' && (
-                  <>
-                    <li>Go to <b>Tenant Provisioning</b> for this institution to complete setup</li>
-                    <li>Invite an institution administrator after provisioning</li>
-                    <li>Verify MFA enrollment separately; an invitation does not complete MFA setup</li>
-                  </>
-                )}
-                {decisionResult.action === 'REJECTED' && (
-                  <>
-                    <li>Application status is now <b>REJECTED</b></li>
-                    <li>The institution can reapply with corrected information via <code>/register-institution</code></li>
-                    <li>Rejection reason is permanently recorded in the compliance audit trail</li>
-                  </>
-                )}
-                {decisionResult.action === 'MORE_INFORMATION_REQUIRED' && (
-                  <>
-                    <li>Application status set to <b>MORE_INFORMATION_REQUIRED</b></li>
-                    <li>Institution can check status at <code>/register-institution</code> (Track tab)</li>
-                    <li>Review the application again once they respond with corrections</li>
-                  </>
-                )}
-              </ul>
-            </div>
-          </div>
-          <div className="row end" style={{ gap: '8px' }}>
-            <button className="btn" onClick={() => setDecisionResult(null)}>Close</button>
-            {decisionResult.action === 'APPROVED' && (
-              <button className="btn primary" onClick={() => { setDecisionResult(null); nav(`/platform/institutions/${decisionResult.app?.institutionId || decisionResult.app?.id}/provisioning`); }}>
-                Go to Tenant Provisioning →
-              </button>
-            )}
-          </div>
-        </Modal>
-      )}
     </Page>
   );
 }
@@ -581,6 +465,7 @@ export function PlatformVerificationPage() {
           code: appData.displayName || appData.id,
           domain: cleanDom,
           rawDomain: appData.domain || '',
+          targetExamUrl: appData.targetExamUrl || '',
           registrationNumber: appData.registrationNumber || '',
           repEmail: appData.repEmail || '',
           repName: appData.repName || '',
@@ -615,6 +500,7 @@ export function PlatformVerificationPage() {
   const [unlockedForEdit, setUnlockedForEdit] = useState(false);
   const isSuperAdmin = user?.role === 'superadmin' || user?.role === 'platform_owner';
   const isAlreadyApproved = (!unlockedForEdit) && ['approved', 'provisioned'].includes(inst?.status?.toLowerCase());
+  const isRejected = isApp && inst?.status?.toLowerCase() === 'rejected';
   const isProvisioned = inst?.status?.toLowerCase() === 'provisioned' || !!inst?.institutionId;
   const [overrideModal, setOverrideModal] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
@@ -628,10 +514,22 @@ export function PlatformVerificationPage() {
 
   const [evidenceNotes, setEvidenceNotes] = useState(inst?.reviewNotes || '');
   const [successAlert, setSuccessAlert] = useState(null);
+  const [decisionError, setDecisionError] = useState('');
 
   useEffect(() => {
     setEvidenceNotes(inst?.reviewNotes || '');
   }, [inst?.reviewNotes]);
+
+  useEffect(() => {
+    if (!isApp || !appData || !appData.reviewChecklist || typeof appData.reviewChecklist !== 'object') return;
+    setChecklist({
+      identity: appData.reviewChecklist.identity === true,
+      domain: appData.reviewChecklist.domain === true,
+      accreditation: appData.reviewChecklist.accreditation === true,
+      representative: appData.reviewChecklist.representative === true,
+      datacenter: appData.reviewChecklist.datacenter === true,
+    });
+  }, [isApp, appData?.id]);
 
   const toggleCheck = (k) => setChecklist((s) => ({ ...s, [k]: !s[k] }));
   const checkedCount = Object.values(checklist).filter(Boolean).length;
@@ -681,26 +579,35 @@ export function PlatformVerificationPage() {
   };
 
   const handleRecordVerdict = async (verdict) => {
+    setDecisionError('');
     if (!id) {
-      setMsg('Error: No institution reference available.');
+      setDecisionError('No institution reference is available. Reload the application and try again.');
       return;
     }
     if (typeof evidenceNotes !== 'string' || evidenceNotes.trim().length < 8) {
-      setMsg('Error: Add at least 8 characters of verification notes or an evidence reference.');
+      setDecisionError('Add at least 8 characters of reviewer notes or an evidence reference.');
       return;
     }
     await run(async () => {
       const isApproved = verdict === 'verified';
       const action = isApproved ? 'APPROVED' : (verdict === 'corrections_requested' ? 'MORE_INFORMATION_REQUIRED' : 'REJECTED');
 
-      if (isApp) {
-        // APPLICATION WORKFLOW: Record review verdict on institution_applications table.
-        // NEVER call updateOnboardingStep because tenant is not provisioned yet!
-        await reviewApplication(user, id, action, evidenceNotes.trim());
-        setAppData((prev) => prev ? { ...prev, status: action, reviewNotes: evidenceNotes } : null);
-      } else {
-        // PROVISIONED TENANT WORKFLOW: Update onboarding step for existing tenant.
-        await updateOnboardingStep(user, id, 'identity_verification', isApproved, evidenceNotes.trim());
+      try {
+        if (isApp) {
+          // Applications persist their checklist and verdict on the application record.
+          await reviewApplication(user, id, action, evidenceNotes.trim(), isApproved ? checklist : undefined);
+          setAppData((prev) => prev ? {
+            ...prev,
+            status: action,
+            reviewNotes: evidenceNotes.trim(),
+            reviewChecklist: isApproved ? checklist : {},
+          } : null);
+        } else {
+          await updateOnboardingStep(user, id, 'identity_verification', isApproved, evidenceNotes.trim());
+        }
+      } catch (error) {
+        setDecisionError(error?.message || 'The review action was not saved. Check access and try again.');
+        throw error;
       }
 
       if (verdict === 'verified') {
@@ -715,7 +622,7 @@ export function PlatformVerificationPage() {
         setSuccessAlert({
           verdict: 'corrections',
           title: 'Corrections Requested',
-          msg: 'The backend status was updated to MORE_INFORMATION_REQUIRED. Applicant notification delivery is not confirmed here.',
+          msg: 'The application is marked MORE_INFORMATION_REQUIRED. The reviewer notes contain the requested corrections; the applicant must contact the platform review team with the reference because self-service editing is not available in the public tracker.',
           nextLabel: 'Back to Applications Queue',
           nextPath: '/platform/institutions/applications',
         });
@@ -795,7 +702,6 @@ export function PlatformVerificationPage() {
               <span style={{ color: '#374151' }}>{inst.reviewNotes}</span>
             </div>
           )}
-
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', paddingTop: '14px', borderTop: '1px solid #BBF7D0', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '12px', color: '#6B7280' }}>
@@ -823,7 +729,12 @@ export function PlatformVerificationPage() {
             </button>
           </div></div>
       )}
-
+      {isRejected && (
+          <Alert tone="danger" title="Application rejected">
+            Rejection is terminal. The application cannot be approved or provisioned; the applicant must submit a new application if they wish to reapply.
+            {inst.reviewNotes && <div style={{ marginTop: '8px' }}><b>Reviewer reason:</b> {inst.reviewNotes}</div>}
+          </Alert>
+      )}
       {/* Applicant Dossier / Submitted Documents & Data Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
         {/* Card 1: Statutory Charter & Registration */}
@@ -842,6 +753,7 @@ export function PlatformVerificationPage() {
               </code>
             </div>
             <div><span className="muted">Registered Address:</span> {[inst.address, inst.state, inst.country].filter(Boolean).join(', ') || 'Not supplied'}</div>
+            <div><span className="muted">Assessment URL:</span> {inst.targetExamUrl || 'Not supplied'}</div>
             <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px solid #F0ECE6' }}>
               <small className="muted">Statutory Verification: Confirm against UGC, AICTE, NAAC, NBA, or statutory portal.</small>
             </div>
@@ -927,7 +839,7 @@ export function PlatformVerificationPage() {
         </div>
       </div>
 
-      {!isAlreadyApproved && (<>
+      {!isAlreadyApproved && !isRejected && (<>
       {/* Checklist Progress */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#FFFFFF', border: '1px solid var(--line, #DCD5D2)', borderRadius: '10px', marginBottom: '16px', boxShadow: 'var(--shadow)' }}>
         <div style={{ flex: 1 }}>
@@ -1032,6 +944,8 @@ export function PlatformVerificationPage() {
           </small>
         </div>
 
+        {decisionError && <Alert tone="danger" title="Review action was not saved">{decisionError}</Alert>}
+
         <div className="row end" style={{ marginTop: '20px', gap: '10px' }}>
           <button className="btn" onClick={() => handleRecordVerdict('corrections_requested')} disabled={busy}>
             Request Corrections
@@ -1076,12 +990,13 @@ export function PlatformVerificationPage() {
             <button className="btn" onClick={() => setOverrideModal(false)}>Cancel</button>
             <button
               className="btn danger"
-              disabled={!overrideReason.trim() || busy}
+              disabled={overrideReason.trim().length < 8 || busy}
               onClick={async () => {
                 await run(async () => {
                   if (isApp) {
                     await reviewApplication(user, id, 'UNDER_REVIEW', `Re-opened for re-evaluation by Platform Owner ${user.name}: ${overrideReason}`);
-                    setAppData((prev) => prev ? { ...prev, status: 'UNDER_REVIEW', reviewNotes: overrideReason } : null);
+                    setAppData((prev) => prev ? { ...prev, status: 'UNDER_REVIEW', reviewNotes: overrideReason, reviewChecklist: {} } : null);
+                    setChecklist({ identity: false, domain: false, accreditation: false, representative: false, datacenter: false });
                   } else {
                     await updateOnboardingStep(user, id, 'identity_verification', false, overrideReason);
                   }
@@ -1133,7 +1048,7 @@ export function PlatformVerificationPage() {
               {successAlert.verdict === 'corrections' && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: '20px', lineHeight: 1.7 }}>
                   <li>Application status set to <b>MORE_INFORMATION_REQUIRED</b></li>
-                  <li>Applicant can update their submission via the public registration tracker</li>
+                  <li>Reviewer notes are visible in the public tracker; the applicant must provide the requested information to the platform review team because self-service editing is not available.</li>
                 </ul>
               )}
               {successAlert.verdict === 'rejected' && (

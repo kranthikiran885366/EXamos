@@ -115,7 +115,7 @@ export default function PublicInstitutionRegisterPage() {
     if (step === 2) {
       if (f.targetExamUrl) {
         try {
-          const targetUrl = new URL(f.targetExamUrl);
+          const targetUrl = new URL(f.targetExamUrl.trim());
           if (!['http:', 'https:'].includes(targetUrl.protocol)) errors.targetExamUrl = 'Use an http or https assessment URL.';
         } catch {
           errors.targetExamUrl = 'Enter a valid assessment URL.';
@@ -222,6 +222,7 @@ export default function PublicInstitutionRegisterPage() {
         step: lifecycle.stage,
         nextAction: lifecycle.nextAction,
         owner: lifecycle.owner,
+        reviewNotes: found.reviewNotes || '',
         domain: found.domain || found.official_domain || '',
         plan: (found.plan || '').toUpperCase(),
         updatedAt: formatApplicationTimestamp(found.updatedAt),
@@ -551,7 +552,11 @@ export default function PublicInstitutionRegisterPage() {
                       <div>
                         <div style={{ color: 'var(--mut, #756F79)', fontSize: '11.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Live Operations Authorization</div>
                         <div style={{ fontWeight: 700, color: 'var(--aubergine, #302337)', marginTop: '3px' }}>
-                          {trackResult.institutionStatus?.toLowerCase() === 'active' ? 'Authorized for live operations' : `Not authorized for live operations${trackResult.institutionStatus ? ` (institution status: ${trackResult.institutionStatus})` : ''}`}
+                          {trackResult.status === 'PROVISIONED'
+                            && trackResult.institutionStatus?.toLowerCase() === 'active'
+                            && trackResult.adminSetupComplete === true
+                            ? 'Authorized for live operations'
+                            : `Not authorized for live operations${trackResult.adminSetupComplete === false ? ' (primary administrator MFA setup is incomplete)' : trackResult.institutionStatus ? ` (institution status: ${trackResult.institutionStatus})` : ''}`}
                         </div>
                       </div>
                       <div>
@@ -577,7 +582,15 @@ export default function PublicInstitutionRegisterPage() {
                       Next action
                     </div>
                     <p style={{ fontSize: '13px', lineHeight: 1.55, color: 'var(--ink2, #48394F)' }}>{trackResult.nextAction}</p>
-                    {trackResult.institutionStatus?.toLowerCase() === 'active' && (
+                    {trackResult.reviewNotes && ['MORE_INFORMATION_REQUIRED', 'REJECTED'].includes(trackResult.status) && (
+                      <div style={{ marginTop: '12px', padding: '12px 14px', background: trackResult.status === 'REJECTED' ? 'var(--rbg, #fdf2f2)' : '#EEF4FF', border: `1px solid ${trackResult.status === 'REJECTED' ? 'var(--rline, #f8c9c6)' : '#BFDBFE'}`, borderRadius: '8px' }}>
+                        <b style={{ display: 'block', marginBottom: '6px' }}>{trackResult.status === 'REJECTED' ? 'Reviewer rationale' : 'Requested corrections'}</b>
+                        <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: 1.55 }}>{trackResult.reviewNotes}</div>
+                      </div>
+                    )}
+                    {trackResult.status === 'PROVISIONED'
+                      && trackResult.institutionStatus?.toLowerCase() === 'active'
+                      && trackResult.adminSetupComplete === true && (
                       <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--line, #DCD5D2)' }}>
                         <a href="/login" style={{ background: 'var(--copper, #B54F34)', color: '#FFFFFF', borderRadius: '8px', padding: '10px 24px', fontWeight: 700, fontSize: '14px', textDecoration: 'none', display: 'inline-block', boxShadow: '0 2px 8px rgba(181,79,52,0.25)' }}>
                           Sign In to ExamOS Console →
@@ -1001,6 +1014,7 @@ export default function PublicInstitutionRegisterPage() {
                   <input
                     id="application-targetExamUrl"
                     type="url"
+                    maxLength={2048}
                     aria-invalid={Boolean(fieldErrors.targetExamUrl)}
                     aria-describedby={fieldErrors.targetExamUrl ? 'application-targetExamUrl-error' : undefined}
                     placeholder={isCorporateEntity(f.entityType) ? "https://assessment.yourcompany.com/exams" : "https://assessment.university.edu.in/portal"}
@@ -1098,6 +1112,7 @@ export default function PublicInstitutionRegisterPage() {
                     ['Entity type', f.entityType],
                     ['Registration', f.registrationNumber],
                     ['Domain', f.domain],
+                    ['Assessment URL', f.targetExamUrl],
                     ['Representative', f.repName],
                     ['Representative email', f.repEmail],
                     ['Deployment model', f.deploymentModel],

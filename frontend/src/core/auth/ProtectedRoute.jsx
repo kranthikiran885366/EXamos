@@ -28,7 +28,7 @@ export function frontendRoleForBackend(backendRole) {
 }
 
 export default function ProtectedRoute({ children, perm }) {
-  const { user, backendMode } = useAuth();
+  const { user, backendMode, authReady } = useAuth();
   const loc = useLocation();
   const perms = perm ? (Array.isArray(perm) ? perm : [perm]) : [];
 
@@ -41,6 +41,7 @@ export default function ProtectedRoute({ children, perm }) {
 
   const allowed = !effectiveRole ? false : perms.length === 0 || perms.some((p) => can(effectiveRole, p));
   useEffect(() => { if (effectiveRole && !allowed) record(effectiveRole, 'ACCESS_DENIED', loc.pathname); }, [effectiveRole, allowed, loc.pathname]);
+  if (!authReady) return <div className="pad"><div className="loading" role="status"><span className="spinner" /> Restoring your session…</div></div>;
   if (!effectiveRole) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   if (!allowed) return <div className="pad"><div className="card denied"><h2>Access denied</h2><p className="muted">Your role does not include this module. The attempt was recorded in the audit trail.</p><p className="muted sm">If you believe you need access, ask an administrator to review your effective permissions.</p><a className="btn" href="/">Return to your overview</a></div></div>;
   return children;

@@ -1029,11 +1029,13 @@ static const char *migration_sql =
 "  plan VARCHAR(40),"
 "  status VARCHAR(40) NOT NULL DEFAULT 'SUBMITTED',"
 "  review_notes TEXT,"
+"  review_checklist JSONB NOT NULL DEFAULT '{}'::jsonb,"
 "  reviewed_by VARCHAR(64),"
 "  reviewed_at BIGINT,"
 "  institution_id VARCHAR(64),"
 "  documents JSONB NOT NULL DEFAULT '[]'::jsonb,"
 "  declarations JSONB NOT NULL DEFAULT '{}'::jsonb,"
+"  target_exam_url TEXT NOT NULL DEFAULT '',"
 "  created_at BIGINT NOT NULL,"
 "  updated_at BIGINT NOT NULL"
 ");"
@@ -1138,6 +1140,7 @@ static void db_ensure_database_extensions(PGconn *conn) {
     exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS institution_id VARCHAR(64);");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS reviewed_at BIGINT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS review_checklist JSONB NOT NULL DEFAULT '{}'::jsonb;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS updated_at BIGINT;");
     exec_sql_step(conn, "CREATE TABLE IF NOT EXISTS institution_onboarding ("
                         "  institution_id VARCHAR(64) PRIMARY KEY,"
@@ -1222,6 +1225,7 @@ static void db_ensure_database_extensions(PGconn *conn) {
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;");
+    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS target_exam_url TEXT NOT NULL DEFAULT '';");
 
     /* 5d. Remove legacy fabricated defaults. A missing value must stay missing
      *     instead of silently becoming "India", "pilot", "usb-boot", 500

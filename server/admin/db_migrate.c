@@ -56,6 +56,8 @@ static const migration_t migrations[] = {
     {"034_device_trust_policy_approvals.sql",               "device_fleet",             11},
     {"035_candidate_exam_runtime.sql",                      "candidate_exam_runtime",     1},
     {"036_candidate_exam_deadlines.sql",                    "candidate_exam_runtime",     2},
+    {"037_institution_application_assessment_url.sql",       "institutions",               2},
+    {"038_institution_application_review_checklist.sql",     "institutions",               3},
 };
 
 /*

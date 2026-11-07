@@ -366,6 +366,9 @@ export const canManageInstitution = (user, t) => can(user.role, 'tenant.manage')
 /* ---------------- Production Institution Lifecycle ---------------- */
 
 export async function submitInstitutionApplication(input) {
+  const targetExamUrl = String(input.targetExamUrl ?? '').trim();
+  if (targetExamUrl.length > 2048) fail('Assessment URL must not exceed 2048 characters.');
+
   const payload = {
     legalName: clean(input.legalName, 160),
     displayName: clean(input.displayName || input.legalName, 160),
@@ -375,6 +378,7 @@ export async function submitInstitutionApplication(input) {
     state: clean(input.state, 60),
     address: clean(input.address, 512),
     domain: clean(input.domain, 120).toLowerCase(),
+    targetExamUrl: clean(targetExamUrl, 2048),
     repName: clean(input.repName, 120),
     repRole: clean(input.repRole, 60),
     repEmail: clean(input.repEmail, 120).toLowerCase(),
@@ -402,6 +406,17 @@ export async function submitInstitutionApplication(input) {
   if (!(payload.campusCount >= 1)) fail('Enter the number of campuses or testing centers.');
   if (!(payload.studentCount >= 1)) fail('Enter the annual candidate volume.');
   if (!(payload.deviceCount >= 1)) fail('Enter the workstation fleet size.');
+  if (payload.targetExamUrl) {
+    let targetUrl;
+    try {
+      targetUrl = new URL(payload.targetExamUrl);
+    } catch {
+      fail('Enter a valid assessment URL.');
+    }
+    if (!['http:', 'https:'].includes(targetUrl.protocol)) {
+      fail('Use an http or https assessment URL.');
+    }
+  }
   if (!payload.declarations.termsAgreed) fail('The terms declaration must be accepted before submitting.');
   if (!payload.declarations.privacyAgreed) fail('The privacy declaration must be accepted before submitting.');
 
@@ -420,9 +435,9 @@ export async function fetchInstitutionApplication(id) {
   return res;
 }
 
-export async function reviewApplication(user, id, action, reviewNotes) {
+export async function reviewApplication(user, id, action, reviewNotes, reviewChecklist) {
   need(user, 'tenant.manage');
-  const res = await Api.reviewInstitutionApplication(id, action, reviewNotes);
+  const res = await Api.reviewInstitutionApplication(id, action, reviewNotes, reviewChecklist);
   await log(user, 'INSTITUTION_APPLICATION_REVIEWED', `${id}: ${action}`);
   return res;
 }

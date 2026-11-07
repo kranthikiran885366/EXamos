@@ -251,7 +251,7 @@ export const getInstitutionStats = wrap(async (id) => {
 // ---------------------------------------------------------------------------
 
 export const applyInstitution = wrap(async (data) => {
-  const res = await api.post(ENDPOINTS.institutionApply, data, { actor: ACTOR });
+  const res = await api.post(ENDPOINTS.institutionApply, data, { actor: ACTOR, retries: 0 });
   return res.data;
 });
 
@@ -310,8 +310,12 @@ export const getInstitutionApplication = wrap(async (id) => {
   return res.data;
 });
 
-export const reviewInstitutionApplication = wrap(async (id, action, reviewNotes) => {
-  const res = await api.post(ENDPOINTS.institutionApplicationReview(id), { action, reviewNotes }, { actor: ACTOR, sign: true });
+export const reviewInstitutionApplication = wrap(async (id, action, reviewNotes, reviewChecklist) => {
+  const res = await api.post(ENDPOINTS.institutionApplicationReview(id), {
+    action,
+    reviewNotes,
+    ...(reviewChecklist ? { reviewChecklist } : {}),
+  }, { actor: ACTOR, sign: true });
   return res.data;
 });
 

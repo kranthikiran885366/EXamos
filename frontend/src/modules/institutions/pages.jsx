@@ -1,6 +1,6 @@
 import { getOrgTerms, isCorporateEntity } from './service';
-import { useMemo, useState, useEffect } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useMemo, useState, useEffect, useRef } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant } from '../../core/db/tenant';
 import { can } from '../../core/security/rbac';
@@ -13,7 +13,7 @@ import {
   createDepartment, setDepartmentStatus,
   assignStaff, removeStaff, saveExamDefaults, saveSecuritySettings, institutionStats,
   submitInstitutionApplication, fetchInstitutionApplications, fetchInstitutionApplication,
-  reviewApplication, provisionApplication, fetchInstitutionAgreements, createAgreementDraft,
+  provisionApplication, fetchInstitutionAgreements, createAgreementDraft,
   signAgreement, fetchInstitutionLicense, updateInstitutionLicense, checkEntitlements,
   fetchInstitutionDeployments, assignDeployment, pushDeployment, fetchInstitutionOnboarding, updateOnboardingStep,
   DEPLOYMENT_MODELS, TIMEZONES, DEPT_TYPES
@@ -269,13 +269,18 @@ const mapInstitution = (t) => ({
   createdAt: t.createdAt || null,
 });
 
+const INSTITUTION_DETAIL_TAB_KEYS = ['onboarding', 'agreements', 'license', 'deployments', 'overview', 'campuses', 'centres', 'settings'];
+
 export function InstitutionDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const { msg, run, busy, setMsg } = useFlash();
 
-  const [tab, setTab] = useState('onboarding');
+  const requestedTab = searchParams.get('tab');
+  const tab = INSTITUTION_DETAIL_TAB_KEYS.includes(requestedTab) ? requestedTab : 'onboarding';
+  const tabsRef = useRef(null);
   const [edit, setEdit] = useState(false);
   const [signModal, setSignModal] = useState(null);
   const [draftModal, setDraftModal] = useState(false);
@@ -386,6 +391,20 @@ export function InstitutionDetailPage() {
     loadDetails();
   }, [id]);
 
+  useEffect(() => {
+    if (!loading && t) tabsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [tab, loading, t]);
+
+  const selectTab = (nextTab) => {
+    if (!INSTITUTION_DETAIL_TAB_KEYS.includes(nextTab)) return;
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextTab === 'onboarding') next.delete('tab');
+      else next.set('tab', nextTab);
+      return next;
+    }, { replace: true });
+  };
+
   const stats = useMemo(() => ({
     campuses:    liveStats?.campuses    ?? '—',
     departments: liveStats?.departments ?? '—',
@@ -463,7 +482,9 @@ export function InstitutionDetailPage() {
         <Stat label="Open Incidents" value={stats.incidents} tone={stats.incidents ? 'amber' : 'green'} icon="alert" />
       </StatGrid>
 
-      <Tabs tabs={tabs} value={tab} onChange={setTab} />
+      <div ref={tabsRef} style={{ scrollMarginTop: '16px' }}>
+        <Tabs tabs={tabs} value={tab} onChange={selectTab} />
+      </div>
 
       {/* 1. Onboarding Lifecycle Tab */}
       {tab === 'onboarding' && (
@@ -876,7 +897,6 @@ export function InstitutionApplicationsPage() {
 
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [reviewModal, setReviewModal] = useState(null);
   const [loadError, setLoadError] = useState('');
 
   const reloadApps = async () => {
@@ -964,67 +984,22 @@ export function InstitutionApplicationsPage() {
         ]}
         actions={(a) => [
           { label: 'View Details', onClick: () => nav(`/admin/institution-applications/${a.id}`) },
-          ...(a.status !== 'PROVISIONED' ? [
-            { label: 'Review Decision', onClick: () => setReviewModal(a) },
-            ...(a.status === 'APPROVED' ? [{
-              label: 'Provision Tenant Now',
-              onClick: () => run(async () => {
-                const res = await provisionApplication(user, a.id);
-                await reloadApps();
-                nav(`/admin/institutions/${res.institution_id}`);
-                return `Institution ${a.legalName} successfully provisioned!`;
-              })
-            }] : [])
-          ] : [])
+          ...(['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'MORE_INFORMATION_REQUIRED'].includes(a.status) ||
+            (a.status === 'APPROVED' && !a.verificationComplete) ? [
+            { label: 'Review & Verify', onClick: () => nav(`/platform/institutions/${a.id}/verification`) },
+          ] : []),
+          ...(a.status === 'APPROVED' && a.verificationComplete ? [{
+            label: 'Provision Tenant Now',
+            onClick: () => run(async () => {
+              const res = await provisionApplication(user, a.id);
+              await reloadApps();
+              nav(`/admin/institutions/${res.institution_id}`);
+              return `Institution ${a.legalName} successfully provisioned!`;
+            })
+          }] : [])
         ]}
         empty={<Empty icon="building" title={loading ? 'Loading applications…' : loadError ? 'Application data unavailable' : 'No institution applications'} />}
       />
-
-      {reviewModal && (
-        <Modal
-          title={`Review Application: ${reviewModal.legalName}`}
-          desc="Update review state or record approval decision."
-          onClose={() => setReviewModal(null)}
-          footer={
-            <>
-              <button className="btn" onClick={() => setReviewModal(null)}>Cancel</button>
-              <button className="btn primary" form="review-form" disabled={busy}>Commit Decision</button>
-            </>
-          }
-        >
-          <form
-            id="review-form"
-            className="formgrid"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = e.target;
-              run(async () => {
-                await reviewApplication(user, reviewModal.id, f.action.value, f.reviewNotes.value);
-                setReviewModal(null);
-                await reloadApps();
-                return 'Application review updated.';
-              });
-            }}
-          >
-            <Field label="Review Decision" required className="span2">
-              <Select
-                name="action"
-                defaultValue={reviewModal.status === 'SUBMITTED' ? 'UNDER_REVIEW' : reviewModal.status}
-                options={[
-                  { v: 'UNDER_REVIEW', l: 'Under Review' },
-                  { v: 'VERIFICATION_PENDING', l: 'Verification Pending' },
-                  { v: 'MORE_INFORMATION_REQUIRED', l: 'More Information Required' },
-                  { v: 'APPROVED', l: 'Approved (Ready to provision)' },
-                  { v: 'REJECTED', l: 'Rejected' },
-                ]}
-              />
-            </Field>
-            <Field label="Reviewer Notes / Rationales" required className="span2">
-              <Textarea name="reviewNotes" defaultValue={reviewModal.reviewNotes || ''} rows={4} placeholder="Record legal identity check details, verification calls, or accreditation references..." />
-            </Field>
-          </form>
-        </Modal>
-      )}
     </Page>
   );
 }
@@ -1106,24 +1081,27 @@ export function InstitutionApplicationDetailPage() {
       <Flash msg={msg} onClose={() => setMsg(null)} />
 
       {/* Status & What's Next Banner */}
-      {['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'APPROVED'].includes(app.status) && (
+      {['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'MORE_INFORMATION_REQUIRED', 'APPROVED'].includes(app.status) && (
         <div style={{ padding: '14px 18px', background: 'rgba(37, 99, 235, 0.06)', border: '1px solid rgba(37, 99, 235, 0.2)', borderRadius: '10px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <b style={{ color: 'var(--aubergine, #302337)', fontSize: '14px' }}>
               {app.status === 'SUBMITTED' && '📥 Application received — Start identity & domain verification'}
               {app.status === 'UNDER_REVIEW' && '🔍 Under review — Complete the verification checklist'}
               {app.status === 'VERIFICATION_PENDING' && '⏳ Verification in progress — Check DNS records and signatory docs'}
+              {app.status === 'MORE_INFORMATION_REQUIRED' && '📋 Additional information requested — Review the notes and respond to the platform review team'}
               {app.status === 'APPROVED' && '✅ Approved — Ready to provision isolated tenant environment'}
             </b>
             <p className="muted sm" style={{ margin: '3px 0 0' }}>
               {app.status === 'SUBMITTED' && 'Click "Full Verification" to open the detailed verification checklist for this institution.'}
               {app.status === 'UNDER_REVIEW' && 'Verify legal charter, domain ownership, and authorized signatory, then mark as Approved.'}
               {app.status === 'VERIFICATION_PENDING' && 'Awaiting DNS TXT record confirmation and authorization letter from the institution.'}
+              {app.status === 'MORE_INFORMATION_REQUIRED' && 'Self-service application editing is not available; provide the requested information to the platform review team using your application reference.'}
               {app.status === 'APPROVED' && 'Click "Provision Tenant Now" above to create the isolated database, cryptographic keys, and license.'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            {['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING'].includes(app.status) && (
+            {(['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'MORE_INFORMATION_REQUIRED'].includes(app.status) ||
+              (app.status === 'APPROVED' && !['identity', 'domain', 'accreditation', 'representative', 'datacenter'].every((key) => app.reviewChecklist?.[key] === true))) && (
               <Link to={`/platform/institutions/applications`} className="btn primary compact">Full Verification →</Link>
             )}
           </div>
