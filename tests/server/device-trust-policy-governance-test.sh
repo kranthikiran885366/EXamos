@@ -33,6 +33,11 @@ createdb examos_device_policy_test
 
 psql -X -v ON_ERROR_STOP=1 -d examos_device_policy_test <<'SQL'
 CREATE TABLE device_trust_policies (id VARCHAR(64) PRIMARY KEY);
+CREATE TABLE examos_schema_migrations (
+    component TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (component, version)
+);
 INSERT INTO device_trust_policies (id) VALUES ('legacy_draft');
 SQL
 
@@ -40,6 +45,13 @@ psql -X -v ON_ERROR_STOP=1 -d examos_device_policy_test \
     -f "$ROOT/server/migrations/034_device_trust_policy_approvals.sql" >/dev/null
 psql -X -v ON_ERROR_STOP=1 -d examos_device_policy_test \
     -f "$ROOT/server/migrations/034_device_trust_policy_approvals.sql" >/dev/null
+
+marker_count="$(psql -X -At -v ON_ERROR_STOP=1 -d examos_device_policy_test \
+    -c "SELECT COUNT(*) FROM examos_schema_migrations WHERE component='device_fleet' AND version=11")"
+[[ "$marker_count" == "1" ]] || {
+    echo "Device-trust policy migration version marker was not recorded exactly once." >&2
+    exit 1
+}
 
 legacy_creator="$(psql -X -At -v ON_ERROR_STOP=1 -d examos_device_policy_test \
     -c "SELECT created_by FROM device_trust_policies WHERE id='legacy_draft'")"
