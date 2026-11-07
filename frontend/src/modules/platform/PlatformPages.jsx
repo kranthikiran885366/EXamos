@@ -1372,6 +1372,10 @@ export function PlatformProvisioningPage() {
   }, [id]);
 
   const isApplication = Boolean(id?.startsWith('app_'));
+  const primaryAdmin = onboarding?.firstAdminEmail
+    ? existingAdmins.find((admin) => admin.email?.trim().toLowerCase() === onboarding.firstAdminEmail.trim().toLowerCase())
+    : null;
+  const primaryAdminMfaEnrolled = primaryAdmin?.status === 'active' && primaryAdmin.mfaEnabled === true;
 
   /* Removed fabricated provisioning progress. This page only reports states
      represented by persisted institution/application and onboarding records. */
@@ -1394,10 +1398,15 @@ export function PlatformProvisioningPage() {
     },
     {
       name: 'MFA enrollment',
-      status: onboarding?.checklist?.admin_mfa?.completed ? 'ATTESTED' : 'NOT VERIFIED',
-      detail: onboarding?.checklist?.admin_mfa?.completed
-        ? 'Platform onboarding record contains an MFA verification attestation.'
-        : 'An administrator invitation does not verify MFA enrollment.',
+      status: loadingAdmins ? 'CHECKING' : adminLoadError ? 'UNAVAILABLE' : primaryAdminMfaEnrolled ? 'ENROLLED' : 'NOT VERIFIED',
+      detail: loadingAdmins ? 'Checking the primary administrator MFA state persisted by the backend.'
+        : adminLoadError ? 'Primary administrator MFA state could not be verified.'
+          : primaryAdminMfaEnrolled ? `MFA enrollment is enabled for ${primaryAdmin.email}.`
+            : !onboarding?.firstAdminEmail ? 'The primary administrator is not identified in the onboarding record.'
+              : !primaryAdmin ? `No administrator account matches ${onboarding.firstAdminEmail}.`
+                : primaryAdmin.status !== 'active' ? 'The primary administrator account is not active.'
+                  : primaryAdmin.mfaEnabled === null ? 'The backend did not return an MFA enrollment state for the primary administrator.'
+                    : 'The primary administrator account does not have MFA enabled in the backend.',
     },
   ];
 
@@ -1477,7 +1486,7 @@ export function PlatformProvisioningPage() {
           rows={steps}
           columns={[
             { key: 'name', label: 'Provisioning Step', render: (s) => <b>{s.name}</b> },
-            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={['AVAILABLE', 'CREATED', 'CONFIGURED', 'ATTESTED'].includes(s.status) ? 'green' : s.status === 'INVITED' ? 'blue' : 'amber'} /> },
+            { key: 'status', label: 'Status', render: (s) => <Badge value={s.status} tone={['AVAILABLE', 'CREATED', 'CONFIGURED', 'ATTESTED', 'ENROLLED'].includes(s.status) ? 'green' : s.status === 'INVITED' ? 'blue' : 'amber'} /> },
             { key: 'detail', label: 'Details', render: (s) => <span className="muted sm">{s.detail}</span> },
           ]}
         />
@@ -1488,7 +1497,7 @@ export function PlatformProvisioningPage() {
               <Icon name="refresh" size={14} /> Execute Tenant Provisioning
             </button>
           ) : null}
-          {provisionDone && !onboarding?.checklist?.admin_mfa?.completed && (
+          {provisionDone && !primaryAdminMfaEnrolled && (
             loadingAdmins ? (
               <span className="muted sm">Checking for existing administrators...</span>
             ) : adminLoadError ? (
@@ -1505,10 +1514,10 @@ export function PlatformProvisioningPage() {
               </button>
             )
           )}
-          {adminCreated && !onboarding?.checklist?.admin_mfa?.completed && (
+          {adminCreated && !primaryAdminMfaEnrolled && (
             <span className="muted sm">Administrator invited; MFA enrollment is not yet verified.</span>
           )}
-          {onboarding?.checklist?.admin_mfa?.completed && (
+          {primaryAdminMfaEnrolled && (
             <button className="btn" onClick={() => nav(`/platform/institutions/${provisioningResult?.institution_id || id}/readiness`)}>
               Next: Pilot &amp; Readiness →
             </button>
@@ -1552,6 +1561,9 @@ export function PlatformProvisioningPage() {
             empty={<Empty icon="users" title="No admins found" />}
           />
           <div className="row end" style={{ marginTop: '12px' }}>
+            <button className="btn" onClick={() => setAdminReload((n) => n + 1)} disabled={loadingAdmins}>
+              <Icon name="refresh" size={14} /> {loadingAdmins ? 'Refreshing...' : 'Refresh MFA status'}
+            </button>
             <button className="btn" onClick={() => setAdminModal(true)} disabled={busy}>
               <Icon name="users" size={14} /> Add Another Administrator
             </button>

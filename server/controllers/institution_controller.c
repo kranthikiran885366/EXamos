@@ -1807,7 +1807,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "  EXISTS (SELECT 1 FROM institution_licenses "
                     "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid, "
                     "  (SELECT COUNT(*) > 0 FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS has_devices, "
-                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE trust = 'attested' OR tpm_status = 'VERIFIED') = COUNT(*) "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE trust = 'attested') = COUNT(*) "
                     "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_attested, "
                     "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') = COUNT(*) "
                     "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_locked, "
@@ -2473,7 +2473,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             /* 1. Total registered devices for this institution */
             PGresult *dev_res = db_simple(conn,
                 "SELECT COUNT(*) AS total, "
-                "  COUNT(*) FILTER (WHERE trust = 'attested' OR tpm_status = 'VERIFIED') AS attested, "
+                "  COUNT(*) FILTER (WHERE trust = 'attested') AS attested, "
                 "  COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') AS locked, "
                 "  COUNT(*) FILTER (WHERE status = 'enrolled') AS enrolled "
                 "FROM devices WHERE tenant_id = $1 OR institution_id = $1",
