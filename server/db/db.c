@@ -1202,7 +1202,6 @@ static void db_ensure_database_extensions(PGconn *conn) {
                         "  change_summary TEXT DEFAULT '',"
                         "  created_at BIGINT NOT NULL"
                         ");");
-    exec_sql_step(conn, "UPDATE exams SET exam_url = 'https://assessment.sppio.io/exam/live' WHERE exam_url IS NULL OR exam_url = '';");
 
     /* 5c. Ensure corporate / entity support columns on institution_applications & tenants */
     exec_sql_step(conn, "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS entity_type VARCHAR(40) NOT NULL DEFAULT 'enterprise';");

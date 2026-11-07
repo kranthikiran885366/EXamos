@@ -1806,13 +1806,27 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "            AND COALESCE(u.totp_secret, '') <> '') AS admin_mfa_complete, "
                     "  EXISTS (SELECT 1 FROM institution_licenses "
                     "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid, "
-                    "  (SELECT COUNT(*) > 0 FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS has_devices, "
-                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE trust = 'attested') = COUNT(*) "
-                    "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_attested, "
-                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') = COUNT(*) "
-                    "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_locked, "
-                    "  EXISTS (SELECT 1 FROM exams WHERE tenant_id = $1 "
-                    "          AND exam_url IS NOT NULL AND exam_url <> '') AS has_exam_url, "
+                    "  (SELECT COUNT(*) > 0 FROM devices d "
+                    "   WHERE d.tenant_id = $1 OR d.institution_id = $1) AS has_devices, "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE "
+                    "       d.status IN ('registered','enrolled') AND "
+                    "       (SELECT COUNT(*) FROM device_trust_policies p "
+                    "        WHERE p.institution_id = $1 AND p.status = 'active') = 1 AND "
+                    "       EXISTS (SELECT 1 FROM device_attestation_evidence e "
+                    "               JOIN device_attestation_challenges c "
+                    "                 ON c.id = e.challenge_id AND c.device_id = e.device_id AND c.used = TRUE "
+                    "               JOIN device_attestation_keys k "
+                    "                 ON k.id = e.ak_key_id AND k.device_id = e.device_id AND k.status = 'active' "
+                    "               WHERE e.device_id = d.id AND e.verification_result = 'TRUSTED' "
+                    "                 AND EXISTS (SELECT 1 FROM device_trust_policies p "
+                    "                             WHERE p.institution_id = $1 AND p.status = 'active' "
+                    "                               AND e.verified_at >= EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
+                    "                                   - p.max_evidence_age_sec::BIGINT * 1000))) = COUNT(*) "
+                    "   FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1) AS devices_attested, "
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled')) = COUNT(*) "
+                    "   FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1) AS devices_locked, "
+                    "  EXISTS (SELECT 1 FROM examinations "
+                    "          WHERE institution_id = $1 AND exam_url IS NOT NULL AND BTRIM(exam_url) <> '') AS has_exam_url, "
                     "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev <> '') = COUNT(*) "
                     "   FROM audit) AS audit_chain_ready",
                     1, gate_vals, gate_lens);
@@ -2470,13 +2484,28 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *pv[1] = { inst_id };
             int pl[1] = { (int)strlen(inst_id) };
 
-            /* 1. Total registered devices for this institution */
+            /* 1. Institution devices and persisted enrollment / evidence state.
+             * Approval uses 'registered'; 'enrolled' remains a supported legacy
+             * lifecycle state. Only fresh evidence marked TRUSTED under one active
+             * policy counts; this does not perform quote verification itself. */
             PGresult *dev_res = db_simple(conn,
                 "SELECT COUNT(*) AS total, "
-                "  COUNT(*) FILTER (WHERE trust = 'attested') AS attested, "
-                "  COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') AS locked, "
-                "  COUNT(*) FILTER (WHERE status = 'enrolled') AS enrolled "
-                "FROM devices WHERE tenant_id = $1 OR institution_id = $1",
+                "  COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled') AND "
+                "    (SELECT COUNT(*) FROM device_trust_policies p "
+                "     WHERE p.institution_id = $1 AND p.status = 'active') = 1 AND "
+                "    EXISTS (SELECT 1 FROM device_attestation_evidence e "
+                "            JOIN device_attestation_challenges c "
+                "              ON c.id = e.challenge_id AND c.device_id = e.device_id AND c.used = TRUE "
+                "            JOIN device_attestation_keys k "
+                "              ON k.id = e.ak_key_id AND k.device_id = e.device_id AND k.status = 'active' "
+                "            WHERE e.device_id = d.id AND e.verification_result = 'TRUSTED' "
+                "              AND EXISTS (SELECT 1 FROM device_trust_policies p "
+                "                          WHERE p.institution_id = $1 AND p.status = 'active' "
+                "                            AND e.verified_at >= EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
+                "                                - p.max_evidence_age_sec::BIGINT * 1000))) AS attested, "
+                "  COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled')) AS registered, "
+                "  COUNT(*) FILTER (WHERE d.status = 'enrolled') AS enrolled "
+                "FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1",
                 1, pv, pl);
             if (!dev_res || PQresultStatus(dev_res) != PGRES_TUPLES_OK || PQntuples(dev_res) == 0) {
                 if (dev_res) PQclear(dev_res);
@@ -2484,18 +2513,19 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 inst_send_error(client_fd, 500, "Failed to query institution device readiness", origin, extra_headers, extra_len);
                 return;
             }
-            int dev_total = 0, dev_attested = 0, dev_locked = 0, dev_enrolled = 0;
+            int dev_total = 0, dev_attested = 0, dev_registered = 0, dev_enrolled = 0;
             dev_total = atoi(PQgetvalue(dev_res, 0, 0));
             dev_attested = atoi(PQgetvalue(dev_res, 0, 1));
-            dev_locked = atoi(PQgetvalue(dev_res, 0, 2));
+            dev_registered = atoi(PQgetvalue(dev_res, 0, 2));
             dev_enrolled = atoi(PQgetvalue(dev_res, 0, 3));
             PQclear(dev_res);
 
-            /* 2. Exam URLs configured for this institution */
+            /* 2. The examinations table is the canonical institution-admin exam
+             * workflow; do not infer a URL from a legacy exam/default record. */
             PGresult *exam_res = db_simple(conn,
                 "SELECT COUNT(*) AS total, "
-                "  COUNT(*) FILTER (WHERE exam_url IS NOT NULL AND exam_url != '') AS with_url "
-                "FROM exams WHERE tenant_id = $1",
+                "  COUNT(*) FILTER (WHERE exam_url IS NOT NULL AND BTRIM(exam_url) <> '') AS with_url "
+                "FROM examinations WHERE institution_id = $1",
                 1, pv, pl);
             if (!exam_res || PQresultStatus(exam_res) != PGRES_TUPLES_OK || PQntuples(exam_res) == 0) {
                 if (exam_res) PQclear(exam_res);
@@ -2510,8 +2540,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
             /* 3. Collect distinct exam URLs */
             PGresult *url_res = db_simple(conn,
-                "SELECT DISTINCT exam_url FROM exams "
-                "WHERE tenant_id = $1 AND exam_url IS NOT NULL AND exam_url != '' "
+                "SELECT DISTINCT exam_url FROM examinations "
+                "WHERE institution_id = $1 AND exam_url IS NOT NULL AND BTRIM(exam_url) <> '' "
                 "LIMIT 10",
                 1, pv, pl);
             if (!url_res || PQresultStatus(url_res) != PGRES_TUPLES_OK) {
@@ -2641,7 +2671,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             /* Build readiness gates */
             int gate_fleet = (dev_total > 0);
             int gate_tpm = (dev_total > 0 && dev_attested == dev_total);
-            int gate_lock = (dev_total > 0 && dev_locked == dev_total);
+            int gate_lock = (dev_total > 0 && dev_registered == dev_total);
             int gate_url = (url_count > 0);
             int gate_chain = chain_ok;
             int gate_agreement = agreement_executed;
@@ -2670,7 +2700,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"institutionName\":\"%s\","
                 "\"institutionStatus\":\"%s\","
                 "\"institutionPlan\":\"%s\","
-                "\"devices\":{\"total\":%d,\"attested\":%d,\"locked\":%d,\"enrolled\":%d},"
+                "\"devices\":{\"total\":%d,\"attested\":%d,\"locked\":%d,\"registered\":%d,\"enrolled\":%d},"
                 "\"exams\":{\"total\":%d,\"withUrl\":%d},"
                 "\"examUrls\":%s,"
                 "\"agreements\":{\"total\":%d,\"executed\":%d,\"draft\":%d},"
@@ -2679,12 +2709,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"gates\":["
                   "{\"key\":\"fleet\",\"check\":\"Registered Device Records Present\","
                     "\"pass\":%s,\"detail\":\"%d device record(s) found for this institution\"},"
-                  "{\"key\":\"tpm\",\"check\":\"Device Attestation State Markers Present\","
-                    "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an attested or verified state marker\"},"
-                  "{\"key\":\"lock\",\"check\":\"Enrolled or Attested Device State Markers Present\","
-                    "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an enrolled or attested state marker\"},"
+                  "{\"key\":\"tpm\",\"check\":\"Current Device TPM Evidence Records Present\","
+                    "\"pass\":%s,\"detail\":\"%d of %d registered device(s) have fresh evidence records marked TRUSTED under exactly one active trust policy; this gate does not verify TPM quotes, and the device quote-verification endpoint is currently unavailable\"},"
+                  "{\"key\":\"lock\",\"check\":\"Device Registration Approved\","
+                    "\"pass\":%s,\"detail\":\"%d of %d device record(s) are in an approved registered or enrolled state\"},"
                   "{\"key\":\"url\",\"check\":\"Assessment Portal URLs Configured\","
-                    "\"pass\":%s,\"detail\":\"%d exam URL(s) are configured; URL reachability is not checked\"},"
+                    "\"pass\":%s,\"detail\":\"%d of %d canonical examination record(s) have a nonblank configured URL; URL reachability is not checked\"},"
                   "{\"key\":\"agreement\",\"check\":\"Agreement Executed\","
                     "\"pass\":%s,\"detail\":\"%d agreement record(s): %d executed, %d draft. Review the agreement; do not execute it unless the signer is authorized and accepts its terms\"},"
                   "{\"key\":\"chain\",\"check\":\"Platform Audit Event Predecessor References Present\","
@@ -2697,7 +2727,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"allPassed\":%s"
                 "}",
                 inst_id, name_esc, inst_status, inst_plan,
-                dev_total, dev_attested, dev_locked, dev_enrolled,
+                dev_total, dev_attested, dev_registered, dev_registered, dev_enrolled,
                 exam_total, exam_with_url,
                 url_list,
                 agreement_total, agreement_executed_count, agreement_draft_count,
@@ -2705,8 +2735,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 onb_status, onb_completed, onb_total,
                 gate_fleet ? "true" : "false", dev_total,
                 gate_tpm ? "true" : "false", dev_attested, dev_total,
-                gate_lock ? "true" : "false", dev_locked, dev_total,
-                gate_url ? "true" : "false", url_count,
+                gate_lock ? "true" : "false", dev_registered, dev_total,
+                gate_url ? "true" : "false", exam_with_url, exam_total,
                 gate_agreement ? "true" : "false", agreement_total, agreement_executed_count, agreement_draft_count,
                 gate_chain ? "true" : "false", chain_linked, chain_total,
                 gate_admin_mfa ? "true" : "false",

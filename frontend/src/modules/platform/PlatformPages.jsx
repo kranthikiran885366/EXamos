@@ -1682,7 +1682,8 @@ export function PlatformReadinessPage() {
         || !data.agreements || typeof data.agreements.total !== 'number'
         || typeof data.agreements.executed !== 'number' || typeof data.agreements.draft !== 'number'
         || !data.devices || typeof data.devices.total !== 'number'
-        || typeof data.devices.attested !== 'number' || typeof data.devices.enrolled !== 'number'
+        || typeof data.devices.attested !== 'number' || typeof data.devices.registered !== 'number'
+        || typeof data.devices.enrolled !== 'number'
         || !data.auditChain || data.auditChain.scope !== 'platform'
         || typeof data.auditChain.total !== 'number'
         || typeof data.auditChain.linked !== 'number' || typeof data.auditChain.ok !== 'boolean'
@@ -1773,14 +1774,14 @@ export function PlatformReadinessPage() {
             value={devices.total}
             tone={devices.total > 0 ? 'green' : 'red'}
             icon="device"
-            sub={`${devices.enrolled} enrollment records · ${devices.attested} attestation markers`}
+            sub={`${devices.registered} approved registrations · ${devices.attested} current TRUSTED evidence records`}
           />
           <Stat
             label="Attestation Markers"
             value={`${devices.attested}/${devices.total}`}
             tone={devices.total > 0 && devices.attested === devices.total ? 'green' : 'amber'}
             icon="shield"
-            sub="Stored device state; cryptographic quote verification is not performed by this view"
+            sub="Persisted TRUSTED evidence records; this readiness view does not verify TPM quotes"
           />
           <Stat
             label="Configured Exam URLs"
