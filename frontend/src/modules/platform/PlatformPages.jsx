@@ -1679,6 +1679,8 @@ export function PlatformReadinessPage() {
       if (!data || !Array.isArray(data.gates) || typeof data.allPassed !== 'boolean'
         || !data.gates.every((gate) => typeof gate.pass === 'boolean' && typeof gate.check === 'string')
         || !Array.isArray(data.examUrls)
+        || !data.agreements || typeof data.agreements.total !== 'number'
+        || typeof data.agreements.executed !== 'number' || typeof data.agreements.draft !== 'number'
         || !data.devices || typeof data.devices.total !== 'number'
         || typeof data.devices.attested !== 'number' || typeof data.devices.enrolled !== 'number'
         || !data.auditChain || data.auditChain.scope !== 'platform'
@@ -1817,7 +1819,23 @@ export function PlatformReadinessPage() {
               columns={[
                 { key: 'check', label: 'Readiness Gate', render: (c) => <b>{c.check}</b> },
                 { key: 'pass', label: 'Result', render: (c) => <Badge value={c.pass ? 'PASS' : 'FAIL'} tone={c.pass ? 'green' : 'red'} /> },
-                { key: 'detail', label: 'Diagnostic Details', render: (c) => <span className="mono sm">{c.detail}</span> },
+                {
+                  key: 'detail',
+                  label: 'Diagnostic Details',
+                  render: (c) => (
+                    <span className="mono sm">
+                      {c.detail}
+                      {c.key === 'agreement' && !c.pass && (
+                        <>
+                          {' '}
+                          <Link to={`/admin/institutions/${id}?tab=agreements`}>
+                            Review agreements
+                          </Link>
+                        </>
+                      )}
+                    </span>
+                  ),
+                },
               ]}
               empty={<Empty title="No readiness data" desc="Could not load readiness data from backend." />}
             />

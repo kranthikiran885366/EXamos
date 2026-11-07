@@ -2595,7 +2595,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "          WHERE o.institution_id = $1 AND u.status = 'active' "
                 "            AND COALESCE(u.totp_secret, '') <> '') AS admin_mfa_complete, "
                 "  EXISTS (SELECT 1 FROM institution_licenses "
-                "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid",
+                "          WHERE institution_id = $1 AND status IN ('PENDING', 'ACTIVE')) AS license_valid, "
+                "  (SELECT COUNT(*) FROM institution_agreements WHERE institution_id = $1) AS agreement_total, "
+                "  (SELECT COUNT(*) FROM institution_agreements "
+                "          WHERE institution_id = $1 AND status = 'EXECUTED') AS agreement_executed_count, "
+                "  (SELECT COUNT(*) FROM institution_agreements "
+                "          WHERE institution_id = $1 AND status = 'DRAFT') AS agreement_draft_count",
                 1, pv, pl);
             if (!activation_res || PQresultStatus(activation_res) != PGRES_TUPLES_OK || PQntuples(activation_res) == 0) {
                 if (activation_res) PQclear(activation_res);
@@ -2606,6 +2611,9 @@ void institution_handle(int client_fd, const char *method, const char *path,
             int agreement_executed = PQgetvalue(activation_res, 0, 0)[0] == 't';
             int admin_mfa_complete = PQgetvalue(activation_res, 0, 1)[0] == 't';
             int license_valid = PQgetvalue(activation_res, 0, 2)[0] == 't';
+            int agreement_total = atoi(PQgetvalue(activation_res, 0, 3));
+            int agreement_executed_count = atoi(PQgetvalue(activation_res, 0, 4));
+            int agreement_draft_count = atoi(PQgetvalue(activation_res, 0, 5));
             PQclear(activation_res);
 
             /* 7. Institution info */
@@ -2665,6 +2673,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"devices\":{\"total\":%d,\"attested\":%d,\"locked\":%d,\"enrolled\":%d},"
                 "\"exams\":{\"total\":%d,\"withUrl\":%d},"
                 "\"examUrls\":%s,"
+                "\"agreements\":{\"total\":%d,\"executed\":%d,\"draft\":%d},"
                 "\"auditChain\":{\"scope\":\"platform\",\"total\":%d,\"linked\":%d,\"ok\":%s},"
                 "\"onboarding\":{\"status\":\"%s\",\"completedSteps\":%d,\"totalSteps\":%d},"
                 "\"gates\":["
@@ -2676,10 +2685,10 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an enrolled or attested state marker\"},"
                   "{\"key\":\"url\",\"check\":\"Assessment Portal URLs Configured\","
                     "\"pass\":%s,\"detail\":\"%d exam URL(s) are configured; URL reachability is not checked\"},"
+                  "{\"key\":\"agreement\",\"check\":\"Agreement Executed\","
+                    "\"pass\":%s,\"detail\":\"%d agreement record(s): %d executed, %d draft. Review the agreement; do not execute it unless the signer is authorized and accepts its terms\"},"
                   "{\"key\":\"chain\",\"check\":\"Platform Audit Event Predecessor References Present\","
                     "\"pass\":%s,\"detail\":\"%d of %d platform audit event(s) have predecessor references; cryptographic hashes are not verified here\"},"
-                  "{\"key\":\"agreement\",\"check\":\"Agreement Executed\","
-                    "\"pass\":%s,\"detail\":\"An institution agreement must be executed before live activation\"},"
                   "{\"key\":\"admin_mfa\",\"check\":\"Primary Administrator MFA Complete\","
                     "\"pass\":%s,\"detail\":\"The primary administrator account must be active with MFA configured\"},"
                   "{\"key\":\"license\",\"check\":\"Institution License Valid\","
@@ -2691,14 +2700,15 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 dev_total, dev_attested, dev_locked, dev_enrolled,
                 exam_total, exam_with_url,
                 url_list,
+                agreement_total, agreement_executed_count, agreement_draft_count,
                 chain_total, chain_linked, chain_ok ? "true" : "false",
                 onb_status, onb_completed, onb_total,
                 gate_fleet ? "true" : "false", dev_total,
                 gate_tpm ? "true" : "false", dev_attested, dev_total,
                 gate_lock ? "true" : "false", dev_locked, dev_total,
                 gate_url ? "true" : "false", url_count,
+                gate_agreement ? "true" : "false", agreement_total, agreement_executed_count, agreement_draft_count,
                 gate_chain ? "true" : "false", chain_linked, chain_total,
-                gate_agreement ? "true" : "false",
                 gate_admin_mfa ? "true" : "false",
                 gate_license ? "true" : "false",
                 all_pass ? "true" : "false");
