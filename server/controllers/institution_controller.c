@@ -1811,7 +1811,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_attested, "
                     "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE status = 'enrolled' OR trust = 'attested') = COUNT(*) "
                     "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_locked, "
-                    "  EXISTS (SELECT 1 FROM exams WHERE (tenant_id = $1 OR institution_id = $1) "
+                    "  EXISTS (SELECT 1 FROM exams WHERE tenant_id = $1 "
                     "          AND exam_url IS NOT NULL AND exam_url <> '') AS has_exam_url, "
                     "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev <> '') >= COUNT(*) - 1 "
                     "   FROM audit WHERE institution_id = $1) AS audit_chain_ready",
@@ -2495,7 +2495,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             PGresult *exam_res = db_simple(conn,
                 "SELECT COUNT(*) AS total, "
                 "  COUNT(*) FILTER (WHERE exam_url IS NOT NULL AND exam_url != '') AS with_url "
-                "FROM exams WHERE tenant_id = $1 OR institution_id = $1",
+                "FROM exams WHERE tenant_id = $1",
                 1, pv, pl);
             if (!exam_res || PQresultStatus(exam_res) != PGRES_TUPLES_OK || PQntuples(exam_res) == 0) {
                 if (exam_res) PQclear(exam_res);
@@ -2511,7 +2511,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
             /* 3. Collect distinct exam URLs */
             PGresult *url_res = db_simple(conn,
                 "SELECT DISTINCT exam_url FROM exams "
-                "WHERE (tenant_id = $1 OR institution_id = $1) AND exam_url IS NOT NULL AND exam_url != '' "
+                "WHERE tenant_id = $1 AND exam_url IS NOT NULL AND exam_url != '' "
                 "LIMIT 10",
                 1, pv, pl);
             if (!url_res || PQresultStatus(url_res) != PGRES_TUPLES_OK) {
