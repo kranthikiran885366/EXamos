@@ -1813,8 +1813,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "   FROM devices WHERE (tenant_id = $1 OR institution_id = $1)) AS devices_locked, "
                     "  EXISTS (SELECT 1 FROM exams WHERE tenant_id = $1 "
                     "          AND exam_url IS NOT NULL AND exam_url <> '') AS has_exam_url, "
-                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev <> '') >= COUNT(*) - 1 "
-                    "   FROM audit WHERE institution_id = $1) AS audit_chain_ready",
+                    "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev <> '') = COUNT(*) "
+                    "   FROM audit) AS audit_chain_ready",
                     1, gate_vals, gate_lens);
                 if (!gate_res || PQresultStatus(gate_res) != PGRES_TUPLES_OK || PQntuples(gate_res) == 0) {
                     if (gate_res) PQclear(gate_res);
@@ -2539,17 +2539,18 @@ void institution_handle(int client_fd, const char *method, const char *path,
             strncat(url_list, "]", sizeof(url_list) - strlen(url_list) - 1);
             PQclear(url_res);
 
-            /* 4. Audit chain integrity — query the 'audit' table (prev+hash chain) */
+            /* The durable audit table is platform-global and has no institution_id.
+             * Report only stored predecessor-reference coverage; hash integrity is
+             * verified separately by audit_verify(). */
             int chain_total = 0, chain_linked = 0;
             int chain_ok = 0;
             int chain_query_ok = 0;
             {
-                /* C2 fix: scope audit chain to this institution only. */
                 PGresult *chain_res = db_simple(conn,
                     "SELECT COUNT(*) AS total, "
                     "  COUNT(*) FILTER (WHERE prev IS NOT NULL AND prev != '') AS chained "
-                    "FROM audit WHERE institution_id = $1",
-                    1, pv, pl);
+                    "FROM audit",
+                    0, NULL, NULL);
                 if (chain_res && PQresultStatus(chain_res) == PGRES_TUPLES_OK && PQntuples(chain_res) > 0) {
                     chain_total = atoi(PQgetvalue(chain_res, 0, 0));
                     chain_linked = atoi(PQgetvalue(chain_res, 0, 1));
@@ -2562,7 +2563,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 inst_send_error(client_fd, 500, "Failed to query institution audit-chain readiness", origin, extra_headers, extra_len);
                 return;
             }
-            chain_ok = (chain_total > 0 && chain_linked >= chain_total - 1);
+            chain_ok = (chain_total > 0 && chain_linked == chain_total);
 
             /* 5. Onboarding state */
             PGresult *onb_res = db_simple(conn,
@@ -2664,7 +2665,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "\"devices\":{\"total\":%d,\"attested\":%d,\"locked\":%d,\"enrolled\":%d},"
                 "\"exams\":{\"total\":%d,\"withUrl\":%d},"
                 "\"examUrls\":%s,"
-                "\"auditChain\":{\"total\":%d,\"linked\":%d,\"ok\":%s},"
+                "\"auditChain\":{\"scope\":\"platform\",\"total\":%d,\"linked\":%d,\"ok\":%s},"
                 "\"onboarding\":{\"status\":\"%s\",\"completedSteps\":%d,\"totalSteps\":%d},"
                 "\"gates\":["
                   "{\"key\":\"fleet\",\"check\":\"Registered Device Records Present\","
@@ -2675,8 +2676,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "\"pass\":%s,\"detail\":\"%d of %d device record(s) have an enrolled or attested state marker\"},"
                   "{\"key\":\"url\",\"check\":\"Assessment Portal URLs Configured\","
                     "\"pass\":%s,\"detail\":\"%d exam URL(s) are configured; URL reachability is not checked\"},"
-                  "{\"key\":\"chain\",\"check\":\"Audit Event Predecessor References Present\","
-                    "\"pass\":%s,\"detail\":\"%d of %d audit event(s) have predecessor references; cryptographic hashes are not verified here\"},"
+                  "{\"key\":\"chain\",\"check\":\"Platform Audit Event Predecessor References Present\","
+                    "\"pass\":%s,\"detail\":\"%d of %d platform audit event(s) have predecessor references; cryptographic hashes are not verified here\"},"
                   "{\"key\":\"agreement\",\"check\":\"Agreement Executed\","
                     "\"pass\":%s,\"detail\":\"An institution agreement must be executed before live activation\"},"
                   "{\"key\":\"admin_mfa\",\"check\":\"Primary Administrator MFA Complete\","

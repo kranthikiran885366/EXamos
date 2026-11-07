@@ -1681,7 +1681,8 @@ export function PlatformReadinessPage() {
         || !Array.isArray(data.examUrls)
         || !data.devices || typeof data.devices.total !== 'number'
         || typeof data.devices.attested !== 'number' || typeof data.devices.enrolled !== 'number'
-        || !data.auditChain || typeof data.auditChain.total !== 'number'
+        || !data.auditChain || data.auditChain.scope !== 'platform'
+        || typeof data.auditChain.total !== 'number'
         || typeof data.auditChain.linked !== 'number' || typeof data.auditChain.ok !== 'boolean'
         || !data.onboarding || typeof data.onboarding.status !== 'string'
         || typeof data.onboarding.completedSteps !== 'number' || typeof data.onboarding.totalSteps !== 'number') {
@@ -1787,11 +1788,11 @@ export function PlatformReadinessPage() {
             sub={examUrls.length > 0 ? 'URL values are configured; reachability is not checked' : 'No exam URLs configured'}
           />
           <Stat
-            label="Audit Event Records"
+            label="Platform Audit Event Records"
             value={auditChain.total}
             tone={auditChain.ok ? 'green' : 'amber'}
             icon="lock"
-            sub={auditChain.ok ? 'Predecessor-reference count meets the stored-record threshold' : (auditChain.total === 0 ? 'No audit events recorded' : 'Predecessor-reference count is incomplete')}
+            sub={auditChain.ok ? 'All platform audit records have predecessor references; hashes are not verified here' : (auditChain.total === 0 ? 'No platform audit events recorded' : 'Some platform audit records lack predecessor references')}
           />
         </StatGrid>
       )}
