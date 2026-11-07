@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE device_trust_policies
+    ADD COLUMN IF NOT EXISTS created_by VARCHAR(64) NOT NULL DEFAULT '';
+
+COMMIT;

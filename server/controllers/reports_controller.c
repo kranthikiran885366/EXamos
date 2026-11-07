@@ -697,6 +697,7 @@ static int parse_common_number(const char *value, int *out, int lo, int hi) {
 
 static int read_filter_pair(const char *query, const char *body, const char *key,
                             char *out, size_t out_len, int *invalid) {
+    if (out && out_len) out[0] = '\0';
     char tmp[256];
     tmp[0] = '\0';
     int found = 0;
@@ -713,7 +714,7 @@ static int read_filter_pair(const char *query, const char *body, const char *key
 static int parse_filters(const char *query, const char *body, report_filters_t *f) {
     filters_default(f);
     int invalid = 0;
-    char tmp[256];
+    char tmp[256] = {0};
 
     read_filter_pair(query, body, "from", tmp, sizeof(tmp), &invalid);
     if (tmp[0]) {
@@ -790,7 +791,16 @@ static PGresult *run_report(const report_def_t *d, const report_scope_t *scope,
         ps,
         off
     };
-    return db_query(d->sql, 9, params);
+    /* Some reports cannot be filtered by exam, so $7 is deliberately unused
+     * there. Declaring its type keeps PostgreSQL from rejecting the parameter
+     * as untyped instead of silently changing every report's parameter list. */
+    Oid types[9] = {0, 0, 0, 0, 0, 0, 25 /* text */, 0, 0};
+    PGconn *conn = db_acquire();
+    if (!conn) return NULL;
+    PGresult *res = PQexecParams(conn, d->sql, 9, types, params, NULL, NULL, 0);
+    db_release(conn, res && PQresultStatus(res) != PGRES_TUPLES_OK &&
+                     PQresultStatus(res) != PGRES_COMMAND_OK);
+    return res;
 }
 
 static int result_ok(const PGresult *r) {

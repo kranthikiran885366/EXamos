@@ -1,7 +1,5 @@
-import { all, get, put, putMany } from '../../core/db/db';
-import { genKeyPair } from '../../core/security/crypto';
-import { id, need, fail, log, cmpVer, seatLabel, assertScope, requireReason } from '../../core/services/common';
-import { latestPublished } from '../policies/service';
+import { all, get, put } from '../../core/db/db';
+import { id, need, fail, log, assertScope, requireReason } from '../../core/services/common';
 import { create as requestApproval } from '../../core/services/approvals';
 import { clean } from '../../core/security/sanitize';
 import * as Api from '../../core/api/services';
@@ -9,7 +7,9 @@ import * as Api from '../../core/api/services';
 export const reachable = (d, t = Date.now()) => t - (d.lastSeen || 0) < 40000;
 export function compliant(d, policies, releases, t = Date.now()) {
   const rel = releases.find((r) => r.id === d.releaseId); const pol = policies.find((p) => p.id === d.policyId);
-  return d.status === 'enrolled' && !d.isolated && reachable(d, t) && d.trust === 'attested' && !!rel && rel.status !== 'revoked' && !!pol && pol.status === 'published';
+  return d.status === 'enrolled' && !d.isolated && reachable(d, t) &&
+    d.backendTrustOutcome === 'ALLOW' && !!rel && rel.status !== 'revoked' &&
+    !!pol && pol.status === 'published';
 }
 
 const PROFILES = {
@@ -55,71 +55,30 @@ const checkStatus = (key, profile, device) => {
 };
 
 export async function listDevices(tenantId) {
-  try {
-    const res = await Api.listRegisteredDevices();
-    const rows = res?.devices || res || [];
-    if (Array.isArray(rows) && rows.length) return rows;
-  } catch { /* fall through to local */ }
-  return (await all('devices')).filter((d) => !tenantId || d.tenantId === tenantId);
-}
-
-export async function enrollDevices(a, { tenantId, centerId, count = 1 }) {
-  need(a, 'device.manage'); assertScope(a, tenantId);
-  const ce = await get('centers', centerId);
-  if (!ce || ce.tenantId !== tenantId) fail('Pick a center.');
-  if (ce.status !== 'active') fail('That center is inactive.');
-  const n = Math.floor(Number(count)); if (!(n >= 1 && n <= 100)) fail('Count must be 1–100.');
-  const devs = await all('devices'); const used = new Set(devs.filter((d) => d.centerId === centerId).map((d) => d.seat));
-  const free = []; for (let i = 0; i < ce.capacity && free.length < n; i++) { const s = seatLabel(i); if (!used.has(s)) free.push(s); }
-  if (free.length < n) fail(`Only ${free.length} free seat(s) at ${ce.code}.`);
-  const stable = (await all('releases')).filter((r) => r.status === 'stable').sort((x, y) => cmpVer(y.version, x.version))[0];
-  if (!stable) fail('No stable release to install. Approve and roll out a release first.');
-  const pol = latestPublished(await all('policies'), tenantId); const now = Date.now(); const keys = [], out = [];
-  for (const seat of free) {
-    const did = id('dev'); const kp = await genKeyPair();
-    keys.push({ id: did, priv: kp.privateKey, pub: await crypto.subtle.exportKey('jwk', kp.publicKey) });
-    out.push(newDevice({ id: did, tenantId, centerId, seat, hostname: `${ce.code}-${seat}`, releaseId: stable.id, policyId: pol?.id || null, now, by: a.id }));
-  }
-  await putMany('keys', keys); await putMany('devices', out); await log(a, 'DEVICES_ENROLLED', `${ce.code} x${n}`);
-  return `${n} device(s) enrolled at ${ce.code} with fresh hardware-bound identities.`;
-}
-function newDevice({ id, tenantId, centerId, seat, hostname, releaseId, policyId, now, by, serial = '', profile = 'standard-uefi' }) {
-  return {
-    id, tenantId, centerId, seat, hostname, serial: serial || `SN-${id.slice(-8).toUpperCase()}`,
-    releaseId, policyId, status: 'enrolled', trust: 'unknown', isolated: false, tampered: false,
-    lastSeen: now, lastAttested: 0, silentUntil: 0, enrolledAt: now, enrolledBy: by,
-    profile, hardware: PROFILES[profile] || PROFILES['standard-uefi'], compatStatus: 'NOT_RUN', lastCompatAt: 0,
-    compatFail: [], compatUnknown: [], exceptions: [], history: [{ at: now, by, action: 'Device enrolled' }],
-  };
-}
-
-export async function enrollSingle(a, { tenantId, centerId, seat, hostname, serial, profile = 'standard-uefi', releaseId }) {
-  need(a, 'device.manage'); assertScope(a, tenantId);
-  const ce = await get('centers', centerId); if (!ce || ce.tenantId !== tenantId) fail('Pick a center in this institution.');
-  const s = clean(seat, 8).toUpperCase(); if (!/^[A-Z]\d{2}$/.test(s)) fail('Seat looks like A01.');
-  if ((await all('devices')).some((d) => d.centerId === centerId && d.seat === s)) fail('That seat already has a device.');
-  const rel = releaseId ? await get('releases', releaseId) : (await all('releases')).filter((r) => r.status === 'stable').sort((x, y) => cmpVer(y.version, x.version))[0];
-  if (!rel || rel.status === 'revoked') fail('Pick an approved release.');
-  if (!PROFILES[profile]) fail('Unknown hardware profile.');
-  const pol = latestPublished(await all('policies'), tenantId);
-  const did = id('dev'); const kp = await genKeyPair();
-  await put('keys', { id: did, priv: kp.privateKey, pub: await crypto.subtle.exportKey('jwk', kp.publicKey) });
-  const d = newDevice({ id: did, tenantId, centerId, seat: s, hostname: clean(hostname, 60) || `${ce.code}-${s}`, releaseId: rel.id, policyId: pol?.id || null, now: Date.now(), by: a.id, serial: clean(serial, 40), profile });
-  await put('devices', d); await log(a, 'DEVICE_ENROLLED', `${d.hostname} serial=${d.serial}`);
-  return d;
+  const res = await Api.listRegisteredDevices();
+  const rows = res?.devices || res || [];
+  if (!Array.isArray(rows)) fail('The device inventory response is invalid.');
+  return rows.filter((d) => !tenantId || d.tenantId === tenantId || d.institution_id === tenantId);
 }
 
 export async function setDeviceStatus(a, d, status, reason) {
   need(a, 'device.manage'); assertScope(a, d.tenantId);
   const r = requireReason(reason, 8);
-  if (!['enrolled', 'suspended', 'revoked', 'rejected'].includes(status)) fail('Unknown device status.');
-  if (d.status === 'revoked' && status === 'enrolled' && !['superadmin', 'ops_admin'].includes(a.role)) fail('Reauthorising a revoked device needs a platform approval.');
+  if (!['enrolled', 'suspended', 'revoked'].includes(status)) fail('Unknown device status.');
+  if (status === 'enrolled' && d.status === 'revoked')
+    fail('A revoked device needs an independent reauthorisation request and fresh device attestation; it cannot be directly reactivated.');
+  if (status === 'enrolled' && d.status !== 'pending_approval')
+    fail('Only a backend-persisted pending enrollment can be approved.');
   if ((await all('sessions')).some((s) => s.deviceId === d.id && s.status === 'in_progress')) fail('End the active exam session on this device first.');
+  let response;
   try {
-    if (status === 'suspended') await Api.suspendDevice(d.id, r);
-    else if (status === 'revoked') await Api.revokeDeviceIdentity(d.id, r);
-    else if (status === 'enrolled') await Api.approveDeviceRegistration(d.id);
+    if (status === 'suspended') response = await Api.suspendDevice(d.id, r);
+    else if (status === 'revoked') response = await Api.revokeDeviceIdentity(d.id, r);
+    else if (status === 'enrolled') response = await Api.approveDeviceRegistration(d.id);
   } catch (err) { fail(err.message || 'Backend device status update failed.'); }
+  const expectedResponseStatus = status === 'enrolled' ? 'approved' : status;
+  if (response?.device_id !== d.id || response.status !== expectedResponseStatus)
+    fail('The backend did not confirm the requested device status transition.');
   const next = { ...d, status, statusReason: r, statusAt: Date.now(), trust: status === 'enrolled' ? 'unknown' : d.trust, history: [...(d.history || []), { at: Date.now(), by: a.id, action: `Status → ${status}`, reason: r }] };
   await put('devices', next); await log(a, 'DEVICE_' + status.toUpperCase(), `${d.hostname}: ${r}`);
   return `${d.hostname} is now ${status}.`;
@@ -129,14 +88,7 @@ export async function requestReauth(a, d, reason) {
   need(a, 'device.manage'); assertScope(a, d.tenantId);
   if (d.status !== 'revoked') fail('Only a revoked device needs reauthorisation approval.');
   const ap = await requestApproval(a, { kind: 'device-reauth', label: `Reauthorise ${d.hostname}`, targetId: d.id, tenantId: d.tenantId, reason, data: {} });
-  return `Reauthorisation requested (${ap.id}). A different privileged user must approve it.`;
-}
-export async function applyDeviceReauth(ap, approver) {
-  const d = await get('devices', ap.targetId); if (!d) fail('Device no longer exists.');
-  if (d.status !== 'revoked') fail('Device is no longer revoked.');
-  await put('devices', { ...d, status: 'enrolled', trust: 'unknown', isolated: false, statusReason: `Reauthorised via ${ap.id}`, history: [...(d.history || []), { at: Date.now(), by: approver.id, action: 'Reauthorised by approval' }] });
-  await log(approver, 'DEVICE_REAUTHORISED', `${d.hostname} via ${ap.id}`);
-  return `${d.hostname} reauthorised. Re-attest before use.`;
+  return `Reauthorisation request ${ap.id} persisted for independent review. Approval alone does not reactivate the device; a fresh trusted attestation identity is required.`;
 }
 
 export async function releaseIsolation(a, d) {
@@ -221,6 +173,6 @@ export const deviceStats = (devices, t = Date.now()) => ({
   suspended: devices.filter((d) => d.status === 'suspended').length,
   revoked: devices.filter((d) => d.status === 'revoked').length,
   online: devices.filter((d) => reachable(d, t)).length,
-  attested: devices.filter((d) => d.trust === 'attested').length,
+  attested: devices.filter((d) => d.backendTrustOutcome === 'ALLOW').length,
   failed: devices.filter((d) => d.trust === 'failed').length,
 });

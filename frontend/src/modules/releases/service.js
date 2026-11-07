@@ -77,7 +77,7 @@ export async function listReleaseDevices() {
     ...device,
     releaseId: device.os_release_id || device.releaseId || '',
     status: device.status || 'unknown',
-    trust: device.trust || 'unknown',
+    backendTrustOutcome: device.backendTrustOutcome || device.backend_trust_outcome || null,
   }));
 }
 export const advisories = async () => fail('Advisories must come from a trusted backend vulnerability feed.');
@@ -239,9 +239,9 @@ export function rolloutStats(r, devices) {
   return {
     total: devices.length, onRelease: on.length, target: r.rollout,
     enrolled: on.filter((d) => d.status === 'enrolled').length,
-    attested: on.filter((d) => d.trust === 'attested').length,
-    failed: on.filter((d) => d.trust === 'failed').length,
-    pendingAttestation: on.filter((d) => d.trust === 'unknown').length,
+    attested: on.filter((d) => d.backendTrustOutcome === 'ALLOW').length,
+    failed: on.filter((d) => d.backendTrustOutcome === 'DENY').length,
+    pendingAttestation: on.filter((d) => d.backendTrustOutcome !== 'ALLOW').length,
     pct: devices.length ? +((on.length / devices.length) * 100).toFixed(1) : 0,
   };
 }
@@ -290,7 +290,7 @@ export async function releaseReadiness(r, ctx = {}) {
     status: 'NOT_RUN',
     detail: `${on.length} device(s) report this release; no deployment dispatch or assignment is recorded.`,
   });
-  out.push({ key: 'devices', label: 'Device attestation', status: on.length && on.every((d) => d.trust === 'attested') ? 'PASS' : on.length ? 'WARN' : 'NOT_RUN', detail: `${on.filter((d) => d.trust === 'attested').length}/${on.length} attested` });
+  out.push({ key: 'devices', label: 'Device attestation', status: on.length && on.every((d) => d.backendTrustOutcome === 'ALLOW') ? 'PASS' : on.length ? 'WARN' : 'NOT_RUN', detail: `${on.filter((d) => d.backendTrustOutcome === 'ALLOW').length}/${on.length} server-verified` });
   return out;
 }
 

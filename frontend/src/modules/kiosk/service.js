@@ -10,37 +10,29 @@ import * as Api from '../../core/api/services';
  * Fetch real-time status of the ExamOS Kiosk Gateway.
  */
 export async function getLiveKioskStatus() {
-  try {
-    const [srvStatus, srvHealth, terminals, fleet, kiosks] = await Promise.allSettled([
-      Api.status(),
-      Api.health(),
-      Api.getTerminals(),
-      Api.listFleet(),
-      Api.getKiosks(),
-    ]);
-
-    return {
-      status: srvStatus.status === 'fulfilled' ? srvStatus.value : null,
-      health: srvHealth.status === 'fulfilled' ? srvHealth.value : null,
-      terminals: terminals.status === 'fulfilled' ? terminals.value : { terminals: [] },
-      fleet: fleet.status === 'fulfilled' ? fleet.value : { devices: [] },
-      kiosks: kiosks.status === 'fulfilled' && kiosks.value?.terminals ? kiosks.value.terminals : [],
-      timestamp: Date.now(),
-      connected: srvHealth.status === 'fulfilled' && srvHealth.value?.status === 'ok',
-    };
-  } catch (err) {
-    console.error('Failed to query live kiosk status:', err);
-    return {
-      status: null,
-      health: null,
-      terminals: { terminals: [] },
-      fleet: { devices: [] },
-      kiosks: [],
-      timestamp: Date.now(),
-      connected: false,
-      error: String(err.message),
-    };
-  }
+  const names = ['server status', 'server health', 'terminals', 'device fleet', 'kiosk registry'];
+  const results = await Promise.allSettled([
+    Api.status(),
+    Api.health(),
+    Api.getTerminals(),
+    Api.listFleet(),
+    Api.getKiosks(),
+  ]);
+  const values = results.map((result) => result.status === 'fulfilled' ? result.value : null);
+  const errors = results.flatMap((result, index) => result.status === 'rejected'
+    ? [`${names[index]}: ${result.reason?.message || 'request failed'}`]
+    : []);
+  const [status, health, terminals, fleet, kiosks] = values;
+  return {
+    status,
+    health,
+    terminals,
+    fleet,
+    kiosks: kiosks?.terminals || null,
+    timestamp: Date.now(),
+    connected: health?.status === 'ok',
+    errors,
+  };
 }
 
 /**
@@ -65,7 +57,7 @@ export async function dispatchExamUrl(user, { examUrl, examName, examId, duratio
   });
 
   await log(user, 'KIOSK_URL_DISPATCHED', `URL: ${cleanUrl} | Name: ${cleanName}`);
-  return res || { status: 'DISPATCHED', exam_url: cleanUrl };
+  return res;
 }
 
 /**

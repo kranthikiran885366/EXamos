@@ -25,6 +25,7 @@
 #include "../include/behaviour_engine.h"
 #include "../include/event_chain.h"
 #include "../include/candidate_login.h"
+#include "../controllers/controller.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -273,12 +274,12 @@ int behaviour_ingest_question(const behaviour_raw_input_t *in,
 
     /* ── Step 1: verify session ownership ─────────────────────────────────
      * The server must confirm this session belongs to in->candidate_id.
-     * We use candidate_session_identity against the in->session_id as a
+     * We use the database-backed candidate token resolver for in->session_id as a
      * session token check.  Real proctoring events must already be on the
      * event_chain for this session; we verify the chain. */
     char verified_cid[64] = {0};
     /* session_id here is the exam session token used server-side */
-    if (!candidate_session_identity(in->session_id, verified_cid, sizeof(verified_cid))) {
+    if (!ctrl_candidate_token_identity(in->session_id, verified_cid, sizeof(verified_cid))) {
         /* Session not found / expired — treat events as unverified */
         out->f1_quality = BFQ_SOURCE_EVENT_UNVERIFIED;
         out->f2_quality = BFQ_SOURCE_EVENT_UNVERIFIED;
@@ -496,7 +497,7 @@ int behaviour_record_practice_quiz(const char *candidate_id,
 
     /* Verify the practice session is real (must be in session store) */
     char verified_cid[64] = {0};
-    int session_valid = candidate_session_identity(
+    int session_valid = ctrl_candidate_token_identity(
         practice_session_id, verified_cid, sizeof(verified_cid));
 
     practice_quiz_eligibility_t rec;
@@ -505,10 +506,7 @@ int behaviour_record_practice_quiz(const char *candidate_id,
     strncpy(rec.candidate_id, candidate_id, sizeof(rec.candidate_id)-1);
     rec.completed_ts = time(NULL);
 
-    const char *mode = getenv("EXAMOS_TPM_MODE");
-    int dev_mode = (!mode || strcmp(mode, "production") != 0);
-
-    if (!session_valid && !dev_mode) {
+    if (!session_valid) {
         rec.eligible = 0;
         strncpy(rec.exclusion_reason, "SESSION_NOT_AUTHENTICATED",
                 sizeof(rec.exclusion_reason)-1);
@@ -517,19 +515,14 @@ int behaviour_record_practice_quiz(const char *candidate_id,
         strncpy(rec.exclusion_reason, "CANDIDATE_MISMATCH",
                 sizeof(rec.exclusion_reason)-1);
     } else {
-        /* In production, verify event chain for this session too */
-        if (!dev_mode) {
-            uint64_t total = 0, corrupt_seq = 0;
-            char reason[128] = {0};
-            int chain_ok = event_chain_verify_session(
-                practice_session_id, &total, &corrupt_seq, reason, sizeof(reason)) == 0;
-            if (!chain_ok) {
-                rec.eligible = 0;
-                snprintf(rec.exclusion_reason, sizeof(rec.exclusion_reason),
-                         "EVENT_CHAIN_FAIL:%s", reason);
-            } else {
-                rec.eligible = 1;
-            }
+        uint64_t total = 0, corrupt_seq = 0;
+        char reason[128] = {0};
+        int chain_ok = event_chain_verify_session(
+            practice_session_id, &total, &corrupt_seq, reason, sizeof(reason)) == 0;
+        if (!chain_ok) {
+            rec.eligible = 0;
+            snprintf(rec.exclusion_reason, sizeof(rec.exclusion_reason),
+                     "EVENT_CHAIN_FAIL:%s", reason);
         } else {
             rec.eligible = 1;
         }

@@ -124,7 +124,17 @@ test-admin-rate-limit:
 test-approval-governance:
 	bash ../tests/server/approval-governance-migration-test.sh
 
+test-device-trust-policy-governance:
+	bash ../tests/server/device-trust-policy-governance-test.sh
+
+test-session-store:
+	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-session-store-test.XXXXXX"); \
+	trap 'rm -f -- "$$test_binary"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) ../tests/server/session-store-lifecycle-test.c \
+		login/session_store.c login/candidate_login.c -lcrypto -lpthread -o "$$test_binary"; \
+	"$$test_binary"
+
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance
+.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-session-store

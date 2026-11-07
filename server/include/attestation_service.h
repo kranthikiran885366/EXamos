@@ -138,6 +138,12 @@ int  attestation_revoke_device(const char *device_id);
 
 /* --- Status & Key Release --- */
 int  attestation_get_status(const char *attestation_id, char *out_status, size_t max_len);
+int attestation_check_device_binding(const char *attestation_id,
+                                     const char *device_id);
+int attestation_check_exam_key_ready(const char *attestation_id,
+                                     const char *device_id);
+int attestation_get_device_release(const char *device_id, char *out_release_id,
+                                   size_t out_len);
 
 /*
  * attestation_get_exam_key:

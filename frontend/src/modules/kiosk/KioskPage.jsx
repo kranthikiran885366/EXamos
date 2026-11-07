@@ -25,6 +25,7 @@ export default function KioskPage() {
     fleet: { devices: [] },
     timestamp: Date.now(),
     connected: false,
+    errors: [],
   });
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -128,8 +129,8 @@ export default function KioskPage() {
   const srvStatus = liveData.status;
   const devices = liveData.fleet?.devices || [];
   const terminals = liveData.terminals?.terminals || [];
-  const currentExamUrl = srvStatus?.exam_url || 'NOT_CONFIGURED';
-  const currentExamName = srvStatus?.exam_name || 'Standard Candidate Terminal';
+  const currentExamUrl = srvStatus ? (srvStatus.exam_url || 'NOT_CONFIGURED') : 'Unavailable';
+  const currentExamName = srvStatus ? (srvStatus.exam_name || 'NOT_CONFIGURED') : 'Unavailable';
 
   return (
     <Page
@@ -164,6 +165,11 @@ export default function KioskPage() {
           The ExamOS C Security Server (port 8895) is not responding. Ensure the backend daemon and PostgreSQL are running.
         </Alert>
       )}
+      {liveData.errors?.length > 0 && (
+        <Alert tone="warn" title="Some live kiosk data is unavailable">
+          {liveData.errors.join('; ')}
+        </Alert>
+      )}
 
       {/* Production Telemetry Stats */}
       <StatGrid cols={4}>
@@ -172,21 +178,21 @@ export default function KioskPage() {
           value={srvHealth?.liveness || 'OFFLINE'}
           icon="server"
           tone={srvHealth?.liveness === 'LIVE' ? 'green' : 'amber'}
-          sub={`Port 8895 Â· ${srvHealth?.tpm_mode || 'dev'} mode`}
+          sub={`Port 8895 Â· ${srvHealth?.tpm_mode || 'unknown'} mode`}
         />
         <Stat
           label="Enrolled Kiosks"
-          value={devices.length || 1}
+          value={devices.length}
           icon="device"
           tone="blue"
-          sub={`${devices.filter((d) => d.attestation_status === 'TRUSTED').length || 1} TPM-Attested`}
+          sub={`${devices.filter((d) => (d.backendTrustOutcome || d.backend_trust_outcome) === 'ALLOW').length} server-verified`}
         />
         <Stat
           label="Active Terminals"
           value={terminals.length}
           icon="candidate"
           tone={terminals.length > 0 ? 'violet' : 'blue'}
-          sub={`Center: ${liveData.terminals?.center_name || 'Main Hall'}`}
+          sub={`Center: ${liveData.terminals?.center_name || 'Unavailable'}`}
         />
         <Stat
           label="Evidence Ledger"
@@ -371,7 +377,7 @@ export default function KioskPage() {
           {/* Kiosk Fleet Terminals Table */}
           <Card
             title="Connected Kiosks & Hardware Terminals"
-            desc="Physical and virtual machines enrolled in the ExamOS secure perimeter"
+            desc="Devices reported by the live ExamOS backend"
             actions={<span className="mini">{devices.length} enrolled</span>}
           >
             <DataTable
@@ -387,24 +393,27 @@ export default function KioskPage() {
                     <>
                       <b>{d.device_id}</b>
                       <br />
-                      <small className="muted mono">{d.hostname || 'kiosk.internal'}</small>
+                      <small className="muted mono">{d.hostname || 'Unreported'}</small>
                     </>
                   ),
                 },
                 {
                   key: 'hardware_platform',
                   label: 'Hardware / Environment',
-                  render: (d) => <span className="mono" style={{ fontSize: '11px' }}>{d.hardware_platform || 'x86_64 / UEFI TPM 2.0'}</span>,
+                  render: (d) => <span className="mono" style={{ fontSize: '11px' }}>{d.hardware_platform || 'Unreported'}</span>,
                 },
                 {
                   key: 'attestation_status',
                   label: 'TPM Attestation',
-                  render: (d) => <Badge value={d.attestation_status || 'TRUSTED'} />,
+                  render: (d) => {
+                    const verified = (d.backendTrustOutcome || d.backend_trust_outcome) === 'ALLOW';
+                    return <Badge value={verified ? 'Server verified' : 'Unverified'} tone={verified ? 'green' : 'amber'} />;
+                  },
                 },
                 {
                   key: 'session_state',
                   label: 'Session State',
-                  render: (d) => <Badge value={d.session_state || 'IDLE'} />,
+                  render: (d) => <Badge value={d.session_state || 'Unknown'} />,
                 },
                 {
                   key: 'actions',

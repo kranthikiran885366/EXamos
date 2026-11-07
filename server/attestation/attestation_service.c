@@ -464,10 +464,12 @@ static int load_exam_key_release(const char *identifier, const char *device_id,
         "FROM examos_exam_key_releases k "
         "JOIN examos_attestation_challenges c ON c.attestation_id = k.attestation_id "
         "WHERE (k.session_id=$1 OR k.attestation_id=$1) "
-        "AND ($2='' OR k.device_id=$2) "
+        "AND k.device_id=$2 "
         "AND k.revoked_at IS NULL "
         "AND c.state='TRUSTED' "
         "AND c.verified_at > clock_timestamp() - interval '10 minutes' "
+        "AND NOT EXISTS (SELECT 1 FROM examos_attestation_challenges newer "
+        "WHERE newer.session_id=c.session_id AND newer.created_at>c.created_at) "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
         "WHERE (r.target_type='DEVICE' AND r.target_id=k.device_id) OR "
         "(r.target_type='RELEASE' AND r.target_id=k.release_id)) "
@@ -1405,6 +1407,103 @@ int attestation_get_status(const char *attestation_id, char *out_status, size_t 
     return -1;
 }
 
+int attestation_check_device_binding(const char *attestation_id,
+                                     const char *device_id) {
+    if (!attestation_id || !attestation_id[0] || !device_id || !device_id[0])
+        return -1;
+
+    if (production_attestation_mode()) {
+        char bound_device[64] = {0}, session_id[64] = {0}, release_id[64] = {0};
+        return persisted_re_attestation_source(attestation_id, device_id,
+                                               bound_device, session_id,
+                                               release_id);
+    }
+
+    pthread_mutex_lock(&g_trust_lock);
+    for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
+        if (!g_sessions[i].created_at) continue;
+        if (strcmp(g_sessions[i].attestation_id, attestation_id) != 0 &&
+            strcmp(g_sessions[i].session_id, attestation_id) != 0)
+            continue;
+        int trusted = g_sessions[i].state == ATTESTATION_STATE_TRUSTED &&
+                      strcmp(g_sessions[i].device_id, device_id) == 0;
+        pthread_mutex_unlock(&g_trust_lock);
+        return trusted ? 0 : -1;
+    }
+    pthread_mutex_unlock(&g_trust_lock);
+    return -1;
+}
+
+int attestation_check_exam_key_ready(const char *attestation_id,
+                                     const char *device_id) {
+    if (!attestation_id || !attestation_id[0] || !device_id || !device_id[0])
+        return -1;
+
+    if (production_attestation_mode()) {
+        PGconn *conn = acquire_db_connection();
+        if (!conn) return -1;
+        const char *params[] = {attestation_id, device_id};
+        PGresult *result = PQexecParams(conn,
+            "SELECT 1 FROM examos_attestation_challenges c "
+            "JOIN examos_exam_key_releases k ON k.attestation_id=c.attestation_id "
+            "WHERE (c.attestation_id=$1 OR c.session_id=$1) "
+            "AND c.device_id=$2 AND k.device_id=$2 "
+            "AND c.state='TRUSTED' "
+            "AND c.verified_at>clock_timestamp()-interval '10 minutes' "
+            "AND k.revoked_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM examos_attestation_challenges newer "
+            "WHERE newer.session_id=c.session_id AND newer.created_at>c.created_at) "
+            "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+            "WHERE (r.target_type='DEVICE' AND r.target_id=c.device_id) "
+            "OR (r.target_type='RELEASE' AND r.target_id=c.release_id)) "
+            "ORDER BY c.created_at DESC LIMIT 1",
+            2, NULL, params, NULL, NULL, 0);
+        int ready = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                    PQntuples(result) == 1;
+        if (result) PQclear(result);
+        release_db_connection(conn, 0);
+        return ready ? 0 : -1;
+    }
+
+    pthread_mutex_lock(&g_trust_lock);
+    for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
+        if (!g_sessions[i].created_at) continue;
+        if (strcmp(g_sessions[i].attestation_id, attestation_id) != 0 &&
+            strcmp(g_sessions[i].session_id, attestation_id) != 0)
+            continue;
+        int ready = g_sessions[i].state == ATTESTATION_STATE_TRUSTED &&
+                    g_sessions[i].exam_key_released &&
+                    strcmp(g_sessions[i].device_id, device_id) == 0;
+        pthread_mutex_unlock(&g_trust_lock);
+        return ready ? 0 : -1;
+    }
+    pthread_mutex_unlock(&g_trust_lock);
+    return -1;
+}
+
+int attestation_get_device_release(const char *device_id, char *out_release_id,
+                                   size_t out_len) {
+    if (!device_id || !device_id[0] || !out_release_id || out_len == 0) return -1;
+    out_release_id[0] = '\0';
+    pthread_mutex_lock(&g_trust_lock);
+    for (int i = 0; i < g_device_count; ++i) {
+        const enrolled_device_t *device = &g_devices[i];
+        if (strcmp(device->device_id, device_id) != 0) continue;
+        if ((device->status != DEVICE_STATUS_ENROLLED &&
+             device->status != DEVICE_STATUS_TRUSTED) ||
+            !device->allowed_release[0] ||
+            strlen(device->allowed_release) >= out_len) {
+            pthread_mutex_unlock(&g_trust_lock);
+            return -1;
+        }
+        safe_copy(out_release_id, out_len, device->allowed_release);
+        pthread_mutex_unlock(&g_trust_lock);
+        return 0;
+    }
+    pthread_mutex_unlock(&g_trust_lock);
+    return -1;
+}
+
 /* -----------------------------------------------------------------------
  * attestation_get_exam_key
  *
@@ -1418,7 +1517,8 @@ int attestation_get_status(const char *attestation_id, char *out_status, size_t 
  * ----------------------------------------------------------------------- */
 int attestation_get_exam_key(const char *session_id, const char *device_id,
                                char *out_key, size_t max_len) {
-    if (!session_id || !out_key || max_len < EXAM_KEY_LEN + 1) return -1;
+    if (!session_id || !session_id[0] || !device_id || !device_id[0] ||
+        !out_key || max_len < EXAM_KEY_LEN + 1) return -1;
     out_key[0] = '\0';
 
     if (production_attestation_mode()) {
@@ -1428,16 +1528,18 @@ int attestation_get_exam_key(const char *session_id, const char *device_id,
             OPENSSL_cleanse(released, sizeof(released));
             return -1;
         }
-        memcpy(out_key, released, EXAM_KEY_LEN);
-        out_key[EXAM_KEY_LEN] = '\0';
 
         ledger_block_t blk;
         char details[256];
         snprintf(details, sizeof(details),
                  "Exam key released: session=%.63s device=%.63s",
-                 session_id, device_id ? device_id : "");
-        ledger_append_event("P3_KEY_RELEASED", device_id ? device_id : "UNKNOWN_DEV",
-                            details, &blk);
+                 session_id, device_id);
+        if (ledger_append_event("P3_KEY_RELEASED", device_id, details, &blk) != 0) {
+            OPENSSL_cleanse(released, sizeof(released));
+            return -1;
+        }
+        memcpy(out_key, released, EXAM_KEY_LEN);
+        out_key[EXAM_KEY_LEN] = '\0';
         OPENSSL_cleanse(released, sizeof(released));
         return 0;
     }
@@ -1465,15 +1567,18 @@ int attestation_get_exam_key(const char *session_id, const char *device_id,
             return -1;
         }
 
-        strncpy(out_key, g_sessions[i].exam_key, max_len - 1);
-        out_key[max_len - 1] = '\0';
-
         ledger_block_t blk;
         char details[256];
         snprintf(details, sizeof(details),
                  "Exam key released: session=%.63s device=%.63s",
                  g_sessions[i].attestation_id, g_sessions[i].device_id);
-        ledger_append_event("P3_KEY_RELEASED", g_sessions[i].device_id, details, &blk);
+        if (ledger_append_event("P3_KEY_RELEASED", g_sessions[i].device_id,
+                                details, &blk) != 0) {
+            pthread_mutex_unlock(&g_trust_lock);
+            return -1;
+        }
+        strncpy(out_key, g_sessions[i].exam_key, max_len - 1);
+        out_key[max_len - 1] = '\0';
 
         pthread_mutex_unlock(&g_trust_lock);
         return 0;

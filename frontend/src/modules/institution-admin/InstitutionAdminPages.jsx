@@ -783,7 +783,7 @@ export function InstitutionDeploymentReadinessPage() {
               .map(d => ({
                 ...d,
                 centerId: d.centerId || d.center_id,
-                trust: d.trust || d.trust_status,
+                backendTrustOutcome: d.backendTrustOutcome || d.backend_trust_outcome || null,
                 lastSeen: d.lastSeen || d.last_seen,
               })));
           } else {
@@ -802,7 +802,7 @@ export function InstitutionDeploymentReadinessPage() {
 
   const devices = liveDevices || [];
   const campuses = liveCampuses || [];
-  const attested = devices.filter((d) => d.trust === 'attested' || d.trust_status === 'trusted' || d.tpm_enrolled);
+  const attested = devices.filter((d) => d.backendTrustOutcome === 'ALLOW');
   const readiness = loading ? 'LOADING' : liveDevices === null ? 'UNKNOWN' :
     (devices.length === 0 ? 'NOT ENROLLED' : (attested.length === devices.length ? 'READY' : 'PENDING'));
 
@@ -815,7 +815,7 @@ export function InstitutionDeploymentReadinessPage() {
       {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={4}>
         <Stat label="Total Workstations" value={liveDevices === null ? '—' : devices.length} icon="device" />
-        <Stat label="Hardware Attested" value={liveDevices === null ? '—' : attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="TPM Validated" />
+        <Stat label="Server-verified hardware" value={liveDevices === null ? '—' : attested.length} tone={attested.length ? 'green' : 'amber'} icon="shield" sub="Requires verified TPM quote evidence" />
         <Stat label={`${getOrgTerms(tenant?.entityType).campusLabel} Scoped`} value={liveCampuses === null ? '—' : campuses.length} icon="pin" />
         <Stat label="Readiness State" value={readiness} tone={readiness === 'READY' ? 'green' : 'amber'} icon="checklist" />
       </StatGrid>
@@ -826,7 +826,7 @@ export function InstitutionDeploymentReadinessPage() {
           columns={[
             { key: 'hostname', label: 'Workstation', render: (d) => <><b>{d.hostname}</b><br /><small className="muted">{d.mac || '—'}</small></> },
             { key: 'seat', label: 'Seat / Room', render: (d) => d.seat || '—' },
-            { key: 'trust', label: 'TPM Attestation', render: (d) => <Badge value={d.trust || '—'} tone={d.trust === 'attested' ? 'green' : 'amber'} /> },
+            { key: 'trust', label: 'TPM Attestation', render: (d) => <Badge value={d.backendTrustOutcome === 'ALLOW' ? 'Server verified' : 'Unverified'} tone={d.backendTrustOutcome === 'ALLOW' ? 'green' : 'amber'} /> },
             { key: 'status', label: 'Status', badge: true },
             { key: 'lastSeen', label: 'Last Heartbeat', render: (d) => d.lastSeen ? ago(d.lastSeen) : '—' },
           ]}

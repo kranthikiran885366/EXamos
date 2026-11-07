@@ -52,8 +52,8 @@ typedef struct {
 
 /*
  * session_store_init — open the journal file, replay existing records to
- * restore in-process session state.  Must be called before
- * candidate_session_init() so the in-memory table is pre-populated.
+ * restore in-process session state. Call candidate_session_init() first;
+ * it clears the in-memory table populated by journal replay.
  *
  * Returns 0 on success, -1 on I/O or integrity failure.
  */

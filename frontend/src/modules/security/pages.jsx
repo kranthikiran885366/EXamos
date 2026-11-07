@@ -41,8 +41,8 @@ export function SecurityOverviewPage() {
         <>
           <StatGrid cols={6}>
             <Stat label="Security score" value={o.score} unit="/100" icon={o.score >= 90 ? 'check' : 'warn'} tone={o.score >= 90 ? 'green' : o.score >= 70 ? 'amber' : 'red'} />
-            <Stat label="Devices" value={o.devices} icon="device" sub={`${o.attested} attested`} />
-            <Stat label="Boot intact" value={o.bootIntact} icon="boot" tone="green" />
+            <Stat label="Devices" value={o.devices} icon="device" sub={`${o.attested} server-verified`} />
+            <Stat label="Boot intact" value={o.bootIntact} icon="boot" tone={o.devices > 0 && o.bootIntact === o.devices ? 'green' : 'amber'} />
             <Stat label="Open incidents" value={o.openIncidents} icon="alert" tone={o.openIncidents ? 'amber' : 'green'} />
             <Stat label="Critical vulns" value={o.criticalVulns} icon={o.criticalVulns ? 'warn' : 'check'} tone={o.criticalVulns ? 'red' : 'green'} />
             <Stat label="Audit chain" value={o.chainOk ? 'Intact' : 'Broken'} icon="shield" tone={o.chainOk ? 'green' : 'red'} sub={`${o.chainCount} entries`} />
@@ -51,8 +51,8 @@ export function SecurityOverviewPage() {
           {o.evidenceTampered > 0 && <Alert tone="danger" title={`${o.evidenceTampered} evidence record(s) failed verification`} action={<Link className="btn" to="/security/evidence">Open vault</Link>}>Do not use affected evidence in audits until it is re-sealed.</Alert>}
           <div className="two">
             <Card title="Posture breakdown" pad>
-              <Progress label={`Attestation rate · ${o.attestedPct}%`} value={o.attestedPct} max={100} />
-              <Progress label={`Boot integrity · ${o.bootPct}%`} value={o.bootPct} max={100} />
+              <Progress label={`Server-verified device trust · ${o.attestedPct}%`} value={o.attestedPct} max={100} />
+              <Progress label={`Server-verified boot integrity · ${o.bootPct}%`} value={o.bootPct} max={100} />
               <Progress label="Security score" value={o.score} max={100} />
               <KeyValue cols={2} items={[
                 ['Isolated devices', o.isolated], ['Failed trust', o.failed],
@@ -66,7 +66,7 @@ export function SecurityOverviewPage() {
             <Card title="Recommended actions" desc={tenant ? `Posture for ${tenant.name}` : 'Platform posture'}>
               <ul className="checklist">
                 {o.criticalVulns > 0 && <li>Remediate {o.criticalVulns} critical vulnerabilities.</li>}
-                {o.attestedPct < 90 && <li>Attest devices with stale or missing TPM evidence ({100 - o.attestedPct}% outstanding).</li>}
+                {o.attestedPct < 90 && <li>Complete trusted device provisioning and server-side TPM quote verification before relying on device posture.</li>}
                 {o.openEvents > 0 && <li>Acknowledge and triage {o.openEvents} open security events.</li>}
                 {o.evidenceTampered > 0 && <li>Re-seal or retire tampered evidence records.</li>}
                 {o.revokedReleases > 0 && <li>Review devices still running revoked releases.</li>}
@@ -99,20 +99,20 @@ export function BootIntegrityPage() {
   );
 
   return (
-    <Page title="Boot integrity" desc="Secure Boot state and signed UKI verification per device, with the latest TPM attestation.">
+    <Page title="Boot integrity" desc="Server-verified boot integrity is unavailable. Local device fields and historical quote reports are unverified.">
       {error && <Alert tone="danger" title="Could not load boot integrity">{error.message}</Alert>}
       {loading ? <Loading /> : (
         <DataTable
-          title="Measured boot" desc="PCR values come from the most recent verified TPM quote."
+          title="Reported boot data" desc="PCR values below come from historical local reports and are not verified evidence."
           rows={rows || []} search={(d) => `${d.hostname} ${d.bootStatus} ${d.trust}`}
           filters={[{ key: 'bootStatus', label: 'Boot status', options: ['intact', 'failed', 'unknown', 'tampered', 'release-revoked'].map((s) => ({ v: s, l: s })) }]}
           columns={[
             { key: 'hostname', label: 'Device', render: (d) => <Link className="strong-link mono" to={`/devices/${d.id}`}>{d.hostname}</Link> },
             { key: 'bootStatus', label: 'Boot status', render: (d) => <Badge value={d.bootStatus} /> },
-            { key: 'secureBoot', label: 'Secure Boot', render: (d) => <Badge value={d.secureBoot ? 'on' : 'off'} /> },
-            { key: 'tpm', label: 'TPM 2.0', render: (d) => <Badge value={d.tpm ? 'present' : 'absent'} /> },
+            { key: 'secureBoot', label: 'Reported Secure Boot', render: (d) => <Badge value={d.secureBoot ? 'reported on' : 'unverified'} tone="amber" /> },
+            { key: 'tpm', label: 'Reported TPM 2.0', render: (d) => <Badge value={d.tpm ? 'reported present' : 'unverified'} tone="amber" /> },
             { key: 'release', label: 'Release', render: (d) => (d.release ? `${d.release.version} (${d.release.status})` : '—') },
-            { key: 'measuredAt', label: 'Last attestation', sortable: true, render: (d) => (d.measuredAt ? fmt(d.measuredAt) : 'Never') },
+            { key: 'measuredAt', label: 'Last local report', sortable: true, render: (d) => (d.measuredAt ? fmt(d.measuredAt) : 'Never') },
             { key: 'pcr', label: 'PCR', render: (d) => <span className="mono sm">{pcrDigest(d.pcr) ? `${pcrDigest(d.pcr).slice(0, 20)}…` : '—'}</span> },
           ]}
           actions={(d) => [{ label: 'Open device', onClick: () => nav(`/devices/${d.id}`) }]}
@@ -124,14 +124,10 @@ export function BootIntegrityPage() {
 
 /* ------------------------------------------------------------------ attestation */
 export function AttestationPage() {
-  const { user } = useAuth();
   const { tenantId } = useTenant();
   const attestations = useCol('attestations', false);
   const devices = useCol('devices', false);
-  const [act, setAct] = useState(null);
   const [view, setView] = useState(null);
-  const flash = useFlash();
-  const perms = usePerm();
 
   const mine = devices.filter((d) => d.tenantId === tenantId);
   const rows = useMemo(() => attestations
@@ -139,44 +135,39 @@ export function AttestationPage() {
     .sort((a, b) => (b.verifiedAt || b.issuedAt || 0) - (a.verifiedAt || a.issuedAt || 0)), [attestations, mine]);
 
   return (
-    <Page title="Attestation" desc="TPM 2.0 quote verification against golden PCR values."
-      actions={perms('device.manage') ? <button className="btn primary" onClick={() => setAct(true)}><Icon name="shield" size={15} /> Attest device</button> : null}>
-      <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+    <Page title="Attestation reports" desc="Historical local reports are unverified. Trusted hardware status requires backend-verified TPM evidence, which is not available in this console.">
+      <Alert tone="warn" title="Quote verification unavailable">
+        Existing report results and PCR matches are not server-verified and cannot establish device trust.
+      </Alert>
       <StatGrid cols={4}>
-        <Stat label="Attestations" value={rows.length} icon="shield" />
-        <Stat label="Attested" value={rows.filter((a) => a.result === 'attested' || a.result === 'pass').length} icon="check" tone="green" />
-        <Stat label="Failed" value={rows.filter((a) => ['failed', 'fail'].includes(a.result)).length} icon="warn" tone="red" />
+        <Stat label="Legacy reports" value={rows.length} icon="shield" />
+        <Stat label="Reported success claims" value={rows.filter((a) => a.result === 'attested' || a.result === 'pass').length} icon="check" tone="amber" />
+        <Stat label="Reported failure claims" value={rows.filter((a) => ['failed', 'fail'].includes(a.result)).length} icon="warn" tone="amber" />
         <Stat label="Devices" value={mine.length} icon="device" />
       </StatGrid>
       <DataTable
-        title="Attestation history" desc="Newest first."
+        title="Legacy report history" desc="Newest first; report values are not trusted evidence."
         rows={rows} search={(a) => `${a.deviceId} ${a.result} ${a.reason || ''}`}
         filters={[{ key: 'result', label: 'Result', options: ['attested', 'failed', 'unknown'].map((s) => ({ v: s, l: s })) }]}
         columns={[
           { key: 'deviceId', label: 'Device', render: (a) => { const d = mine.find((x) => x.id === a.deviceId); return d ? <Link className="strong-link mono" to={`/devices/${d.id}`}>{d.hostname}</Link> : a.deviceId; } },
-          { key: 'result', label: 'Result', render: (a) => <Badge value={a.result || a.status} /> },
-          { key: 'pcrMatch', label: 'PCR match', render: (a) => <Badge value={a.pcrMatch ? 'match' : 'mismatch'} /> },
+          { key: 'result', label: 'Reported result', render: (a) => <Badge value={a.result || a.status || 'Unknown'} tone="amber" /> },
+          { key: 'pcrMatch', label: 'Reported PCR match', render: (a) => <Badge value={a.pcrMatch ? 'claimed match' : 'not verified'} tone="amber" /> },
           { key: 'nonce', label: 'Nonce', render: (a) => <span className="mono sm">{a.nonce ? `${a.nonce.slice(0, 12)}…` : '—'}</span> },
           { key: 'issuedAt', label: 'Issued', sortable: true, render: (a) => fmt(a.issuedAt || a.verifiedAt) },
           { key: 'reason', label: 'Detail', render: (a) => a.reason || '—' },
         ]}
         actions={(a) => [{ label: 'View quote', onClick: () => setView(a) }]}
       />
-      {act && (
-        <ActionDialog title="Attest device" desc="Runs a fresh TPM quote and checks PCR values." confirmLabel="Attest" requireReason={false}
-          field={{ label: 'Device', options: mine.map((d) => ({ v: d.id, l: `${d.hostname} · ${d.seat}` })) }}
-          onClose={() => setAct(null)}
-          onConfirm={(_r, val) => flash.run(async () => { const m = await import('../tpm/service'); await m.attest(user, val); return 'Attestation completed.'; })} />
-      )}
       {view && (
         <Modal wide title="Attestation quote" desc={view.deviceId} onClose={() => setView(null)} footer={<button className="btn primary" onClick={() => setView(null)}>Close</button>}>
           <KeyValue cols={2} items={[
-            ['Result', <Badge key="r" value={view.result || view.status} />],
-            ['PCR match', <Badge key="p" value={view.pcrMatch ? 'match' : 'mismatch'} />],
+            ['Reported result', <Badge key="r" value={view.result || view.status || 'Unknown'} tone="amber" />],
+            ['Reported PCR match', <Badge key="p" value={view.pcrMatch ? 'claimed match' : 'not verified'} tone="amber" />],
             ['Nonce', <code key="n">{view.nonce || '—'}</code>],
-            ['Issued', fmt(view.issuedAt)], ['Verified', view.verifiedAt ? fmt(view.verifiedAt) : '—'],
+            ['Issued', fmt(view.issuedAt)], ['Reported verification time', view.verifiedAt ? fmt(view.verifiedAt) : '—'],
           ]} />
-          {view.reason && <Alert tone={view.result === 'failed' ? 'danger' : 'info'}>{view.reason}</Alert>}
+          {view.reason && <Alert tone="warn">{view.reason} (unverified legacy report)</Alert>}
           <pre className="codeblock">{JSON.stringify(view.quote || view.pcr || {}, null, 2)}</pre>
         </Modal>
       )}

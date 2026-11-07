@@ -561,7 +561,7 @@ export function ApprovalsPage() {
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
       {loadError && <Alert tone="danger">{loadError}</Alert>}
       <Alert tone="warn" title="Execution depends on the operation">
-        Elevated role changes and native ExamOS policy rollbacks execute on the backend only after authorized approval and fresh target validation. Other approval types are recorded but remain unexecuted until their resource-specific backend integrations are available; browser policy publication also requires a trusted server-side signing key.
+        Elevated role changes and native ExamOS policy rollbacks execute on the backend only after authorized approval and fresh target validation. Device reauthorization requests are recorded and revalidated, but approval does not reactivate the device; fresh trusted device-key enrollment is still required. Other approval types remain unexecuted until their resource-specific backend integrations are available; browser policy publication also requires a trusted server-side signing key.
       </Alert>
       <StatGrid cols={4}>
         <Stat label="Pending" value={pending.length} icon="clock" tone="amber" />

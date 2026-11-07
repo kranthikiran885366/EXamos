@@ -22,6 +22,7 @@
 #include "../include/totp.h"
 #include "../include/candidate_login.h"
 #include "../include/session_store.h"
+#include "../include/attestation_service.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -869,7 +870,8 @@ static int candidate_auth_role_allowed(user_role_t role) {
 }
 
 static int candidate_session_persist(PGconn *conn, const char *candidate_id,
-                                     const char *institution_id, time_t now,
+                                     const char *institution_id,
+                                     const char *exam_session_id, time_t now,
                                      char token[EXAMOS_TOKEN_HEX_LEN + 1],
                                      char token_hash[EXAMOS_TOKEN_HEX_LEN + 1],
                                      time_t *expires_at) {
@@ -883,17 +885,18 @@ static int candidate_session_persist(PGconn *conn, const char *candidate_id,
     snprintf(session_id, sizeof(session_id), "csess_%ld_%.8s",
              (long)now, token + EXAMOS_TOKEN_HEX_LEN - 8);
 
-    const char *params[9] = {
+    const char *params[10] = {
         session_id, candidate_id, candidate_id, institution_id ? institution_id : "",
-        "candidate", token_hash, now_str, exp_str, "active"
+        "candidate", token_hash, now_str, exp_str, "active",
+        exam_session_id ? exam_session_id : ""
     };
-    int lengths[9];
-    for (int i = 0; i < 9; ++i) lengths[i] = (int)strlen(params[i]);
+    int lengths[10];
+    for (int i = 0; i < 10; ++i) lengths[i] = (int)strlen(params[i]);
     PGresult *insert = db_simple(conn,
         "INSERT INTO auth_sessions (id, user_id, username, institution_id, role, "
-        "session_token, created_at, expires_at, status) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7::bigint,$8::bigint,$9)",
-        9, params, lengths);
+        "session_token, created_at, expires_at, status, exam_session_id) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7::bigint,$8::bigint,$9,NULLIF($10,''))",
+        10, params, lengths);
     int ok = insert && PQresultStatus(insert) == PGRES_COMMAND_OK &&
              strcmp(PQcmdTuples(insert), "1") == 0;
     if (insert) PQclear(insert);
@@ -906,11 +909,40 @@ static int candidate_session_persist(PGconn *conn, const char *candidate_id,
     return 0;
 }
 
-static void candidate_session_activate(const char *token, const char *candidate_id,
-                                       time_t now, time_t expires) {
+static void candidate_session_end_persisted(const char *token) {
+    char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (secure_token_hash(token, token_hash) != 0) {
+        fprintf(stderr, "[AUTH] ERROR: could not hash candidate token while ending failed activation\n");
+        return;
+    }
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        fprintf(stderr, "[AUTH] ERROR: could not acquire database connection to end failed candidate activation\n");
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
+        return;
+    }
+    const char *params[1] = { token_hash };
+    int lengths[1] = { (int)strlen(token_hash) };
+    PGresult *ended = db_simple(conn,
+        "UPDATE auth_sessions SET status='ended' "
+        "WHERE session_token=$1 AND role='candidate' AND status='active'",
+        1, params, lengths);
+    int persisted = ended && PQresultStatus(ended) == PGRES_COMMAND_OK &&
+                    strcmp(PQcmdTuples(ended), "1") == 0;
+    if (ended) PQclear(ended);
+    if (!persisted)
+        fprintf(stderr, "[AUTH] ERROR: failed candidate activation remains active in auth_sessions\n");
+    db_release(conn, persisted ? 0 : 1);
+    OPENSSL_cleanse(token_hash, sizeof(token_hash));
+}
+
+static int candidate_session_activate(const char *token, const char *candidate_id,
+                                      time_t now, time_t expires) {
     if (candidate_session_restore(token, candidate_id, now) != 0) {
         fprintf(stderr, "[AUTH] ERROR: could not activate persisted candidate session\n");
-        return;
+        candidate_session_invalidate(token);
+        candidate_session_end_persisted(token);
+        return -1;
     }
     session_journal_record_t record;
     memset(&record, 0, sizeof(record));
@@ -919,26 +951,36 @@ static void candidate_session_activate(const char *token, const char *candidate_
     snprintf(record.candidate_id, sizeof(record.candidate_id), "%s", candidate_id);
     record.created_at = now;
     record.expires_at = expires;
-    if (session_store_record(&record) != 0)
-        fprintf(stderr, "[AUTH] WARN: candidate session journal append failed\n");
+    if (session_store_record(&record) != 0) {
+        fprintf(stderr, "[AUTH] ERROR: candidate session journal append failed\n");
+        candidate_session_invalidate(token);
+        candidate_session_end_persisted(token);
+        return -1;
+    }
+    return 0;
 }
 
 static void candidate_success_response(int client_fd, const char *token,
                                        const char *candidate_id, const char *name,
                                        const char *exam_id, const char *exam_title,
-                                       const char *exam_url, const char *origin,
+                                       const char *exam_url, const char *exam_session_id,
+                                       const char *origin,
                                        char *extra_headers, size_t extra_len) {
-    char escaped_candidate[128], escaped_name[256], escaped_exam[128];
+    char escaped_candidate[128], escaped_name[256], escaped_exam[128], escaped_session[128];
     char escaped_title[256], escaped_url[1024], response[2048];
     ctrl_json_escape(candidate_id, escaped_candidate, sizeof(escaped_candidate));
     ctrl_json_escape(name, escaped_name, sizeof(escaped_name));
     ctrl_json_escape(exam_id, escaped_exam, sizeof(escaped_exam));
+    ctrl_json_escape(exam_session_id ? exam_session_id : "",
+                     escaped_session, sizeof(escaped_session));
     ctrl_json_escape(exam_title, escaped_title, sizeof(escaped_title));
     ctrl_json_escape(exam_url, escaped_url, sizeof(escaped_url));
     snprintf(response, sizeof(response),
         "{\"status\":\"SUCCESS\",\"token\":\"%s\",\"candidate_id\":\"%s\","
-        "\"name\":\"%s\",\"exam_id\":\"%s\",\"exam_name\":\"%s\",\"exam_url\":\"%s\"}",
-        token, escaped_candidate, escaped_name, escaped_exam, escaped_title, escaped_url);
+        "\"name\":\"%s\",\"exam_id\":\"%s\",\"exam_name\":\"%s\",\"exam_url\":\"%s\","
+        "\"exam_session_id\":\"%s\"}",
+        token, escaped_candidate, escaped_name, escaped_exam, escaped_title,
+        escaped_url, escaped_session);
     send_json_cors(client_fd, 200, response, origin, extra_headers, extra_len);
 }
 
@@ -972,6 +1014,60 @@ static int parse_candidate_workflow_path(const char *path, char *exam_id,
     return 1;
 }
 
+static int candidate_assigned_exam_device(PGconn *conn, const char *exam_id,
+                                          const char *institution_id,
+                                          const char *candidate_id,
+                                          const char *roll_no,
+                                          char *student_id, size_t student_len,
+                                          char *device_id, size_t device_len) {
+    if (!conn || !exam_id || !institution_id || !candidate_id || !roll_no ||
+        !student_id || student_len == 0 || !device_id || device_len == 0) return -1;
+    student_id[0] = '\0';
+    device_id[0] = '\0';
+    const char *params[4] = { exam_id, institution_id, candidate_id, roll_no };
+    int lengths[4];
+    for (int i = 0; i < 4; ++i) lengths[i] = (int)strlen(params[i]);
+    PGresult *result = db_simple(conn,
+        "SELECT s.id, COALESCE(a.assigned_device_id,'') "
+        "FROM candidates c "
+        "JOIN students s ON s.institution_id=c.tenant_id AND s.roll_no=c.roll_no "
+        "JOIN exam_student_assignments a ON a.exam_id=$1 "
+        "AND a.institution_id=$2 AND a.roll_no=c.roll_no "
+        "AND (a.student_id=s.id OR a.student_id=s.roll_no) "
+        "WHERE c.id=$3 AND c.exam_id=$1 AND c.roll_no=$4 "
+        "AND a.eligibility_status='eligible' "
+        "ORDER BY (a.student_id=s.id) DESC LIMIT 1",
+        4, params, lengths);
+    if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
+        if (result) PQclear(result);
+        return -1;
+    }
+    if (PQntuples(result) != 1 || !PQgetvalue(result, 0, 1)[0] ||
+        strlen(PQgetvalue(result, 0, 0)) >= student_len ||
+        strlen(PQgetvalue(result, 0, 1)) >= device_len) {
+        PQclear(result);
+        return 0;
+    }
+    snprintf(student_id, student_len, "%s", PQgetvalue(result, 0, 0));
+    snprintf(device_id, device_len, "%s", PQgetvalue(result, 0, 1));
+    PQclear(result);
+    return 1;
+}
+
+static int candidate_exam_session_id(char out[64]) {
+    unsigned char random[16];
+    static const char hex[] = "0123456789abcdef";
+    if (!out || RAND_bytes(random, sizeof(random)) != 1) return -1;
+    memcpy(out, "sess_", 5);
+    for (size_t i = 0; i < sizeof(random); ++i) {
+        out[5 + i * 2] = hex[random[i] >> 4];
+        out[6 + i * 2] = hex[random[i] & 15];
+    }
+    out[37] = '\0';
+    OPENSSL_cleanse(random, sizeof(random));
+    return 0;
+}
+
 void auth_candidate_workflow_handle(int client_fd, const char *method, const char *path,
                                     const char *body, const char *auth_header,
                                     const char *origin, char *extra_headers, size_t extra_len) {
@@ -1000,7 +1096,8 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
         int lengths[1] = { (int)strlen(poll_hash) };
         PGresult *checkin = db_simple(conn,
             "SELECT ci.id, ci.examination_id, ci.institution_id, ci.candidate_id, ci.status, "
-            "ci.expires_at, c.status, c.name, c.roll_no, e.name, COALESCE(e.exam_url,'') "
+            "ci.expires_at, c.status, c.name, c.roll_no, e.name, COALESCE(e.exam_url,''), "
+            "COALESCE(ci.exam_session_id,'') "
             "FROM candidate_exam_checkins ci "
             "JOIN candidates c ON c.id=ci.candidate_id "
             "JOIN examinations e ON e.id=ci.examination_id "
@@ -1017,7 +1114,7 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
 
         char request_id[64], exam_id[64], institution_id[64], candidate_id[64];
         char checkin_status[24], candidate_status[32], candidate_name[128];
-        char roll_no[64], exam_title[128], exam_url[512];
+        char roll_no[64], exam_title[128], exam_url[512], exam_session_id[64];
         snprintf(request_id, sizeof(request_id), "%s", PQgetvalue(checkin, 0, 0));
         snprintf(exam_id, sizeof(exam_id), "%s", PQgetvalue(checkin, 0, 1));
         snprintf(institution_id, sizeof(institution_id), "%s", PQgetvalue(checkin, 0, 2));
@@ -1029,17 +1126,44 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
         snprintf(roll_no, sizeof(roll_no), "%s", PQgetvalue(checkin, 0, 8));
         snprintf(exam_title, sizeof(exam_title), "%s", PQgetvalue(checkin, 0, 9));
         snprintf(exam_url, sizeof(exam_url), "%s", PQgetvalue(checkin, 0, 10));
+        snprintf(exam_session_id, sizeof(exam_session_id), "%s", PQgetvalue(checkin, 0, 11));
         PQclear(checkin);
 
         long long now_ms = (long long)time(NULL) * 1000;
-        if (expires <= now_ms && strcmp(checkin_status, "pending") == 0) {
+        if (expires <= now_ms &&
+            (strcmp(checkin_status, "pending") == 0 ||
+             strcmp(checkin_status, "approved") == 0 ||
+             strcmp(checkin_status, "attesting") == 0)) {
             const char *expire_params[1] = { request_id };
             int expire_lengths[1] = { (int)strlen(request_id) };
             PGresult *expired = db_simple(conn,
                 "UPDATE candidate_exam_checkins SET status='expired' "
-                "WHERE id=$1 AND status='pending'", 1, expire_params, expire_lengths);
+                "WHERE id=$1 AND status IN ('pending','approved','attesting')",
+                1, expire_params, expire_lengths);
+            int expire_ok = expired && PQresultStatus(expired) == PGRES_COMMAND_OK;
             if (expired) PQclear(expired);
+            if (expire_ok && exam_session_id[0]) {
+                char expired_at[32];
+                snprintf(expired_at, sizeof(expired_at), "%lld", now_ms);
+                const char *session_params[2] = { exam_session_id, expired_at };
+                int session_lengths[2] = { (int)strlen(exam_session_id),
+                                            (int)strlen(expired_at) };
+                PGresult *closed = db_simple(conn,
+                    "UPDATE exam_sessions SET status='closed',closed_at=$2::bigint,"
+                    "closure_reason='CHECKIN_EXPIRED',updated_at=$2::bigint "
+                    "WHERE id=$1 AND status='pending'",
+                    2, session_params, session_lengths);
+                int close_ok = closed && PQresultStatus(closed) == PGRES_COMMAND_OK;
+                if (closed) PQclear(closed);
+                expire_ok = close_ok;
+            }
             db_release(conn, 0);
+            if (!expire_ok) {
+                send_json_cors(client_fd, 503,
+                    "{\"status\":\"FAIL\",\"error\":\"Could not expire the check-in safely\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
             send_json_cors(client_fd, 410,
                 "{\"status\":\"FAIL\",\"error\":\"Invigilator check-in request expired. Please sign in again.\"}",
                 origin, extra_headers, extra_len);
@@ -1078,71 +1202,251 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
             return;
         }
 
+        if (strcmp(checkin_status, "approved") == 0) {
+            char student_id[64] = {0}, device_id[64] = {0}, release_id[64] = {0};
+            int assigned = candidate_assigned_exam_device(conn, exam_id, institution_id,
+                candidate_id, roll_no, student_id, sizeof(student_id),
+                device_id, sizeof(device_id));
+            if (assigned < 0) {
+                db_release(conn, 1);
+                send_json_cors(client_fd, 503,
+                    "{\"status\":\"FAIL\",\"error\":\"Could not verify the candidate's device assignment\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            if (assigned == 0 ||
+                attestation_get_device_release(device_id, release_id,
+                                               sizeof(release_id)) != 0) {
+                db_release(conn, 0);
+                send_json_cors(client_fd, 403,
+                    "{\"status\":\"FAIL\",\"error\":\"A registered, approved TPM device must be assigned to this candidate before check-in\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            char new_exam_session_id[64] = {0};
+            if (candidate_exam_session_id(new_exam_session_id) != 0) {
+                db_release(conn, 0);
+                send_json_cors(client_fd, 500,
+                    "{\"status\":\"FAIL\",\"error\":\"Secure exam-session ID generation failed\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                db_release(conn, 1);
+                send_json_cors(client_fd, 503,
+                    "{\"status\":\"FAIL\",\"error\":\"Could not start the exam-session transaction\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
+            char created_ms[32];
+            snprintf(created_ms, sizeof(created_ms), "%lld", now_ms);
+            const char *insert_params[7] = { new_exam_session_id, institution_id,
+                exam_id, student_id, device_id, created_ms, created_ms };
+            int insert_lengths[7];
+            for (int i = 0; i < 7; ++i)
+                insert_lengths[i] = (int)strlen(insert_params[i]);
+            PGresult *insert_session = db_simple(conn,
+                "INSERT INTO exam_sessions (id,institution_id,examination_id,student_id,"
+                "device_id,status,created_at,updated_at) "
+                "VALUES ($1,$2,$3,$4,$5,'pending',$6::bigint,$7::bigint)",
+                7, insert_params, insert_lengths);
+            int session_inserted = insert_session &&
+                PQresultStatus(insert_session) == PGRES_COMMAND_OK;
+            if (insert_session) PQclear(insert_session);
+            const char *update_params[4] = { request_id, poll_hash,
+                new_exam_session_id, created_ms };
+            int update_lengths[4];
+            for (int i = 0; i < 4; ++i)
+                update_lengths[i] = (int)strlen(update_params[i]);
+            PGresult *update_checkin = session_inserted ? db_simple(conn,
+                "UPDATE candidate_exam_checkins SET status='attesting',exam_session_id=$3 "
+                "WHERE id=$1 AND poll_token_hash=$2 AND status='approved' "
+                "AND expires_at>$4::bigint RETURNING id",
+                4, update_params, update_lengths) : NULL;
+            int checkin_updated = update_checkin &&
+                PQresultStatus(update_checkin) == PGRES_TUPLES_OK &&
+                PQntuples(update_checkin) == 1;
+            if (update_checkin) PQclear(update_checkin);
+            PGresult *commit = (session_inserted && checkin_updated) ?
+                PQexec(conn, "COMMIT") : NULL;
+            int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!committed) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                send_json_cors(client_fd, 409,
+                    "{\"status\":\"FAIL\",\"error\":\"Check-in approval changed or expired before TPM attestation could start\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            db_release(conn, 0);
+            char escaped_session[128], response[256];
+            ctrl_json_escape(new_exam_session_id, escaped_session, sizeof(escaped_session));
+            snprintf(response, sizeof(response),
+                "{\"status\":\"ATTESTATION_PENDING\",\"exam_session_id\":\"%s\","
+                "\"message\":\"Waiting for fresh TPM attestation from the assigned device\"}",
+                escaped_session);
+            send_json_cors(client_fd, 200, response, origin, extra_headers, extra_len);
+            return;
+        }
+
+        if (strcmp(checkin_status, "attesting") != 0 || !exam_session_id[0]) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 409,
+                "{\"status\":\"FAIL\",\"error\":\"Check-in is not in an attestable state\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        char student_id[64] = {0}, device_id[64] = {0}, release_id[64] = {0};
+        int assigned = candidate_assigned_exam_device(conn, exam_id, institution_id,
+            candidate_id, roll_no, student_id, sizeof(student_id),
+            device_id, sizeof(device_id));
+        if (assigned != 1 ||
+            attestation_get_device_release(device_id, release_id, sizeof(release_id)) != 0) {
+            db_release(conn, assigned < 0 ? 1 : 0);
+            send_json_cors(client_fd, assigned < 0 ? 503 : 403,
+                "{\"status\":\"FAIL\",\"error\":\"The assigned registered TPM device could not be revalidated\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        const char *session_params[1] = { exam_session_id };
+        int session_lengths[1] = { (int)strlen(exam_session_id) };
+        PGresult *exam_session = db_simple(conn,
+            "SELECT institution_id,examination_id,student_id,device_id,status "
+            "FROM exam_sessions WHERE id=$1",
+            1, session_params, session_lengths);
+        if (!exam_session || PQresultStatus(exam_session) != PGRES_TUPLES_OK ||
+            PQntuples(exam_session) != 1) {
+            if (exam_session) PQclear(exam_session);
+            db_release(conn, 1);
+            send_json_cors(client_fd, 503,
+                "{\"status\":\"FAIL\",\"error\":\"Bound exam session could not be loaded\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        int session_matches =
+            strcmp(PQgetvalue(exam_session, 0, 0), institution_id) == 0 &&
+            strcmp(PQgetvalue(exam_session, 0, 1), exam_id) == 0 &&
+            strcmp(PQgetvalue(exam_session, 0, 2), student_id) == 0 &&
+            strcmp(PQgetvalue(exam_session, 0, 3), device_id) == 0 &&
+            strcmp(PQgetvalue(exam_session, 0, 4), "pending") == 0;
+        PQclear(exam_session);
+        db_release(conn, 0);
+        if (!session_matches) {
+            send_json_cors(client_fd, 403,
+                "{\"status\":\"FAIL\",\"error\":\"Bound exam session no longer matches the candidate's approved device assignment\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        if (attestation_check_device_binding(exam_session_id, device_id) != 0) {
+            char escaped_session[128], response[256];
+            ctrl_json_escape(exam_session_id, escaped_session, sizeof(escaped_session));
+            snprintf(response, sizeof(response),
+                "{\"status\":\"ATTESTATION_PENDING\",\"exam_session_id\":\"%s\","
+                "\"message\":\"Waiting for a fresh TPM quote from the assigned device\"}",
+                escaped_session);
+            send_json_cors(client_fd, 200, response, origin, extra_headers, extra_len);
+            return;
+        }
+        if (attestation_check_exam_key_ready(exam_session_id, device_id) != 0) {
+            send_json_cors(client_fd, 503,
+                "{\"status\":\"FAIL\",\"error\":\"TPM quote is trusted but the session-bound exam key is unavailable\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        conn = db_acquire();
+        if (!conn) {
+            send_json_cors(client_fd, 503,
+                "{\"status\":\"FAIL\",\"error\":\"Database service unavailable while activating the attested session\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
         PGresult *begin = PQexec(conn, "BEGIN");
         if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
             if (begin) PQclear(begin);
             db_release(conn, 1);
             send_json_cors(client_fd, 503,
-                "{\"status\":\"FAIL\",\"error\":\"Could not start check-in session transaction\"}",
+                "{\"status\":\"FAIL\",\"error\":\"Could not start attested-session activation\"}",
                 origin, extra_headers, extra_len);
             return;
         }
         PQclear(begin);
-        char now_ms_text[32];
-        snprintf(now_ms_text, sizeof(now_ms_text), "%lld", now_ms);
-        const char *claim_params[3] = { request_id, poll_hash, now_ms_text };
-        int claim_lengths[3] = { (int)strlen(request_id), (int)strlen(poll_hash),
-                                 (int)strlen(now_ms_text) };
-        PGresult *claim = db_simple(conn,
-            "UPDATE candidate_exam_checkins SET status='consumed', consumed_at=$3::bigint "
-            "WHERE id=$1 AND poll_token_hash=$2 AND status='approved' AND expires_at>$3::bigint "
-            "RETURNING candidate_id",
-            3, claim_params, claim_lengths);
-        if (!claim || PQresultStatus(claim) != PGRES_TUPLES_OK || PQntuples(claim) != 1) {
-            if (claim) PQclear(claim);
-            PQexec(conn, "ROLLBACK");
-            db_release(conn, 0);
-            send_json_cors(client_fd, 409,
-                "{\"status\":\"FAIL\",\"error\":\"Check-in approval has changed or expired. Please check in again.\"}",
-                origin, extra_headers, extra_len);
-            return;
-        }
-        PQclear(claim);
-
+        char now_text[32];
+        snprintf(now_text, sizeof(now_text), "%lld", now_ms);
+        const char *activate_params[3] = { exam_session_id, device_id, now_text };
+        int activate_lengths[3] = { (int)strlen(exam_session_id),
+                                    (int)strlen(device_id), (int)strlen(now_text) };
+        PGresult *activated = db_simple(conn,
+            "UPDATE exam_sessions SET status='authorized',authorized_at=$3::bigint,"
+            "updated_at=$3::bigint WHERE id=$1 AND device_id=$2 AND status='pending'",
+            3, activate_params, activate_lengths);
+        int exam_activated = activated &&
+            PQresultStatus(activated) == PGRES_COMMAND_OK &&
+            strcmp(PQcmdTuples(activated), "1") == 0;
+        if (activated) PQclear(activated);
+        const char *consume_params[4] = { request_id, poll_hash,
+            exam_session_id, now_text };
+        int consume_lengths[4];
+        for (int i = 0; i < 4; ++i)
+            consume_lengths[i] = (int)strlen(consume_params[i]);
+        PGresult *consumed = exam_activated ? db_simple(conn,
+            "UPDATE candidate_exam_checkins SET status='consumed',consumed_at=$4::bigint "
+            "WHERE id=$1 AND poll_token_hash=$2 AND exam_session_id=$3 "
+            "AND status='attesting' AND expires_at>$4::bigint RETURNING id",
+            4, consume_params, consume_lengths) : NULL;
+        int checkin_consumed = consumed && PQresultStatus(consumed) == PGRES_TUPLES_OK &&
+            PQntuples(consumed) == 1;
+        if (consumed) PQclear(consumed);
         char token[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
         char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
         time_t now = time(NULL), session_expires = 0;
-        if (candidate_session_persist(conn, candidate_id, institution_id, now,
-                                      token, token_hash, &session_expires) != 0) {
-            PQexec(conn, "ROLLBACK");
-            db_release(conn, 0);
-            send_json_cors(client_fd, 503,
-                "{\"status\":\"FAIL\",\"error\":\"Could not create candidate session\"}",
-                origin, extra_headers, extra_len);
-            return;
-        }
-        PGresult *commit = PQexec(conn, "COMMIT");
-        if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
-            if (commit) PQclear(commit);
+        int auth_persisted = checkin_consumed &&
+            candidate_session_persist(conn, candidate_id, institution_id,
+                exam_session_id, now, token, token_hash, &session_expires) == 0;
+        PGresult *commit = auth_persisted ? PQexec(conn, "COMMIT") : NULL;
+        int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+        if (commit) PQclear(commit);
+        if (!committed) {
             PQexec(conn, "ROLLBACK");
             OPENSSL_cleanse(token, sizeof(token));
             OPENSSL_cleanse(token_hash, sizeof(token_hash));
-            db_release(conn, 1);
+            db_release(conn, 0);
             send_json_cors(client_fd, 503,
-                "{\"status\":\"FAIL\",\"error\":\"Could not commit candidate session\"}",
+                "{\"status\":\"FAIL\",\"error\":\"Could not durably activate the TPM-attested candidate session\"}",
                 origin, extra_headers, extra_len);
             return;
         }
-        PQclear(commit);
         db_release(conn, 0);
-        candidate_session_activate(token, candidate_id, now, session_expires);
+        if (candidate_session_activate(token, candidate_id, now, session_expires) != 0) {
+            const char *close_params[2] = { exam_session_id, now_text };
+            int close_lengths[2] = { (int)strlen(exam_session_id), (int)strlen(now_text) };
+            PGconn *close_conn = db_acquire();
+            if (close_conn) {
+                PGresult *closed = db_simple(close_conn,
+                    "UPDATE exam_sessions SET status='closed',closed_at=$2::bigint,"
+                    "closure_reason='CANDIDATE_SESSION_ACTIVATION_FAILED',updated_at=$2::bigint "
+                    "WHERE id=$1 AND status='authorized'",
+                    2, close_params, close_lengths);
+                if (closed) PQclear(closed);
+                db_release(close_conn, 0);
+            }
+            OPENSSL_cleanse(token, sizeof(token));
+            OPENSSL_cleanse(token_hash, sizeof(token_hash));
+            send_json_cors(client_fd, 503,
+                "{\"status\":\"FAIL\",\"error\":\"Candidate session could not be durably activated\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
         candidate_success_response(client_fd, token, candidate_id, candidate_name,
-                                   exam_id, exam_title, exam_url, origin,
-                                   extra_headers, extra_len);
-        audit_log(candidate_id, "CANDIDATE_CHECKIN_APPROVED", exam_id);
+                                   exam_id, exam_title, exam_url, exam_session_id,
+                                   origin, extra_headers, extra_len);
+        audit_log(candidate_id, "CANDIDATE_CHECKIN_TPM_ATTESTED", exam_session_id);
         OPENSSL_cleanse(token, sizeof(token));
         OPENSSL_cleanse(token_hash, sizeof(token_hash));
-        (void)roll_no;
         return;
     }
 
@@ -1618,6 +1922,13 @@ void auth_candidate_login(int client_fd, const char *req_body,
         db_release(conn, 0);
         goto done;
     }
+    if (strcmp(exam_auth_mode, "proctor-verify") != 0) {
+        send_json_cors(client_fd, 409,
+            "{\"status\":\"FAIL\",\"error\":\"Candidate authentication requires invigilator-approved check-in and fresh TPM attestation; PIN-only and token-only launches are disabled\"}",
+            origin, extra_headers, extra_len);
+        db_release(conn, 0);
+        goto done;
+    }
 
     if (strcmp(exam_auth_mode, "exam-token") == 0 && !exam_token[0]) {
         send_json_cors(client_fd, 400,
@@ -1897,7 +2208,8 @@ void auth_candidate_login(int client_fd, const char *req_body,
     }
 
     const char *session_candidate_id = db_id[0] ? db_id : candidate_id;
-    if (candidate_session_persist(conn, session_candidate_id, exam_institution_id, now,
+    if (candidate_session_persist(conn, session_candidate_id, exam_institution_id,
+                                  NULL, now,
                                   token, candidate_token_hash, &session_expires) != 0) {
         if (token_transaction) PQexec(conn, "ROLLBACK");
         db_release(conn, 0);
@@ -1922,10 +2234,17 @@ void auth_candidate_login(int client_fd, const char *req_body,
         PQclear(commit);
     }
     db_release(conn, 0);
-    candidate_session_activate(token, session_candidate_id, now, session_expires);
+    if (candidate_session_activate(token, session_candidate_id, now, session_expires) != 0) {
+        OPENSSL_cleanse(token, sizeof(token));
+        OPENSSL_cleanse(candidate_token_hash, sizeof(candidate_token_hash));
+        send_json_cors(client_fd, 503,
+            "{\"status\":\"FAIL\",\"error\":\"Candidate session could not be durably activated\"}",
+            origin, extra_headers, extra_len);
+        goto done;
+    }
     candidate_success_response(client_fd, token, session_candidate_id,
                                db_name[0] ? db_name : candidate_id, db_exam_id,
-                               exam_title, exam_url, origin, extra_headers, extra_len);
+                               exam_title, exam_url, NULL, origin, extra_headers, extra_len);
     OPENSSL_cleanse(token, sizeof(token));
     OPENSSL_cleanse(candidate_token_hash, sizeof(candidate_token_hash));
     clear_failure(candidate_id);

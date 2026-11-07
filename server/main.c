@@ -14,7 +14,6 @@
 #include "include/enterprise_platform.h"
 #include "include/admin_auth_store.h"
 #include "include/policy_catalog.h"
-#include "include/key_release.h"
 #include "include/e1_consent.h"
 #include "include/environment_engine.h"
 #include "include/exam_engine.h"
@@ -310,7 +309,7 @@ static int extract_named_header(const char *buffer, const char *wanted,
 }
 
 
-static int extract_candidate_session_token(const char *buffer, const char *auth_header, char *out, size_t out_size) {
+int extract_candidate_session_token(const char *buffer, const char *auth_header, char *out, size_t out_size) {
     if (!out || out_size == 0) return 0;
     out[0] = '\0';
 
@@ -849,8 +848,7 @@ static const char *bearer_token(const char *authorization) {
 }
 
 static int candidate_authorized(const char *authorization, char *candidate_id, size_t max_len) {
-    const char *token = bearer_token(authorization);
-    return token && candidate_session_identity(token, candidate_id, max_len);
+    return ctrl_candidate_session_identity(authorization, candidate_id, max_len);
 }
 
 static int bearer_secret_authorized(const char *authorization, const char *environment_name) {
@@ -1295,7 +1293,8 @@ static void* handle_client(void *arg) {
                 extra);
             goto client_done;
         }
-        auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
+        send_http_response(client_fd, 503, "application/json",
+            "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the candidate login flow.\"}");
         goto client_done;
     }
     /* Route: POST /api/v1/candidate/logout */
@@ -1311,8 +1310,9 @@ static void* handle_client(void *arg) {
                 extra);
             goto client_done;
         }
-        auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
-                                       auth_header, origin, extra, sizeof(extra));
+        send_http_response_ex(client_fd, 503, "application/json",
+            "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the check-in flow.\"}",
+            extra);
         goto client_done;
     }
     /* Canonical dashboard route plus the established API login alias. */
@@ -1392,11 +1392,9 @@ static void* handle_client(void *arg) {
             snprintf(audit_actor, sizeof(audit_actor), "%s",
                      audit_sess.user_id[0] ? audit_sess.user_id : "admin");
         } else {
-            char candidate_token[128] = {0};
             char candidate_id[64] = {0};
-            if (ctrl_extract_bearer(auth_header, candidate_token, sizeof(candidate_token)) &&
-                candidate_session_validate(candidate_token) &&
-                candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id)) &&
+            if (ctrl_candidate_session_identity(auth_header, candidate_id,
+                                                sizeof(candidate_id)) &&
                 candidate_id[0]) {
                 snprintf(audit_actor, sizeof(audit_actor), "%s", candidate_id);
             }
@@ -2040,29 +2038,16 @@ static void* handle_client(void *arg) {
         pthread_mutex_unlock(&g_kiosk_sync_lock);
         send_http_response(client_fd, 200, "application/json", resp);
     }
-    /* Route: GET /exam and GET /workbench -> TCS iON NQT-Level Secure Exam Workbench */
+    /* Candidate workbench is available only on the managed ExamOS kiosk. */
     else if ((strcmp(route_path, "/exam") == 0 || strcmp(route_path, "/workbench") == 0) && strcmp(method, "GET") == 0) {
         if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
             send_http_response(client_fd, 403, "text/html; charset=utf-8", candidate_kiosk_lockout_html());
             goto client_done;
         }
-        char token[SESSION_TOKEN_LEN + 1] = {0};
-        char candidate_id[MAX_CANDIDATE_ID_LEN] = {0};
-        int is_valid = 0;
-
-        if (extract_candidate_session_token(buffer, auth_header, token, sizeof(token))) {
-            if (candidate_session_validate(token)) {
-                if (candidate_session_identity(token, candidate_id, sizeof(candidate_id)) && candidate_id[0]) {
-                    is_valid = 1;
-                }
-            }
-        }
-
-        if (is_valid) {
-            send_http_response(client_fd, 200, "text/html; charset=utf-8", exam_workbench_html(candidate_id, token));
-        } else {
-            send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
-        }
+        send_http_response_ex(client_fd, 200, "text/html; charset=utf-8",
+                              candidate_workbench_html(),
+                              "Cache-Control: no-store\r\n");
+        goto client_done;
     }
     /* Route: GET /api/v1/exam/paper -> Question battery */
     else if (strcmp(route_path, "/api/v1/exam/paper") == 0 && strcmp(method, "GET") == 0) {
@@ -2071,18 +2056,9 @@ static void* handle_client(void *arg) {
                 "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
             goto client_done;
         }
-        char token[SESSION_TOKEN_LEN + 1] = {0};
-        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
-            !candidate_session_validate(token)) {
-            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
-            goto client_done;
-        }
-        const char *paper_json = exam_engine_get_paper_json(token);
-        if (!paper_json) {
-            send_http_response(client_fd, 503, "application/json", "{\"status\":\"FAIL\",\"error\":\"Exam questions not ready or session expired\"}");
-            goto client_done;
-        }
-        send_http_response(client_fd, 200, "application/json", paper_json);
+        session_handle(client_fd, method, route_path, req_body,
+                       auth_header, origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* Route: POST /api/v1/exam/save_answer -> Real-time answer auto-save */
     else if (strcmp(route_path, "/api/v1/exam/save_answer") == 0 && strcmp(method, "POST") == 0) {
@@ -2091,23 +2067,9 @@ static void* handle_client(void *arg) {
                 "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
             goto client_done;
         }
-        char token[SESSION_TOKEN_LEN + 1] = {0};
-        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
-            !candidate_session_validate(token)) {
-            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
-            goto client_done;
-        }
-        int qid = parse_json_int(req_body, "question_id", -1);
-        int sel = parse_json_int(req_body, "selected_option", -1);
-        int stat = parse_json_int(req_body, "status", 0);
-        char text_ans[1024] = {0};
-        parse_json_string(req_body, "text_answer", text_ans, sizeof(text_ans));
-
-        if (exam_engine_save_answer(token, qid, sel, text_ans[0] ? text_ans : NULL, stat) == 0) {
-            send_http_response(client_fd, 200, "application/json", "{\"status\":\"SAVED\"}");
-        } else {
-            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Answer save rejected: exam may be submitted or paused\"}");
-        }
+        session_handle(client_fd, method, route_path, req_body,
+                       auth_header, origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* Route: POST /api/v1/exam/submit -> Final exam submission with cryptographic SHA-256 HMAC digest */
     else if (strcmp(route_path, "/api/v1/exam/submit") == 0 && strcmp(method, "POST") == 0) {
@@ -2116,18 +2078,9 @@ static void* handle_client(void *arg) {
                 "{\"status\":\"FAIL\",\"error\":\"ACCESS_DENIED: Candidate examination is restricted to ExamOS kiosk.\"}", extra);
             goto client_done;
         }
-        char token[SESSION_TOKEN_LEN + 1] = {0};
-        if (!extract_candidate_session_token(buffer, auth_header, token, sizeof(token)) ||
-            !candidate_session_validate(token)) {
-            send_http_response(client_fd, 401, "application/json", "{\"status\":\"FAIL\",\"error\":\"Unauthorized exam session\"}");
-            goto client_done;
-        }
-        char receipt[1024] = {0};
-        if (exam_engine_submit(token, receipt, sizeof(receipt)) == 0) {
-            send_http_response(client_fd, 200, "application/json", receipt);
-        } else {
-            send_http_response(client_fd, 400, "application/json", "{\"status\":\"FAIL\",\"error\":\"Exam submission failed or already submitted\"}");
-        }
+        session_handle(client_fd, method, route_path, req_body,
+                       auth_header, origin, extra, sizeof(extra));
+        goto client_done;
     }
     /* Route: GET /api/v1/exam/announcements -> Real-time broadcast alerts */
     else if (strcmp(route_path, "/api/v1/exam/announcements") == 0 && strcmp(method, "GET") == 0) {
@@ -2251,67 +2204,19 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
             goto client_done;
         }
-        char sess_id[64] = {0}, dev_id[64] = {0}, exam_key[65] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
-        parse_json_string(req_body, "device_id", dev_id, sizeof(dev_id));
-        if (strlen(sess_id) == 0) {
-            parse_json_string(req_body, "attestation_id", sess_id, sizeof(sess_id));
-        }
-
-        /*
-         * The release goes through the key-release gateway, which applies
-         * the trust, device-binding and revocation checks. Releasing the key
-         * straight from the attestation store would bypass those checks.
-         */
-        char release_error[64] = {0};
-        if (key_release_get_session_key(sess_id, exam_key, sizeof(exam_key),
-                                        dev_id, release_error) == 0) {
-            char resp[512];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"KEY_RELEASED\",\"session_id\":\"%s\",\"session_key\":\"%s\"}",
-                     sess_id, exam_key);
-            OPENSSL_cleanse(exam_key, sizeof(exam_key));
-            send_http_response(client_fd, 200, "application/json", resp);
-        } else {
-            OPENSSL_cleanse(exam_key, sizeof(exam_key));
-            char resp[512];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"REJECTED\",\"error_code\":\"%s\",\"reason\":\"Session untrusted or unverified\"}",
-                     release_error[0] ? release_error : "P3_SESSION_INVALID");
-            send_http_response(client_fd, 403, "application/json", resp);
-        }
+        send_http_response(client_fd, 503, "application/json",
+            "{\"status\":\"UNAVAILABLE\",\"error\":\"Key release is disabled until the authenticated candidate is durably bound to the attested exam session.\"}");
     }
     /* Route: GET /api/v1/exam/key-release/eligibility -> Non-destructive eligibility check */
     else if (strcmp(route_path, "/api/v1/exam/key-release/eligibility") == 0 && strcmp(method, "GET") == 0) {
-        char sess_id[64] = {0}, dev_id[64] = {0}, reason[64] = {0};
-        const char *q = strchr(path, '?');
-        if (q) {
-            const char *p_s = strstr(q, "session_id=");
-            if (p_s) {
-                p_s += 11;
-                int i = 0;
-                while (*p_s && *p_s != '&' && i < 63) sess_id[i++] = *p_s++;
-                sess_id[i] = '\0';
-            }
-            const char *p_d = strstr(q, "device_id=");
-            if (p_d) {
-                p_d += 10;
-                int i = 0;
-                while (*p_d && *p_d != '&' && i < 63) dev_id[i++] = *p_d++;
-                dev_id[i] = '\0';
-            }
+        char authenticated_candidate[64] = {0};
+        if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
+            send_http_response(client_fd, 401, "application/json",
+                               "{\"error\":\"Valid candidate bearer token required\"}");
+            goto client_done;
         }
-        if (!sess_id[0]) {
-            send_http_response(client_fd, 400, "application/json", "{\"error\":\"session_id is required\"}");
-        } else if (key_release_check_eligibility(sess_id, dev_id[0] ? dev_id : NULL, reason) == 0) {
-            send_http_response(client_fd, 200, "application/json", "{\"status\":\"ELIGIBLE\"}");
-        } else {
-            char ineligible[256];
-            snprintf(ineligible, sizeof(ineligible),
-                     "{\"status\":\"INELIGIBLE\",\"reason\":\"%s\"}",
-                     reason[0] ? reason : "P3_SESSION_INVALID");
-            send_http_response(client_fd, 403, "application/json", ineligible);
-        }
+        send_http_response(client_fd, 503, "application/json",
+            "{\"status\":\"UNAVAILABLE\",\"error\":\"Eligibility cannot be confirmed until the authenticated candidate is durably bound to the attested exam session.\"}");
     }
     /* Route: POST /api/v1/consent -> Record candidate consent before camera/mic access */
     else if (strcmp(route_path, "/api/v1/consent") == 0 && strcmp(method, "POST") == 0) {
@@ -4003,7 +3908,7 @@ static void* handle_client(void *arg) {
         const char *candidate_token = bearer_token(auth_header);
         char candidate_id[64] = {0};
         if (!candidate_token ||
-            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            !ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id))) {
             send_http_response(client_fd, 401, "application/json",
                                "{\"error\":\"Valid candidate bearer token required\"}");
         } else {
@@ -4066,7 +3971,7 @@ static void* handle_client(void *arg) {
         const char *candidate_token = bearer_token(auth_header);
         char candidate_id[64] = {0};
         if (!candidate_token ||
-            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            !ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id))) {
             send_http_response(client_fd, 401, "application/json",
                                "{\"error\":\"Valid candidate bearer token required\"}");
         } else {
@@ -4132,7 +4037,7 @@ p5_baseline_done:
         const char *candidate_token = bearer_token(auth_header);
         char candidate_id[64] = {0};
         if (!candidate_token ||
-            !candidate_session_identity(candidate_token, candidate_id, sizeof(candidate_id))) {
+            !ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id))) {
             send_http_response(client_fd, 401, "application/json",
                                "{\"error\":\"Valid candidate bearer token required\"}");
         } else {
@@ -4263,8 +4168,8 @@ p5_score_done:
         const char *candidate_token = bearer_token(auth_header);
         char authenticated_candidate[64] = {0};
         if (!candidate_token ||
-            !candidate_session_identity(candidate_token, authenticated_candidate,
-                                        sizeof(authenticated_candidate))) {
+            !ctrl_candidate_session_identity(auth_header, authenticated_candidate,
+                                             sizeof(authenticated_candidate))) {
             send_http_response(client_fd, 401, "application/json",
                                "{\"error\":\"Valid candidate bearer token required\"}");
         } else {
@@ -4512,7 +4417,9 @@ p5_score_done:
                         extra);
                     goto client_done;
                 }
-                auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
+                send_http_response_ex(client_fd, 503, "application/json",
+                    "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the candidate login flow.\"}",
+                    extra);
                 goto client_done;
             }
             if (strcmp(route_path, "/api/v1/candidate/logout") == 0 && strcmp(method, "POST") == 0) {
@@ -4527,8 +4434,9 @@ p5_score_done:
                         extra);
                     goto client_done;
                 }
-                auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
-                                               auth_header, origin, extra, sizeof(extra));
+                send_http_response_ex(client_fd, 503, "application/json",
+                    "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the check-in flow.\"}",
+                    extra);
                 goto client_done;
             }
 
@@ -4586,6 +4494,15 @@ p5_score_done:
             if (strncmp(route_path, "/api/v1/exam-sessions", 21) == 0 ||
                 (strncmp(route_path, "/api/v1/examinations/", 21) == 0 &&
                  strstr(route_path, "/sessions"))) {
+                char candidate_id[64] = {0};
+                if (ctrl_candidate_session_identity(auth_header, candidate_id,
+                                                    sizeof(candidate_id)) &&
+                    !is_examos_kiosk_request(client_fd, buffer, origin)) {
+                    send_http_response_ex(client_fd, 403, "application/json",
+                        "{\"status\":\"FAIL\",\"error\":\"Candidate exam sessions are restricted to the managed ExamOS kiosk\"}",
+                        extra);
+                    goto client_done;
+                }
                 exam_session_handle(client_fd, method, route_path, req_body,
                                     auth_header, origin, extra, sizeof(extra));
                 goto client_done;
@@ -4635,7 +4552,8 @@ p5_score_done:
             }
 
             /* TPM/attestation routes */
-            if (strncmp(route_path, "/api/v1/attestation", 19) == 0) {
+            if (strncmp(route_path, "/api/v1/attestation", 19) == 0 ||
+                strcmp(route_path, "/api/v1/agent/exam-attestation/pending") == 0) {
                 tpm_handle(client_fd, method, route_path, req_body,
                            auth_header, origin, extra, sizeof(extra));
                 goto client_done;
@@ -4857,14 +4775,14 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[ExamOS-Server] FATAL: evidence ledger is corrupt, truncated, unauthenticated, or unreadable; refusing startup.\n");
         return 1;
     }
-    /* Initialise durable session journal â€” replay restores active sessions */
+    candidate_session_init();
+    /* Replay the journal only after the in-memory session table is initialized. */
     if (session_store_init() != 0 && production_mode) {
         fprintf(stderr, "[ExamOS-Server] FATAL: session journal unavailable in production mode.\n");
         return 1;
     }
     exam_manager_init();
     exam_engine_init();
-    candidate_session_init();
 
     /* --- ExamOS Console integration: PostgreSQL database --- */
     if (db_init(NULL) != 0) {

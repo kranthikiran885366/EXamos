@@ -249,7 +249,7 @@ function CandidateDetail({ c, exams, centers, devices, policies, releases, onClo
       {tab === 'devices' && (
         <div className="stack gap">
           <Alert tone="info" title="Authorized ExamOS hardware (Module 13)">
-            Attested TPM 2.0 hardware terminals bound to this candidate.
+            Device assignment is recorded here. Exam launch requires server-verified TPM evidence; legacy console attestation claims are not trusted.
           </Alert>
           {loading ? <Loading /> : (
             <DataTable
@@ -258,7 +258,10 @@ function CandidateDetail({ c, exams, centers, devices, policies, releases, onClo
                 { label: 'Device ID', key: 'device_id' },
                 { label: 'Hostname', key: 'hostname' },
                 { label: 'Device name', key: 'device_name' },
-                { label: 'Trust status', render: (r) => <Badge value={r.device_status || 'TRUSTED'} tone="green" /> },
+                { label: 'Trust status', render: (r) => {
+                  const verified = (r.backendTrustOutcome || r.backend_trust_outcome) === 'ALLOW';
+                  return <Badge value={verified ? 'Server verified' : 'Unverified'} tone={verified ? 'green' : 'amber'} />;
+                } },
                 { label: 'Assignment', render: (r) => <Badge value={r.assignment_status || 'active'} /> },
               ]}
               empty={<Empty title="No hardware devices assigned" desc="Devices will be allocated during seating or attestation." />}

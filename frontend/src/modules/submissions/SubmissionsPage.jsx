@@ -48,9 +48,9 @@ function Kiosk() {
   const cand = pool.find((c) => c.id === cid); const ex = cand && exams.find((e) => e.id === cand.examId); const dev = cand && devs.find((d) => d.centerId === cand.centerId && d.seat === cand.seat);
   const active = cand && sess.find((s) => s.candidateId === cand.id && s.status === 'in_progress');
   return (
-    <div className="pad"><p className="muted">Simulates the exam kiosk on a candidate's device. Starting a session runs the real gates: identity, live window, heartbeat, release, policy signature and fresh TPM attestation.</p>
+    <div className="pad"><p className="muted">Simulates the exam kiosk UI. Candidate launch is blocked until server-side TPM quote verification is available; local simulation cannot authorize an exam.</p>
       <div className="card pad2"><div className="row wrap"><select value={cid} onChange={(e) => { setCid(e.target.value); setDone(null); }}><option value="">Select a verified candidate…</option>{pool.map((c) => <option key={c.id} value={c.id}>{c.rollNo} · {c.name} · {c.seat}</option>)}</select>
-        {dev && <span className="muted sm">Device <b className="mono">{dev.hostname}</b> · trust <Badge>{dev.trust === 'attested' ? 'Attested' : dev.trust === 'failed' ? 'Failed' : 'Pending'}</Badge> · checked {ago(dev.lastAttested)} · heartbeat {ago(dev.lastSeen)}</span>}</div>
+        {dev && <span className="muted sm">Device <b className="mono">{dev.hostname}</b> · server trust <Badge>{dev.backendTrustOutcome === 'ALLOW' ? 'Verified' : 'Unverified'}</Badge> · last report {ago(dev.lastAttested)} · heartbeat {ago(dev.lastSeen)}</span>}</div>
         {cand && !active && <div className="row"><button className="btn" disabled={!dev || !can(user.role, 'tpm.run')} onClick={() => run(() => attest(user, dev.id))}>1 · Run device check</button><button className="btn primary" onClick={() => run(async () => { await startSession(user, cand.id); return 'Session started.'; })}>2 · Start exam</button></div>}
         <Flash msg={msg} onClose={() => setMsg(null)} /></div>
       {active && ex && <Runner key={active.id} s={active} ex={ex} onDone={setDone} />}

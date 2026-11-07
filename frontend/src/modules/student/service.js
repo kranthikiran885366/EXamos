@@ -160,7 +160,8 @@ export async function deviceCheck(user, examId, ctx = {}) {
   const identity = String(candidate.verification_status || '').toLowerCase();
   add('identity', 'Identity verified', identity === 'verified' ? 'PASS' : identity === 'rejected' ? 'FAIL' : 'WARN', identity || 'pending');
   add('centre', 'Exam centre active', String(center?.status).toLowerCase() === 'active' ? 'PASS' : center ? 'WARN' : 'FAIL', center ? `${center.code || ''} · ${center.name || ''}` : 'No centre');
-  add('device', 'Seat device attested', ['enrolled', 'active'].includes(String(device?.status).toLowerCase()) && String(device?.trust).toLowerCase() === 'attested' ? 'PASS' : 'WARN', device?.hostname || 'No device at your seat');
+  add('device', 'Seat device server-verified', device?.backendTrustOutcome === 'ALLOW' ? 'PASS' : 'WARN',
+    device?.hostname ? `${device.hostname} · ${device?.backendTrustOutcome === 'ALLOW' ? 'server verified' : 'unverified'}` : 'No device at your seat');
   add('session', 'Session available', !session || ['authorized', 'active', 'in_progress'].includes(session.status) ? 'PASS' : 'FAIL', session ? session.status : 'not started');
 
   const blocking = checks.filter((c) => c.status !== 'PASS');

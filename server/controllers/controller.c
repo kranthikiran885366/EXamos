@@ -5,6 +5,8 @@
 
 #include "controller.h"
 #include "../include/candidate_login.h"
+#include "../include/secure_token.h"
+#include <openssl/crypto.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <ctype.h>
@@ -287,14 +289,108 @@ int ctrl_authorize(const char *auth_header, uint32_t required_perm,
     return 0;
 }
 
-int ctrl_candidate_session_identity(const char *auth_header, char *out_candidate_id,
-                                    size_t out_len) {
-    char token[128] = {0};
-    if (!out_candidate_id || out_len == 0 ||
-        !ctrl_extract_bearer(auth_header, token, sizeof(token))) {
+int ctrl_candidate_token_identity(const char *token, char *out_candidate_id,
+                                  size_t out_len) {
+    if (!out_candidate_id || out_len == 0) return 0;
+    out_candidate_id[0] = '\0';
+    if (!token || strlen(token) != SESSION_TOKEN_LEN) return 0;
+    char cached_candidate_id[64] = {0};
+    char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (candidate_session_identity(token, cached_candidate_id,
+                                   sizeof(cached_candidate_id)) != 1 ||
+        secure_token_hash(token, token_hash) != 0) {
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
         return 0;
     }
-    return candidate_session_identity(token, out_candidate_id, out_len);
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
+        OPENSSL_cleanse(cached_candidate_id, sizeof(cached_candidate_id));
+        return 0;
+    }
+    const char *params[1] = { token_hash };
+    int lengths[1] = { (int)strlen(token_hash) };
+    PGresult *result = db_simple(conn,
+        "SELECT user_id,COALESCE(exam_session_id,'') FROM auth_sessions WHERE session_token=$1 "
+        "AND role='candidate' AND status='active' "
+        "AND expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint",
+        1, params, lengths);
+    int active = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                 PQntuples(result) == 1 &&
+                 strcmp(PQgetvalue(result, 0, 0), cached_candidate_id) == 0;
+    if (result) PQclear(result);
+    db_release(conn, 0);
+
+    if (active)
+        snprintf(out_candidate_id, out_len, "%s", cached_candidate_id);
+    OPENSSL_cleanse(token_hash, sizeof(token_hash));
+    OPENSSL_cleanse(cached_candidate_id, sizeof(cached_candidate_id));
+    return active;
+}
+
+int ctrl_candidate_session_context(const char *auth_header, char *out_candidate_id,
+                                   size_t candidate_len, char *out_exam_session_id,
+                                   size_t exam_session_len) {
+    char token[SESSION_TOKEN_LEN + 1] = {0};
+    char cached_candidate_id[64] = {0};
+    char token_hash[EXAMOS_TOKEN_HEX_LEN + 1] = {0};
+    if (!out_candidate_id || candidate_len == 0 || !out_exam_session_id ||
+        exam_session_len == 0) return 0;
+    out_candidate_id[0] = '\0';
+    out_exam_session_id[0] = '\0';
+    if (!ctrl_extract_bearer(auth_header, token, sizeof(token)) ||
+        candidate_session_identity(token, cached_candidate_id,
+                                   sizeof(cached_candidate_id)) != 1 ||
+        secure_token_hash(token, token_hash) != 0) {
+        OPENSSL_cleanse(token, sizeof(token));
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
+        OPENSSL_cleanse(cached_candidate_id, sizeof(cached_candidate_id));
+        return 0;
+    }
+
+    PGconn *conn = db_acquire();
+    if (!conn) {
+        OPENSSL_cleanse(token, sizeof(token));
+        OPENSSL_cleanse(token_hash, sizeof(token_hash));
+        OPENSSL_cleanse(cached_candidate_id, sizeof(cached_candidate_id));
+        return 0;
+    }
+    const char *params[1] = { token_hash };
+    int lengths[1] = { (int)strlen(token_hash) };
+    PGresult *result = db_simple(conn,
+        "SELECT user_id,COALESCE(exam_session_id,'') FROM auth_sessions "
+        "WHERE session_token=$1 AND role='candidate' AND status='active' "
+        "AND expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint",
+        1, params, lengths);
+    int valid = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
+                PQntuples(result) == 1 &&
+                strcmp(PQgetvalue(result, 0, 0), cached_candidate_id) == 0 &&
+                PQgetvalue(result, 0, 1)[0] != '\0';
+    if (valid && (strlen(PQgetvalue(result, 0, 0)) >= candidate_len ||
+                  strlen(PQgetvalue(result, 0, 1)) >= exam_session_len))
+        valid = 0;
+    if (valid) {
+        snprintf(out_candidate_id, candidate_len, "%s", cached_candidate_id);
+        snprintf(out_exam_session_id, exam_session_len, "%s", PQgetvalue(result, 0, 1));
+    }
+    if (result) PQclear(result);
+    db_release(conn, 0);
+    OPENSSL_cleanse(token, sizeof(token));
+    OPENSSL_cleanse(token_hash, sizeof(token_hash));
+    OPENSSL_cleanse(cached_candidate_id, sizeof(cached_candidate_id));
+    return valid;
+}
+
+int ctrl_candidate_session_identity(const char *auth_header, char *out_candidate_id,
+                                    size_t out_len) {
+    char token[SESSION_TOKEN_LEN + 1] = {0};
+    if (!out_candidate_id || out_len == 0) return 0;
+    out_candidate_id[0] = '\0';
+    if (!ctrl_extract_bearer(auth_header, token, sizeof(token))) return 0;
+    int active = ctrl_candidate_token_identity(token, out_candidate_id, out_len);
+    OPENSSL_cleanse(token, sizeof(token));
+    return active;
 }
 
 void ctrl_set_cors(char *extra_headers, size_t extra_len,

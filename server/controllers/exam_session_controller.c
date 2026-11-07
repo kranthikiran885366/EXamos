@@ -16,13 +16,13 @@
 #include "controller.h"
 #include "../db/db.h"
 #include "../audit/audit.h"
+#include "../include/attestation_service.h"
+#include "../include/enterprise_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <openssl/sha.h>
-#include <openssl/rand.h>
 
 static void audit_log(const char *actor, const char *event, const char *detail) {
     audit_append(actor, event, detail);
@@ -69,15 +69,6 @@ static void record_session_audit(PGconn *conn, const char *session_id, const cha
     if (r) PQclear(r);
 }
 
-static void sha256_hex(const unsigned char *data, size_t len, char *out_hex) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(data, len, hash);
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        sprintf(out_hex + (i * 2), "%02x", hash[i]);
-    }
-    out_hex[SHA256_DIGEST_LENGTH * 2] = '\0';
-}
-
 static int candidate_owns_exam_student(PGconn *conn, const char *candidate_id,
                                        const char *exam_id, const char *student_id) {
     if (!conn || !candidate_id || !candidate_id[0] || !exam_id || !exam_id[0] ||
@@ -110,6 +101,11 @@ static int verify_session_authorization(PGconn *conn, const char *exam_id, const
                                         char *out_reason, size_t reason_len) {
     if (out_reason && reason_len > 0) out_reason[0] = '\0';
     if (out_wait_seconds) *out_wait_seconds = 0;
+    if (is_candidate) {
+        snprintf(out_reason, reason_len,
+                 "Candidate launch is unavailable until server-side TPM quote verification is implemented");
+        return -1;
+    }
 
     /* 1. Verify Examination */
     const char *ep[1] = { exam_id };
@@ -251,8 +247,10 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
 
     /* Authenticate user or candidate */
     int auth_rc = ctrl_authorize(auth_header, AUTH_PERM_READ, &sess);
-    char candidate_id[64] = {0};
-    int is_candidate = ctrl_candidate_session_identity(auth_header, candidate_id, sizeof(candidate_id));
+    char candidate_id[64] = {0}, candidate_exam_session_id[64] = {0};
+    int is_candidate = ctrl_candidate_session_context(auth_header, candidate_id,
+        sizeof(candidate_id), candidate_exam_session_id,
+        sizeof(candidate_exam_session_id));
     if (auth_rc != 0 && !is_candidate) {
         ses_send_error(client_fd, 401, "Authentication required", origin, extra_headers, extra_len);
         return;
@@ -464,6 +462,13 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
         memcpy(session_id, sub, id_len);
         session_id[id_len] = '\0';
         const char *action = slash ? slash : "";
+        if (is_candidate && strcmp(candidate_exam_session_id, session_id) != 0) {
+            db_release(conn, 0);
+            ses_send_error(client_fd, 403,
+                "Candidate token is bound to a different exam session",
+                origin, extra_headers, extra_len);
+            return;
+        }
 
         /* Load Session and verify tenant */
         const char *sp[1] = { session_id };
@@ -517,14 +522,11 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             }
         }
         if (is_candidate &&
-            (!candidate_owns_exam_student(conn, candidate_id, s_exam, s_sid) ||
-             (strcmp(method, "GET") != 0 && strcmp(action, "/launch") != 0 &&
-              strcmp(action, "/heartbeat") != 0 && strcmp(action, "/close") != 0))) {
+            !candidate_owns_exam_student(conn, candidate_id, s_exam, s_sid)) {
             db_release(conn, 0);
             ses_send_error(client_fd, 403, "Candidate may only access their own exam session", origin, extra_headers, extra_len);
             return;
         }
-
         /* ---------------- GET /api/v1/exam-sessions/:id ---------------- */
         if (strcmp(method, "GET") == 0 && action[0] == '\0') {
             db_release(conn, 0);
@@ -545,68 +547,129 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/exam-sessions/:id/launch (Authorized URL launch) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/launch") == 0) {
-            if (strcmp(s_status, "closed") == 0) {
+            if (is_candidate) {
+                const char *runtime_params[1] = { session_id };
+                int runtime_lengths[1] = { (int)strlen(session_id) };
+                PGresult *runtime_state = db_simple(conn,
+                    "SELECT CASE "
+                    "WHEN s.status='closed' AND EXISTS ("
+                    "SELECT 1 FROM candidate_exam_submissions sub "
+                    "WHERE sub.exam_session_id=s.id) THEN 'submission_recorded' "
+                    "WHEN s.status IN ('authorized','active','interrupted') AND s.deadline_at<="
+                    "EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000 "
+                    "THEN 'deadline_expired' ELSE '' END "
+                    "FROM exam_sessions s WHERE s.id=$1",
+                    1, runtime_params, runtime_lengths);
+                if (!runtime_state ||
+                    PQresultStatus(runtime_state) != PGRES_TUPLES_OK ||
+                    PQntuples(runtime_state) != 1) {
+                    if (runtime_state) PQclear(runtime_state);
+                    db_release(conn, 1);
+                    ses_send_error(client_fd, 503,
+                        "Could not verify candidate exam deadline or submission state",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                char runtime_status[32];
+                snprintf(runtime_status, sizeof(runtime_status), "%s",
+                         PQgetvalue(runtime_state, 0, 0));
+                PQclear(runtime_state);
+                if (runtime_status[0]) {
+                    db_release(conn, 0);
+                    char response[160];
+                    snprintf(response, sizeof(response),
+                        "{\"status\":\"%s\",\"session_id\":\"%s\"}",
+                        runtime_status, session_id);
+                    ses_send_json(client_fd, 200, response, origin,
+                                  extra_headers, extra_len);
+                    return;
+                }
+                if (!s_url[0] || platform_validate_exam_url(s_url, NULL, 0) != 0) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 503,
+                        "A valid, approved external assessment URL is not configured for this exam",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                if ((strcmp(s_status, "authorized") != 0 &&
+                     strcmp(s_status, "active") != 0) ||
+                    attestation_check_device_binding(session_id, s_dev) != 0 ||
+                    attestation_check_exam_key_ready(session_id, s_dev) != 0) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 403,
+                        "A fresh TPM-verified authorized exam session is required",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                const char *launch_params[1] = { session_id };
+                int launch_lengths[1] = { (int)strlen(session_id) };
+                PGresult *launched = db_simple(conn,
+                    "UPDATE exam_sessions s SET status='active',"
+                    "launched_at=COALESCE(s.launched_at,EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000),"
+                    "deadline_at=COALESCE(s.deadline_at,LEAST("
+                    "COALESCE(s.launched_at,EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000)"
+                    "+e.duration_minutes::bigint*60000,"
+                    "COALESCE((SELECT CASE WHEN schedule.end_time<10000000000 "
+                    "THEN schedule.end_time*1000 ELSE schedule.end_time END "
+                    "FROM exam_schedules schedule WHERE schedule.exam_id=s.examination_id "
+                    "ORDER BY schedule.start_time ASC LIMIT 1),"
+                    "COALESCE(s.launched_at,EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000)"
+                    "+e.duration_minutes::bigint*60000))),"
+                    "updated_at=EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000 "
+                    "FROM examinations e WHERE s.id=$1 AND e.id=s.examination_id "
+                    "AND s.status IN ('authorized','active') "
+                    "AND COALESCE(s.deadline_at,LEAST("
+                    "COALESCE(s.launched_at,EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000)"
+                    "+e.duration_minutes::bigint*60000,"
+                    "COALESCE((SELECT CASE WHEN schedule.end_time<10000000000 "
+                    "THEN schedule.end_time*1000 ELSE schedule.end_time END "
+                    "FROM exam_schedules schedule WHERE schedule.exam_id=s.examination_id "
+                    "ORDER BY schedule.start_time ASC LIMIT 1),"
+                    "COALESCE(s.launched_at,EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000)"
+                    "+e.duration_minutes::bigint*60000)))>"
+                    "EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000 "
+                    "RETURNING s.deadline_at",
+                    1, launch_params, launch_lengths);
+                int launch_ok = launched &&
+                    PQresultStatus(launched) == PGRES_TUPLES_OK &&
+                    PQntuples(launched) == 1;
+                char deadline_at[32] = {0};
+                if (launch_ok)
+                    snprintf(deadline_at, sizeof(deadline_at), "%s",
+                             PQgetvalue(launched, 0, 0));
+                if (launched) PQclear(launched);
+                if (!launch_ok) {
+                    db_release(conn, 1);
+                    ses_send_error(client_fd, 409,
+                        "Exam session changed before launch",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                if (strcmp(s_status, "active") != 0) {
+                    record_session_event(conn, session_id, s_exam, s_inst,
+                                         "launched", "{\"source\":\"candidate\"}");
+                    record_session_audit(conn, session_id, s_exam, s_inst,
+                        candidate_id, "CANDIDATE_SESSION_LAUNCHED", s_dev);
+                    audit_log(candidate_id, "CANDIDATE_SESSION_LAUNCHED", session_id);
+                }
                 db_release(conn, 0);
-                ses_send_error(client_fd, 400, "Cannot launch closed exam session", origin, extra_headers, extra_len);
+                char escaped_session[160], escaped_url[1024];
+                ctrl_json_escape(session_id, escaped_session, sizeof(escaped_session));
+                ctrl_json_escape(s_url, escaped_url, sizeof(escaped_url));
+                char response[1400];
+                snprintf(response, sizeof(response),
+                    "{\"status\":\"launched\",\"session_id\":\"%s\","
+                    "\"exam_url\":\"%s\",\"deadline_at\":%s,\"server_time\":%lld}",
+                    escaped_session, escaped_url, deadline_at,
+                    (long long)time(NULL) * 1000);
+                ses_send_json(client_fd, 200, response, origin,
+                              extra_headers, extra_len);
                 return;
             }
-            if (!s_url[0]) {
-                db_release(conn, 0);
-                ses_send_error(client_fd, 409, "Assessment portal URL is not configured", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Generate single-use launch authorization token */
-            unsigned char rand_bytes[32];
-            if (RAND_bytes(rand_bytes, sizeof(rand_bytes)) != 1) {
-                for (int i = 0; i < 32; i++) rand_bytes[i] = (unsigned char)(rand() % 256);
-            }
-            char token_str[65];
-            for (int i = 0; i < 32; i++) sprintf(token_str + (i * 2), "%02x", rand_bytes[i]);
-            token_str[64] = '\0';
-
-            char token_hash[65];
-            sha256_hex((const unsigned char *)token_str, strlen(token_str), token_hash);
-
-            char auth_id[64];
-            snprintf(auth_id, sizeof(auth_id), "laut_%ld_%d", (long)time(NULL), rand() % 10000);
-
-            long long now_ms = (long long)time(NULL) * 1000;
-            long long exp_ms = now_ms + (120LL * 1000); /* 120 seconds expiry */
-            char exp_str[32];
-            snprintf(exp_str, sizeof(exp_str), "%lld", exp_ms);
-
-            const char *lp[5] = { auth_id, session_id, token_hash, s_url, s_orgs };
-            int ll[5];
-            for (int i = 0; i < 5; i++) ll[i] = (int)strlen(lp[i]);
-
-            PGresult *ins_l = db_simple(conn,
-                "INSERT INTO exam_launch_authorizations (id, session_id, token_hash, exam_url, allowed_origins, expires_at, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 + 120000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
-                5, lp, ll);
-            if (ins_l) PQclear(ins_l);
-
-            /* Update Session status to active */
-            const char *up_p[2] = { "active", session_id };
-            int up_l[2] = { 6, (int)strlen(session_id) };
-            PGresult *up_r = db_simple(conn,
-                "UPDATE exam_sessions SET status = $1, launched_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "last_heartbeat_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up_p, up_l);
-            if (up_r) PQclear(up_r);
-
-            record_session_event(conn, session_id, s_exam, s_inst, "launched", "{\"launch_token_generated\":true}");
-            record_session_audit(conn, session_id, s_exam, s_inst, sess.user_id[0] ? sess.user_id : s_sid,
-                                 "SESSION_LAUNCHED", s_url);
-            audit_log(sess.user_id[0] ? sess.user_id : s_sid, "EXAM_URL_LAUNCHED", session_id);
-
             db_release(conn, 0);
-            char resp[1024];
-            snprintf(resp, sizeof(resp),
-                "{\"status\":\"launch_authorized\",\"session_id\":\"%s\",\"exam_url\":\"%s\","
-                "\"allowed_origins\":\"%s\",\"launch_token\":\"%s\",\"expires_in_sec\":120}",
-                session_id, s_url, s_orgs, token_str);
-            ses_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+            ses_send_json(client_fd, 503,
+                "{\"status\":\"UNAVAILABLE\",\"error\":\"Exam launch authorization requires verified device trust and durable candidate-session binding.\"}",
+                origin, extra_headers, extra_len);
             return;
         }
 
@@ -616,6 +679,34 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
                 db_release(conn, 0);
                 ses_send_error(client_fd, 400, "Session is closed", origin, extra_headers, extra_len);
                 return;
+            }
+            if (is_candidate &&
+                (attestation_check_device_binding(session_id, s_dev) != 0 ||
+                 attestation_check_exam_key_ready(session_id, s_dev) != 0)) {
+                db_release(conn, 0);
+                ses_send_error(client_fd, 403,
+                    "Fresh TPM verification is required to continue the exam session",
+                    origin, extra_headers, extra_len);
+                return;
+            }
+            if (is_candidate) {
+                const char *deadline_params[1] = { session_id };
+                int deadline_lengths[1] = { (int)strlen(session_id) };
+                PGresult *deadline = db_simple(conn,
+                    "SELECT 1 FROM exam_sessions WHERE id=$1 AND deadline_at>"
+                    "EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000",
+                    1, deadline_params, deadline_lengths);
+                int deadline_valid = deadline &&
+                    PQresultStatus(deadline) == PGRES_TUPLES_OK &&
+                    PQntuples(deadline) == 1;
+                if (deadline) PQclear(deadline);
+                if (!deadline_valid) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 409,
+                        "The candidate exam deadline has passed; submit the saved answers",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             const char *hb_status = strcmp(s_status, "resuming") == 0 ? "active" : s_status;
@@ -699,96 +790,83 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/exam-sessions/:id/resume (Reconnection & Resumption) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/resume") == 0) {
-            if (strcmp(s_status, "interrupted") != 0 && strcmp(s_status, "resuming") != 0) {
-                db_release(conn, 0);
-                ses_send_error(client_fd, 400, "Only interrupted sessions may be resumed", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Check Policy (Max interruptions and Reconnect Window) */
-            int max_int = 3, rec_win = 600, allow_re = 1;
-            const char *pol_p[1] = { s_exam };
-            int pol_l[1] = { (int)strlen(s_exam) };
-            PGresult *pol_res = db_simple(conn,
-                "SELECT max_interruptions, reconnect_window_sec, allow_reentry FROM exam_session_policies WHERE examination_id = $1", 1, pol_p, pol_l);
-            if (pol_res && PQntuples(pol_res) > 0) {
-                max_int = atoi(PQgetvalue(pol_res, 0, 0));
-                rec_win = atoi(PQgetvalue(pol_res, 0, 1));
-                allow_re = (strcmp(PQgetvalue(pol_res, 0, 2), "t") == 0);
-                PQclear(pol_res);
-            } else {
-                if (pol_res) PQclear(pol_res);
-            }
-
-            if (!allow_re) {
-                db_release(conn, 0);
-                ses_send_error(client_fd, 403, "Re-entry is not permitted by exam session policy", origin, extra_headers, extra_len);
-                return;
-            }
-
-            int cur_cnt = atoi(s_icnt);
-            if (cur_cnt > max_int) {
-                db_release(conn, 0);
-                ses_send_error(client_fd, 403, "Maximum interruption limit exceeded. Contact exam proctor.", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Check Reconnect window elapsed */
-            if (s_intat[0]) {
-                long long int_ms = atoll(s_intat);
+            if (is_candidate) {
+                if (strcmp(s_status, "interrupted") != 0 || !s_intat[0]) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 409,
+                        "Only an interrupted exam session can be resumed",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+                int max_interruptions = 0, reconnect_window_sec = 0;
+                int allow_reentry = 0;
+                const char *policy_params[1] = { s_exam };
+                int policy_lengths[1] = { (int)strlen(s_exam) };
+                PGresult *policy = db_simple(conn,
+                    "SELECT max_interruptions,reconnect_window_sec,allow_reentry "
+                    "FROM exam_session_policies WHERE examination_id=$1",
+                    1, policy_params, policy_lengths);
+                int policy_ok = policy &&
+                    PQresultStatus(policy) == PGRES_TUPLES_OK &&
+                    PQntuples(policy) == 1;
+                if (policy_ok) {
+                    max_interruptions = atoi(PQgetvalue(policy, 0, 0));
+                    reconnect_window_sec = atoi(PQgetvalue(policy, 0, 1));
+                    allow_reentry = strcmp(PQgetvalue(policy, 0, 2), "t") == 0;
+                }
+                if (policy) PQclear(policy);
                 long long now_ms = (long long)time(NULL) * 1000;
-                long long elapsed_sec = (now_ms - int_ms) / 1000;
-                if (elapsed_sec > rec_win) {
+                long long interrupted_ms = atoll(s_intat);
+                int interruptions = atoi(s_icnt);
+                int within_window = interrupted_ms > 0 && now_ms >= interrupted_ms &&
+                    now_ms - interrupted_ms <= (long long)reconnect_window_sec * 1000;
+                if (!policy_ok || !allow_reentry || !within_window ||
+                    interruptions > max_interruptions ||
+                    attestation_check_device_binding(session_id, s_dev) != 0 ||
+                    attestation_check_exam_key_ready(session_id, s_dev) != 0) {
                     db_release(conn, 0);
-                    ses_send_error(client_fd, 403, "Reconnection window expired. Session closed.", origin, extra_headers, extra_len);
+                    ses_send_error(client_fd, 403,
+                        "Exam session resumption policy or fresh TPM verification was not satisfied",
+                        origin, extra_headers, extra_len);
                     return;
                 }
-            }
-
-            /* Revalidate Student Standing */
-            const char *st_p[1] = { s_sid };
-            int st_l[1] = { (int)strlen(s_sid) };
-            PGresult *st_res = db_simple(conn,
-                "SELECT academic_status, administrative_hold FROM students WHERE id = $1", 1, st_p, st_l);
-            if (st_res && PQntuples(st_res) > 0) {
-                const char *st_stat = PQgetvalue(st_res, 0, 0);
-                const char *st_hld = PQgetvalue(st_res, 0, 1);
-                if (strcmp(st_stat, "active") != 0 || strcmp(st_hld, "t") == 0) {
-                    PQclear(st_res);
-                    db_release(conn, 0);
-                    ses_send_error(client_fd, 403, "Student is no longer in active academic standing or has an administrative hold", origin, extra_headers, extra_len);
+                const char *resume_params[2] = { session_id, s_icnt };
+                int resume_lengths[2] = { (int)strlen(session_id), (int)strlen(s_icnt) };
+                PGresult *resumed = db_simple(conn,
+                    "UPDATE exam_sessions SET status='active',"
+                    "last_heartbeat_at=EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000,"
+                    "updated_at=EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000 "
+                    "WHERE id=$1 AND interruption_count=$2::integer AND status='interrupted' "
+                    "AND deadline_at>EXTRACT(EPOCH FROM statement_timestamp())::bigint*1000",
+                    2, resume_params, resume_lengths);
+                int resume_ok = resumed &&
+                    PQresultStatus(resumed) == PGRES_COMMAND_OK &&
+                    strcmp(PQcmdTuples(resumed), "1") == 0;
+                if (resumed) PQclear(resumed);
+                if (!resume_ok) {
+                    db_release(conn, 1);
+                    ses_send_error(client_fd, 409,
+                        "Exam session changed before resumption",
+                        origin, extra_headers, extra_len);
                     return;
                 }
-                PQclear(st_res);
-            } else {
-                if (st_res) PQclear(st_res);
-            }
-
-            /* Resume Session to Active with Atomic State Transition */
-            const char *res_p[1] = { session_id };
-            int res_l[1] = { (int)strlen(session_id) };
-            PGresult *res_r = db_simple(conn,
-                "UPDATE exam_sessions SET status = 'active', last_heartbeat_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1 AND (status = 'interrupted' OR status = 'resuming')", 1, res_p, res_l);
-            if (!res_r || strcmp(PQcmdTuples(res_r), "1") != 0) {
-                if (res_r) PQclear(res_r);
+                record_session_event(conn, session_id, s_exam, s_inst,
+                                     "resumed", "{\"source\":\"candidate\"}");
+                record_session_audit(conn, session_id, s_exam, s_inst,
+                    candidate_id, "CANDIDATE_SESSION_RESUMED", s_dev);
+                audit_log(candidate_id, "CANDIDATE_SESSION_RESUMED", session_id);
                 db_release(conn, 0);
-                ses_send_error(client_fd, 400, "Only interrupted sessions may be resumed", origin, extra_headers, extra_len);
+                char response[256];
+                snprintf(response, sizeof(response),
+                    "{\"status\":\"resumed\",\"session_id\":\"%s\"}", session_id);
+                ses_send_json(client_fd, 200, response, origin,
+                              extra_headers, extra_len);
                 return;
             }
-            PQclear(res_r);
-
-            record_session_event(conn, session_id, s_exam, s_inst, "resumed", "{\"revalidated\":true}");
-            record_session_audit(conn, session_id, s_exam, s_inst, sess.user_id[0] ? sess.user_id : s_sid,
-                                 "SESSION_RESUMED", "Session resumed successfully after revalidation");
-            audit_log(sess.user_id[0] ? sess.user_id : s_sid, "EXAM_SESSION_RESUMED", session_id);
-
             db_release(conn, 0);
-            char resp[1024];
-            snprintf(resp, sizeof(resp),
-                "{\"status\":\"resumed\",\"session_id\":\"%s\",\"exam_url\":\"%s\",\"allowed_origins\":\"%s\"}",
-                session_id, s_url, s_orgs);
-            ses_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+            ses_send_json(client_fd, 503,
+                "{\"status\":\"UNAVAILABLE\",\"error\":\"Exam session resumption requires renewed device attestation and durable candidate-session binding.\"}",
+                origin, extra_headers, extra_len);
             return;
         }
 
@@ -799,6 +877,22 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
                 if (strcmp(s_status, "active") != 0) {
                     db_release(conn, 0);
                     ses_send_error(client_fd, 409, "Candidate can only confirm completion for an active session", origin, extra_headers, extra_len);
+                    return;
+                }
+                const char *submission_params[1] = { session_id };
+                int submission_lengths[1] = { (int)strlen(session_id) };
+                PGresult *submission = db_simple(conn,
+                    "SELECT 1 FROM candidate_exam_submissions WHERE exam_session_id=$1",
+                    1, submission_params, submission_lengths);
+                int submitted = submission &&
+                    PQresultStatus(submission) == PGRES_TUPLES_OK &&
+                    PQntuples(submission) == 1;
+                if (submission) PQclear(submission);
+                if (!submitted) {
+                    db_release(conn, 0);
+                    ses_send_error(client_fd, 409,
+                        "Candidate exam sessions can close only after durable submission",
+                        origin, extra_headers, extra_len);
                     return;
                 }
                 snprintf(reason, sizeof(reason), "candidate_confirmed_portal_submission");

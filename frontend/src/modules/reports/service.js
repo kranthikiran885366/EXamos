@@ -1,84 +1,331 @@
-import { all, put } from '../../core/db/db';
-import { sha256 } from '../../core/security/crypto';
-import { id, need, log } from '../../core/services/common';
-import { compliant } from '../fleet/service';
-import * as Api from '../../core/api/services';
+// SPPIO Console — reporting service.
+//
+// Every value shown by the report pages comes from the authenticated server-side
+// reporting API (`/api/v1/reports/*`, implemented in server/controllers/
+// reports_controller.c). Nothing here aggregates, samples or fabricates data:
+// this module only builds filter parameters, calls the API, formats returned
+// values for display and triggers the browser download of a server-generated
+// export.
+//
+// Server guarantees relied on here:
+//   * tenant scope and RBAC are resolved from the bearer/cookie session,
+//   * `from`/`to` filters are epoch milliseconds,
+//   * exports exist only as CSV and JSON,
+//   * each export is appended to `report_exports` before it is returned.
 
-export const TYPES = { attendance: 'Attendance by exam', results: 'Exam results', attestation: 'Attestation outcomes', fleet: 'Fleet compliance by center', incidents: 'Incident register' };
-const d = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0, 19) : '');
-export async function buildFromBackend(type, tenantId) {
-  try {
-    const res = await Api.listAuditTrail({ limit: 500 });
-    if (type === 'audit-summary' && res?.events) {
-      const counts = {};
-      for (const e of res.events) { const k = e.event; counts[k] = (counts[k] || 0) + 1; }
-      return { cols: ['Event', 'Count'], rows: Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n]) };
-    }
-  } catch { /* fall through to local */ }
+import { api } from '../../core/api/client';
+
+const BASE = '/api/v1/reports';
+
+export const GROUPS = {
+  exams: 'Exams',
+  devices: 'Devices',
+  security: 'Security',
+  business: 'Business',
+};
+
+export const DEFAULT_PAGE_SIZE = 25;
+
+/* ------------------------------------------------------------------ params */
+
+function toQuery(params) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    search.set(key, String(value));
+  }
+  const out = search.toString();
+  return out ? `?${out}` : '';
+}
+
+/** Local-midnight epoch milliseconds for a `<input type="date">` value. */
+export function dateStartEpoch(value) {
+  if (!value) return '';
+  const time = new Date(`${value}T00:00:00`).getTime();
+  return Number.isFinite(time) ? time : '';
+}
+
+/** Last millisecond of the selected local day. */
+export function dateEndEpoch(value) {
+  if (!value) return '';
+  const time = new Date(`${value}T23:59:59.999`).getTime();
+  return Number.isFinite(time) ? time : '';
+}
+
+/** Inverse of dateStartEpoch for showing an existing filter in the UI. */
+export function epochToDateInput(epoch) {
+  if (!epoch) return '';
+  const d = new Date(Number(epoch));
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export const emptyFilters = () => ({
+  q: '',
+  status: '',
+  examId: '',
+  from: '',
+  to: '',
+  fromDate: '',
+  toDate: '',
+  page: 1,
+  pageSize: DEFAULT_PAGE_SIZE,
+});
+
+/* --------------------------------------------------------------------- api */
+
+/** Catalog: groups/reports the signed-in role may view, plus capabilities. */
+export async function getCatalog() {
+  const res = await api.get(`${BASE}/catalog`, { actor: 'reports' });
+  return res.data;
+}
+
+/** One headline summary per group the signed-in role may view. */
+export async function getHub(filters = {}, institutionId = null) {
+  const query = toQuery({
+    from: filters.from,
+    to: filters.to,
+    q: filters.q,
+    status: filters.status,
+    examId: filters.examId,
+    institutionId,
+  });
+  const res = await api.get(`${BASE}/hub${query}`, { actor: 'reports' });
+  return res.data;
+}
+
+/** A single report for a group (exams, devices, security, business). */
+export async function getReport(group, report, filters = {}, institutionId = null) {
+  const query = toQuery({
+    report,
+    from: filters.from,
+    to: filters.to,
+    q: filters.q,
+    status: filters.status,
+    examId: filters.examId,
+    page: filters.page || 1,
+    pageSize: filters.pageSize || DEFAULT_PAGE_SIZE,
+    institutionId,
+  });
+  const res = await api.get(`${BASE}/${group}${query}`, { actor: 'reports' });
+  return res.data;
+}
+
+/** Append-only export history for the caller's tenant scope. */
+export async function getHistory(institutionId = null) {
+  const query = toQuery({ institutionId });
+  const res = await api.get(`${BASE}/history${query}`, { actor: 'reports' });
+  return res.data;
+}
+
+/**
+ * Ask the server to render an export. The server re-runs the report with the
+ * caller's scope, renders CSV/JSON, hashes the content and records the audit
+ * row before returning the bytes in a JSON envelope.
+ */
+export async function createExport({ report, group, format, filters = {}, institutionId = null }) {
+  const query = toQuery({
+    from: filters.from,
+    to: filters.to,
+    q: filters.q,
+    status: filters.status,
+    examId: filters.examId,
+    institutionId,
+  });
+  const res = await api.post(
+    `${BASE}/export${query}`,
+    { report, group, format },
+    { actor: 'reports' },
+  );
+  return res.data;
+}
+
+/** Save a server-generated export to disk without altering its bytes. */
+export function downloadExport(exp) {
+  if (!exp || typeof exp.content !== 'string') {
+    throw new Error('The server did not return export content.');
+  }
+  const blob = new Blob([exp.content], { type: exp.contentType || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = exp.filename || 'sppio-report';
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* -------------------------------------------------------------- formatting */
+
+export const SUMMARY_LABELS = {
+  total: 'Total',
+  live: 'Live',
+  finalized: 'Finalized',
+  cancelled: 'Cancelled',
+  assigned: 'Assigned',
+  started: 'Started',
+  submitted: 'Submitted',
+  attendancePct: 'Attendance',
+  completionPct: 'Completion',
+  submissions: 'Submissions',
+  averageScore: 'Average score',
+  averagePercentage: 'Average %',
+  passRate: 'Pass rate',
+  receipts: 'Receipts',
+  identityVerified: 'Identity verified',
+  seated: 'Seated',
+  deviceAttested: 'Device attested',
+  ready: 'Ready',
+  devices: 'Devices',
+  enrolled: 'Enrolled',
+  attested: 'Attested',
+  isolated: 'Isolated',
+  online: 'Online (60s)',
+  compliancePct: 'Compliance',
+  trusted: 'Trusted',
+  failed: 'Failed',
+  unverified: 'Unverified',
+  passed: 'Passed',
+  notRun: 'Not run',
+  assets: 'Assets',
+  issued: 'Issued',
+  available: 'Available',
+  quarantined: 'Quarantined',
+  lost: 'Lost',
+  open: 'Open',
+  critical: 'Critical',
+  resolved: 'Resolved',
+  high: 'High',
+  fixed: 'Fixed',
+  releases: 'Releases',
+  stable: 'Stable',
+  revoked: 'Revoked',
+  criticalCves: 'Critical CVEs',
+  evidence: 'Evidence',
+  events: 'Events',
+  actors: 'Actors',
+  eventTypes: 'Event types',
+  lastAt: 'Last activity',
+  breached: 'SLA breached',
+  satisfaction: 'Satisfaction',
+  invoiced: 'Invoiced',
+  paid: 'Paid',
+  outstanding: 'Outstanding',
+  overdue: 'Overdue',
+};
+
+export function summaryLabel(key) {
+  if (SUMMARY_LABELS[key]) return SUMMARY_LABELS[key];
+  return String(key || '')
+    .replace(/Pct$/, ' %')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+const PERCENT_KEYS = new Set([
+  'attendancePct', 'completionPct', 'passRate', 'averagePercentage', 'compliancePct',
+]);
+const MONEY_KEYS = new Set(['invoiced', 'paid', 'outstanding']);
+
+const numberFormat = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });
+const moneyFormat = new Intl.NumberFormat('en-IN', {
+  style: 'currency',
+  currency: 'INR',
+  maximumFractionDigits: 2,
+});
+
+function isNumber(value) {
+  if (value === null || value === undefined || value === '') return false;
+  return Number.isFinite(Number(value));
+}
+
+/** Display a KPI value returned in a report `summary` array. */
+export function formatSummaryValue(key, value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (key === 'lastAt') {
+    if (!isNumber(value)) return '—';
+    return formatEpoch(value) || '—';
+  }
+  if (PERCENT_KEYS.has(key)) return `${numberFormat.format(Number(value))}%`;
+  if (MONEY_KEYS.has(key)) return moneyFormat.format(Number(value));
+  if (isNumber(value)) return numberFormat.format(Number(value));
+  return String(value);
+}
+
+export function formatEpoch(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** Format a table cell using the column type supplied by the server. */
+export function formatValue(value, type) {
+  if (value === null || value === undefined || value === '') {
+    return value === false ? 'No' : '—';
+  }
+  if (type === 'epoch') {
+    const formatted = formatEpoch(value);
+    return formatted || '—';
+  }
+  if (type === 'bool') {
+    if (value === true || value === 'true' || value === 1 || value === '1') return 'Yes';
+    if (value === false || value === 'false' || value === 0 || value === '0') return 'No';
+    return String(value);
+  }
+  if (type === 'percent') {
+    return isNumber(value) ? `${numberFormat.format(Number(value))}%` : String(value);
+  }
+  if (type === 'number') {
+    return isNumber(value) ? numberFormat.format(Number(value)) : String(value);
+  }
+  return String(value);
+}
+
+/* -------------------------------------------------------------- cataloging */
+
+export function findGroup(catalog, group) {
+  return catalog?.groups?.find((g) => g.key === group) || null;
+}
+
+export function findReport(catalog, key) {
+  for (const group of catalog?.groups || []) {
+    const report = (group.reports || []).find((r) => r.key === key);
+    if (report) return report;
+  }
   return null;
 }
 
-export async function build(type, tenantId) {
-  const f = (r) => !tenantId || r.tenantId === tenantId;
-  const [exams, cands, sess, devs, atts, incs, pols, rels, ctrs] = await Promise.all(['exams', 'candidates', 'sessions', 'devices', 'attestations', 'incidents', 'policies', 'releases', 'centers'].map(all));
-  if (type === 'attendance') return { cols: ['Exam', 'Status', 'Assigned', 'Started', 'Submitted', 'Attendance %'], rows: exams.filter(f).map((e) => { const a = cands.filter((c) => c.examId === e.id).length, s = sess.filter((x) => x.examId === e.id), sub = s.filter((x) => x.status === 'submitted').length; return [e.code, e.status, a, s.length, sub, a ? Math.round((s.length / a) * 100) : 0]; }) };
-  if (type === 'results') return { cols: ['Exam', 'Roll no', 'Candidate', 'Score', 'Out of', 'Receipt'], rows: sess.filter((s) => f(s) && s.status === 'submitted').map((s) => { const c = cands.find((x) => x.id === s.candidateId), e = exams.find((x) => x.id === s.examId); return [e?.code, c?.rollNo, c?.name, s.score, e?.questions.length, s.receipt]; }) };
-  if (type === 'attestation') return { cols: ['Time (UTC)', 'Device', 'Result', 'Reason'], rows: atts.filter((a) => f(a) && a.result).sort((x, y) => y.issuedAt - x.issuedAt).slice(0, 500).map((a) => [d(a.issuedAt), a.hostname, a.result, a.reason]) };
-  if (type === 'fleet') return { cols: ['Center', 'Devices', 'Compliant', 'Compliance %', 'Isolated'], rows: ctrs.filter(f).map((c) => { const v = devs.filter((x) => x.centerId === c.id), ok = v.filter((x) => compliant(x, pols, rels)).length; return [c.code, v.length, ok, v.length ? +((ok / v.length) * 100).toFixed(1) : 0, v.filter((x) => x.isolated).length]; }) };
-  return { cols: ['Incident', 'Title', 'Severity', 'Kind', 'Status', 'Owner', 'Opened (UTC)'], rows: incs.filter(f).map((i) => ['INC-' + i.no, i.title, i.severity, i.kind, i.status, i.owner || '', d(i.createdAt)]) };
-}
-export async function saveReport(a, type, tenantId, rows) {
-  need(a, 'report.generate');
-  const hash = await sha256(JSON.stringify(rows));
-  await put('reports', { id: id('rpt'), tenantId, type, count: rows.length, hash, by: a.id, at: Date.now() });
-  await log(a, 'REPORT_GENERATED', `${type} rows=${rows.length} sha256=${hash.slice(0, 12)}`);
+/** Reports for a group, optionally restricted to a preferred display order. */
+export function reportsForGroup(catalog, group, preferredKeys) {
+  const reports = findGroup(catalog, group)?.reports || [];
+  if (!preferredKeys?.length) return reports;
+  const byKey = new Map(reports.map((r) => [r.key, r]));
+  return preferredKeys.map((key) => byKey.get(key)).filter(Boolean);
 }
 
-export const CATALOG = [
-  { key: 'attendance', label: 'Attendance by exam', desc: 'Assigned, started and submitted counts for every exam.', group: 'Exams' },
-  { key: 'results', label: 'Exam results', desc: 'Per-candidate score and signed submission receipt.', group: 'Exams' },
-  { key: 'exam-summary', label: 'Exam summary', desc: 'Lifecycle status, centre coverage, policy and readiness.', group: 'Exams' },
-  { key: 'candidate-readiness', label: 'Candidate readiness', desc: 'Assignment, identity, seat and device status per candidate.', group: 'Exams' },
-  { key: 'fleet', label: 'Fleet compliance by centre', desc: 'Compliant devices, isolation and release coverage.', group: 'Devices' },
-  { key: 'attestation', label: 'Attestation outcomes', desc: 'Recent TPM quote verification results and failure reasons.', group: 'Devices' },
-  { key: 'compatibility', label: 'Compatibility results', desc: 'Latest preflight result per device.', group: 'Devices' },
-  { key: 'usb-custody', label: 'USB custody', desc: 'USB assets, release, status and current holder.', group: 'Devices' },
-  { key: 'incidents', label: 'Incident register', desc: 'All incidents with severity, status and owner.', group: 'Security' },
-  { key: 'security-events', label: 'Security events', desc: 'Console security events and their resolution.', group: 'Security' },
-  { key: 'vulnerabilities', label: 'Vulnerability register', desc: 'CVE findings, CVSS, ownership and status.', group: 'Security' },
-  { key: 'release-validation', label: 'Release validation', desc: 'Release status, rollout, CVEs and evidence counts.', group: 'Security' },
-  { key: 'audit-summary', label: 'Audit summary', desc: 'Event counts by actor and event type (not the raw trail).', group: 'Security' },
-  { key: 'support', label: 'Support performance', desc: 'Requests, SLA breaches, resolution and satisfaction.', group: 'Business' },
-  { key: 'billing', label: 'Billing summary', desc: 'Invoices, outstanding balance and payment status.', group: 'Business' },
-];
-export const GROUPS = [...new Set(CATALOG.map((c) => c.group))];
-
-const fmtTime = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0, 19) : '');
-
-export async function buildReport(type, tenantId, opts = {}) {
-  if (['attendance', 'results', 'attestation', 'fleet', 'incidents'].includes(type)) return build(type, tenantId);
-  const f = (r) => !tenantId || r.tenantId === tenantId;
-  const [exams, cands, sess, devs, atts, incs, pols, rels, ctrs, usbs, sec, vul, rev, sup, inv, audit] = await Promise.all(
-    ['exams', 'candidates', 'sessions', 'devices', 'attestations', 'incidents', 'policies', 'releases', 'centers', 'usbs', 'securityEvents', 'vulnerabilities', 'releaseEvidence', 'support', 'invoices', 'audit'].map(all),
-  );
-  const exOf = (id) => exams.find((e) => e.id === id);
-  const candOf = (id) => cands.find((c) => c.id === id);
-  const devOf = (id) => devs.find((d) => d.id === id);
-  if (type === 'exam-summary') return { cols: ['Code', 'Title', 'Status', 'Start', 'Duration', 'Centres', 'Assigned', 'Policy', 'Questions'], rows: exams.filter(f).map((e) => [e.code, e.title, e.status, fmtTime(e.startAt), e.durationMin, e.centerIds.length, cands.filter((c) => c.examId === e.id).length, pols.find((p) => p.id === e.policyId)?.name || '', e.questions.length]) };
-  if (type === 'candidate-readiness') return { cols: ['Roll no', 'Candidate', 'Exam', 'Centre', 'Seat', 'Identity', 'Device', 'Trust', 'Status'], rows: cands.filter(f).map((c) => { const d = devs.find((x) => x.centerId === c.centerId && x.seat === c.seat); return [c.rollNo, c.name, exOf(c.examId)?.code || '', ctrs.find((x) => x.id === c.centerId)?.code || '', c.seat || '', c.identity, d?.hostname || 'none', d?.trust || 'unknown', c.status]; }) };
-  if (type === 'compatibility') return { cols: ['Device', 'Centre', 'Seat', 'Profile', 'Overall', 'Last run', 'Release'], rows: devs.filter(f).map((d) => { const last = atts.filter((a) => a.deviceId === d.id && a.result).sort((x, y) => y.verifiedAt - x.verifiedAt)[0]; void last; return [d.hostname, ctrs.find((c) => c.id === d.centerId)?.code || '', d.seat, d.profile, d.compatStatus, fmtTime(d.lastCompatAt), rels.find((r) => r.id === d.releaseId)?.version || '']; }) };
-  if (type === 'usb-custody') return { cols: ['Asset', 'Serial', 'Status', 'Release', 'Holder', 'Location', 'Last check'], rows: usbs.filter(f).map((u) => [u.assetId, u.serial, u.status, rels.find((r) => r.id === u.releaseId)?.version || '', u.holder?.name || '', u.lastLocation || u.station || '', fmtTime(u.lastCheckAt)]) };
-  if (type === 'security-events') return { cols: ['Time', 'Type', 'Severity', 'Title', 'Status', 'Actor'], rows: sec.filter(f).sort((a, b) => b.at - a.at).map((e) => [fmtTime(e.at), e.type, e.severity, e.title, e.status, e.actor]) };
-  if (type === 'vulnerabilities') return { cols: ['CVE', 'Component', 'Severity', 'CVSS', 'Status', 'Owner', 'Fixed in'], rows: vul.filter(f).map((v) => [v.cve || '', v.component, v.severity, v.cvss, v.status, v.owner || '', v.fixedIn || '']) };
-  if (type === 'release-validation') return { cols: ['Version', 'Status', 'Rollout %', 'Critical CVEs', 'Findings', 'Evidence', 'Created'], rows: rels.map((r) => [r.version, r.status, r.rollout || 0, r.criticalCves || 0, r.findings?.length || 0, rev.filter((e) => e.releaseId === r.id).length, fmtTime(r.createdAt)]) };
-  if (type === 'audit-summary') {
-    const counts = {};
-    for (const e of audit) { const k = e.event; counts[k] = (counts[k] || 0) + 1; }
-    return { cols: ['Event', 'Count'], rows: Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n]) };
-  }
-  if (type === 'support') return { cols: ['Request', 'Subject', 'Priority', 'Status', 'Assignee', 'SLA', 'Satisfaction'], rows: sup.filter(f).map((t) => [t.no, t.subject, t.priority, t.status, t.assignee || '', t.slaDue && t.slaDue < Date.now() && !t.firstResponseAt ? 'BREACHED' : 'ok', t.satisfaction?.score || '']) };
-  if (type === 'billing') return { cols: ['Invoice', 'Issued', 'Due', 'Status', 'Subtotal', 'Tax', 'Total', 'Paid'], rows: inv.filter(f).map((i) => [i.number, fmtTime(i.issuedAt), fmtTime(i.dueAt), i.status, i.subtotal, i.tax, i.total, fmtTime(i.paidAt)]) };
-  return build(type, tenantId);
+export function reportLabel(catalog, key) {
+  return findReport(catalog, key)?.label || key;
 }
 
-export const reportStats = (rows) => ({ generated: rows.length, lastAt: rows.sort((a, b) => b.at - a.at)[0]?.at || null, types: new Set(rows.map((r) => r.type)).size });
+/** Human-readable explanation of a failed report request. */
+export function reportError(error) {
+  const status = error?.status;
+  if (status === 401) return 'Your session expired or is missing. Sign in again to view reports.';
+  if (status === 403) return error?.message || 'Your role cannot view this report.';
+  if (status === 400) return error?.message || 'The report filters were rejected.';
+  if (status === 404) return 'This report endpoint does not exist on the connected server.';
+  if (status >= 500) return 'The reporting service failed to build this report. No cached or fabricated data is shown.';
+  return error?.message || 'The report could not be loaded.';
+}

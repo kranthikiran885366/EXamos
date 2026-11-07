@@ -53,6 +53,9 @@ static const migration_t migrations[] = {
     {"031_centralized_approval_governance.sql",             "approval_governance",       1},
     {"032_support_module.sql",                               "support_module",            1},
     {"033_reporting_module.sql",                             "reporting_module",          1},
+    {"034_device_trust_policy_approvals.sql",               "device_fleet",             11},
+    {"035_candidate_exam_runtime.sql",                      "candidate_exam_runtime",     1},
+    {"036_candidate_exam_deadlines.sql",                    "candidate_exam_runtime",     2},
 };
 
 /*

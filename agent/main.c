@@ -112,17 +112,24 @@ int main(int argc, char *argv[]) {
     // Initial attestation uses the server's one-time challenge.
     attestation_report_t report;
     if (tpm_attestation_generate_report(device_id, release_id, challenge_nonce, &report) == 0) {
-        char report_json[4096];
+        char report_json[16384];
         if (tpm_attestation_format_json(&report, report_json, sizeof(report_json)) != 0 ||
             attestation_client_verify(server_url, report_json) != 0) {
             log_info("Server rejected the TPM quote; refusing to run.");
+            OPENSSL_cleanse(report_json, sizeof(report_json));
+            OPENSSL_cleanse(&report, sizeof(report));
+            OPENSSL_cleanse(challenge_nonce, sizeof(challenge_nonce));
             return 2;
         }
         log_info("Fresh TPM quote verified by the server; attestation state is trusted.");
+        OPENSSL_cleanse(report_json, sizeof(report_json));
+        OPENSSL_cleanse(&report, sizeof(report));
     } else {
         log_info("TPM quote and event-log attestation are not established; refusing to start.");
+        OPENSSL_cleanse(challenge_nonce, sizeof(challenge_nonce));
         return 2;
     }
+    OPENSSL_cleanse(challenge_nonce, sizeof(challenge_nonce));
 
     /* Re-attest every N heartbeat cycles — default 60, configurable */
     int reattest_every = 60;
@@ -136,10 +143,37 @@ int main(int argc, char *argv[]) {
 
     int iteration = 0;
     while (g_running) {
+        char exam_session_id[64] = {0}, exam_release_id[64] = {0};
+        int exam_pending = attestation_client_poll_exam_session(
+            server_url, device_id, exam_session_id, sizeof(exam_session_id),
+            exam_release_id, sizeof(exam_release_id));
+        if (exam_pending == 1) {
+            char exam_nonce[65] = {0};
+            attestation_report_t exam_report;
+            char exam_json[16384];
+            if (attestation_client_issue_challenge(server_url, device_id,
+                    exam_release_id, exam_session_id, exam_nonce,
+                    sizeof(exam_nonce)) != 0 ||
+                tpm_attestation_generate_report(device_id, exam_release_id,
+                    exam_nonce, &exam_report) != 0 ||
+                tpm_attestation_format_json(&exam_report, exam_json,
+                    sizeof(exam_json)) != 0 ||
+                attestation_client_verify(server_url, exam_json) != 0) {
+                log_info("Candidate exam-session TPM attestation failed; no candidate session will be authorized.");
+            } else {
+                log_info("Candidate exam-session TPM quote verified by the server.");
+            }
+            OPENSSL_cleanse(exam_nonce, sizeof(exam_nonce));
+            OPENSSL_cleanse(&exam_report, sizeof(exam_report));
+            OPENSSL_cleanse(exam_json, sizeof(exam_json));
+        } else if (exam_pending < 0 && iteration % 12 == 0) {
+            log_info("Could not poll the candidate exam-session attestation queue.");
+        }
+
         if (iteration > 0 && iteration % reattest_every == 0) {
             char re_nonce[65] = {0};
             attestation_report_t re_report;
-            char re_json[4096];
+            char re_json[16384];
             if (attestation_client_rechallenge(server_url, device_id, session_id,
                                                re_nonce, sizeof(re_nonce)) != 0 ||
                 tpm_attestation_generate_report(device_id, release_id, re_nonce,

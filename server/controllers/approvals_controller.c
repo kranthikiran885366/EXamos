@@ -370,6 +370,148 @@ static int approval_execute_role_change(PGconn *conn, const char *target_id,
     return 0;
 }
 
+static int approval_release_target_valid(PGconn *conn, const char *release_id,
+                                         const char *requester_id,
+                                         const char *requester_name,
+                                         const char *approver_id,
+                                         const char *approver_name,
+                                         const char *proposed_data) {
+    char proposed_release_id[65] = {0}, proposed_digest[129] = {0};
+    if (!ctrl_json_string(proposed_data, "releaseId", proposed_release_id,
+                          sizeof(proposed_release_id)) ||
+        !ctrl_json_string(proposed_data, "manifestDigest", proposed_digest,
+                          sizeof(proposed_digest)) ||
+        strcmp(proposed_release_id, release_id) != 0 ||
+        strncmp(proposed_digest, "sha256:", 7) != 0 ||
+        strlen(proposed_digest) != 71)
+        return 0;
+    for (size_t i = 7; i < 71; i++) {
+        if (!((proposed_digest[i] >= '0' && proposed_digest[i] <= '9') ||
+              (proposed_digest[i] >= 'a' && proposed_digest[i] <= 'f') ||
+              (proposed_digest[i] >= 'A' && proposed_digest[i] <= 'F')))
+            return 0;
+    }
+
+    PGresult *res = db_simple(conn,
+        "SELECT r.status,r.created_by,r.manifest_digest,m.manifest_digest,"
+        "m.signature_value,m.verified,k.status,k.key_type "
+        "FROM os_releases r "
+        "JOIN os_release_manifests m ON m.release_id=r.id "
+        "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
+        "WHERE r.id=$1 FOR UPDATE OF r,m,k",
+        1, (const char *[]){ release_id },
+        (const int []){ (int)strlen(release_id) });
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        return -1;
+    }
+    if (PQntuples(res) != 1) {
+        PQclear(res);
+        return 0;
+    }
+
+    const char *release_status = PQgetvalue(res, 0, 0);
+    const char *creator = PQgetvalue(res, 0, 1);
+    const char *release_digest = PQgetvalue(res, 0, 2);
+    const char *manifest_digest = PQgetvalue(res, 0, 3);
+    const char *signature = PQgetvalue(res, 0, 4);
+    const char *verified = PQgetvalue(res, 0, 5);
+    const char *key_status = PQgetvalue(res, 0, 6);
+    const char *key_type = PQgetvalue(res, 0, 7);
+    int valid = strcmp(release_status, "signed") == 0 &&
+                creator[0] && strcmp(creator, requester_id) != 0 &&
+                (!requester_name || strcmp(creator, requester_name) != 0) &&
+                (!approver_id || (strcmp(creator, approver_id) != 0 &&
+                                  (!approver_name ||
+                                   strcmp(creator, approver_name) != 0))) &&
+                strcmp(release_digest, proposed_digest) == 0 &&
+                strcmp(manifest_digest, proposed_digest) == 0 &&
+                signature[0] && strcmp(verified, "t") == 0 &&
+                strcmp(key_status, "active") == 0 &&
+                strcmp(key_type, "production") == 0;
+    PQclear(res);
+    return valid;
+}
+
+static int approval_device_reauth_target_valid(PGconn *conn,
+                                               const char *device_id,
+                                               const char *tenant_id) {
+    PGresult *res = db_simple(conn,
+        "SELECT status FROM devices WHERE id=$1 AND institution_id=$2 FOR UPDATE",
+        2, (const char *[]){ device_id, tenant_id },
+        (const int []){ (int)strlen(device_id), (int)strlen(tenant_id) });
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        return -1;
+    }
+    if (PQntuples(res) != 1) {
+        PQclear(res);
+        return 0;
+    }
+    int valid = strcmp(PQgetvalue(res, 0, 0), "revoked") == 0;
+    PQclear(res);
+    return valid;
+}
+
+static int approval_execute_release(PGconn *conn, const char *release_id,
+                                    const char *requester_id,
+                                    const char *requester_name,
+                                    const char *approver_id,
+                                    const char *approver_name,
+                                    const char *proposed_data,
+                                    const char *decision_reason) {
+    if (approval_release_target_valid(conn, release_id, requester_id,
+                                      requester_name, approver_id, approver_name,
+                                      proposed_data) != 1)
+        return -1;
+
+    char approval_record_id[64];
+    if (approval_id(approval_record_id, sizeof(approval_record_id), "osap_") != 0)
+        return -1;
+    const char *insert_params[4] = {
+        approval_record_id, release_id, approver_id, decision_reason
+    };
+    const int insert_lengths[4] = {
+        (int)strlen(insert_params[0]), (int)strlen(insert_params[1]),
+        (int)strlen(insert_params[2]), (int)strlen(insert_params[3])
+    };
+    PGresult *insert = db_simple(conn,
+        "INSERT INTO os_release_approvals "
+        "(id,release_id,reviewer_id,decision,notes,created_at) "
+        "VALUES ($1,$2,$3,'approved',$4,"
+        "(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint)",
+        4, insert_params, insert_lengths);
+    if (!insert || PQresultStatus(insert) != PGRES_COMMAND_OK) {
+        if (insert) PQclear(insert);
+        return -1;
+    }
+    PQclear(insert);
+
+    char proposed_digest[129] = {0};
+    if (!ctrl_json_string(proposed_data, "manifestDigest", proposed_digest,
+                          sizeof(proposed_digest)))
+        return -1;
+    const char *update_params[3] = { approver_id, release_id, proposed_digest };
+    const int update_lengths[3] = {
+        (int)strlen(update_params[0]), (int)strlen(update_params[1]),
+        (int)strlen(update_params[2])
+    };
+    PGresult *update = db_simple(conn,
+        "UPDATE os_releases SET status='approved',approved_by=$1,"
+        "approved_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint,"
+        "updated_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint "
+        "WHERE id=$2 AND status='signed' AND created_by<>$1 "
+        "AND manifest_digest=$3",
+        3, update_params, update_lengths);
+    if (!update || PQresultStatus(update) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdTuples(update), "1") != 0) {
+        if (update) PQclear(update);
+        return -1;
+    }
+    PQclear(update);
+    return 0;
+}
+
 static int approval_actor_active(PGconn *conn, const auth_session_t *actor) {
     const char *role = security_role_to_string(actor->role);
     const char *alias = approval_role_alias(actor->role);
@@ -682,6 +824,33 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
         (void)requested_role_id;
         snprintf(target_id, sizeof(target_id), "%s", canonical_id);
     }
+    if (strcmp(kind, "release-approve") == 0) {
+        int target_valid = approval_release_target_valid(
+            conn, target_id, actor->user_id, actor->username,
+            NULL, NULL, data_json);
+        if (target_valid != 1) {
+            db_release(conn, 0);
+            approval_error(fd, target_valid < 0 ? 503 : 409,
+                           target_valid < 0
+                               ? "Release approval target could not be verified"
+                               : "Release approval requires a signed, verified release with a matching manifest digest and an independent reviewer",
+                           origin, extra, extra_len);
+            return;
+        }
+    }
+    if (strcmp(kind, "device-reauth") == 0) {
+        int target_valid = tenant[0]
+            ? approval_device_reauth_target_valid(conn, target_id, tenant) : 0;
+        if (target_valid != 1) {
+            db_release(conn, 0);
+            approval_error(fd, target_valid < 0 ? 503 : 409,
+                           target_valid < 0
+                               ? "Device reauthorization target could not be verified"
+                               : "Device reauthorization requires a revoked device in the authenticated institution",
+                           origin, extra, extra_len);
+            return;
+        }
+    }
     if (strcmp(kind, "policy-rollback") == 0 &&
         strstr(data_json, "\"targetVersion\"") != NULL) {
         int target_version = 0;
@@ -878,7 +1047,8 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
         "SELECT r.policy_key,r.policy_version,r.requester_id,COALESCE(r.institution_id,''),"
         "r.status,r.expires_at,r.required_approvals,r.conflict_status,"
         "(p.approver_roles @> ARRAY[$2::smallint]),p.active,r.resource_id,"
-        "COALESCE(r.institution_id,''),r.proposed_data::text,r.label,r.requester_role "
+        "COALESCE(r.institution_id,''),r.proposed_data::text,r.label,r.requester_role,"
+        "r.requester_name "
         "FROM approval_requests r JOIN approval_policies p "
         "ON p.policy_key=r.policy_key AND p.version=r.policy_version "
         "WHERE r.id=$1 FOR UPDATE OF r",
@@ -891,6 +1061,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
         return;
     }
     char policy_key[65], requester_id[65], requester_role_name[41];
+    char requester_name[141];
     char request_tenant[65], request_status[33];
     char target_id[129], proposed_data[16385], request_label[141];
     int policy_version = atoi(PQgetvalue(request, 0, 1));
@@ -906,6 +1077,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
     snprintf(proposed_data, sizeof(proposed_data), "%s", PQgetvalue(request, 0, 12));
     snprintf(request_label, sizeof(request_label), "%s", PQgetvalue(request, 0, 13));
     snprintf(requester_role_name, sizeof(requester_role_name), "%s", PQgetvalue(request, 0, 14));
+    snprintf(requester_name, sizeof(requester_name), "%s", PQgetvalue(request, 0, 15));
     PQclear(request);
     int requester_role_id = approval_role_id(requester_role_name);
 
@@ -1005,6 +1177,99 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
             return;
         }
         (void)requested_role_id;
+    }
+    if (strcmp(policy_key, "device-reauth") == 0 &&
+        strcmp(decision, "approved") == 0) {
+        int target_valid = approval_device_reauth_target_valid(
+            conn, target_id, request_tenant);
+        if (target_valid < 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, 503, "Device reauthorization target could not be revalidated",
+                           origin, extra, extra_len);
+            return;
+        }
+        if (target_valid == 0) {
+            PGresult *blocked = db_simple(conn,
+                "UPDATE approval_requests SET status='blocked',conflict_status='BLOCKED',"
+                "updated_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE id=$1",
+                1, (const char *[]){ request_id },
+                (const int []){ (int)strlen(request_id) });
+            if (!blocked || PQresultStatus(blocked) != PGRES_COMMAND_OK ||
+                approval_event(conn, request_id, actor, "CONFLICT_DETECTED",
+                    "Device is no longer revoked in the request institution",
+                    "{\"result\":\"BLOCKED\",\"resourceStateRevalidated\":true}") != 0) {
+                if (blocked) PQclear(blocked);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                approval_error(fd, 503, "Device reauthorization conflict could not be persisted",
+                               origin, extra, extra_len);
+                return;
+            }
+            PQclear(blocked);
+            PGresult *commit = PQexec(conn, "COMMIT");
+            if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+                if (commit) PQclear(commit);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                approval_error(fd, 503, "Device reauthorization conflict could not be committed",
+                               origin, extra, extra_len);
+                return;
+            }
+            PQclear(commit);
+            audit_append(actor->user_id, "APPROVAL_REQUEST_BLOCKED", request_id);
+            db_release(conn, 0);
+            approval_error(fd, 409, "Device state changed; the reauthorization request was blocked",
+                           origin, extra, extra_len);
+            return;
+        }
+    }
+    if (strcmp(policy_key, "release-approve") == 0 &&
+        strcmp(decision, "approved") == 0) {
+        int target_valid = approval_release_target_valid(
+            conn, target_id, requester_id, requester_name,
+            actor->user_id, actor->username, proposed_data);
+        if (target_valid < 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, 503, "Release approval target could not be revalidated",
+                           origin, extra, extra_len);
+            return;
+        }
+        if (target_valid == 0) {
+            PGresult *blocked = db_simple(conn,
+                "UPDATE approval_requests SET status='blocked',conflict_status='BLOCKED',"
+                "updated_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE id=$1",
+                1, (const char *[]){ request_id },
+                (const int []){ (int)strlen(request_id) });
+            if (!blocked || PQresultStatus(blocked) != PGRES_COMMAND_OK ||
+                approval_event(conn, request_id, actor, "CONFLICT_DETECTED",
+                    "Release signature, verification, signer key, or manifest digest is no longer eligible",
+                    "{\"result\":\"BLOCKED\",\"resourceStateRevalidated\":true}") != 0) {
+                if (blocked) PQclear(blocked);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                approval_error(fd, 503, "Release approval conflict could not be persisted",
+                               origin, extra, extra_len);
+                return;
+            }
+            PQclear(blocked);
+            PGresult *commit = PQexec(conn, "COMMIT");
+            if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+                if (commit) PQclear(commit);
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                approval_error(fd, 503, "Release approval conflict could not be committed",
+                               origin, extra, extra_len);
+                return;
+            }
+            PQclear(commit);
+            audit_append(actor->user_id, "APPROVAL_REQUEST_BLOCKED", request_id);
+            db_release(conn, 0);
+            approval_error(fd, 409, "Release changed or is no longer trusted; the request was blocked",
+                           origin, extra, extra_len);
+            return;
+        }
     }
     if (strcmp(policy_key, "policy-rollback") == 0 &&
         strstr(proposed_data, "\"targetVersion\"") != NULL &&
@@ -1141,6 +1406,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                               strcmp(decision, "changes_requested") == 0 ? "changes_requested" :
                               approval_count >= required_approvals ? "execution_pending" : "pending_review";
     int role_change_executed = 0;
+    int release_executed = 0;
     int policy_rollback_executed = 0;
     if (strcmp(policy_key, "role-change") == 0 &&
         strcmp(next_status, "execution_pending") == 0) {
@@ -1154,6 +1420,21 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
             return;
         }
         role_change_executed = 1;
+        next_status = "completed";
+    }
+    if (strcmp(policy_key, "release-approve") == 0 &&
+        strcmp(next_status, "execution_pending") == 0) {
+        if (approval_execute_release(conn, target_id, requester_id,
+                                     requester_name, actor->user_id,
+                                     actor->username, proposed_data, reason) != 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, 409,
+                           "Release approval execution failed revalidation; no approval was applied",
+                           origin, extra, extra_len);
+            return;
+        }
+        release_executed = 1;
         next_status = "completed";
     }
     if (strcmp(policy_key, "policy-rollback") == 0 &&
@@ -1170,7 +1451,8 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
         policy_rollback_executed = 1;
         next_status = "completed";
     }
-    const int operation_executed = role_change_executed || policy_rollback_executed;
+    const int operation_executed = role_change_executed || release_executed ||
+                                   policy_rollback_executed;
     const char *next_execution = operation_executed ? "completed" :
         strcmp(next_status, "execution_pending") == 0
         ? "pending_integration" : "not_started";
@@ -1200,7 +1482,9 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
          approval_event(conn, request_id, actor, "OPERATION_EXECUTED", "",
                         role_change_executed
                             ? "{\"operation\":\"role-change\",\"result\":\"completed\"}"
-                            : "{\"operation\":\"policy-rollback\",\"result\":\"completed\"}") != 0) ||
+                            : release_executed
+                                ? "{\"operation\":\"release-approve\",\"result\":\"completed\"}"
+                                : "{\"operation\":\"policy-rollback\",\"result\":\"completed\"}") != 0) ||
         approval_insert_notification(conn, request_tenant, requester_id, NULL,
             strcmp(decision, "approved") == 0 ? "Approval update: approved" :
             strcmp(decision, "rejected") == 0 ? "Approval update: rejected" :
@@ -1242,9 +1526,11 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
              next_execution, operation_executed ? "true" : "false",
              role_change_executed
                  ? "Approval recorded and the role change was executed."
-                 : policy_rollback_executed
-                     ? "Approval recorded and the exam policy rollback was executed."
-                 : "Approval decision recorded; the requested operation was not executed.");
+                 : release_executed
+                     ? "Approval recorded and the verified release was approved."
+                     : policy_rollback_executed
+                         ? "Approval recorded and the exam policy rollback was executed."
+                         : "Approval decision recorded; the requested operation was not executed.");
     approval_send(fd, 200, response, origin, extra, extra_len);
 }
 

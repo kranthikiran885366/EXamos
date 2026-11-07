@@ -294,21 +294,26 @@ int session_store_record(const session_journal_record_t *rec)
     if (!rec) return -1;
 
     const char *event = event_name(rec->event_type);
+    if (strcmp(event, "UNKNOWN") == 0 || !rec->token[0] ||
+        (rec->event_type == SESSION_EVENT_CREATE && !rec->candidate_id[0])) {
+        fprintf(stderr, "[SessionStore] Refusing invalid session journal record.\n");
+        return -1;
+    }
     char payload[512];
     build_record_payload(payload, sizeof(payload),
                          event, rec->token, rec->candidate_id,
                          rec->created_at, rec->expires_at);
 
-    char hmac[65];
-    compute_record_hmac(payload, hmac);
-
     pthread_mutex_lock(&g_store_lock);
 
-    if (!g_journal_fp) {
+    if (!g_journal_fp || !g_hmac_ok) {
+        fprintf(stderr, "[SessionStore] Refusing session record without an open authenticated journal.\n");
         pthread_mutex_unlock(&g_store_lock);
-        return is_production_mode() ? -1 : 0;
+        return -1;
     }
 
+    char hmac[65];
+    compute_record_hmac(payload, hmac);
     int ok = fprintf(g_journal_fp,
         "{\"v\":1,\"event\":\"%s\","
         "\"token\":\"%s\","
@@ -325,6 +330,8 @@ int session_store_record(const session_journal_record_t *rec)
 
     if (ok) ok = (fflush(g_journal_fp) == 0);
     if (ok) ok = (fsync(fileno(g_journal_fp)) == 0);
+    if (!ok)
+        fprintf(stderr, "[SessionStore] Failed to append and sync session journal record.\n");
 
     pthread_mutex_unlock(&g_store_lock);
     return ok ? 0 : -1;

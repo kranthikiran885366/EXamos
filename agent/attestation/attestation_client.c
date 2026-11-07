@@ -160,3 +160,46 @@ int attestation_client_rechallenge(const char *heartbeat_url,
         strlen(out_nonce) != 64) return -1;
     return 0;
 }
+
+int attestation_client_poll_exam_session(const char *heartbeat_url,
+                                         const char *device_id,
+                                         char *out_session_id, size_t session_size,
+                                         char *out_release_id, size_t release_size)
+{
+    static const char heartbeat_path[] = "/api/v1/heartbeat";
+    static const char pending_path[] = "/api/v1/agent/exam-attestation/pending";
+    if (!safe_identifier(device_id, 64) || !out_session_id || session_size < 2 ||
+        !out_release_id || release_size < 2 || !heartbeat_url ||
+        strncmp(heartbeat_url, "https://", 8) != 0) return -1;
+    size_t url_len = strlen(heartbeat_url);
+    size_t heartbeat_path_len = sizeof(heartbeat_path) - 1;
+    if (url_len < heartbeat_path_len ||
+        strcmp(heartbeat_url + url_len - heartbeat_path_len, heartbeat_path) != 0)
+        return -1;
+
+    char endpoint[1024], body[256], response[2048], status_text[32];
+    int endpoint_len = snprintf(endpoint, sizeof(endpoint), "%.*s%s",
+        (int)(url_len - heartbeat_path_len), heartbeat_url, pending_path);
+    if (endpoint_len < 0 || (size_t)endpoint_len >= sizeof(endpoint) ||
+        snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", device_id) >=
+            (int)sizeof(body)) return -1;
+    out_session_id[0] = '\0';
+    out_release_id[0] = '\0';
+
+    long http_status = 0;
+    if (post_json(endpoint, body, response, sizeof(response), &http_status) != 0 ||
+        http_status != 200 ||
+        json_string(response, "status", status_text, sizeof(status_text)) != 0)
+        return -1;
+    if (strcmp(status_text, "IDLE") == 0) return 0;
+    if (strcmp(status_text, "CHALLENGE") != 0 ||
+        json_string(response, "session_id", out_session_id, session_size) != 0 ||
+        json_string(response, "release_id", out_release_id, release_size) != 0 ||
+        !safe_identifier(out_session_id, session_size) ||
+        !safe_identifier(out_release_id, release_size)) {
+        out_session_id[0] = '\0';
+        out_release_id[0] = '\0';
+        return -1;
+    }
+    return 1;
+}

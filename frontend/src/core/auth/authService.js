@@ -190,7 +190,8 @@ export class AuthService {
         const statusRes = await api.post(ENDPOINTS.candidateCheckinStatus, { poll_token: data.poll_token }, {
           useCandidateToken: true, actor: 'candidate', sign: true,
         });
-        if (statusRes.data.status === 'PENDING_VERIFICATION') continue;
+        if (statusRes.data.status === 'PENDING_VERIFICATION' ||
+            statusRes.data.status === 'ATTESTATION_PENDING') continue;
         if (statusRes.data.status !== 'SUCCESS') {
           throw new ApiError(statusRes.status, statusRes.data.error || 'Invigilator verification was not approved', statusRes.data);
         }

@@ -34,9 +34,15 @@ int ctrl_extract_origin(const char *buffer, char *out, size_t out_len);
 int ctrl_authorize(const char *auth_header, uint32_t required_perm,
                    auth_session_t *out);
 
-/* Resolve a live ExamOS candidate bearer token to its roster candidate ID. */
+/* Resolve a live candidate token against both the local session cache and auth_sessions. */
 int ctrl_candidate_session_identity(const char *auth_header, char *out_candidate_id,
                                     size_t out_len);
+/* Token-based form for trusted internal consumers that already extracted the bearer token. */
+int ctrl_candidate_token_identity(const char *token, char *out_candidate_id,
+                                  size_t out_len);
+int ctrl_candidate_session_context(const char *auth_header, char *out_candidate_id,
+                                   size_t candidate_len, char *out_exam_session_id,
+                                   size_t exam_session_len);
 
 /* Set CORS headers on the response for the given origin. */
 void ctrl_set_cors(char *extra_headers, size_t extra_len,

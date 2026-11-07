@@ -1,8 +1,22 @@
 # ExamOS P3 Exam Key Release
 
+## Current Availability
+
+Candidate key release is currently disabled. The candidate bearer-token
+workflow does not yet have a durable binding to the attested exam session, so
+the server returns `503 UNAVAILABLE` rather than releasing a key or reporting
+eligibility. Unauthenticated requests are rejected.
+
+The internal key-release gateway requires an explicit device ID and verifies
+that it matches the trusted attestation. This device check alone is not a
+substitute for binding the authenticated candidate to the exam session.
+
 ## Design Principle
 
-The exam decryption key is **never sent before trust is established**. The key release gateway enforces a strict sequence: attestation must reach TRUSTED state before any key is made available, and the key is only released to a candidate bearer token that is bound to the attested session.
+The exam decryption key must never be sent before trust is established and
+the candidate bearer token is bound to the attested session. That end-to-end
+candidate/session binding is not implemented yet; the candidate-facing release
+route stays unavailable until it is.
 
 ## Key Release Flow
 

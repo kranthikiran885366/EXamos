@@ -397,7 +397,7 @@ export function readinessFor(c, ctx = {}) {
   out.push({ key: 'assignment', label: 'Exam assignment', status: c.examId ? 'PASS' : 'FAIL', detail: ex ? `${ex.code} · seat ${c.seat}` : 'Not assigned' });
   out.push({ key: 'identity', label: 'Identity check', status: c.identity === 'verified' ? 'PASS' : c.identity === 'rejected' ? 'FAIL' : 'NOT_RUN', detail: c.identity });
   out.push({ key: 'device', label: 'Seat device', status: dev ? 'PASS' : 'FAIL', detail: dev ? dev.hostname : 'No device enrolled at this seat' });
-  out.push({ key: 'trust', label: 'Device trust', status: dev?.trust === 'attested' ? 'PASS' : dev?.status === 'enrolled' ? 'NOT_RUN' : 'FAIL', detail: dev?.trust || 'unknown' });
+  out.push({ key: 'trust', label: 'Device trust', status: dev?.backendTrustOutcome === 'ALLOW' ? 'PASS' : 'FAIL', detail: dev?.backendTrustOutcome === 'ALLOW' ? 'Server verified' : 'Server-verified device trust is unavailable' });
   out.push({ key: 'policy', label: 'Policy deployment', status: pol && pol.status === 'published' && dev?.policyId === pol.id ? 'PASS' : pol && dev?.policyId ? 'WARN' : 'FAIL', detail: pol ? `v${pol.version}` : 'No policy' });
   out.push({ key: 'release', label: 'Approved release', status: rel && !['revoked', 'candidate'].includes(rel.status) ? 'PASS' : 'FAIL', detail: rel?.version || 'unknown' });
   return out;

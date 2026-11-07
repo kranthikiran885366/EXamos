@@ -169,7 +169,9 @@ export async function bootIntegrity(tenantId, ctx = {}) {
     const pol = policies.find((p) => p.id === d.policyId);
     const secureBoot = d.hardware?.secureBoot;
     const tpm = d.hardware?.tpm2;
-    const status = d.tampered ? 'tampered' : !last ? 'unknown' : last.result === 'attested' ? (rel?.status === 'revoked' ? 'release-revoked' : 'intact') : 'failed';
+    const status = d.backendTrustOutcome === 'ALLOW'
+      ? rel?.status === 'revoked' ? 'release-revoked' : 'intact'
+      : d.backendTrustOutcome === 'DENY' ? 'failed' : 'unknown';
     return {
       ...d, lastAttestation: last, release: rel, policy: pol, secureBoot, tpm,
       bootStatus: status, measuredAt: last?.verifiedAt || null,
@@ -182,21 +184,21 @@ export async function securityOverview(tenantId, ctx = {}) {
   const { devices = await all('devices'), incidents = await all('incidents'), events = await all('securityEvents'), vulnerabilities = await all('vulnerabilities'), evidence = await all('evidence'), attestations = await all('attestations'), releases = await all('releases'), policies = await all('policies') } = ctx;
   const f = (r) => r.tenantId === tenantId;
   const d = devices.filter(f), inc = incidents.filter(f), ev = events.filter(f), vul = vulnerabilities.filter(f), e = evidence.filter(f);
-  const attested = d.filter((x) => x.trust === 'attested').length;
+  const attested = d.filter((x) => x.backendTrustOutcome === 'ALLOW').length;
   const openVul = vul.filter((v) => !['fixed', 'false-positive'].includes(v.status));
   const critical = openVul.filter((v) => v.severity === 'critical').length;
   const openEvents = ev.filter((x) => ['open', 'acknowledged', 'escalated'].includes(x.status)).length;
   const chain = await verifyChain();
-  const boot = d.filter((x) => !x.tampered && latestAttestations(attestations, x.id)?.result === 'attested').length;
+  const boot = d.filter((x) => !x.tampered && x.backendTrustOutcome === 'ALLOW').length;
   const score = Math.max(0, Math.min(100, Math.round(
-    (d.length ? (attested / d.length) * 35 : 20) +
-    (d.length ? (boot / d.length) * 25 : 15) +
+    (d.length ? (attested / d.length) * 35 : 0) +
+    (d.length ? (boot / d.length) * 25 : 0) +
     (openVul.length ? Math.max(0, 20 - critical * 8) : 20) +
     (chain.ok ? 10 : 0) +
     (openEvents ? Math.max(0, 10 - openEvents * 2) : 10),
   )));
   return {
-    devices: d.length, attested, bootIntact: boot, failed: d.filter((x) => x.trust === 'failed').length,
+    devices: d.length, attested, bootIntact: boot, failed: d.filter((x) => x.backendTrustOutcome === 'DENY').length,
     isolated: d.filter((x) => x.isolated).length, openIncidents: inc.filter((i) => ['open', 'investigating', 'contained'].includes(i.status)).length,
     criticalIncidents: inc.filter((i) => i.severity === 'critical' && ['open', 'investigating', 'contained'].includes(i.status)).length,
     openEvents, criticalVulns: critical, openVulns: openVul.length, evidence: e.length,

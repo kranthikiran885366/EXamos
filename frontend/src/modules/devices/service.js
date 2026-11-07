@@ -26,7 +26,7 @@ export async function deviceDetail(deviceId, ctx = {}) {
 
 export function timelineFor(detail) {
   const out = [];
-  for (const a of detail.attestations) out.push({ id: a.id, title: `Attestation ${a.result || a.status}`, meta: new Date(a.verifiedAt || a.issuedAt).toLocaleString('en-IN'), body: a.reason || '', tone: a.result === 'failed' ? 'r' : a.result === 'attested' ? 'g' : '' });
+  for (const a of detail.attestations) out.push({ id: a.id, title: 'Legacy attestation record (unverified)', meta: new Date(a.verifiedAt || a.issuedAt).toLocaleString('en-IN'), body: a.reason || '', tone: '' });
   for (const c of detail.compat) out.push({ id: c.id, title: `Compatibility ${c.overall}`, meta: new Date(c.runAt).toLocaleString('en-IN'), body: `${c.checks.filter((x) => x.effective === 'PASS').length}/${c.checks.length} checks passed` });
   for (const i of detail.incidents) out.push({ id: i.id, title: `INC-${i.no} · ${i.title}`, meta: new Date(i.createdAt).toLocaleString('en-IN'), body: i.status, tone: i.severity === 'critical' ? 'r' : '' });
   for (const s of detail.sessions) out.push({ id: s.id, title: `Exam session ${s.status}`, meta: new Date(s.startedAt).toLocaleString('en-IN'), body: s.receipt || '' });

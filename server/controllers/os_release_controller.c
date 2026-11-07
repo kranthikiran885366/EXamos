@@ -165,8 +165,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
 
         char rel_id[64] = {0}, version[64] = {0}, commit_id[64] = {0};
         char manifest_json[16384] = {0};
-        char build_cfg[256] = "mkosi-debian-secure-uefi", toolchain[64] = "Debian 12 / mkosi 14.1";
-        char kernel_v[64] = "6.6.0-examos", min_v[64] = "1.0.0", pol_v[64] = "1.0";
+        char build_cfg[256] = {0}, toolchain[64] = {0};
+        char kernel_v[64] = {0}, min_v[64] = {0}, pol_v[64] = {0};
 
         ctrl_json_string(body, "release_id", rel_id, sizeof(rel_id));
         ctrl_json_string(body, "version", version, sizeof(version));
@@ -235,7 +235,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         PGresult *mr = db_simple(conn,
             "INSERT INTO os_release_manifests "
             "(id, release_id, manifest_json, manifest_digest, signature_algorithm, signature_value, verified, created_at) "
-            "VALUES ($1, $1, $2::jsonb, $3, 'rsa-sha256', NULL, FALSE, "
+            "VALUES ($1, $1, $2::jsonb, $3, '', '', FALSE, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 3, mp, ml);
         if (!mr || PQresultStatus(mr) != PGRES_COMMAND_OK) {
             if (mr) PQclear(mr);

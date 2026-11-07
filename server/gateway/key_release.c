@@ -9,7 +9,8 @@ int key_release_get_session_key(const char *session_id,
                                 char *out_exam_key, size_t max_len,
                                 const char *device_id,
                                 char *out_error_code) {
-    if (!session_id || !session_id[0] || !out_exam_key || max_len < 65) {
+    if (!session_id || !session_id[0] || !device_id || !device_id[0] ||
+        !out_exam_key || max_len < 65) {
         if (out_error_code) snprintf(out_error_code, 64, "P3_INVALID_REQUEST");
         return -1;
     }
@@ -38,7 +39,7 @@ int key_release_get_session_key(const char *session_id,
 int key_release_check_eligibility(const char *session_id,
                                   const char *device_id,
                                   char *out_reason) {
-    if (!session_id || !session_id[0]) {
+    if (!session_id || !session_id[0] || !device_id || !device_id[0]) {
         if (out_reason) snprintf(out_reason, 64, "P3_INVALID_REQUEST");
         return -1;
     }
@@ -53,6 +54,13 @@ int key_release_check_eligibility(const char *session_id,
         if (out_reason) snprintf(out_reason, 64, "P3_SESSION_NOT_TRUSTED");
         return -1;
     }
-    (void)device_id;
+    if (attestation_check_device_binding(session_id, device_id) != 0) {
+        if (out_reason) snprintf(out_reason, 64, "P3_DEVICE_BINDING_MISMATCH");
+        return -1;
+    }
+    if (attestation_check_exam_key_ready(session_id, device_id) != 0) {
+        if (out_reason) snprintf(out_reason, 64, "P3_KEY_UNAVAILABLE");
+        return -1;
+    }
     return 0;
 }

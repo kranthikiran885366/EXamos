@@ -2,6 +2,7 @@
 #include "../include/exam_engine.h"
 #include "../include/event_chain.h"
 #include "../include/candidate_login.h"
+#include "../controllers/controller.h"
 #include "../include/ledger.h"
 #include "../include/config_manager.h"
 #include "../include/admin_auth_store.h"
@@ -194,7 +195,7 @@ candidate_exam_state_t* exam_engine_get_state(const char *session_token) {
 
     /* Resolve candidate identity outside the engine lock to avoid lock ordering issues */
     char resolved_cid[MAX_CANDIDATE_ID_LEN] = {0};
-    if (!candidate_session_identity(session_token, resolved_cid, sizeof(resolved_cid)) ||
+    if (!ctrl_candidate_token_identity(session_token, resolved_cid, sizeof(resolved_cid)) ||
         !resolved_cid[0]) return NULL;
 
     pthread_mutex_lock(&g_engine_lock);

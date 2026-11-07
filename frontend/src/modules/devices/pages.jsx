@@ -9,8 +9,8 @@ import {
 import { fmt, ago } from '../../core/ui/format';
 import { useLoad, usePerm } from '../../core/ui/hooks';
 import {
-  enrollDevices, enrollSingle, setDeviceStatus, runCompatibility, grantException, deviceState,
-  deviceStats, CHECKS, COMPAT_PROFILES, deviceDetail, timelineFor, attestDeviceFor,
+  setDeviceStatus, runCompatibility, grantException, deviceState,
+  deviceStats, CHECKS, COMPAT_PROFILES, deviceDetail, timelineFor,
   releaseIsolation, simulateOutage, reassignDevice, replaceDevice, requestReauth, latestCompat,
 } from './service';
 
@@ -26,7 +26,6 @@ export function DevicesPage() {
   const compat = useCol('compat', false);
   const [act, setAct] = useState(null);
   const [reassign, setReassign] = useState(null);
-  const [enrolling, setEnrolling] = useState(false);
   const flash = useFlash();
   const perms = usePerm();
 
@@ -39,24 +38,23 @@ export function DevicesPage() {
       actions={<>
         <Link className="btn" to="/devices/enrollment">Enrollment</Link>
         <Link className="btn" to="/devices/compatibility">Compatibility</Link>
-        {perms('device.manage') && <button className="btn primary" onClick={() => setEnrolling(true)}><Icon name="plus" size={15} /> Enroll devices</button>}
       </>}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
       <StatGrid cols={6}>
         <Stat label="Total" value={stats.total} icon="device" />
         <Stat label="Enrolled" value={stats.enrolled} icon="check" tone="green" />
         <Stat label="Online" value={stats.online} icon="pulse" tone="green" />
-        <Stat label="Attested" value={stats.attested} icon="shield" tone="violet" />
+        <Stat label="Server trusted" value={stats.attested} icon="shield" tone="violet" />
         <Stat label="Suspended" value={stats.suspended} icon="warn" tone="amber" />
         <Stat label="Revoked" value={stats.revoked} icon="warn" tone="red" />
       </StatGrid>
       <DataTable
-        title="Device fleet" desc="Devices must be reachable and attested before a candidate can start."
+        title="Device fleet" desc="Candidates require backend-verified device trust before an exam can start."
         rows={rows} search={(d) => `${d.hostname} ${d.seat} ${d.serial} ${d.trust} ${d.status}`}
         filters={[
           { key: 'state', label: 'State', get: (d) => deviceState(d), options: STATE_FILTERS.map((s) => ({ v: s, l: s })) },
           { key: 'centerId', label: 'Centre', options: centers.filter((c) => c.tenantId === tenantId).map((c) => ({ v: c.id, l: `${c.code} · ${c.name}` })) },
-          { key: 'trust', label: 'Trust', options: ['unknown', 'attested', 'failed'].map((s) => ({ v: s, l: s })) },
+          { key: 'trust', label: 'Trust report', options: [{ v: 'unknown', l: 'No report' }, { v: 'attested', l: 'Legacy claim (unverified)' }, { v: 'failed', l: 'Legacy failure report' }] },
         ]}
         defaultSort={{ key: 'hostname', dir: 'asc' }}
         columns={[
@@ -64,22 +62,21 @@ export function DevicesPage() {
           { key: 'seat', label: 'Seat', mono: true },
           { key: 'centerId', label: 'Centre', render: (d) => centerName(d.centerId) },
           { key: 'state', label: 'State', render: (d) => <Badge value={deviceState(d)} /> },
-          { key: 'trust', label: 'Trust', render: (d) => <Badge value={d.trust} /> },
+          { key: 'trust', label: 'Trust', render: (d) => <Badge value={d.backendTrustOutcome === 'ALLOW' ? 'verified' : 'unverified'} /> },
           { key: 'compatStatus', label: 'Compat', render: (d) => <Badge value={d.compatStatus || 'NOT_RUN'} /> },
           { key: 'lastSeen', label: 'Last seen', sortable: true, render: (d) => <span title={fmt(d.lastSeen)}>{ago(d.lastSeen)}</span> },
-          { key: 'lastAttested', label: 'Attested', render: (d) => (d.lastAttested ? ago(d.lastAttested) : 'Never') },
+          { key: 'lastAttested', label: 'Last reported', render: (d) => (d.lastAttested ? ago(d.lastAttested) : 'Never') },
         ]}
         actions={(d) => {
           const out = [{ label: 'Open', onClick: () => navigate(`/devices/${d.id}`) }];
           if (!perms('device.manage')) return out;
-          out.push({ label: 'Attest', onClick: () => setAct({ type: 'attest', row: d }) });
           if (perms('compat.manage')) out.push({ label: 'Compat check', onClick: () => flash.run(async () => { const r = await runCompatibility(user, d, d.profile); return `Compatibility: ${r.overall}`; }) });
           if (d.status === 'revoked') {
             out.push({ label: 'Request reauth', onClick: () => setAct({ type: 'reauth', row: d }) });
           } else if (d.status === 'enrolled') {
             out.push({ label: 'Suspend', danger: true, onClick: () => setAct({ type: 'status', row: d, next: 'suspended' }) });
-          } else {
-            out.push({ label: 'Reactivate', onClick: () => setAct({ type: 'status', row: d, next: 'enrolled' }) });
+          } else if (d.status === 'pending_approval') {
+            out.push({ label: 'Approve enrollment', onClick: () => setAct({ type: 'status', row: d, next: 'enrolled' }) });
           }
           if (d.isolated) out.push({ label: 'Release isolation', onClick: () => setAct({ type: 'isolation', row: d }) });
           out.push({ label: 'Reassign', onClick: () => setReassign(d) });
@@ -88,20 +85,15 @@ export function DevicesPage() {
         }}
       />
 
-      {enrolling && <BulkEnrollModal onClose={() => setEnrolling(false)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
       {reassign && <ReassignModal device={reassign} centers={centers.filter((c) => c.tenantId === tenantId)} onClose={() => setReassign(null)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
 
-      {act?.type === 'attest' && (
-        <ActionDialog title="Attest device" desc={`${act.row.hostname} · verifies TPM quote and PCR values.`} confirmLabel="Attest" requireReason={false}
-          onClose={() => setAct(null)} onConfirm={() => flash.run(() => attestDeviceFor(user, act.row.id))} />
-      )}
       {act?.type === 'status' && (
         <ActionDialog title={act.next === 'suspended' ? 'Suspend device' : 'Reactivate device'} desc={act.row.hostname} danger={act.next === 'suspended'}
           confirmLabel={act.next === 'suspended' ? 'Suspend' : 'Reactivate'} onClose={() => setAct(null)}
           onConfirm={(reason) => flash.run(() => setDeviceStatus(user, act.row, act.next, reason))} />
       )}
       {act?.type === 'reauth' && (
-        <ActionDialog title="Request reauthorisation" desc="A different privileged user must approve this." confirmLabel="Request"
+        <ActionDialog title="Request reauthorisation" desc="A different privileged user must approve this. Approval alone does not reactivate the device; a fresh trusted attestation identity is required." confirmLabel="Request"
           onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => requestReauth(user, act.row, reason))} />
       )}
       {act?.type === 'isolation' && (
@@ -117,88 +109,12 @@ export function DevicesPage() {
 }
 
 /* ------------------------------------------------------------------ enrollment */
-function BulkEnrollModal({ onClose, onDone }) {
-  const { user } = useAuth();
-  const { tenantId } = useTenant();
-  const centers = useCol('centers', false);
-  const [v, setV] = useState({ centerId: '', count: '1' });
-  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
-  const submit = async (e) => {
-    e.preventDefault(); if (busy) return; setBusy(true); setErr('');
-    try { const m = await enrollDevices(user, { tenantId, centerId: v.centerId, count: v.count }); onDone?.(m); onClose(); }
-    catch (x) { setErr(x.message || String(x)); }
-    setBusy(false);
-  };
-  return (
-    <Modal title="Enroll devices" desc="Enrolls consecutive free seats at the selected centre." onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" type="submit" form="bulk-enroll" disabled={busy}>{busy ? 'Enrolling…' : 'Enroll'}</button></>}>
-      <form id="bulk-enroll" onSubmit={submit} className="formgrid">
-        <Field label="Centre" required>
-          <Select value={v.centerId} onChange={(e) => setV({ ...v, centerId: e.target.value })} options={centers.filter((c) => c.tenantId === tenantId && c.status === 'active').map((c) => ({ v: c.id, l: `${c.code} · ${c.name}` }))} />
-        </Field>
-        <Field label="How many" required help="1–100 devices."><Input type="number" min="1" max="100" value={v.count} onChange={(e) => setV({ ...v, count: e.target.value })} /></Field>
-        {err && <div className="span2"><Alert tone="danger">{err}</Alert></div>}
-      </form>
-    </Modal>
-  );
-}
-
 export function EnrollmentPage() {
-  const { user } = useAuth();
-  const { tenantId } = useTenant();
-  const centers = useCol('centers', false);
-  const releases = useCol('releases', false);
-  const [bulk, setBulk] = useState(false);
-  const [v, setV] = useState({ hostname: '', seat: '', centerId: '', serial: '', profile: 'standard-uefi', releaseId: '' });
-  const [err, setErr] = useState(''); const [result, setResult] = useState(null);
-  const flash = useFlash();
-  const perms = usePerm();
-  const activeCenters = centers.filter((c) => c.tenantId === tenantId && c.status === 'active');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    await flash.run(async () => {
-      const d = await enrollSingle(user, { tenantId, ...v });
-      setResult(d);
-      setV({ hostname: '', seat: '', centerId: '', serial: '', profile: 'standard-uefi', releaseId: '' });
-      return `Enrolled ${d.hostname} (${d.serial}).`;
-    });
-  };
-
   return (
-    <Page title="Enrollment" desc="Enroll devices into the fleet with a hardware-bound identity."
-      actions={perms('device.manage') ? <button className="btn primary" onClick={() => setBulk(true)}><Icon name="plus" size={15} /> Bulk enroll</button> : null}>
-      <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
-      <div className="two">
-        <Card title="Enroll a single device" desc="Generates a unique key pair and binds it to the seat.">
-          <form onSubmit={submit} className="formgrid">
-            <Field label="Centre" required><Select value={v.centerId} onChange={(e) => setV({ ...v, centerId: e.target.value })} options={activeCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.name}` }))} /></Field>
-            <Field label="Seat" required help="Format A01."><Input value={v.seat} onChange={(e) => setV({ ...v, seat: e.target.value.toUpperCase() })} maxLength={3} placeholder="A01" /></Field>
-            <Field label="Hostname" help="Defaults to centre-seat."><Input value={v.hostname} onChange={(e) => setV({ ...v, hostname: e.target.value })} maxLength={60} /></Field>
-            <Field label="Serial number"><Input value={v.serial} onChange={(e) => setV({ ...v, serial: e.target.value })} maxLength={40} /></Field>
-            <Field label="Hardware profile"><Select value={v.profile} onChange={(e) => setV({ ...v, profile: e.target.value })} options={COMPAT_PROFILES} placeholder={false} /></Field>
-            <Field label="Release" help="Defaults to the latest stable release.">
-              <Select value={v.releaseId} onChange={(e) => setV({ ...v, releaseId: e.target.value })} options={releases.filter((r) => r.status !== 'revoked').map((r) => ({ v: r.id, l: `${r.version} (${r.status})` }))} placeholder="Latest stable" />
-            </Field>
-            <div className="span2"><button className="btn primary" disabled={flash.busy || !v.centerId || !v.seat}>{flash.busy ? 'Enrolling…' : 'Enroll device'}</button></div>
-          </form>
-        </Card>
-        <Card title="Enrollment checklist" desc="What happens when a device is enrolled.">
-          <ol className="checklist">
-            <li>A fresh ECDSA key pair is generated in the browser and bound to the device id.</li>
-            <li>The device inherits the institution policy and latest stable release.</li>
-            <li>It starts as <Badge value="unknown" /> trust and must be attested.</li>
-            <li>Run a compatibility check before assigning candidates.</li>
-            <li>Devices must heartbeat at least every 40 seconds to be reachable.</li>
-          </ol>
-          {result && (
-            <Alert tone="success" title="Device enrolled">
-              <KeyValue cols={2} items={[['Hostname', result.hostname], ['Seat', result.seat], ['Serial', result.serial], ['Trust', <Badge key="t" value={result.trust} />]]} />
-            </Alert>
-          )}
-        </Card>
-      </div>
-      {bulk && <BulkEnrollModal onClose={() => setBulk(false)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
+    <Page title="Enrollment" desc="Trusted device enrollment status.">
+      <Alert tone="warn" title="Console enrollment is unavailable">
+        The previous console flow generated a browser key and locally assembled device records; that does not establish a hardware-bound identity or persist registration through the device trust backend. Enrollment is disabled until trusted device provisioning and verifiable attestation are implemented end to end. No device or key was created.
+      </Alert>
     </Page>
   );
 }
@@ -374,20 +290,17 @@ export function DeviceDetailPage() {
     <Page title={d.hostname} desc={`Seat ${d.seat} · ${deviceState(d)}`}
       breadcrumb={<div className="crumbs-inline"><Link to="/devices">Devices</Link><Icon name="arrow" size={12} /><span>{d.hostname}</span></div>}
       actions={perms('device.manage') ? <>
-        <button className="btn" onClick={() => setAct({ type: 'attest' })}>Attest</button>
         <button className="btn" onClick={() => setAct({ type: 'compat' })}>Compat check</button>
         <button className="btn" onClick={() => setReassign(true)}>Reassign</button>
         {d.isolated && <button className="btn" onClick={() => setAct({ type: 'isolation' })}>Release isolation</button>}
-        {d.status === 'enrolled'
-          ? <button className="btn danger" onClick={() => setAct({ type: 'status', next: 'suspended' })}>Suspend</button>
-          : d.status === 'revoked'
-            ? <button className="btn primary" onClick={() => setAct({ type: 'reauth' })}>Request reauth</button>
-            : <button className="btn" onClick={() => setAct({ type: 'status', next: 'enrolled' })}>Reactivate</button>}
+        {d.status === 'enrolled' && <button className="btn danger" onClick={() => setAct({ type: 'status', next: 'suspended' })}>Suspend</button>}
+        {d.status === 'pending_approval' && <button className="btn" onClick={() => setAct({ type: 'status', next: 'enrolled' })}>Approve enrollment</button>}
+        {d.status === 'revoked' && <button className="btn primary" onClick={() => setAct({ type: 'reauth' })}>Request reauth</button>}
       </> : null}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
       <StatGrid cols={4}>
         <Stat label="State" value={deviceState(d)} icon="device" tone={deviceState(d) === 'enrolled' ? 'green' : 'amber'} />
-        <Stat label="Trust" value={d.trust} icon="shield" tone={d.trust === 'attested' ? 'green' : 'amber'} />
+        <Stat label="Trust" value={d.backendTrustOutcome === 'ALLOW' ? 'verified' : 'unverified'} icon="shield" tone={d.backendTrustOutcome === 'ALLOW' ? 'green' : 'amber'} />
         <Stat label="Last seen" value={ago(d.lastSeen)} icon="clock" sub={fmt(d.lastSeen)} />
         <Stat label="Centre" value={detail.center?.code || '—'} icon="building" sub={detail.center?.name} />
       </StatGrid>
@@ -400,7 +313,7 @@ export function DeviceDetailPage() {
             ['Policy', detail.policy?.name || '—'],
             ['Compatibility', <Badge key="c" value={d.compatStatus || 'NOT_RUN'} />],
             ['Isolated', d.isolated ? 'Yes' : 'No'],
-            ['Enrolled', fmt(d.enrolledAt)], ['Last attested', d.lastAttested ? fmt(d.lastAttested) : 'Never'],
+            ['Enrolled', fmt(d.enrolledAt)], ['Last attestation report', d.lastAttested ? fmt(d.lastAttested) : 'Never'],
           ]} />
         </Card>
         <Card title="Compatibility summary" desc={lastCompat ? `Last run ${fmt(lastCompat.runAt)}` : 'No compatibility run yet.'}>
@@ -426,22 +339,18 @@ export function DeviceDetailPage() {
       </Card>
 
       {reassign && <ReassignModal device={d} centers={centers.filter((c) => c.tenantId === d.tenantId)} onClose={() => setReassign(false)} onDone={(m) => flash.setMsg({ ok: true, text: m })} />}
-      {act?.type === 'attest' && (
-        <ActionDialog title="Attest device" desc={`${d.hostname} · verifies TPM quote and PCR values.`} confirmLabel="Attest" requireReason={false}
-          onClose={() => setAct(null)} onConfirm={() => flash.run(() => attestDeviceFor(user, d.id))} />
-      )}
       {act?.type === 'compat' && (
         <ActionDialog title="Run compatibility check" desc={d.hostname} confirmLabel="Run check" requireReason={false}
           field={{ label: 'Hardware profile', options: COMPAT_PROFILES, default: d.profile }}
           onClose={() => setAct(null)} onConfirm={(_r, val) => flash.run(async () => { const r = await runCompatibility(user, d, val); return `Compatibility: ${r.overall}`; })} />
       )}
       {act?.type === 'status' && (
-        <ActionDialog title={act.next === 'suspended' ? 'Suspend device' : act.next === 'revoked' ? 'Revoke device' : 'Reactivate device'}
-          desc={d.hostname} danger={act.next !== 'enrolled'} confirmLabel={act.next === 'suspended' ? 'Suspend' : act.next === 'revoked' ? 'Revoke' : 'Reactivate'}
+        <ActionDialog title={act.next === 'suspended' ? 'Suspend device' : act.next === 'revoked' ? 'Revoke device' : 'Approve device enrollment'}
+          desc={d.hostname} danger={act.next !== 'enrolled'} confirmLabel={act.next === 'suspended' ? 'Suspend' : act.next === 'revoked' ? 'Revoke' : 'Approve enrollment'}
           onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => setDeviceStatus(user, d, act.next, reason))} />
       )}
       {act?.type === 'reauth' && (
-        <ActionDialog title="Request reauthorisation" desc="A different privileged user must approve this." confirmLabel="Request"
+        <ActionDialog title="Request reauthorisation" desc="A different privileged user must approve this. Approval alone does not reactivate the device; a fresh trusted attestation identity is required." confirmLabel="Request"
           onClose={() => setAct(null)} onConfirm={(reason) => flash.run(() => requestReauth(user, d, reason))} />
       )}
       {act?.type === 'isolation' && (
@@ -477,25 +386,28 @@ export function DeviceAttestationPage() {
     .sort((a, b) => (b.verifiedAt || b.issuedAt || 0) - (a.verifiedAt || a.issuedAt || 0)), [attestations, id]);
 
   return (
-    <Page title="Attestation" desc={device ? `${device.hostname} · TPM quote history` : 'TPM quote history for this device.'}
+    <Page title="Attestation reports" desc={device ? `${device.hostname} · historical, unverified local quote reports` : 'Historical, unverified local quote reports.'}
       breadcrumb={<div className="crumbs-inline"><Link to="/devices">Devices</Link><Icon name="arrow" size={12} /><Link to={`/devices/${id}`}>{device?.hostname || id}</Link></div>}>
+      <Alert tone="warn" title="Reports do not establish device trust">
+        Backend-verified hardware quote evidence is unavailable; report results and PCR matches are unverified.
+      </Alert>
       <StatGrid cols={3}>
-        <Stat label="Attestations" value={rows.length} icon="shield" />
-        <Stat label="Passed" value={rows.filter((a) => a.result === 'attested' || a.result === 'pass').length} icon="check" tone="green" />
-        <Stat label="Failed" value={rows.filter((a) => a.result === 'failed' || a.result === 'fail').length} icon="warn" tone="red" />
+        <Stat label="Legacy reports" value={rows.length} icon="shield" />
+        <Stat label="Reported success claims" value={rows.filter((a) => a.result === 'attested' || a.result === 'pass').length} icon="check" tone="amber" />
+        <Stat label="Reported failure claims" value={rows.filter((a) => a.result === 'failed' || a.result === 'fail').length} icon="warn" tone="amber" />
       </StatGrid>
       <DataTable
-        title="Attestation history" desc="Newest first."
+        title="Legacy report history" desc="Newest first; report values are not trusted evidence."
         rows={rows}
         columns={[
-          { key: 'result', label: 'Result', render: (a) => <Badge value={a.result || a.status} /> },
-          { key: 'pcrMatch', label: 'PCR match', render: (a) => <Badge value={a.pcrMatch ? 'match' : 'mismatch'} /> },
+          { key: 'result', label: 'Reported result', render: (a) => <Badge value={a.result || a.status || 'Unknown'} tone="amber" /> },
+          { key: 'pcrMatch', label: 'Reported PCR match', render: (a) => <Badge value={a.pcrMatch ? 'claimed match' : 'not verified'} tone="amber" /> },
           { key: 'nonce', label: 'Nonce', render: (a) => <span className="mono sm">{a.nonce || '—'}</span> },
           { key: 'reason', label: 'Detail', render: (a) => a.reason || '—' },
           { key: 'issuedAt', label: 'Issued', sortable: true, render: (a) => fmt(a.issuedAt || a.verifiedAt) },
-          { key: 'verifiedAt', label: 'Verified', render: (a) => (a.verifiedAt ? fmt(a.verifiedAt) : '—') },
+          { key: 'verifiedAt', label: 'Reported verification time', render: (a) => (a.verifiedAt ? fmt(a.verifiedAt) : '—') },
         ]}
-        empty={<Empty icon="shield" title="No attestations yet">Attest this device from the device page.</Empty>}
+        empty={<Empty icon="shield" title="No legacy reports">No server-verified hardware quote evidence is available.</Empty>}
       />
     </Page>
   );

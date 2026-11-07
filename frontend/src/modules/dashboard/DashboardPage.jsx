@@ -111,7 +111,7 @@ export default function DashboardPage() {
   // Device posture is authoritative only when the live fleet API responds.
   const liveDevices = fleetData?.devices || [];
   const totalDevicesCount = fleetData ? liveDevices.length : null;
-  const attested = fleetData ? liveDevices.filter((d) => d.attestation_status === 'TRUSTED').length : null;
+  const attested = fleetData ? liveDevices.filter((d) => (d.backendTrustOutcome || d.backend_trust_outcome) === 'ALLOW').length : null;
   const onlineCount = serverHealth?.status === 'ok' && fleetData ? liveDevices.filter((d) => d.status === 'online' || d.status === 'ONLINE').length : null;
   const usbLocked = fleetData ? liveDevices.filter((d) => d.usb_storage_blocked === true).length : null;
   const kioskActive = fleetData ? liveDevices.filter((d) => d.kiosk_status === 'active' || d.kiosk_status === 'ACTIVE').length : null;
@@ -360,7 +360,7 @@ export default function DashboardPage() {
           icon="device"
           tone="green"
           to="/kiosk"
-          sub={attested === null ? 'Fleet data unavailable' : `${attested} TPM-Attested`}
+          sub={attested === null ? 'Fleet data unavailable' : `${attested} server-verified`}
         />
         <Stat
           label="Audit Ledger Blocks"

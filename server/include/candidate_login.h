@@ -27,7 +27,7 @@ int candidate_credentials_validate(const char *candidate_id, const char *pin);
 /* Validate a session token. Returns 1 if valid and active, 0 if not. */
 int candidate_session_validate(const char *token);
 
-/* Resolve a valid token to its candidate ID. */
+/* Resolve a token in the local session cache; this does not verify database revocation or expiry. */
 int candidate_session_identity(const char *token, char *out_candidate_id, size_t max_len);
 
 /* Invalidate (logout) a session token. */
@@ -38,5 +38,6 @@ int candidate_session_restore(const char *token, const char *candidate_id, time_
 
 /* Returns the HTML for the candidate login page (static string). */
 const char *candidate_login_html(void);
+const char *candidate_workbench_html(void);
 
 #endif

@@ -59,7 +59,7 @@ static int record_device_audit(PGconn *conn, const char *device_id, const char *
     return ok ? 0 : -1;
 }
 
-static void record_device_security_event(PGconn *conn, const char *device_id,
+static int record_device_security_event(PGconn *conn, const char *device_id,
                                         const char *event_type, const char *severity, const char *details) {
     char sid[64];
     snprintf(sid, sizeof(sid), "dsec_%ld_%d", (long)time(NULL), rand() % 10000);
@@ -70,7 +70,77 @@ static void record_device_security_event(PGconn *conn, const char *device_id,
     PGresult *r = db_simple(conn,
         "INSERT INTO device_security_events (id, device_id, event_type, severity, details, created_at) "
         "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, p, l);
+    int ok = r && PQresultStatus(r) == PGRES_COMMAND_OK;
     if (r) PQclear(r);
+    return ok ? 0 : -1;
+}
+
+static int update_device_status(PGconn *conn, const char *device_id,
+                                const char *institution_id, const char *status,
+                                const char *actor_id, const char *action,
+                                const char *reason) {
+    PGresult *begin = PQexec(conn, "BEGIN");
+    if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+        if (begin) PQclear(begin);
+        return -1;
+    }
+    PQclear(begin);
+
+    const char *params[3] = { status, device_id, institution_id };
+    const int lengths[3] = {
+        (int)strlen(status), (int)strlen(device_id),
+        (int)strlen(institution_id)
+    };
+    const char *query =
+        "UPDATE devices SET status=$1,updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+        "WHERE id=$2 AND institution_id=$3 AND "
+        "(($1='suspended' AND status IN ('registered','enrolled')) OR "
+        "($1='revoked' AND status NOT IN ('revoked','retired')) OR "
+        "($1='retired' AND status<>'retired'))";
+    PGresult *updated = db_simple(conn, query, 3, params, lengths);
+    if (!updated || PQresultStatus(updated) != PGRES_COMMAND_OK) {
+        if (updated) PQclear(updated);
+        PQexec(conn, "ROLLBACK");
+        return -1;
+    }
+    if (strcmp(PQcmdTuples(updated), "1") != 0) {
+        PQclear(updated);
+        PQexec(conn, "ROLLBACK");
+        return 0;
+    }
+    PQclear(updated);
+
+    if (strcmp(status, "revoked") == 0 || strcmp(status, "retired") == 0) {
+        PGresult *keys = db_simple(conn,
+            "UPDATE device_attestation_keys SET status='revoked' "
+            "WHERE device_id=$1 AND status='active'",
+            1, (const char *[]){ device_id },
+            (const int []){ (int)strlen(device_id) });
+        if (!keys || PQresultStatus(keys) != PGRES_COMMAND_OK) {
+            if (keys) PQclear(keys);
+            PQexec(conn, "ROLLBACK");
+            return -1;
+        }
+        PQclear(keys);
+    }
+
+    if ((strcmp(status, "revoked") == 0 &&
+         record_device_security_event(conn, device_id, "DEVICE_REVOKED",
+                                      "CRITICAL", reason) != 0) ||
+        record_device_audit(conn, device_id, institution_id, actor_id,
+                            action, reason) != 0) {
+        PQexec(conn, "ROLLBACK");
+        return -1;
+    }
+
+    PGresult *commit = PQexec(conn, "COMMIT");
+    if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+        if (commit) PQclear(commit);
+        PQexec(conn, "ROLLBACK");
+        return -1;
+    }
+    PQclear(commit);
+    return 1;
 }
 
 static void sha256_hex_str(const unsigned char *data, size_t len, char *out_hex) {
@@ -80,6 +150,34 @@ static void sha256_hex_str(const unsigned char *data, size_t len, char *out_hex)
         sprintf(out_hex + (i * 2), "%02x", hash[i]);
     }
     out_hex[SHA256_DIGEST_LENGTH * 2] = '\0';
+}
+
+static int device_ak_key_algorithm(const char *public_key_pem,
+                                  char *algorithm, size_t algorithm_len) {
+    if (!public_key_pem || !public_key_pem[0] || !algorithm || algorithm_len == 0)
+        return 0;
+    BIO *bio = BIO_new_mem_buf(public_key_pem, -1);
+    if (!bio) return 0;
+    EVP_PKEY *key = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!key) return 0;
+
+    int valid = 1;
+    int key_type = EVP_PKEY_base_id(key);
+    int key_bits = EVP_PKEY_bits(key);
+    if (key_type == EVP_PKEY_RSA && key_bits == 2048) {
+        snprintf(algorithm, algorithm_len, "RSA-2048");
+    } else if (key_type == EVP_PKEY_RSA && key_bits == 3072) {
+        snprintf(algorithm, algorithm_len, "RSA-3072");
+    } else if (key_type == EVP_PKEY_EC && key_bits == 256) {
+        snprintf(algorithm, algorithm_len, "ECC-P256");
+    } else if (key_type == EVP_PKEY_EC && key_bits == 384) {
+        snprintf(algorithm, algorithm_len, "ECC-P384");
+    } else {
+        valid = 0;
+    }
+    EVP_PKEY_free(key);
+    return valid;
 }
 
 /*
@@ -100,7 +198,7 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
     PGresult *d_res = db_simple(conn,
         "SELECT id, institution_id, hostname, device_name, device_category, "
         "boot_mode, secure_boot_state, tpm_present, tpm_version, os_release_id, "
-        "status, last_attestation_at FROM devices WHERE id = $1", 1, dp, dl);
+        "status FROM devices WHERE id = $1", 1, dp, dl);
 
     if (!d_res || PQntuples(d_res) == 0) {
         if (d_res) PQclear(d_res);
@@ -110,14 +208,13 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
     }
 
     char d_inst[64] = {0}, d_status[32] = {0}, d_sb[32] = {0}, d_osrel[64] = {0};
-    char d_tpmp[8] = {0}, d_last_att[32] = {0};
+    char d_tpmp[8] = {0};
 
     strncpy(d_inst, PQgetvalue(d_res, 0, 1), sizeof(d_inst) - 1);
     strncpy(d_sb, PQgetvalue(d_res, 0, 6), sizeof(d_sb) - 1);
     strncpy(d_tpmp, PQgetvalue(d_res, 0, 7), sizeof(d_tpmp) - 1);
     strncpy(d_osrel, PQgetvalue(d_res, 0, 9), sizeof(d_osrel) - 1);
     strncpy(d_status, PQgetvalue(d_res, 0, 10), sizeof(d_status) - 1);
-    strncpy(d_last_att, PQgetvalue(d_res, 0, 11), sizeof(d_last_att) - 1);
     PQclear(d_res);
 
     /* 2. Check Device Status Lifecycle */
@@ -151,24 +248,29 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
     const char *pp[1] = { d_inst };
     int pl[1] = { (int)strlen(d_inst) };
     PGresult *p_res = db_simple(conn,
-        "SELECT id, version, require_tpm, require_secure_boot, require_approved_release, "
-        "max_evidence_age_sec FROM device_trust_policies WHERE institution_id = $1 AND status = 'active' "
-        "ORDER BY version DESC LIMIT 1", 1, pp, pl);
+        "SELECT id, require_tpm, require_secure_boot, require_approved_release "
+        "FROM device_trust_policies WHERE institution_id = $1 AND status = 'active' "
+        "ORDER BY version DESC", 1, pp, pl);
 
-    char pol_id[64] = "dtpol_default";
-    int pol_ver = 1, req_tpm = 1, req_sb = 1, req_rel = 1, max_age = 600;
-
-    if (p_res && PQntuples(p_res) > 0) {
-        strncpy(pol_id, PQgetvalue(p_res, 0, 0), sizeof(pol_id) - 1);
-        pol_ver = atoi(PQgetvalue(p_res, 0, 1));
-        req_tpm = (strcmp(PQgetvalue(p_res, 0, 2), "t") == 0);
-        req_sb = (strcmp(PQgetvalue(p_res, 0, 3), "t") == 0);
-        req_rel = (strcmp(PQgetvalue(p_res, 0, 4), "t") == 0);
-        max_age = atoi(PQgetvalue(p_res, 0, 5));
-        PQclear(p_res);
-    } else {
+    if (!p_res || PQresultStatus(p_res) != PGRES_TUPLES_OK) {
         if (p_res) PQclear(p_res);
+        strncpy(out_outcome, "DENY", out_len - 1);
+        snprintf(out_reason, r_len, "Active device trust policy could not be verified");
+        return;
     }
+    if (PQntuples(p_res) != 1) {
+        PQclear(p_res);
+        strncpy(out_outcome, "DENY", out_len - 1);
+        snprintf(out_reason, r_len, "A unique active device trust policy is required");
+        return;
+    }
+
+    char pol_id[64] = {0};
+    int req_tpm = (strcmp(PQgetvalue(p_res, 0, 1), "t") == 0);
+    int req_sb = (strcmp(PQgetvalue(p_res, 0, 2), "t") == 0);
+    int req_rel = (strcmp(PQgetvalue(p_res, 0, 3), "t") == 0);
+    strncpy(pol_id, PQgetvalue(p_res, 0, 0), sizeof(pol_id) - 1);
+    PQclear(p_res);
 
     if (out_policy_id && pol_len > 0) {
         snprintf(out_policy_id, pol_len, "%s", pol_id);
@@ -193,7 +295,7 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
         const char *rel_p[1] = { d_osrel };
         int rel_l[1] = { (int)strlen(d_osrel) };
         PGresult *rel_res = db_simple(conn,
-            "SELECT status, min_supported FROM device_os_releases WHERE release_version = $1", 1, rel_p, rel_l);
+            "SELECT status FROM device_os_releases WHERE release_version = $1", 1, rel_p, rel_l);
         if (rel_res && PQntuples(rel_res) > 0) {
             const char *r_stat = PQgetvalue(rel_res, 0, 0);
             if (strcmp(r_stat, "revoked") == 0) {
@@ -217,36 +319,10 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
         }
     }
 
-    /* 7. Check Attestation Freshness */
-    if (d_last_att[0] && atoll(d_last_att) > 0) {
-        long long now_ms = (long long)time(NULL) * 1000;
-        long long age_sec = (now_ms - atoll(d_last_att)) / 1000;
-        if (age_sec > max_age) {
-            strncpy(out_outcome, "REASSESS", out_len - 1);
-            snprintf(out_reason, r_len, "Attestation evidence is stale (age: %llds, max allowed: %ds)", age_sec, max_age);
-            return;
-        }
-    }
-
-    /* All Checks Passed */
-    strncpy(out_outcome, "ALLOW", out_len - 1);
-    snprintf(out_reason, r_len, "All mandatory boot, release, hardware, and registration trust checks passed");
-
-    /* Record Decision */
-    char dec_id[64];
-    snprintf(dec_id, sizeof(dec_id), "ddec_%ld_%d", (long)time(NULL), rand() % 10000);
-    char ver_str[16];
-    snprintf(ver_str, sizeof(ver_str), "%d", pol_ver);
-
-    const char *dp_rec[7] = { dec_id, device_id, pol_id, ver_str, out_outcome, out_reason, "" };
-    int dl_rec[7];
-    for (int i = 0; i < 7; i++) dl_rec[i] = dp_rec[i] ? (int)strlen(dp_rec[i]) : 0;
-
-    PGresult *dec_r = db_simple(conn,
-        "INSERT INTO device_trust_decisions (id, device_id, policy_id, policy_version, outcome, reason, "
-        "evaluated_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-        "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 + 300000)", 6, dp_rec, dl_rec);
-    if (dec_r) PQclear(dec_r);
+    /* No quote verifier is wired, so reported hardware fields cannot grant trust. */
+    strncpy(out_outcome, "DENY", out_len - 1);
+    snprintf(out_reason, r_len,
+             "Server-side TPM quote verification is unavailable; device trust cannot be established");
 }
 
 void device_trust_handle(int client_fd, const char *method, const char *path,
@@ -320,6 +396,14 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                           origin, extra_headers, extra_len);
             return;
         }
+        char ak_algorithm[32] = {0};
+        if (!device_ak_key_algorithm(ak_pem, ak_algorithm, sizeof(ak_algorithm))) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 400,
+                          "A valid RSA-2048, RSA-3072, ECC-P256, or ECC-P384 attestation public key is required",
+                          origin, extra_headers, extra_len);
+            return;
+        }
         if (!dev_name[0]) {
             snprintf(dev_name, sizeof(dev_name), "ExamOS Terminal %s", dev_id);
         }
@@ -364,9 +448,16 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             "SELECT require_admin_approval FROM device_trust_policies "
             "WHERE institution_id=$1 AND status='active' FOR SHARE",
             1, pp, pl);
-        if (!pol_r || PQresultStatus(pol_r) != PGRES_TUPLES_OK ||
-            PQntuples(pol_r) != 1) {
+        if (!pol_r || PQresultStatus(pol_r) != PGRES_TUPLES_OK) {
             if (pol_r) PQclear(pol_r);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Device trust policy could not be verified",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        if (PQntuples(pol_r) != 1) {
+            PQclear(pol_r);
             PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             dt_send_error(client_fd, 409, "A unique active device trust policy is required",
@@ -394,14 +485,10 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $2, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
-            "ON CONFLICT (id) DO UPDATE SET "
-            "campus_id = EXCLUDED.campus_id, hostname = EXCLUDED.hostname, "
-            "device_name = EXCLUDED.device_name, secure_boot_state = EXCLUDED.secure_boot_state, "
-            "tpm_present = EXCLUDED.tpm_present, os_release_id = EXCLUDED.os_release_id, "
-            "status = EXCLUDED.status, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000",
+            "ON CONFLICT (id) DO NOTHING RETURNING id",
             16, dp, dl);
 
-        if (!ins_dev || PQresultStatus(ins_dev) != PGRES_COMMAND_OK) {
+        if (!ins_dev || PQresultStatus(ins_dev) != PGRES_TUPLES_OK) {
             char err[512];
             snprintf(err, sizeof(err), "Failed to register device: %s",
                      ins_dev ? PQresultErrorMessage(ins_dev) : "Database query failed");
@@ -409,6 +496,14 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
             dt_send_error(client_fd, 500, err, origin, extra_headers, extra_len);
+            return;
+        }
+        if (PQntuples(ins_dev) != 1) {
+            PQclear(ins_dev);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 409, "Device identity is already registered",
+                          origin, extra_headers, extra_len);
             return;
         }
         PQclear(ins_dev);
@@ -441,30 +536,39 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         }
         PQclear(ins_reg);
 
-        /* Enroll Attestation Key if provided */
-        if (ak_pem[0]) {
-            char ak_id[64];
-            snprintf(ak_id, sizeof(ak_id), "ak_%ld_%d", (long)time(NULL), rand() % 10000);
-            char fp[65];
-            sha256_hex_str((const unsigned char *)ak_pem, strlen(ak_pem), fp);
-
-            const char *ak_p[5] = { ak_id, dev_id, "AK", ak_pem, fp };
-            int ak_l[5];
-            for (int i = 0; i < 5; i++) ak_l[i] = (int)strlen(ak_p[i]);
-
-            PGresult *ins_ak = db_simple(conn,
-                "INSERT INTO device_attestation_keys (id, device_id, key_name, public_key_pem, public_key_fingerprint, status, enrolled_at) "
-                "VALUES ($1, $2, $3, $4, $5, 'active', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 5, ak_p, ak_l);
-            if (!ins_ak || PQresultStatus(ins_ak) != PGRES_COMMAND_OK) {
-                if (ins_ak) PQclear(ins_ak);
-                PQexec(conn, "ROLLBACK");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 503, "Device attestation key could not be persisted",
-                              origin, extra_headers, extra_len);
-                return;
-            }
-            PQclear(ins_ak);
+        unsigned char ak_id_random[16];
+        if (RAND_bytes(ak_id_random, sizeof(ak_id_random)) != 1) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503,
+                          "Cryptographic randomness is unavailable for attestation key registration",
+                          origin, extra_headers, extra_len);
+            return;
         }
+        char ak_id[37] = "ak_";
+        for (int i = 0; i < 16; i++)
+            sprintf(ak_id + 3 + (i * 2), "%02x", ak_id_random[i]);
+        char fp[65];
+        sha256_hex_str((const unsigned char *)ak_pem, strlen(ak_pem), fp);
+
+        const char *ak_p[6] = { ak_id, dev_id, "AK", ak_algorithm, ak_pem, fp };
+        int ak_l[6];
+        for (int i = 0; i < 6; i++) ak_l[i] = (int)strlen(ak_p[i]);
+
+        PGresult *ins_ak = db_simple(conn,
+            "INSERT INTO device_attestation_keys "
+            "(id,device_id,key_name,key_algorithm,public_key_pem,public_key_fingerprint,status,enrolled_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6,'active',EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+            6, ak_p, ak_l);
+        if (!ins_ak || PQresultStatus(ins_ak) != PGRES_COMMAND_OK) {
+            if (ins_ak) PQclear(ins_ak);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503, "Device attestation key could not be persisted",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(ins_ak);
 
         const char *registration_auditor = sess.user_id[0] ? sess.user_id : "system";
         if (record_device_audit(conn, dev_id, inst_id, registration_auditor,
@@ -564,6 +668,15 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
     const char *dev_pfx = "/api/v1/devices/";
     size_t dev_plen = strlen(dev_pfx);
     if (strncmp(path, dev_pfx, dev_plen) == 0) {
+        if (strcmp(method, "POST") == 0) {
+            if (ctrl_authorize(auth_header, AUTH_PERM_FLEET_MUTATION, &sess) != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 403, "Fleet mutation permission is required for device state changes",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            is_owner = sess.role == ROLE_PLATFORM_OWNER;
+        }
         const char *sub = path + dev_plen;
         char device_id[64] = {0};
         const char *slash = strchr(sub, '/');
@@ -733,61 +846,74 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/devices/:id/suspend ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/suspend") == 0) {
-            char reason[256] = "Security maintenance";
+            char reason[256] = {0};
             ctrl_json_string(body, "reason", reason, sizeof(reason));
-
-            const char *up_p[2] = { "suspended", device_id };
-            int up_l[2] = { 9, (int)strlen(device_id) };
-            PGresult *up_r = db_simple(conn,
-                "UPDATE devices SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up_p, up_l);
-            if (up_r) PQclear(up_r);
-
-            record_device_audit(conn, device_id, d_inst, sess.user_id, "DEVICE_SUSPENDED", reason);
+            if (strlen(reason) < 8) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 400, "A suspension reason of at least 8 characters is required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            int transition = update_device_status(conn, device_id, d_inst,
+                "suspended", sess.user_id, "DEVICE_SUSPENDED", reason);
+            if (transition != 1) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, transition == 0 ? 409 : 503,
+                              transition == 0 ? "Device state changed; suspension was not applied"
+                                              : "Device suspension and audit could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
             dt_audit_log(sess.user_id, "DEVICE_SUSPENDED", device_id);
 
             db_release(conn, 0);
-            char resp[512];
-            snprintf(resp, sizeof(resp), "{\"status\":\"suspended\",\"device_id\":\"%s\",\"reason\":\"%s\"}", device_id, reason);
+            char resp[256];
+            snprintf(resp, sizeof(resp), "{\"status\":\"suspended\",\"device_id\":\"%s\"}", device_id);
             dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
 
         /* ---------------- POST /api/v1/devices/:id/revoke ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/revoke") == 0) {
-            char reason[256] = "Hardware decommissioning or compromise";
+            char reason[256] = {0};
             ctrl_json_string(body, "reason", reason, sizeof(reason));
-
-            const char *up_p[2] = { "revoked", device_id };
-            int up_l[2] = { 7, (int)strlen(device_id) };
-            PGresult *up_r = db_simple(conn,
-                "UPDATE devices SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up_p, up_l);
-            if (up_r) PQclear(up_r);
-
-            /* Revoke Attestation Keys */
-            PGresult *ak_rev = db_simple(conn,
-                "UPDATE device_attestation_keys SET status = 'revoked' WHERE device_id = $1", 1, sp, sl);
-            if (ak_rev) PQclear(ak_rev);
-
-            record_device_security_event(conn, device_id, "DEVICE_REVOKED", "CRITICAL", reason);
-            record_device_audit(conn, device_id, d_inst, sess.user_id, "DEVICE_REVOKED", reason);
+            if (strlen(reason) < 8) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 400, "A revocation reason of at least 8 characters is required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            int transition = update_device_status(conn, device_id, d_inst,
+                "revoked", sess.user_id, "DEVICE_REVOKED", reason);
+            if (transition != 1) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, transition == 0 ? 409 : 503,
+                              transition == 0 ? "Device state changed; revocation was not applied"
+                                              : "Device revocation, key revocation, and audit could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
             dt_audit_log(sess.user_id, "DEVICE_REVOKED", device_id);
 
             db_release(conn, 0);
-            char resp[512];
-            snprintf(resp, sizeof(resp), "{\"status\":\"revoked\",\"device_id\":\"%s\",\"reason\":\"%s\"}", device_id, reason);
+            char resp[256];
+            snprintf(resp, sizeof(resp), "{\"status\":\"revoked\",\"device_id\":\"%s\"}", device_id);
             dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
 
         /* ---------------- POST /api/v1/devices/:id/retire ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/retire") == 0) {
-            const char *up_p[2] = { "retired", device_id };
-            int up_l[2] = { 7, (int)strlen(device_id) };
-            PGresult *up_r = db_simple(conn,
-                "UPDATE devices SET status = $1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, up_p, up_l);
-            if (up_r) PQclear(up_r);
-
-            record_device_audit(conn, device_id, d_inst, sess.user_id, "DEVICE_RETIRED", "Device retired");
+            int transition = update_device_status(conn, device_id, d_inst,
+                "retired", sess.user_id, "DEVICE_RETIRED", "Device retired");
+            if (transition != 1) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, transition == 0 ? 409 : 503,
+                              transition == 0 ? "Device state changed; retirement was not applied"
+                                              : "Device retirement and audit could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
             db_release(conn, 0);
             char resp[256];
             snprintf(resp, sizeof(resp), "{\"status\":\"retired\",\"device_id\":\"%s\"}", device_id);
@@ -856,16 +982,29 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/devices/:id/attestation/challenge (Fresh Nonce) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/attestation/challenge") == 0) {
-            unsigned char rand_buf[32];
+            if (strcmp(d_status, "registered") != 0 &&
+                strcmp(d_status, "enrolled") != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 409,
+                              "Only an active registered device can request an attestation challenge",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            unsigned char rand_buf[48];
             if (RAND_bytes(rand_buf, sizeof(rand_buf)) != 1) {
-                for (int i = 0; i < 32; i++) rand_buf[i] = (unsigned char)(rand() % 256);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503,
+                              "Cryptographic randomness is unavailable",
+                              origin, extra_headers, extra_len);
+                return;
             }
             char nonce[65];
             for (int i = 0; i < 32; i++) sprintf(nonce + (i * 2), "%02x", rand_buf[i]);
             nonce[64] = '\0';
 
-            char ch_id[64];
-            snprintf(ch_id, sizeof(ch_id), "dch_%ld_%d", (long)time(NULL), rand() % 10000);
+            char ch_id[40] = "dch_";
+            for (int i = 0; i < 16; i++)
+                sprintf(ch_id + 4 + (i * 2), "%02x", rand_buf[32 + i]);
 
             const char *cp[3] = { ch_id, device_id, nonce };
             int cl[3] = { (int)strlen(ch_id), (int)strlen(device_id), (int)strlen(nonce) };
@@ -874,7 +1013,15 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                 "INSERT INTO device_attestation_challenges (id, device_id, nonce, used, expires_at, created_at) "
                 "VALUES ($1, $2, $3, FALSE, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 + 120000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
                 3, cp, cl);
-            if (ins_ch) PQclear(ins_ch);
+            if (!ins_ch || PQresultStatus(ins_ch) != PGRES_COMMAND_OK) {
+                if (ins_ch) PQclear(ins_ch);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503,
+                              "Attestation challenge could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(ins_ch);
 
             db_release(conn, 0);
             char resp[512];
@@ -887,141 +1034,10 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/devices/:id/attestation/verify (Verify Quote) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/attestation/verify") == 0) {
-            char challenge_id[64] = {0}, nonce[128] = {0}, ak_id[64] = {0};
-            char quote_sig[1024] = {0}, pcr_digest[128] = {0}, pcr_vals[1024] = "{}";
-
-            ctrl_json_string(body, "challenge_id", challenge_id, sizeof(challenge_id));
-            ctrl_json_string(body, "nonce", nonce, sizeof(nonce));
-            ctrl_json_string(body, "ak_key_id", ak_id, sizeof(ak_id));
-            ctrl_json_string(body, "quote_signature", quote_sig, sizeof(quote_sig));
-            ctrl_json_string(body, "pcr_digest", pcr_digest, sizeof(pcr_digest));
-
-            if (!quote_sig[0]) {
-                db_release(conn, 0);
-                dt_send_error(client_fd, 400, "quote_signature is required", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* 1. Verify Challenge */
-            const char *ch_p[2] = { device_id, nonce[0] ? nonce : challenge_id };
-            int ch_l[2] = { (int)strlen(device_id), (int)strlen(ch_p[1]) };
-            PGresult *ch_r = db_simple(conn,
-                "SELECT id, used, expires_at FROM device_attestation_challenges "
-                "WHERE device_id = $1 AND (id = $2 OR nonce = $2)", 2, ch_p, ch_l);
-
-            if (!ch_r || PQntuples(ch_r) == 0) {
-                if (ch_r) PQclear(ch_r);
-                record_device_security_event(conn, device_id, "ATTESTATION_FAILED", "WARNING", "Unknown or missing challenge nonce");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "Invalid attestation challenge nonce", origin, extra_headers, extra_len);
-                return;
-            }
-
-            char found_ch_id[64];
-            strncpy(found_ch_id, PQgetvalue(ch_r, 0, 0), sizeof(found_ch_id) - 1);
-            int is_used = (strcmp(PQgetvalue(ch_r, 0, 1), "t") == 0);
-            long long exp_ms = atoll(PQgetvalue(ch_r, 0, 2));
-            PQclear(ch_r);
-
-            long long now_ms = (long long)time(NULL) * 1000;
-            if (is_used) {
-                record_device_security_event(conn, device_id, "ATTESTATION_REPLAY_DETECTED", "CRITICAL", "Attempted replay of used nonce");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "Attestation challenge nonce has already been used (anti-replay violation)", origin, extra_headers, extra_len);
-                return;
-            }
-            if (now_ms > exp_ms) {
-                record_device_security_event(conn, device_id, "ATTESTATION_EXPIRED", "WARNING", "Challenge nonce expired");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "Attestation challenge nonce expired", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Invalidate challenge immediately */
-            const char *mk_p[1] = { found_ch_id };
-            int mk_l[1] = { (int)strlen(found_ch_id) };
-            PGresult *mk_r = db_simple(conn,
-                "UPDATE device_attestation_challenges SET used = TRUE WHERE id = $1", 1, mk_p, mk_l);
-            if (mk_r) PQclear(mk_r);
-
-            /* 2. Verify Enrolled Attestation Key */
-            PGresult *ak_r = NULL;
-            if (ak_id[0]) {
-                const char *ak_qp[2] = { device_id, ak_id };
-                int ak_ql[2] = { (int)strlen(device_id), (int)strlen(ak_id) };
-                ak_r = db_simple(conn,
-                    "SELECT id, status, public_key_pem FROM device_attestation_keys WHERE device_id = $1 AND (id = $2 OR public_key_fingerprint = $2)", 2, ak_qp, ak_ql);
-            } else {
-                const char *ak_qp[1] = { device_id };
-                int ak_ql[1] = { (int)strlen(device_id) };
-                ak_r = db_simple(conn,
-                    "SELECT id, status, public_key_pem FROM device_attestation_keys WHERE device_id = $1 AND status = 'active' LIMIT 1", 1, ak_qp, ak_ql);
-            }
-
-            if (!ak_r || PQntuples(ak_r) == 0) {
-                if (ak_r) PQclear(ak_r);
-                record_device_security_event(conn, device_id, "ATTESTATION_KEY_NOT_ENROLLED", "ERROR", "No enrolled active AK key found for device");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "No active attestation key enrolled for this device", origin, extra_headers, extra_len);
-                return;
-            }
-
-            char found_ak_id[64];
-            strncpy(found_ak_id, PQgetvalue(ak_r, 0, 0), sizeof(found_ak_id) - 1);
-            const char *ak_status = PQgetvalue(ak_r, 0, 1);
-            if (strcmp(ak_status, "active") != 0) {
-                PQclear(ak_r);
-                record_device_security_event(conn, device_id, "ATTESTATION_KEY_REVOKED", "CRITICAL", "Attempt to attest with revoked AK key");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "Device attestation key is revoked", origin, extra_headers, extra_len);
-                return;
-            }
-            PQclear(ak_r);
-
-            /* Signature Validation Check */
-            /* If quote_sig is 'INVALID_SIG' or less than 16 chars, reject */
-            if (strcmp(quote_sig, "INVALID_SIGNATURE") == 0 || strlen(quote_sig) < 8) {
-                record_device_security_event(conn, device_id, "QUOTE_SIGNATURE_INVALID", "CRITICAL", "Corrupt or forged quote signature");
-                db_release(conn, 0);
-                dt_send_error(client_fd, 403, "TPM quote signature verification failed", origin, extra_headers, extra_len);
-                return;
-            }
-
-            /* Record Valid Evidence */
-            char ev_id[64];
-            snprintf(ev_id, sizeof(ev_id), "dev_ev_%ld_%d", (long)time(NULL), rand() % 10000);
-            if (!pcr_digest[0]) strcpy(pcr_digest, "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-
-            const char *ev_p[7] = { ev_id, device_id, found_ch_id, found_ak_id, quote_sig, pcr_digest, pcr_vals };
-            int ev_l[7];
-            for (int i = 0; i < 7; i++) ev_l[i] = (int)strlen(ev_p[i]);
-
-            PGresult *ins_ev = db_simple(conn,
-                "INSERT INTO device_attestation_evidence (id, device_id, challenge_id, ak_key_id, quote_signature, "
-                "pcr_digest, pcr_values_json, verification_result, failure_reason, verified_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, 'TRUSTED', '', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 7, ev_p, ev_l);
-            if (ins_ev) PQclear(ins_ev);
-
-            /* Update device last_attestation_at and status */
-            const char *up_p[2] = { device_id, "registered" };
-            int up_l[2] = { (int)strlen(device_id), 10 };
-            PGresult *up_d = db_simple(conn,
-                "UPDATE devices SET last_attestation_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "last_contact_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                "status = $2, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1", 2, up_p, up_l);
-            if (up_d) PQclear(up_d);
-
-            record_device_audit(conn, device_id, d_inst, sess.user_id[0] ? sess.user_id : "system",
-                                "ATTESTATION_VERIFIED", "TPM 2.0 quote signature verified");
-            dt_audit_log(device_id, "TPM_ATTESTATION_VERIFIED", ev_id);
-
             db_release(conn, 0);
-            char resp[512];
-            snprintf(resp, sizeof(resp),
-                "{\"status\":\"verified\",\"verification_result\":\"TRUSTED\",\"device_id\":\"%s\","
-                "\"evidence_id\":\"%s\",\"outcome\":\"ALLOW\"}",
-                device_id, ev_id);
-            dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+            dt_send_error(client_fd, 501,
+                          "TPM quote verification is unavailable; evidence cannot be marked trusted",
+                          origin, extra_headers, extra_len);
             return;
         }
 
@@ -1082,17 +1098,65 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* POST /api/v1/device-trust-policies (Create Draft) */
         if (strcmp(method, "POST") == 0 && sub[0] == '\0') {
-            char pol_name[128] = "Campus Trust Policy", inst_id[64] = {0};
-            int req_tpm = 1, req_sb = 1, req_rel = 1, max_age = 300;
+            auth_session_t policy_actor;
+            if (ctrl_authorize(auth_header, AUTH_PERM_SECURITY_ADMIN, &policy_actor) != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 403, "Security administration permission is required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            char pol_name[128] = {0}, inst_id[64] = {0};
+            int req_tpm = 1, req_sb = 1, req_rel = 1, req_admin = 1, max_age = 300;
 
             ctrl_json_string(body, "policy_name", pol_name, sizeof(pol_name));
             ctrl_json_string(body, "institution_id", inst_id, sizeof(inst_id));
             ctrl_json_bool(body, "require_tpm", &req_tpm);
             ctrl_json_bool(body, "require_secure_boot", &req_sb);
             ctrl_json_bool(body, "require_approved_release", &req_rel);
+            ctrl_json_bool(body, "require_admin_approval", &req_admin);
             ctrl_json_int(body, "max_evidence_age_sec", &max_age);
 
-            if (!inst_id[0]) snprintf(inst_id, sizeof(inst_id), "%s", sess.institution_id);
+            if (!pol_name[0] || max_age < 1 || max_age > 86400) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 400, "A policy name and evidence age between 1 and 86400 seconds are required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (policy_actor.role != ROLE_PLATFORM_OWNER) {
+                if (!policy_actor.institution_id[0] ||
+                    (inst_id[0] && strcmp(inst_id, policy_actor.institution_id) != 0)) {
+                    db_release(conn, 0);
+                    dt_send_error(client_fd, 403, "Policy creation is outside the authenticated institution",
+                                  origin, extra_headers, extra_len);
+                    return;
+                }
+                snprintf(inst_id, sizeof(inst_id), "%s", policy_actor.institution_id);
+            } else if (!inst_id[0]) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 400, "Platform owner must provide an institution_id",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *tenant_params[1] = { inst_id };
+            const int tenant_lengths[1] = { (int)strlen(inst_id) };
+            PGresult *tenant = db_simple(conn, "SELECT id FROM tenants WHERE id=$1",
+                                         1, tenant_params, tenant_lengths);
+            if (!tenant || PQresultStatus(tenant) != PGRES_TUPLES_OK) {
+                if (tenant) PQclear(tenant);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Institution registry could not be verified",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (PQntuples(tenant) != 1) {
+                PQclear(tenant);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 404, "Institution does not exist",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(tenant);
 
             char pid[64];
             snprintf(pid, sizeof(pid), "dtpol_%ld_%d", (long)time(NULL), rand() % 10000);
@@ -1100,19 +1164,33 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             char age_str[16];
             snprintf(age_str, sizeof(age_str), "%d", max_age);
 
-            const char *pp[8] = {
+            const char *pp[10] = {
                 pid, inst_id, pol_name, req_tpm ? "t" : "f", req_sb ? "t" : "f",
-                req_rel ? "t" : "f", age_str, "draft"
+                req_rel ? "t" : "f", req_admin ? "t" : "f", age_str, "draft",
+                policy_actor.user_id
             };
-            int pl[8];
-            for (int i = 0; i < 8; i++) pl[i] = (int)strlen(pp[i]);
+            int pl[10];
+            for (int i = 0; i < 10; i++) pl[i] = (int)strlen(pp[i]);
 
             PGresult *ins_p = db_simple(conn,
-                "INSERT INTO device_trust_policies (id, institution_id, policy_name, require_tpm, require_secure_boot, "
-                "require_approved_release, max_evidence_age_sec, status, created_at, updated_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
-                8, pp, pl);
-            if (ins_p) PQclear(ins_p);
+                "INSERT INTO device_trust_policies "
+                "(id,institution_id,policy_name,require_tpm,require_secure_boot,"
+                "require_approved_release,require_admin_approval,max_evidence_age_sec,"
+                "status,created_by,created_at,updated_at) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
+                "EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                "EXTRACT(EPOCH FROM NOW())::BIGINT*1000) RETURNING id",
+                10, pp, pl);
+            if (!ins_p || PQresultStatus(ins_p) != PGRES_TUPLES_OK ||
+                PQntuples(ins_p) != 1) {
+                if (ins_p) PQclear(ins_p);
+                db_release(conn, 0);
+                dt_send_error(client_fd, 503, "Device trust policy draft could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(ins_p);
+            dt_audit_log(policy_actor.user_id, "DEVICE_TRUST_POLICY_DRAFT_CREATED", pid);
 
             db_release(conn, 0);
             char resp[256];
@@ -1132,12 +1210,44 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                 const char *act = slash ? slash : "";
 
                 if (strcmp(method, "POST") == 0 && strcmp(act, "/approve") == 0) {
-                    const char *ap[2] = { sess.user_id[0] ? sess.user_id : "admin", pid };
-                    int al[2] = { (int)strlen(ap[0]), (int)strlen(pid) };
+                    auth_session_t policy_actor;
+                    if (ctrl_authorize(auth_header, AUTH_PERM_SECURITY_ADMIN, &policy_actor) != 0) {
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 403, "Security administration permission is required",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    const char *ap[4] = {
+                        policy_actor.user_id, pid, policy_actor.institution_id,
+                        policy_actor.role == ROLE_PLATFORM_OWNER ? "true" : "false"
+                    };
+                    const int al[4] = {
+                        (int)strlen(ap[0]), (int)strlen(ap[1]),
+                        (int)strlen(ap[2]), (int)strlen(ap[3])
+                    };
                     PGresult *ar = db_simple(conn,
-                        "UPDATE device_trust_policies SET status = 'approved', approved_by = $1, "
-                        "approved_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $2", 2, ap, al);
-                    if (ar) PQclear(ar);
+                        "UPDATE device_trust_policies SET status='approved',approved_by=$1,"
+                        "approved_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                        "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+                        "WHERE id=$2 AND status='draft' AND created_by<>'' AND created_by<>$1 "
+                        "AND ($4::boolean OR institution_id=$3) RETURNING id",
+                        4, ap, al);
+                    if (!ar || PQresultStatus(ar) != PGRES_TUPLES_OK) {
+                        if (ar) PQclear(ar);
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 503, "Device trust policy approval could not be persisted",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    if (PQntuples(ar) != 1) {
+                        PQclear(ar);
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 409, "Policy is not an eligible draft or requires an independent approver",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(ar);
+                    dt_audit_log(policy_actor.user_id, "DEVICE_TRUST_POLICY_APPROVED", pid);
 
                     db_release(conn, 0);
                     char resp[256];
@@ -1147,30 +1257,117 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                 }
 
                 if (strcmp(method, "POST") == 0 && strcmp(act, "/activate") == 0) {
-                    /* Fetch policy's institution_id */
-                    const char *gp[1] = { pid };
-                    int gl[1] = { (int)strlen(pid) };
-                    PGresult *gr = db_simple(conn, "SELECT institution_id FROM device_trust_policies WHERE id = $1", 1, gp, gl);
-                    if (gr && PQntuples(gr) > 0) {
-                        const char *p_inst = PQgetvalue(gr, 0, 0);
-                        /* Deactivate old active policies */
-                        const char *dp_p[1] = { p_inst };
-                        int dp_l[1] = { (int)strlen(p_inst) };
-                        PGresult *dr = db_simple(conn,
-                            "UPDATE device_trust_policies SET status = 'retired' WHERE institution_id = $1 AND status = 'active'", 1, dp_p, dp_l);
-                        if (dr) PQclear(dr);
-                        PQclear(gr);
-                    } else {
-                        if (gr) PQclear(gr);
+                    auth_session_t policy_actor;
+                    if (ctrl_authorize(auth_header, AUTH_PERM_SECURITY_ADMIN, &policy_actor) != 0) {
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 403, "Security administration permission is required",
+                                      origin, extra_headers, extra_len);
+                        return;
                     }
-
-                    const char *act_p[1] = { pid };
-                    int act_l[1] = { (int)strlen(pid) };
-                    PGresult *act_r = db_simple(conn,
-                        "UPDATE device_trust_policies SET status = 'active', activated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
-                        "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $1", 1, act_p, act_l);
-                    if (act_r) PQclear(act_r);
-
+                    PGresult *begin = PQexec(conn, "BEGIN");
+                    if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                        if (begin) PQclear(begin);
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 503, "Could not start policy activation transaction",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(begin);
+                    const char *policy_params[1] = { pid };
+                    const int policy_lengths[1] = { (int)strlen(policy_params[0]) };
+                    PGresult *policy = db_simple(conn,
+                        "SELECT institution_id,created_by,approved_by,status "
+                        "FROM device_trust_policies WHERE id=$1 FOR UPDATE",
+                        1, policy_params, policy_lengths);
+                    if (!policy || PQresultStatus(policy) != PGRES_TUPLES_OK ||
+                        PQntuples(policy) != 1) {
+                        if (policy) PQclear(policy);
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 404, "Device trust policy was not found",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    char policy_inst[64], created_by[65], approved_by[65], policy_status[33];
+                    snprintf(policy_inst, sizeof(policy_inst), "%s", PQgetvalue(policy, 0, 0));
+                    snprintf(created_by, sizeof(created_by), "%s", PQgetvalue(policy, 0, 1));
+                    snprintf(approved_by, sizeof(approved_by), "%s", PQgetvalue(policy, 0, 2));
+                    snprintf(policy_status, sizeof(policy_status), "%s", PQgetvalue(policy, 0, 3));
+                    PQclear(policy);
+                    int is_platform_owner = policy_actor.role == ROLE_PLATFORM_OWNER;
+                    if ((!is_platform_owner &&
+                         strcmp(policy_inst, policy_actor.institution_id) != 0) ||
+                        strcmp(policy_status, "approved") != 0 || !created_by[0] ||
+                        !approved_by[0] || strcmp(created_by, approved_by) == 0 ||
+                        strcmp(created_by, policy_actor.user_id) == 0) {
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 409, "Policy is not eligible for independent activation",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    const char *tenant_params[1] = { policy_inst };
+                    const int tenant_lengths[1] = { (int)strlen(policy_inst) };
+                    PGresult *tenant = db_simple(conn,
+                        "SELECT id FROM tenants WHERE id=$1 FOR UPDATE",
+                        1, tenant_params, tenant_lengths);
+                    if (!tenant || PQresultStatus(tenant) != PGRES_TUPLES_OK ||
+                        PQntuples(tenant) != 1) {
+                        if (tenant) PQclear(tenant);
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 409, "Policy institution could not be locked for activation",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(tenant);
+                    PGresult *retire = db_simple(conn,
+                        "UPDATE device_trust_policies SET status='retired',"
+                        "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+                        "WHERE institution_id=$1 AND status='active'",
+                        1, tenant_params, tenant_lengths);
+                    if (!retire || PQresultStatus(retire) != PGRES_COMMAND_OK) {
+                        if (retire) PQclear(retire);
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 503, "Existing active policy could not be retired",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(retire);
+                    const char *activate_params[3] = { pid, policy_inst, policy_actor.user_id };
+                    const int activate_lengths[3] = {
+                        (int)strlen(activate_params[0]), (int)strlen(activate_params[1]),
+                        (int)strlen(activate_params[2])
+                    };
+                    PGresult *activate = db_simple(conn,
+                        "UPDATE device_trust_policies SET status='active',"
+                        "activated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                        "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+                        "WHERE id=$1 AND institution_id=$2 AND status='approved' "
+                        "AND approved_by<>'' AND created_by<>$3",
+                        3, activate_params, activate_lengths);
+                    if (!activate || PQresultStatus(activate) != PGRES_COMMAND_OK ||
+                        strcmp(PQcmdTuples(activate), "1") != 0) {
+                        if (activate) PQclear(activate);
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 409, "Policy activation failed revalidation",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(activate);
+                    PGresult *commit = PQexec(conn, "COMMIT");
+                    if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
+                        if (commit) PQclear(commit);
+                        PQexec(conn, "ROLLBACK");
+                        db_release(conn, 0);
+                        dt_send_error(client_fd, 503, "Policy activation transaction could not commit",
+                                      origin, extra_headers, extra_len);
+                        return;
+                    }
+                    PQclear(commit);
+                    dt_audit_log(policy_actor.user_id, "DEVICE_TRUST_POLICY_ACTIVATED", pid);
                     db_release(conn, 0);
                     char resp[256];
                     snprintf(resp, sizeof(resp), "{\"status\":\"activated\",\"policy_id\":\"%s\"}", pid);
