@@ -13,6 +13,7 @@ export function TenantProvider({ children }) {
   const { user } = useAuth();
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [tenantsLoaded, setTenantsLoaded] = useState(false);
   const [error, setError] = useState('');
   const [tenantId, setTenantIdState] = useState(() => {
     try {
@@ -23,10 +24,15 @@ export function TenantProvider({ children }) {
   });
 
   const setTenantId = (newId) => {
-    setTenantIdState(newId);
+    // Normalise: find the canonical `id` in the allowed list so the stored
+    // key always matches what the backend returns as the primary identifier.
+    const canonical = newId
+      ? (allowed.find((x) => x.id === newId || x.institution_id === newId)?.id || newId)
+      : null;
+    setTenantIdState(canonical);
     try {
-      if (newId) {
-        localStorage.setItem(TENANT_STORAGE_KEY, newId);
+      if (canonical) {
+        localStorage.setItem(TENANT_STORAGE_KEY, canonical);
       } else {
         localStorage.removeItem(TENANT_STORAGE_KEY);
       }
@@ -37,10 +43,12 @@ export function TenantProvider({ children }) {
     if (!user) {
       setTenants([]);
       setLoading(false);
+      setTenantsLoaded(true);
       setError('');
       return;
     }
     setLoading(true);
+    setTenantsLoaded(false);
     setError('');
     try {
       let rows;
@@ -76,6 +84,7 @@ export function TenantProvider({ children }) {
       throw loadError;
     } finally {
       setLoading(false);
+      setTenantsLoaded(true);
     }
   }, [user]);
 
@@ -112,46 +121,65 @@ export function TenantProvider({ children }) {
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === TENANT_STORAGE_KEY && e.newValue) {
-        setTenantIdState(e.newValue);
+        // Validate the incoming value is still in the allowed list before applying.
+        const incoming = e.newValue;
+        setTenantIdState((cur) => {
+          const valid = allowed.some((x) => x.id === incoming || x.institution_id === incoming);
+          if (!valid) return cur;
+          const canonical = allowed.find((x) => x.id === incoming || x.institution_id === incoming)?.id || incoming;
+          return canonical;
+        });
       }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, []);
+  }, [allowed]);
 
   useEffect(() => {
-    if (!user || loading || error) return;
+    if (!user || loading || !tenantsLoaded || error) return;
     if (allowed.length === 0) {
       setTenantIdState(null);
       try { localStorage.removeItem(TENANT_STORAGE_KEY); } catch {}
       return;
     }
-    setTenantIdState((cur) => {
-      // 1. If currently selected institution is valid in allowed list, keep it!
-      if (cur && allowed.some((x) => x.id === cur)) {
-        try { localStorage.setItem(TENANT_STORAGE_KEY, cur); } catch {}
-        return cur;
-      }
-      // 2. Check if localStorage has a valid stored institution
-      try {
-        const saved = localStorage.getItem(TENANT_STORAGE_KEY);
-        if (saved && allowed.some((x) => x.id === saved)) {
-          return saved;
-        }
-      } catch {}
-      // 3. Fallback to user's assigned tenant if applicable
-      if (user.tenantId && allowed.some((x) => x.id === user.tenantId)) {
-        try { localStorage.setItem(TENANT_STORAGE_KEY, user.tenantId); } catch {}
-        return user.tenantId;
-      }
-      // 4. Fallback to first active or available tenant
-      const fallback = (allowed.find((x) => x.status === 'active') || allowed[0])?.id || null;
-      if (fallback) {
-        try { localStorage.setItem(TENANT_STORAGE_KEY, fallback); } catch {}
-      }
-      return fallback;
-    });
-  }, [allowed, user, loading, error]);
+    // Normalise: backend may return institution_id or id; both are valid keys.
+    const inAllowed = (id) => id && allowed.some((x) => x.id === id || x.institution_id === id);
+    const canonicalId = (id) => {
+      if (!id) return null;
+      const match = allowed.find((x) => x.id === id || x.institution_id === id);
+      return match ? match.id : null;
+    };
+
+    // 1. Read the persisted selection directly — do NOT rely on the stale
+    //    `cur` closure value inside a setter, which races with re-renders.
+    let saved = null;
+    try { saved = localStorage.getItem(TENANT_STORAGE_KEY); } catch {}
+
+    if (inAllowed(saved)) {
+      // Persisted selection is still valid — keep it, no state change needed.
+      const canonical = canonicalId(saved);
+      setTenantIdState((cur) => {
+        if (cur === canonical) return cur;
+        return canonical;
+      });
+      return;
+    }
+
+    // 2. Fallback to user's assigned tenant.
+    if (inAllowed(user.tenantId)) {
+      const canonical = canonicalId(user.tenantId);
+      try { localStorage.setItem(TENANT_STORAGE_KEY, canonical); } catch {}
+      setTenantIdState(canonical);
+      return;
+    }
+
+    // 3. Last resort: first active tenant (only when nothing else matches).
+    const fallback = (allowed.find((x) => x.status === 'active') || allowed[0])?.id || null;
+    if (fallback) {
+      try { localStorage.setItem(TENANT_STORAGE_KEY, fallback); } catch {}
+    }
+    setTenantIdState(fallback);
+  }, [allowed, user, loading, tenantsLoaded, error]);
 
   const tenant = allowed.find((t) => t.id === tenantId) || null;
   return <T.Provider value={{ tenantId, tenant, tenants: allowed, allTenants: tenants, loading, error, setTenantId, refreshTenants }}>{children}</T.Provider>;

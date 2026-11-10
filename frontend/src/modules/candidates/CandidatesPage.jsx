@@ -87,10 +87,16 @@ function AssignPanel({ tenantId, exams, candidates, rosterLoading, rosterError, 
   }, [tenantId]);
   const examCenterIds = Array.isArray(exam?.centerIds) ? exam.centerIds : [];
   const availableCenters = centers.filter((center) => examCenterIds.includes(center.id));
+  const noCenterMapping = !!examId && examCenterIds.length === 0;
   return (
     <Card title="Assign & seat" desc="Seats are allocated automatically from free centre capacity. Only unassigned candidates are seated.">
       <Flash msg={msg} onClose={() => setMsg(null)} />
       {centersError && <Alert tone="danger">{centersError}</Alert>}
+      {noCenterMapping && (
+        <Alert tone="warn" title="No centres mapped to this exam">
+          Edit the exam and select at least one active centre before assigning candidates.
+        </Alert>
+      )}
       <div className="formgrid">
         <Field label="Exam"><Select value={examId} onChange={(e) => { setExamId(e.target.value); setCenterId(''); }} options={exams.map((e) => ({ v: e.id, l: `${e.code} · ${e.status}` }))} placeholder="Choose an exam" /></Field>
         <Field label="Centre"><Select value={centerId} onChange={(e) => setCenterId(e.target.value)} options={availableCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder={centersLoading ? 'Loading centres…' : 'Choose a centre'} /></Field>

@@ -183,6 +183,17 @@ static void campus_create(int client_fd, const char *body,
     ctrl_json_int(body, "exam_capacity", &exam_cap);
     ctrl_json_int(body, "device_capacity", &dev_cap);
 
+    /* Platform owners have no institution scope in their session token.
+     * The console sends institution_id (or tenantId) in the request body. */
+    if (sess.role == ROLE_PLATFORM_OWNER && !sess.institution_id[0]) {
+        char body_inst[64] = {0};
+        ctrl_json_string(body, "institution_id", body_inst, sizeof(body_inst));
+        if (!body_inst[0])
+            ctrl_json_string(body, "tenantId", body_inst, sizeof(body_inst));
+        if (body_inst[0])
+            strncpy(sess.institution_id, body_inst, sizeof(sess.institution_id) - 1);
+    }
+
     if (!name[0] || !code[0] || !sess.institution_id[0]) {
         camp_send_json(client_fd, 400, "{\"error\":\"name, code and institution context required\"}",
                        origin, extra, extra_len);
@@ -231,84 +242,50 @@ static void campus_create(int client_fd, const char *body,
     escape_sql(campus_type, esc_campus_type, sizeof(esc_campus_type));
     escape_sql(timezone, esc_timezone, sizeof(esc_timezone));
 
-    const char *ins_p[20] = { id, sess.institution_id, esc_name, esc_code, esc_addr,
-                              esc_city, esc_state, esc_country, esc_postal,
-                              esc_contact_name, esc_contact_phone, esc_contact_email,
-                              esc_campus_type, esc_timezone };
-    int il[20];
-    for (int i = 0; i < 20; i++) pl[i] = 0;
-    il[0] = (int)strlen(id); il[1] = (int)strlen(sess.institution_id);
-    il[2] = (int)strlen(esc_name); il[3] = (int)strlen(esc_code);
-    il[4] = (int)strlen(esc_addr); il[5] = (int)strlen(esc_city);
-    il[6] = (int)strlen(esc_state); il[7] = (int)strlen(esc_country);
-    il[8] = (int)strlen(esc_postal); il[9] = (int)strlen(esc_contact_name);
-    il[10] = (int)strlen(esc_contact_phone); il[11] = (int)strlen(esc_contact_email);
-    il[12] = (int)strlen(esc_campus_type); il[13] = (int)strlen(esc_timezone);
+    /* $1...$14: id, tenant_id, name, code, addr, city, state, country,
+     *           postal, contact_name, contact_phone, contact_email,
+     *           campus_type, timezone
+     * $15: exam_capacity  $16: device_capacity
+     * $17: created_at (epoch)  $18: created_by */
     char exam_cap_str[16], dev_cap_str[16];
     snprintf(exam_cap_str, sizeof(exam_cap_str), "%d", exam_cap);
     snprintf(dev_cap_str, sizeof(dev_cap_str), "%d", dev_cap);
-    p[14] = exam_cap_str; il[14] = (int)strlen(exam_cap_str);
-    p[15] = dev_cap_str; il[15] = (int)strlen(dev_cap_str);
-    p[16] = now; il[16] = (int)strlen(now);
-    p[17] = sess.user_id; il[17] = (int)strlen(sess.user_id);
+
+    const char *ins_p[18] = {
+        id, sess.institution_id, esc_name, esc_code, esc_addr,
+        esc_city, esc_state, esc_country, esc_postal,
+        esc_contact_name, esc_contact_phone, esc_contact_email,
+        esc_campus_type, esc_timezone,
+        exam_cap_str, dev_cap_str, now, sess.user_id
+    };
+    int il[18];
+    for (int i = 0; i < 18; i++) il[i] = (int)strlen(ins_p[i] ? ins_p[i] : "");
 
     PGresult *ins = db_simple(conn,
-        "INSERT INTO campuses (id, tenant_id, name, code, address, city, state, "
-         "country, postal_code, contact_name, contact_phone, contact_email, "
-         "campus_type, timezone, exam_capacity, device_capacity, status, "
-         "approval_status, created_at, updated_at, created_by) "
-         "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'pending',"
-         "to_timestamp($18),to_timestamp($18),$19)",
-        19, p, il)
+        "INSERT INTO campuses "
+        "(id, tenant_id, name, code, address, city, state, country, postal_code, "
+        " contact_name, contact_phone, contact_email, campus_type, timezone, "
+        " exam_capacity, device_capacity, status, approval_status, "
+        " created_at, updated_at, created_by) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,"
+        "'pending','pending',"
+        "to_timestamp($17::bigint),to_timestamp($17::bigint),$18)",
+        18, ins_p, il);
     int created_ok = ins && PQresultStatus(ins) == PGRES_COMMAND_OK;
     if (ins) PQclear(ins);
 
-    if (!ok_created) {
-        camp_send_json(client_fd, 503, "{\"error\":\"Campus creation failed\"}",
-                       origin, extra, extra_len);
-        db_release(conn, 0);
-        return;
-    }
-
-    /* Create approval request */
-    char ap_id[64]; gen_id(ap_id, sizeof(ap_id), "apr");
-    const char *ap_p[9] = { ap_id, id, sess.institution_id, campus_id,
-                            sess.user_id, now, "pending", sess.user_id, now };
-    int ap_l[9];
-    for (int i = 0; i < 9; i++) ap_l[i] = (int)strlen(ap_p[i]);
-    PGresult *apr = db_simple(conn,
-        "INSERT INTO campus_approvals (id, campus_id, institution_id, action, "
-         "requested_by, requested_at, status, decided_by, decided_at) "
-         "VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7),$8,$9,to_timestamp($9))",
-        9, ap_p, ap_l);
-    if (apr) PQclear(apr);
-
-    char och_id[64]; gen_id(och_id, sizeof(och_id), "och");
-    const char *och_p[12] = { och_id, sess.institution_id, id, NULL,
-                              sess.user_id, "campus_create", "campuses", id,
-                              NULL, NULL, NULL, now };
-    int och_l[12];
-    for (int i = 0; i < 12; i++) och_l[i] = (int)strlen(och_p[i]);
-    PGresult *och = db_simple(conn,
-        "INSERT INTO organization_change_history (id, institution_id, campus_id, "
-         "department_id, actor_id, action, target_table, target_id, "
-         "previous_values, new_values, reason, created_at) "
-         "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,to_timestamp($12))",
-        12, och_p, och_l);
-    if (och) PQclear(och);
-
     db_release(conn, 0);
 
-    if (!ok_created) {
+    if (!created_ok) {
         camp_send_json(client_fd, 503, "{\"error\":\"Campus creation failed\"}",
                        origin, extra, extra_len);
         return;
     }
     char resp[256];
     snprintf(resp, sizeof(resp),
-        "{\"status\":\"submitted\",\"campus_id\":\"%s\",\"approval_status\":\"pending\"}", id);
+        "{\"status\":\"created\",\"campus_id\":\"%s\",\"approval_status\":\"pending\"}", id);
     camp_send_json(client_fd, 201, resp, origin, extra, extra_len);
-    audit_log(sess.user_id, "CAMPUS_CREATE_REQUESTED", id);
+    audit_log(sess.user_id, "CAMPUS_CREATED", id);
 }
 
 static void campus_get(int client_fd, const char *campus_id,

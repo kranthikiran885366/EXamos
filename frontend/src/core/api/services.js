@@ -401,7 +401,18 @@ export const listCampuses = wrap(async (institutionId) => {
 });
 
 export const createCampus = wrap(async (data) => {
-  const res = await api.post(ENDPOINTS.campuses, data, { actor: ACTOR, sign: true });
+  const res = await api.post(ENDPOINTS.campuses, {
+    // Send institution_id explicitly in the body so the backend can use it
+    // when the session belongs to a platform-owner whose session has no
+    // institution scope (sess.institution_id is empty for superadmin).
+    institution_id: data.tenantId || data.institution_id || '',
+    tenantId: data.tenantId || '',
+    name: data.name,
+    code: data.code || '',
+    address: data.address || '',
+    city: data.city || '',
+    capacity: Number(data.capacity) || 0,
+  }, { actor: ACTOR, sign: true });
   return res.data;
 });
 
@@ -620,7 +631,12 @@ export const getExamination = wrap(async (id) => {
 });
 
 export const updateExamination = wrap(async (id, patch) => {
-  const res = await api.patch(ENDPOINTS.examinationById(id), patch, { actor: ACTOR, sign: true });
+  /* The exam update path runs a multi-step transaction with a large
+   * validate_exam_config() query on the server. 60 seconds gives the
+   * database enough headroom without masking real hangs. */
+  const res = await api.patch(ENDPOINTS.examinationById(id), patch, {
+    actor: ACTOR, sign: true, timeoutMs: 60000,
+  });
   return res.data;
 });
 
