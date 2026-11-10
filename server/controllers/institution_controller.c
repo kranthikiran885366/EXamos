@@ -32,6 +32,10 @@ static void inst_generate_code(const char *prefix, char *out, size_t out_len) {
     snprintf(out, out_len, "%s-%03u", prefix, val);
 }
 
+static int inst_status_allows_organization_setup(const char *status) {
+    return status && (strcmp(status, "pilot") == 0 || strcmp(status, "active") == 0);
+}
+
 static void get_latest_os_release_id(PGconn *conn, char *out_release_id, size_t max_len) {
     out_release_id[0] = '\0';
     if (!conn) {
@@ -3851,13 +3855,13 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
                 return;
             }
-            int tenant_active = strcmp(PQgetvalue(tenant_res, 0, 0), "active") == 0;
+            int tenant_setup_allowed = inst_status_allows_organization_setup(PQgetvalue(tenant_res, 0, 0));
             int max_centers = atoi(PQgetvalue(tenant_res, 0, 1));
             int center_count = atoi(PQgetvalue(tenant_res, 0, 2));
             PQclear(tenant_res);
-            if (!tenant_active) {
+            if (!tenant_setup_allowed) {
                 db_release(conn, 0);
-                inst_send_error(client_fd, 409, "Centers can only be created for an active institution", origin, extra_headers, extra_len);
+                inst_send_error(client_fd, 409, "Centers can only be created for a pilot or active institution", origin, extra_headers, extra_len);
                 return;
             }
             if (max_centers > 0 && center_count >= max_centers) {
@@ -4158,16 +4162,17 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 int tl[1] = { (int)strlen(tenant_id) };
                 PGresult *tres = db_simple(conn, "SELECT status FROM tenants WHERE id = $1", 1, tv, tl);
                 int t_ok = tres && PQresultStatus(tres) == PGRES_TUPLES_OK && PQntuples(tres) > 0;
-                int t_active = t_ok && strcmp(PQgetvalue(tres, 0, 0), "active") == 0;
+                int t_setup_allowed = t_ok &&
+                    inst_status_allows_organization_setup(PQgetvalue(tres, 0, 0));
                 if (tres) PQclear(tres);
                 if (!t_ok) {
                     db_release(conn, 0);
                     inst_send_error(client_fd, 404, "Institution not found", origin, extra_headers, extra_len);
                     return;
                 }
-                if (!t_active) {
+                if (!t_setup_allowed) {
                     db_release(conn, 0);
-                    inst_send_error(client_fd, 409, "Campuses can only be created for an active institution", origin, extra_headers, extra_len);
+                    inst_send_error(client_fd, 409, "Campuses can only be created for a pilot or active institution", origin, extra_headers, extra_len);
                     return;
                 }
             }

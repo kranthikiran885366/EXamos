@@ -610,7 +610,7 @@ export const createExamination = wrap(async (exam) => {
     allowed_origins: exam.allowedOrigins,
     institution_id: exam.institutionId || exam.tenantId,
     exam_config_json: JSON.stringify(exam.examConfig || {}),
-  }, { actor: ACTOR, sign: true });
+  }, { actor: ACTOR, sign: true, retries: 0, timeoutMs: 15000 });
   return res.data;
 });
 

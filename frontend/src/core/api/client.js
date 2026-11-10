@@ -76,7 +76,11 @@ export async function request({
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, timeoutMs);
 
     let onExternalAbort = null;
     if (signal) {
@@ -131,10 +135,18 @@ export async function request({
       }
       return { status: res.status, data: parsed, headers: res.headers };
     } catch (err) {
-      lastError = err;
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) throw err;
+      const requestError = timedOut
+        ? new ApiError(408, `Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`, null)
+        : err;
+      lastError = requestError;
+      if (timedOut && attempt < retries) {
+        await sleep(500 * (attempt + 1));
+        continue;
+      }
+      if (requestError instanceof ApiError && requestError.status >= 400 &&
+          requestError.status < 500 && requestError.status !== 429) throw requestError;
       if (attempt < retries) { await sleep(500 * (attempt + 1)); continue; }
-      throw err;
+      throw requestError;
     } finally {
       clearTimeout(timer);
       if (signal && onExternalAbort) {

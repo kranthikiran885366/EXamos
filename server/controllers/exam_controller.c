@@ -33,6 +33,26 @@ static void ex_send_error(int fd, int code, const char *msg,
     ex_send_json(fd, code, buf, origin, extra, extra_len);
 }
 
+static const char *exam_mirror_error_message(const char *sqlstate) {
+    if (!sqlstate) return "The exam configuration could not be saved. Contact platform support.";
+    if (strcmp(sqlstate, "23502") == 0) {
+        return "A required exam detail is missing from storage. Review the exam details and try again.";
+    }
+    if (strcmp(sqlstate, "23503") == 0) {
+        return "A linked institution record is unavailable. Reload the exam setup and verify its selections.";
+    }
+    if (strcmp(sqlstate, "23505") == 0) {
+        return "This exam code or identifier already exists. Choose a different exam code and try again.";
+    }
+    if (strcmp(sqlstate, "42703") == 0 || strcmp(sqlstate, "42P01") == 0) {
+        return "Exam storage is missing a required database field or table. Contact platform support.";
+    }
+    if (strcmp(sqlstate, "22P02") == 0 || strcmp(sqlstate, "23514") == 0) {
+        return "An exam configuration value is not accepted by storage. Review the exam details and try again.";
+    }
+    return "The exam configuration could not be saved. Contact platform support.";
+}
+
 static void audit_log(const char *actor, const char *event, const char *target, const char *detail) {
     audit_append(actor ? actor : "system", event, detail ? detail : "");
     ledger_block_t blk;
@@ -470,14 +490,14 @@ void exam_handle(int client_fd, const char *method, const char *path,
         }
 
         /* Keep the complete operational configuration in the canonical exam record. */
-        const char *m_p[7] = { exam_id, inst_id, code, name, subject, now_str, exam_config };
-        int m_l[7] = { (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(name), (int)strlen(subject), (int)strlen(now_str), (int)strlen(exam_config) };
+        const char *m_p[8] = { exam_id, inst_id, code, name, subject, now_str, exam_config, sess.user_id };
+        int m_l[8] = { (int)strlen(exam_id), (int)strlen(inst_id), (int)strlen(code), (int)strlen(name), (int)strlen(subject), (int)strlen(now_str), (int)strlen(exam_config), (int)strlen(sess.user_id) };
         PGresult *m_r = db_simple(conn,
             "INSERT INTO exams (id, tenant_id, code, title, description, course, department_id, academic_year, "
             "type, center_ids, start_at, duration_min, timezone, late_entry_min, capacity, instructions, resources, "
             "accommodations, auth_mode, identity_required, origins, navigation, allowed_destinations, compatibility_profile, "
             "attestation_level, session_timeout_min, reconnect_policy, submission_mode, required_checks, policy_id, exam_url, "
-            "created_at, updated_at, status) "
+            "created_at, updated_at, status, created_by) "
             "SELECT $1, $2, $3, $4, COALESCE($7::jsonb->>'description',''), COALESCE($7::jsonb->>'course', $5::varchar), "
             "NULLIF($7::jsonb->>'departmentId',''), COALESCE($7::jsonb->>'academicYear',''), "
             "COALESCE($7::jsonb->>'type','internal'), COALESCE($7::jsonb->'centerIds','[]'::jsonb), "
@@ -493,14 +513,27 @@ void exam_handle(int client_fd, const char *method, const char *path,
             "COALESCE($7::jsonb->>'attestationLevel','tpm'), COALESCE(($7::jsonb->>'sessionTimeoutMin')::integer,15), "
             "COALESCE($7::jsonb->>'reconnectPolicy','allow-reconnect'), COALESCE($7::jsonb->>'submissionMode','either'), "
             "COALESCE($7::jsonb->'requiredChecks','[]'::jsonb), NULLIF($7::jsonb->>'policyId',''), "
-            "$7::jsonb->>'examUrl', $6::bigint, $6::bigint, 'draft' "
+            "$7::jsonb->>'examUrl', $6::bigint, $6::bigint, 'draft', $8 "
             "ON CONFLICT (id) DO UPDATE SET exam_url = EXCLUDED.exam_url, title = EXCLUDED.title",
-            7, m_p, m_l);
+            8, m_p, m_l);
         if (!m_r || PQresultStatus(m_r) != PGRES_COMMAND_OK) {
+            char sqlstate[6] = {0};
+            const char *error_state = m_r ? PQresultErrorField(m_r, PG_DIAG_SQLSTATE) : NULL;
+            const char *table = m_r ? PQresultErrorField(m_r, PG_DIAG_TABLE_NAME) : NULL;
+            const char *column = m_r ? PQresultErrorField(m_r, PG_DIAG_COLUMN_NAME) : NULL;
+            const char *constraint = m_r ? PQresultErrorField(m_r, PG_DIAG_CONSTRAINT_NAME) : NULL;
+            if (error_state) snprintf(sqlstate, sizeof(sqlstate), "%s", error_state);
+            const char *client_error = exam_mirror_error_message(sqlstate[0] ? sqlstate : NULL);
+            fprintf(stderr,
+                "[EXAM DB ERROR] operation=configuration_mirror sqlstate=%s table=%s column=%s constraint=%s\n",
+                sqlstate[0] ? sqlstate : "unknown",
+                table ? table : "unknown",
+                column ? column : "unknown",
+                constraint ? constraint : "unknown");
             if (m_r) PQclear(m_r);
             PQexec(conn, "ROLLBACK");
             db_release(conn, 0);
-            ex_send_error(client_fd, 500, "Failed to persist complete exam configuration", origin, extra_headers, extra_len);
+            ex_send_error(client_fd, 500, client_error, origin, extra_headers, extra_len);
             return;
         }
         if (m_r) PQclear(m_r);

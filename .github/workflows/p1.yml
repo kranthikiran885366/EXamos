@@ -46,6 +46,9 @@ jobs:
       - name: Compile all native subsystems
         run: make clean && make all
 
+      - name: Pilot and exam persistence regression test
+        run: bash tests/server/pilot-exam-workflow-regression-test.sh
+
       - name: P1 kiosk configuration check
         run: bash tests/p1/kiosk.sh
 
