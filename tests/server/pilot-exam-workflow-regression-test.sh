@@ -6,6 +6,10 @@ INSTITUTIONS="$ROOT/server/controllers/institution_controller.c"
 EXAMS="$ROOT/server/controllers/exam_controller.c"
 API="$ROOT/frontend/src/core/api/services.js"
 CLIENT="$ROOT/frontend/src/core/api/client.js"
+EXAM_PAGES="$ROOT/frontend/src/modules/exams/pages.jsx"
+EXAM_SERVICE="$ROOT/frontend/src/modules/exams/service.js"
+MODULES="$ROOT/server/controllers/modules_controller.c"
+POLICIES="$ROOT/server/controllers/policy_controller.c"
 
 require_text() {
     local file="$1"
@@ -33,5 +37,14 @@ require_text "$EXAMS" 'PG_DIAG_SQLSTATE'
 require_text "$EXAMS" 'Exam storage is missing a required database field or table.'
 require_text "$API" 'retries: 0, timeoutMs: 15000'
 require_text "$CLIENT" 'Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds.'
+require_text "$EXAM_PAGES" 'function useInstitutionCenters(tenantId)'
+require_text "$EXAM_PAGES" 'listBackendCenters(tenantId).then((rows)'
+require_text "$EXAM_SERVICE" 'listBackendCenters(ex.tenantId)'
+require_text "$EXAM_SERVICE" 'Api.listExaminationStudents(ex.id)'
+require_text "$MODULES" '[console-data] read failed collection=%s sqlstate=%s'
+require_text "$MODULES" 'Record not found'
+require_text "$POLICIES" 'FROM console_records WHERE collection='\''policies'\'' '
+require_text "$POLICIES" 'AND ($2::boolean OR institution_id=$1)'
+require_text "$EXAM_PAGES" 'loadInstitutionPolicies(tenantId)'
 
-echo "[PILOT-EXAM] PASS: pilot setup, activation gates, exam persistence diagnostics, and bounded save requests."
+echo "[PILOT-EXAM] PASS: pilot setup, live exam centres/assignments/policies, diagnostics, and bounded save requests."

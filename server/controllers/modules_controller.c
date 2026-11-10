@@ -136,6 +136,11 @@ static void console_data_routes(int fd, const char *method, const char *path,
                 mod_send_json(fd, 200, response, origin, extra, extra_len);
                 return;
             }
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 0) {
+                PQclear(res);
+                mod_send_json(fd, 404, "{\"error\":\"Record not found\"}", origin, extra, extra_len);
+                return;
+            }
         } else {
             const char *list_params[3] = { collection, sess.institution_id,
                 sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
@@ -147,7 +152,15 @@ static void console_data_routes(int fd, const char *method, const char *path,
                 return;
             }
         }
-        if (res) PQclear(res);
+        if (res) {
+            const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+            fprintf(stderr, "[console-data] read failed collection=%s sqlstate=%s\n",
+                    collection, sqlstate ? sqlstate : "unknown");
+            PQclear(res);
+        } else {
+            fprintf(stderr, "[console-data] read failed collection=%s sqlstate=connection_error\n",
+                    collection);
+        }
         mod_send_json(fd, 500, "{\"error\":\"Database read failed\"}", origin, extra, extra_len);
         return;
     }

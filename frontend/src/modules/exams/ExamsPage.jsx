@@ -1,9 +1,9 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
-import { put } from '../../core/db/db';
-import { useCol } from '../../core/db/tenant';
-import { usePerm } from '../../core/ui/hooks';
+import { useTenant } from '../../core/db/tenant';
+import { useLoad, usePerm } from '../../core/ui/hooks';
+import { listCenters as listBackendCenters } from '../centers/service';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash,
   Empty, Icon, Progress, Tabs,
@@ -49,25 +49,32 @@ const configFromApi = (value) => {
   return {};
 };
 
+function useInstitutionCenters(tenantId) {
+  return useLoad(() => tenantId ? listBackendCenters(tenantId) : Promise.resolve([]), [tenantId]);
+}
+
 export default function ExamsPage() {
   const { user } = useAuth();
+  const { tenantId } = useTenant();
   const may = usePerm();
   const navigate = useNavigate();
-  // Backend-first: fetch exams from the real API on mount.
-  // Fall back to local IndexedDB only if the backend is unreachable.
-  const localExams = useCol('exams');
   const [backendExams, setBackendExams] = useState(null); // null = not yet fetched
-  const [fetchError, setFetchError] = useState(false);
+  const [seatedByExam, setSeatedByExam] = useState({});
+  const [fetchError, setFetchError] = useState('');
+  const [assignmentError, setAssignmentError] = useState('');
+  const { data: centers = [], error: centersError } = useInstitutionCenters(tenantId);
 
   useEffect(() => {
     let cancelled = false;
+    setFetchError('');
     const fetchExams = async () => {
       try {
         const res = await Api.listExaminations();
         const list = res?.examinations || res?.exams || (Array.isArray(res) ? res : []);
         if (!cancelled) {
           // Map backend field names to frontend shape, sync to local cache
-          const mapped = list.map((e) => {
+          const scopedList = tenantId ? list.filter((exam) => exam.institution_id === tenantId) : list;
+          const mapped = scopedList.map((e) => {
             const config = configFromApi(e.exam_config);
             return ({
             ...config,
@@ -95,24 +102,44 @@ export default function ExamsPage() {
             });
           });
           setBackendExams(mapped);
-          // Sync to local cache so detail page reads are consistent
-          for (const ex of mapped) {
-            await put('exams', ex).catch(() => {});
-          }
         }
-      } catch {
-        if (!cancelled) setFetchError(true);
+      } catch (error) {
+        if (!cancelled) {
+          setBackendExams([]);
+          setFetchError(error.message || 'Could not load examinations from the backend.');
+        }
       }
     };
     fetchExams();
     return () => { cancelled = true; };
-  }, []);
+  }, [tenantId]);
 
-  // Use backend data when available, fall back to local IndexedDB
-  const exams = backendExams ?? localExams;
-  const centers = useCol('centers');
-  const policies = useCol('policies');
-  const candidates = useCol('candidates');
+  useEffect(() => {
+    let active = true;
+    if (!backendExams) return () => { active = false; };
+    setAssignmentError('');
+    Promise.all(backendExams.map(async (exam) => [
+      exam.id,
+      (await Api.listExaminationStudents(exam.id)).length,
+    ])).then((entries) => {
+      if (active) setSeatedByExam(Object.fromEntries(entries));
+    }).catch((error) => {
+      if (active) {
+        setSeatedByExam({});
+        setAssignmentError(error.message || 'Assigned candidate counts could not be loaded.');
+      }
+    });
+    return () => { active = false; };
+  }, [backendExams]);
+
+  const exams = backendExams ?? [];
+  const { data: policies = [], error: policiesError } = useLoad(async () => {
+    const response = await Api.listPolicies();
+    if (!Array.isArray(response?.policies)) throw new Error('The backend returned an invalid policy response.');
+    return response.policies
+      .map((policy) => ({ ...policy, tenantId: policy.tenantId || policy.tenant_id }))
+      .filter((policy) => policy.tenantId === tenantId);
+  }, [tenantId]);
   const { msg, setMsg, run, busy } = useFlash();
   const [pending, setPending] = useState(null);
   const [tab, setTab] = useState('all');
@@ -146,6 +173,10 @@ export default function ExamsPage() {
       actions={may('exam.manage') ? <button className="btn primary" onClick={() => navigate('/college/exams/new')}><Icon name="plus" size={15} /> New exam</button> : null}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {fetchError && <Alert tone="danger" title="Examination list unavailable">{fetchError}</Alert>}
+      {assignmentError && <Alert tone="danger" title="Assigned candidate counts unavailable">{assignmentError}</Alert>}
+      {centersError && <Alert tone="danger" title="Institution centres unavailable">{centersError.message || 'Could not load active centres from the backend.'}</Alert>}
+      {policiesError && <Alert tone="danger" title="Institution policies unavailable">{policiesError.message || 'Could not load policies from the backend.'}</Alert>}
       <StatGrid cols={4}>
         <Stat label="Total exams" value={exams.length} icon="exam" sub={`${counts.draft || 0} draft`} />
         <Stat label="Awaiting review" value={needsReview} icon="checklist" tone="amber" sub="Needs an approver" />
@@ -186,7 +217,7 @@ export default function ExamsPage() {
             { label: 'Window', sortable: true, key: 'startAt', render: (e) => <>{fmt(e.startAt)}<br /><small className="muted">{e.durationMin} min</small></> },
             { label: 'Portal URL', render: (e) => e.examUrl ? <span className="mono sm" title={e.examUrl}>{e.examUrl.replace(/^https?:\/\//, '').slice(0, 22)}{e.examUrl.length > 22 ? '…' : ''}</span> : <span className="muted">—</span> },
             { label: 'Centres', render: (e) => <span title={e.centerIds.map(centerName).join(', ')}>{e.centerIds.length}</span> },
-            { label: 'Seated', render: (e) => candidates.filter((c) => c.examId === e.id).length },
+            { label: 'Seated', render: (e) => seatedByExam[e.id] || 0 },
             { label: 'Policy', render: (e) => policyName(e.policyId) },
             { label: 'Result', render: (e) => (e.summary ? `${e.summary.submitted}/${e.summary.assigned} · avg ${e.summary.avg}/${e.summary.total}` : '—') },
             { label: 'Status', key: 'status', badge: true },

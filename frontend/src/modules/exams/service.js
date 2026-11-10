@@ -4,6 +4,7 @@ import { id, need, fail, log, genQuestions, score, assertScope, requireReason, v
 import { verifyPolicy } from '../policies/service';
 import { submitSession } from '../submissions/service';
 import * as Api from '../../core/api/services';
+import { listCenters as listBackendCenters } from '../centers/service';
 
 export const TYPES = ['practice', 'internal', 'laboratory', 'midterm', 'final'];
 export const LIFECYCLE = ['draft', 'configured', 'pending_approval', 'approved', 'scheduled', 'ready', 'in_progress', 'closed', 'finalized', 'cancelled'];
@@ -392,12 +393,53 @@ export async function readiness(ex, ctx = {}) {
     backendStatus = await Api.getExaminationStatus(ex.id);
   } catch { /* offline fallback */ }
 
-  const { policies = await all('policies'), centers = await all('centers'),
-          exams = await all('exams'), candidates = await all('candidates'),
-          devices = await all('devices') } = ctx;
+  const [liveCenters, assignments, studentResponse, examinationResponse, deviceResponse] = await Promise.all([
+    ctx.centers ? Promise.resolve(ctx.centers) : listBackendCenters(ex.tenantId),
+    Api.listExaminationStudents(ex.id),
+    Api.listStudents(),
+    Api.listExaminations(),
+    Api.listRegisteredDevices(),
+  ]);
+  const policies = ctx.policies || await all('policies');
+  const rawExams = examinationResponse?.examinations || examinationResponse?.exams || [];
+  const exams = ctx.exams || rawExams.map((exam) => {
+    let config = exam.exam_config || {};
+    if (typeof config === 'string') {
+      try { config = JSON.parse(config); } catch { config = {}; }
+    }
+    return {
+      ...exam,
+      id: exam.id || exam.exam_id,
+      tenantId: exam.institution_id,
+      centerIds: Array.isArray(config.centerIds) ? config.centerIds : [],
+      startAt: config.startAt || exam.scheduled_start || 0,
+      durationMin: config.durationMin || exam.duration_minutes || 60,
+    };
+  });
+  if (!Array.isArray(studentResponse?.students) || !Array.isArray(rawExams) ||
+      !Array.isArray(deviceResponse?.devices)) {
+    throw new Error('Readiness data returned an invalid student, exam, or device list.');
+  }
+  const devices = deviceResponse.devices;
+  const scopedDevices = devices.filter((device) =>
+    (device.institution_id || device.tenantId) === ex.tenantId);
   const checksFor = (key, label) => ({ key, label });
   const checks = [];
-  const cands = candidates.filter((c) => c.examId === ex.id);
+  const candidatesById = new Map((studentResponse?.students || []).map((student) => [student.id, {
+    ...student,
+    identity: (student.verification_status || '').toLowerCase() === 'verified' ? 'verified' : 'pending',
+  }]));
+  const cands = assignments.map((assignment) => ({
+    ...candidatesById.get(assignment.student_id),
+    id: assignment.student_id,
+    examId: ex.id,
+    centerId: assignment.center_id,
+    seat: assignment.seat_no,
+    rollNo: assignment.roll_no,
+    name: assignment.name,
+  }));
+  const centerIds = Array.isArray(ex.centerIds) ? ex.centerIds : [];
+  const configuredCenters = centerIds.map((centerId) => liveCenters.find((center) => center.id === centerId));
   const pol = policies.find((p) => p.id === ex.policyId);
 
   // 1. URL format — is a URL present at all?
@@ -428,13 +470,27 @@ export async function readiness(ex, ctx = {}) {
     checks.push({ ...checksFor('urlOriginPolicy', 'Assessment URL permitted by policy'), status: 'FAIL', detail: 'No policy selected — cannot verify kiosk firewall permission for this URL' });
   }
 
-  checks.push({ ...checksFor('centers', 'Exam centres'), status: ex.centerIds.length && ex.centerIds.every((cid) => centers.find((c) => c.id === cid)?.status === 'active') ? 'PASS' : 'FAIL', detail: `${ex.centerIds.length} centre(s)` });
+  const centersReady = centerIds.length > 0 && configuredCenters.every((center) => center?.status === 'active');
+  const centerDetail = centerIds.length
+    ? configuredCenters.map((center, index) => center ? `${center.code} (${center.status})` : `${centerIds[index]} not found`).join(', ')
+    : 'No active centre is mapped to this exam.';
+  checks.push({ ...checksFor('centers', 'Exam centres'), status: centersReady ? 'PASS' : 'FAIL', detail: centerDetail });
   checks.push({ ...checksFor('candidates', 'Candidate list'), status: cands.length ? 'PASS' : 'FAIL', detail: `${cands.length} assigned` });
   checks.push({ ...checksFor('identity', 'Identity verification'), status: cands.length && cands.every((c) => c.identity === 'verified') ? 'PASS' : cands.some((c) => c.identity === 'verified') ? 'WARN' : 'NOT_RUN', detail: `${cands.filter((c) => c.identity === 'verified').length}/${cands.length} verified` });
-  checks.push({ ...checksFor('policy', 'Published policy'), status: pol && pol.status === 'published' && (await verifyPolicy(pol)) ? 'PASS' : 'FAIL', detail: pol ? `${pol.name} v${pol.version} (${pol.status})` : 'No policy selected' });
+  const policyReady = !!pol && pol.status === 'published' && await verifyPolicy(pol);
+  checks.push({ ...checksFor('policy', 'Published policy'), status: policyReady ? 'PASS' : 'FAIL', detail: pol ? `${pol.name} v${pol.version} (${pol.status})` : 'No policy selected' });
   checks.push({ ...checksFor('instructions', 'Candidate instructions'), status: ex.instructions?.trim() ? 'PASS' : 'WARN', detail: ex.instructions?.trim() ? 'Provided' : 'Not written — required before publication' });
   checks.push({ ...checksFor('schedule', 'Schedule conflict'), status: conflicts(exams, ex) ? 'FAIL' : 'PASS', detail: conflicts(exams, ex) ? `Conflicts with ${conflicts(exams, ex).code}` : 'No conflict' });
-  checks.push({ ...checksFor('devices', 'Device readiness'), status: devices.length ? 'PASS' : 'NOT_RUN', detail: `${devices.filter((d) => ex.centerIds.includes(d.centerId)).length} devices in scope` });
+  const examCampusIds = new Set(liveCenters
+    .filter((center) => centerIds.includes(center.id))
+    .flatMap((center) => [center.id, center.campusId].filter(Boolean)));
+  const devicesInScope = scopedDevices.filter((device) =>
+    examCampusIds.has(device.centerId || device.center_id || device.campusId || device.campus_id));
+  checks.push({
+    ...checksFor('devices', 'Device readiness'),
+    status: 'NOT_RUN',
+    detail: `${devicesInScope.length} device(s) are registered in the exam centre scope; the device inventory does not establish current attestation trust.`,
+  });
   // Live session monitoring from backend if available
   if (backendStatus?.attempts) {
     const a = backendStatus.attempts;

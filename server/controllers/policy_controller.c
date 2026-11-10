@@ -41,29 +41,35 @@ void policy_handle(int client_fd, const char *method, const char *path,
     /* Policy list: GET /api/v1/admin/policies?exam_id= */
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/v1/admin/policies") == 0) {
         PGconn *conn = db_acquire();
-        PGresult *res = PQexec(conn,
-            "SELECT id, tenant_id, name, version, status, created_at FROM policies "
-            "ORDER BY created_at DESC");
-        char json[131072] = {0};
-        size_t pos = 0;
-        pos += snprintf(json + pos, sizeof(json) - pos, "{\"policies\":[");
-        if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
-            int n = PQntuples(res);
-            for (int i = 0; i < n; i++) {
-                if (i > 0) pos += snprintf(json + pos, sizeof(json) - pos, ",");
-                pos += snprintf(json + pos, sizeof(json) - pos,
-                    "{\"id\":\"%s\",\"tenant_id\":\"%s\",\"name\":\"%s\","
-                    "\"version\":%s,\"status\":\"%s\",\"created_at\":%s}",
-                    PQgetvalue(res, i, 0), PQgetvalue(res, i, 1),
-                    PQgetvalue(res, i, 2) ? PQgetvalue(res, i, 2) : "",
-                    PQgetvalue(res, i, 3) ? PQgetvalue(res, i, 3) : "1",
-                    PQgetvalue(res, i, 4) ? PQgetvalue(res, i, 4) : "draft",
-                    PQgetvalue(res, i, 5) ? PQgetvalue(res, i, 5) : "0");
-            }
+        const char *params[2] = {
+            sess.institution_id,
+            sess.role == ROLE_PLATFORM_OWNER ? "true" : "false"
+        };
+        int lengths[2] = { (int)strlen(params[0]), (int)strlen(params[1]) };
+        PGresult *res = db_simple(conn,
+            "SELECT COALESCE(jsonb_agg(data ORDER BY updated_at DESC), '[]'::jsonb)::text "
+            "FROM console_records WHERE collection='policies' "
+            "AND ($2::boolean OR institution_id=$1)",
+            2, params, lengths);
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1) {
+            const char *sqlstate = res ? PQresultErrorField(res, PG_DIAG_SQLSTATE) : NULL;
+            fprintf(stderr, "[policies] list failed sqlstate=%s\n",
+                    sqlstate ? sqlstate : "connection_error");
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            pol_send_json(client_fd, 500, "{\"error\":\"Policy records could not be loaded\"}",
+                          origin, extra_headers, extra_len);
+            return;
         }
-        if (res) PQclear(res);
-        snprintf(json + pos, sizeof(json) - pos, "]}");
+        char json[131072];
+        int written = snprintf(json, sizeof(json), "{\"policies\":%s}", PQgetvalue(res, 0, 0));
+        PQclear(res);
         db_release(conn, 0);
+        if (written < 0 || (size_t)written >= sizeof(json)) {
+            pol_send_json(client_fd, 500, "{\"error\":\"Policy response exceeds the supported size\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
         pol_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
         return;
     }

@@ -70,14 +70,43 @@ const STEP_PERM = {
 };
 const REASON = new Set(['live', 'in_progress', 'cancelled', 'draft']);
 
+function useInstitutionCenters(tenantId) {
+  const [state, setState] = useState({ rows: [], loaded: false, error: null });
+  useEffect(() => {
+    let active = true;
+    if (!tenantId) {
+      setState({ rows: [], loaded: true, error: null });
+      return () => { active = false; };
+    }
+    setState((current) => ({ ...current, loaded: false, error: null }));
+    listBackendCenters(tenantId).then((rows) => {
+      if (active) setState({ rows, loaded: true, error: null });
+    }).catch((error) => {
+      if (active) setState({ rows: [], loaded: true, error });
+    });
+    return () => { active = false; };
+  }, [tenantId]);
+  return state;
+}
+
+async function loadInstitutionPolicies(tenantId) {
+  const response = await Api.listPolicies();
+  if (!Array.isArray(response?.policies)) {
+    throw new Error('The backend returned an invalid policy response.');
+  }
+  return response.policies
+    .map((policy) => ({ ...policy, tenantId: policy.tenantId || policy.tenant_id }))
+    .filter((policy) => policy.tenantId === tenantId);
+}
+
 /* ------------------------------------------------------------------ new exam */
 export function ExamNewPage() {
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const may = usePerm();
   const navigate = useNavigate();
-  const { rows: centers, loaded: centersLoaded, error: centersError } = useColLoaded('centers');
-  const { rows: policies, loaded: policiesLoaded, error: policiesError } = useColLoaded('policies');
+  const { rows: centers, loaded: centersLoaded, error: centersError } = useInstitutionCenters(tenantId);
+  const { data: policies = [], loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(tenantId), [tenantId]);
   const { msg, setMsg, run, busy } = useFlash();
   const [v, setV] = useState({
     code: '', title: '', type: 'internal', course: '', departmentId: '', academicYear: '', description: '',
@@ -93,7 +122,7 @@ export function ExamNewPage() {
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const activeCenters = centers.filter((c) => c.status === 'active');
   const publishedPolicies = policies.filter((p) => p.status === 'published');
-  const catalogsReady = centersLoaded && policiesLoaded && !centersError && !policiesError && !!tenantId;
+  const catalogsReady = centersLoaded && !policiesLoading && !centersError && !policiesError && !!tenantId;
   const catalogsError = centersError || policiesError;
   let portalOrigin = '';
   try { portalOrigin = v.examUrl ? new URL(v.examUrl).origin : ''; } catch { /* URL is validated on save. */ }
@@ -308,20 +337,23 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
 export function ExamDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
+  const { tenantId } = useTenant();
   const may = usePerm();
   const navigate = useNavigate();
   // Backend-first: fetch exam detail from the real API.
-  const { rows: localExams, loaded } = useColLoaded('exams');
   const [backendExam, setBackendExam] = useState(null);
   const [detailLoaded, setDetailLoaded] = useState(false);
+  const [detailError, setDetailError] = useState('');
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     const fetchDetail = async () => {
+      setDetailError('');
       try {
         const res = await Api.getExamination(id);
         const exam = res?.examination || res;
+        if (!exam) throw new Error('The examination endpoint returned no record.');
         if (exam && !cancelled) {
           const config = examConfigFromApi(exam.exam_config);
           const schedule = res?.schedules?.[0];
@@ -357,24 +389,43 @@ export function ExamDetailPage() {
             identityRequired: config.identityRequired ?? exam.identity_required ?? true,
           };
           setBackendExam(mapped);
-          await put('exams', mapped).catch(() => {});
         }
-      } catch { /* fall through to local */ }
+      } catch (error) {
+        if (!cancelled) setDetailError(error.message || 'Could not load examination details from the backend.');
+      }
       if (!cancelled) setDetailLoaded(true);
     };
     fetchDetail();
     return () => { cancelled = true; };
   }, [id]);
-  const { rows: centers, loaded: centersLoaded, error: centersError } = useColLoaded('centers');
-  const { rows: policies, loaded: policiesLoaded, error: policiesError } = useColLoaded('policies');
-  const examCatalogsReady = centersLoaded && policiesLoaded && !centersError && !policiesError;
-  const candidates = useCol('candidates');
-  const devices = useCol('devices');
-  const releases = useCol('releases');
-
-  // Use backend data when available, fall back to local
-  const exams = backendExam ? [backendExam, ...localExams.filter(x => x.id !== backendExam.id)] : localExams;
-  const isLoaded = detailLoaded || loaded;
+  const examTenantId = backendExam?.tenantId || tenantId;
+  const { rows: centers, loaded: centersLoaded, error: centersError } = useInstitutionCenters(examTenantId);
+  const { data: policies = [], loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(examTenantId), [examTenantId]);
+  const examCatalogsReady = centersLoaded && !policiesLoading && !centersError && !policiesError;
+  const { data: assignedRoster = [], loading: assignmentsLoading, error: assignmentsError, reload: reloadAssignments } = useLoad(async () => {
+    if (!backendExam) return [];
+    const [assignments, studentResponse] = await Promise.all([
+      Api.listExaminationStudents(backendExam.id),
+      Api.listStudents(),
+    ]);
+    const studentsById = new Map((studentResponse?.students || []).map((student) => [student.id, student]));
+    return assignments.map((assignment) => {
+      const student = studentsById.get(assignment.student_id);
+      return {
+        ...student,
+        id: assignment.student_id,
+        examId: backendExam.id,
+        centerId: assignment.center_id,
+        seat: assignment.seat_no,
+        rollNo: assignment.roll_no,
+        name: assignment.name,
+        email: student?.email || '',
+        identity: (student?.verification_status || '').toLowerCase() === 'verified' ? 'verified' : 'pending',
+      };
+    });
+  }, [backendExam?.id]);
+  const exams = backendExam ? [backendExam] : [];
+  const isLoaded = detailLoaded;
   const [tab, setTab] = useState('overview');
   const [edit, setEdit] = useState(false);
   const [pending, setPending] = useState(null);
@@ -383,12 +434,13 @@ export function ExamDetailPage() {
 
   const e = exams.find((x) => x.id === id);
   const pol = policies.find((p) => p.id === e?.policyId);
-  const { data: checks, loading: readinessLoading, reload: reloadReadiness } = useLoad(async () => (e ? readiness(e) : []), [e?.id, e?.version, e?.status]);
+  const { data: checks, loading: readinessLoading, error: readinessError, reload: reloadReadiness } = useLoad(async () => (e ? readiness(e, { centers, policies }) : []), [e?.id, e?.version, e?.status, centers, policies]);
   const { data: preview } = useLoad(async () => (e ? policyPreview(e) : null), [e?.id, e?.policyId]);
 
   if (!isLoaded) return <Page title="Exam"><Loading /></Page>;
+  if (detailError && !backendExam) return <Page title="Exam unavailable"><Alert tone="danger" title="Backend data unavailable">{detailError}</Alert><Link className="btn" to="/college/exams">Back to exams</Link></Page>;
   if (!e) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/college/exams">Back to exams</Link>} /></Page>;
-  const assigned = candidates.filter((c) => c.examId === e.id);
+  const assigned = assignedRoster;
   const centersList = (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid)).filter(Boolean);
   const currentStep = LIFECYCLE.indexOf(e.status);
   const readyCount = (checks || []).filter((c) => c.status === 'PASS').length;
@@ -396,7 +448,7 @@ export function ExamDetailPage() {
 
   const advance = async (to, reason) => {
     const ok = await run(() => transition(user, e, to, reason), 'Lifecycle updated.');
-    if (ok) { setPending(null); reloadReadiness(); }
+    if (ok) { setPending(null); reloadReadiness(); reloadAssignments(); }
   };
 
   return (
@@ -422,7 +474,7 @@ export function ExamDetailPage() {
       </>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
-      {(centersError || policiesError) && <Alert tone="danger" title="Backend data unavailable">Centres or policies could not be loaded from the backend. Editing is disabled until those records can be verified. {(centersError || policiesError).message || ''}</Alert>}
+      {(centersError || policiesError) && <Alert tone="danger" title="Backend data unavailable">{centersError ? 'Centres could not be loaded from the institution centre service.' : 'Policies could not be loaded from the backend.'} Editing is disabled until those records can be verified. {(centersError || policiesError).message || ''}</Alert>}
       {e.status === 'live' && <Alert tone="success" title="Exam is live">Critical configuration is locked. Sessions started before the deadline can be monitored from Operations.</Alert>}
       {conflict && <Alert tone="warn" title={`Schedule conflict with ${conflict.code}`}>Both exams overlap at a shared centre. Adjust the window before publishing.</Alert>}
       {e.status === 'cancelled' && <Alert tone="danger" title="Exam cancelled">Reason: {e.cancelReason || 'not recorded'}</Alert>}
@@ -471,7 +523,8 @@ export function ExamDetailPage() {
       </>}
 
       {tab === 'readiness' && <Card title="Publication readiness" desc="Checks run against the live workspace. A FAIL blocks publication." actions={<button className="btn" onClick={reloadReadiness}>Re-run checks</button>}>
-        {readinessLoading ? <Loading label="Running readiness checks…" /> : (
+        {readinessError && <Alert tone="danger" title="Readiness checks unavailable">{readinessError.message || 'Live readiness data could not be loaded.'}</Alert>}
+        {readinessLoading ? <Loading label="Running readiness checks…" /> : !readinessError && (
           <DataTable rows={checks || []} columns={[
             { label: 'Check', key: 'label' }, { label: 'Status', key: 'status', badge: true }, { label: 'Detail', key: 'detail' },
           ]} empty={<Empty title="No checks" />} />
@@ -479,12 +532,14 @@ export function ExamDetailPage() {
       </Card>}
 
       {tab === 'candidates' && <Card title="Candidates assigned" actions={<Link className="btn" to={`/college/exams/${e.id}/candidates`}>Manage seating</Link>}>
+        {assignmentsError && <Alert tone="danger" title="Assigned roster unavailable">{assignmentsError.message || 'Could not load assigned candidates from the backend.'}</Alert>}
+        {assignmentsLoading && <Loading label="Loading assigned candidates…" />}
         <DataTable rows={assigned} columns={[
           { label: 'Roll no', key: 'rollNo' }, { label: 'Name', key: 'name' }, { label: 'Email', key: 'email' },
           { label: 'Centre', render: (c) => centers.find((x) => x.id === c.centerId)?.code || '—' },
           { label: 'Seat', key: 'seat' }, { label: 'Identity', key: 'identity', badge: true },
           { label: 'Ready', render: (c) => {
-            const checks2 = readinessFor(c, { devices, exams, policies, releases });
+            const checks2 = readinessFor(c, { devices: [], exams, policies, releases: [] });
             return <Badge value={isReady(checks2) ? 'ready' : 'not ready'} />;
           } },
         ]} empty={<Empty icon="candidate" title="No candidates assigned">Assign candidates from the exam candidates page.</Empty>} />
