@@ -7,6 +7,7 @@ EXAMS="$ROOT/server/controllers/exam_controller.c"
 API="$ROOT/frontend/src/core/api/services.js"
 CLIENT="$ROOT/frontend/src/core/api/client.js"
 EXAM_PAGES="$ROOT/frontend/src/modules/exams/pages.jsx"
+EXAMS_PAGE="$ROOT/frontend/src/modules/exams/ExamsPage.jsx"
 EXAM_SERVICE="$ROOT/frontend/src/modules/exams/service.js"
 MODULES="$ROOT/server/controllers/modules_controller.c"
 POLICIES="$ROOT/server/controllers/policy_controller.c"
@@ -50,6 +51,10 @@ require_text "$EXAM_PAGES" 'loadInstitutionPolicies(tenantId)'
 require_text "$EXAM_PAGES" 'Array.isArray(policyData) ? policyData : []'
 require_text "$EXAM_PAGES" 'No active center mapped'
 require_text "$EXAM_PAGES" 'Array.isArray(backendCenters) ? backendCenters : []'
+require_text "$EXAMS_PAGE" 'Array.isArray(centerData) ? centerData : []'
+require_text "$EXAMS_PAGE" 'Array.isArray(policyData) ? policyData : []'
+require_text "$EXAMS_PAGE" 'The backend returned an invalid examination list.'
+require_text "$EXAMS_PAGE" 'Array.isArray(config.centerIds)'
 require_text "$INSTITUTIONS" '[campus] create insert failed sqlstate=%s constraint=%s column=%s'
 require_text "$DB" 'EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT'
 require_text "$DB" 'EXTRACT(EPOCH FROM updated_at) * 1000)::BIGINT'

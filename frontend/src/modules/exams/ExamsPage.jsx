@@ -62,7 +62,8 @@ export default function ExamsPage() {
   const [seatedByExam, setSeatedByExam] = useState({});
   const [fetchError, setFetchError] = useState('');
   const [assignmentError, setAssignmentError] = useState('');
-  const { data: centers = [], error: centersError } = useInstitutionCenters(tenantId);
+  const { data: centerData, error: centersError } = useInstitutionCenters(tenantId);
+  const centers = Array.isArray(centerData) ? centerData : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +72,7 @@ export default function ExamsPage() {
       try {
         const res = await Api.listExaminations();
         const list = res?.examinations || res?.exams || (Array.isArray(res) ? res : []);
+        if (!Array.isArray(list)) throw new Error('The backend returned an invalid examination list.');
         if (!cancelled) {
           // Map backend field names to frontend shape, sync to local cache
           const scopedList = tenantId ? list.filter((exam) => exam.institution_id === tenantId) : list;
@@ -93,7 +95,10 @@ export default function ExamsPage() {
             instructions: config.instructions || e.instructions || '',
             origins: config.origins || (e.allowed_origins || '').split(',').filter(Boolean),
             policyId: config.policyId || e.policy_id || e.policyId || null,
-            centerIds: config.centerIds || e.center_ids || e.centerIds || [],
+            centerIds: Array.isArray(config.centerIds)
+              ? config.centerIds
+              : Array.isArray(e.center_ids) ? e.center_ids
+                : Array.isArray(e.centerIds) ? e.centerIds : [],
             createdBy: e.created_by || e.createdBy || '',
             createdAt: e.created_at || e.createdAt || 0,
             updatedAt: e.updated_at || e.updatedAt || 0,
@@ -133,13 +138,14 @@ export default function ExamsPage() {
   }, [backendExams]);
 
   const exams = backendExams ?? [];
-  const { data: policies = [], error: policiesError } = useLoad(async () => {
+  const { data: policyData, error: policiesError } = useLoad(async () => {
     const response = await Api.listPolicies();
     if (!Array.isArray(response?.policies)) throw new Error('The backend returned an invalid policy response.');
     return response.policies
       .map((policy) => ({ ...policy, tenantId: policy.tenantId || policy.tenant_id }))
       .filter((policy) => policy.tenantId === tenantId);
   }, [tenantId]);
+  const policies = Array.isArray(policyData) ? policyData : [];
   const { msg, setMsg, run, busy } = useFlash();
   const [pending, setPending] = useState(null);
   const [tab, setTab] = useState('all');
