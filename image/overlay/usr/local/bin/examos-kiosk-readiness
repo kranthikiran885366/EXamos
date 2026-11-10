@@ -2,18 +2,99 @@
 set -eu
 
 attempt=0
-while [ "$attempt" -lt 240 ]; do
-    if /usr/bin/systemctl is-active --quiet examos-kiosk.service; then
-        if [ -S /run/user/1000/wayland-0 ]; then
-            if /usr/bin/pgrep -u exam -f 'chromium.*--kiosk.*--app=' >/dev/null; then
-                echo "EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1"
-                exit 0
-            fi
+ready_streak=0
+stable_pid=""
+while [ "$attempt" -lt 90 ]; do
+    chromium_pid="$(/usr/bin/pgrep -u exam -f 'chromium.*--kiosk.*--app=' 2>/dev/null | head -n 1 || true)"
+    if /usr/bin/systemctl is-active --quiet examos-kiosk.service &&
+       [ -S "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is required}/wayland-0" ] &&
+       [ -n "$chromium_pid" ] &&
+       /usr/bin/kill -0 "$chromium_pid" 2>/dev/null; then
+        if [ "$chromium_pid" = "$stable_pid" ]; then
+            ready_streak=$((ready_streak + 1))
+        else
+            stable_pid="$chromium_pid"
+            ready_streak=1
         fi
+        if [ "$ready_streak" -ge 10 ] &&
+           /usr/bin/kill -0 "$chromium_pid" 2>/dev/null; then
+            echo "EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1 stable_seconds=10 chromium_pid=$chromium_pid"
+            exit 0
+        fi
+    else
+        ready_streak=0
+        stable_pid=""
     fi
     attempt=$((attempt + 1))
-    sleep 0.25
+    sleep 1
 done
 
-echo "EXAMOS_KIOSK_NOT_READY: live Cage, Wayland socket, and kiosk Chromium were not all verified" >&2
+runtime_dir="${XDG_RUNTIME_DIR:-unset}"
+kiosk_state="$(/usr/bin/systemctl show --property=ActiveState --value examos-kiosk.service)"
+kiosk_substate="$(/usr/bin/systemctl show --property=SubState --value examos-kiosk.service)"
+kiosk_result="$(/usr/bin/systemctl show --property=Result --value examos-kiosk.service)"
+kiosk_pid="$(/usr/bin/systemctl show --property=MainPID --value examos-kiosk.service)"
+wayland_socket=0
+chromium_process=0
+if [ "$runtime_dir" != "unset" ] && [ -S "$runtime_dir/wayland-0" ]; then
+    wayland_socket=1
+fi
+if /usr/bin/pgrep -u exam -f 'chromium.*--kiosk.*--app=' >/dev/null; then
+    chromium_process=1
+fi
+echo "EXAMOS_KIOSK_NOT_READY: kiosk_active_state=$kiosk_state kiosk_substate=$kiosk_substate kiosk_result=$kiosk_result wayland_socket=$wayland_socket chromium=$chromium_process runtime_dir=$runtime_dir" >&2
+echo "EXAMOS_KIOSK_DIAGNOSTICS: kiosk_main_pid=$kiosk_pid" >&2
+for sysctl_path in \
+    /proc/sys/kernel/unprivileged_userns_clone \
+    /proc/sys/kernel/apparmor_restrict_unprivileged_userns \
+    /proc/sys/user/max_user_namespaces; do
+    if [ -r "$sysctl_path" ]; then
+        printf 'EXAMOS_KIOSK_DIAGNOSTICS: %s=%s\n' "$sysctl_path" "$(cat "$sysctl_path")" >&2
+    else
+        echo "EXAMOS_KIOSK_DIAGNOSTICS: $sysctl_path=unavailable" >&2
+    fi
+done
+if ! /usr/bin/systemctl show --property=CapabilityBoundingSet --property=NoNewPrivileges \
+        examos-kiosk.service >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect kiosk sandbox properties" >&2
+fi
+
+if [ "$kiosk_pid" -gt 0 ]; then
+    if ! /usr/bin/ps -p "$kiosk_pid" -o uid,euid,user,gid,egid,pid,ppid,stat,wchan:32,args >&2; then
+        echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect kiosk process" >&2
+    fi
+    if ! /usr/bin/grep -E '^(Name|Uid|Gid|Groups|CapEff):' "/proc/$kiosk_pid/status" >&2; then
+        echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect kiosk process credentials" >&2
+    fi
+    if ! /usr/bin/tr '\0' '\n' < "/proc/$kiosk_pid/environ" |
+         /usr/bin/grep -E '^(XDG_RUNTIME_DIR|WAYLAND_DISPLAY)=' >&2; then
+        echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect kiosk display environment" >&2
+    fi
+fi
+if ! /usr/bin/ps -eo uid,euid,gid,egid,pid,ppid,stat,wchan:32,args --forest |
+     /usr/bin/grep -E '(^ *UID|cage|examos-kiosk-launcher|chromium|systemd --user)' >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect kiosk process tree" >&2
+fi
+for display_runtime in "$runtime_dir"; do
+    if [ "$display_runtime" != "unset" ] && [ -d "$display_runtime" ]; then
+        if ! /usr/bin/ls -la "$display_runtime" >&2; then
+            echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect $display_runtime" >&2
+        fi
+    else
+        echo "EXAMOS_KIOSK_RUNTIME_DIRECTORY_MISSING: $display_runtime" >&2
+    fi
+done
+if ! /usr/bin/ls -la /dev/dri /dev/tty1 >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect DRM and tty devices" >&2
+fi
+if ! /usr/bin/loginctl list-sessions --no-legend >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to list logind sessions" >&2
+fi
+if ! /usr/bin/loginctl seat-status seat0 >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to inspect logind seat0" >&2
+fi
+if ! /usr/bin/journalctl --boot --unit=examos-kiosk.service --no-pager --lines=40 >&2; then
+    echo "EXAMOS_KIOSK_DIAGNOSTICS_UNAVAILABLE: unable to read the kiosk service journal" >&2
+fi
+echo "EXAMOS_KIOSK_DIAGNOSTICS_COMPLETE" >&2
 exit 1

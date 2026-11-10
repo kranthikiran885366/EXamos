@@ -57,47 +57,22 @@ EXAMOS_LEDGER_PATH=/var/log/examos/event_ledger.log
 EOF
 sudo chmod 644 "$MNT/etc/examos/proctor.env"
 
-# Setup examos-kiosk.service directly on /dev/tty1
-cat << 'EOF' | sudo tee "$MNT/etc/systemd/system/examos-kiosk.service" > /dev/null
-[Unit]
-Description=ExamOS Secure Graphical Kiosk Desktop
-Documentation=https://examos.example.edu/docs/kiosk
-After=network.target sound.target systemd-user-sessions.service examos-server.service
-Wants=examos-server.service
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-PAMName=login
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal
-StandardError=journal
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
-
-Environment=XDG_RUNTIME_DIR=/run/user/0
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=WLR_LIBINPUT_NO_DEVICES=0
-Environment=WLR_RENDERER=auto
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=GDK_BACKEND=wayland
-Environment=QT_QPA_PLATFORM=wayland
-Environment=XDG_SESSION_TYPE=wayland
-Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/0
-ExecStartPre=/usr/bin/chmod 0700 /run/user/0
-ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-EOF
+# Use the canonical unprivileged kiosk unit from the image overlay.
+sudo install -m 0644 \
+  "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-kiosk.service" \
+  "$MNT/etc/systemd/system/examos-kiosk.service"
+sudo install -m 0644 \
+  "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-proctor.service" \
+  "$MNT/etc/systemd/system/examos-proctor.service"
+sudo install -m 0755 \
+  "/mnt/d/SEB BRO/image/overlay/usr/local/bin/examos-kiosk-readiness" \
+  "$MNT/usr/local/bin/examos-kiosk-readiness"
+sudo install -m 0644 \
+  "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-kiosk-readiness.service" \
+  "$MNT/etc/systemd/system/examos-kiosk-readiness.service"
+sudo install -D -m 0644 \
+  "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" \
+  "$MNT/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
 
 # Ensure services are enabled in graphical.target and multi-user.target
 sudo mkdir -p "$MNT/etc/systemd/system/graphical.target.wants"

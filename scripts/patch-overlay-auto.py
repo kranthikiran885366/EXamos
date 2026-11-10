@@ -62,82 +62,17 @@ patch_commands = [
     "chmod 0700 /run/user/1000\n",
     "usermod -aG video,render,input,audio exam 2>/dev/null || true\n",
     "cat << 'UDEV_EOF' > /etc/udev/rules.d/70-uaccess-drm.rules\nKERNEL==\"card*\", SUBSYSTEM==\"drm\", MODE=\"0666\"\nKERNEL==\"renderD*\", SUBSYSTEM==\"drm\", MODE=\"0666\"\nKERNEL==\"tty1\", MODE=\"0666\"\nUDEV_EOF\n",
-    """cat << 'LAUNCHER_EOF' > /usr/local/bin/examos-kiosk-launcher
-#!/bin/bash
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
-export GDK_BACKEND=wayland
-export QT_QPA_PLATFORM=wayland
-
-mkdir -p "$XDG_RUNTIME_DIR"
-chown exam:exam "$XDG_RUNTIME_DIR" 2>/dev/null || true
-chmod 0700 "$XDG_RUNTIME_DIR"
-
-TARGET_URL="file:///usr/share/examos/onboarding.html"
-if [ -f /etc/examos/exam.conf ]; then
-  CONF_URL=$(grep '^EXAM_URL=' /etc/examos/exam.conf | cut -d'=' -f2 | tr -d ' \\r\\n')
-  if [ -n "$CONF_URL" ]; then
-    TARGET_URL="$CONF_URL"
-  fi
-fi
-
-if [ -n "$1" ]; then
-  TARGET_URL="$1"
-fi
-
-echo "[ExamOS-Launcher] Launching target: $TARGET_URL" > /dev/ttyS0 2>/dev/null || true
-
-PROFILE_DIR=$(mktemp -d /tmp/examos_kiosk_XXXXXX)
-chown -R exam:exam "$PROFILE_DIR" 2>/dev/null || true
-
-trap "rm -rf $PROFILE_DIR" EXIT INT TERM
-
-exec /usr/lib/chromium/chromium \\
-  --kiosk \\
-  --no-sandbox \\
-  --no-first-run \\
-  --no-default-browser-check \\
-  --ozone-platform=wayland \\
-  --enable-features=UseOzonePlatform \\
-  --disable-gpu \\
-  --disable-software-rasterizer \\
-  --user-data-dir="$PROFILE_DIR" \\
-  --app="$TARGET_URL" 2>&1 | tee -a /dev/ttyS0
-LAUNCHER_EOF
-""",
-    "chmod 755 /usr/local/bin/examos-kiosk-launcher\n",
-    """cat << 'SERVICE_EOF' > /etc/systemd/system/examos-kiosk.service
-[Unit]
-Description=ExamOS Secure Examination Kiosk Desktop
-After=network.target sound.target systemd-user-sessions.service
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=exam
-Group=exam
-SupplementaryGroups=video audio input render
-StandardOutput=journal+console
-StandardError=journal+console
-
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=pixman
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=LIBSEAT_BACKEND=builtin
-Environment=XDG_SESSION_TYPE=wayland
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/1000
-ExecStartPre=+/usr/bin/chown exam:exam /run/user/1000
-ExecStartPre=+/usr/bin/chmod 0700 /run/user/1000
-ExecStart=/bin/sh -c "/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher 2>&1 | tee -a /dev/ttyS0"
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-SERVICE_EOF
-""",
+    "test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher || { echo 'Missing canonical kiosk launcher' >&2; exit 1; }\n",
+    "install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher /usr/local/bin/examos-kiosk-launcher\n",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service || { echo 'Missing canonical kiosk unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service /etc/systemd/system/examos-kiosk.service\n",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service || { echo 'Missing canonical proctor unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service /etc/systemd/system/examos-proctor.service\n",
+    "test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness || { echo 'Missing canonical kiosk readiness probe' >&2; exit 1; }\n",
+    "install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness /usr/local/bin/examos-kiosk-readiness\n",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service || { echo 'Missing canonical kiosk readiness unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service /etc/systemd/system/examos-kiosk-readiness.service\n",
+    "install -D -m 0644 /mnt/host/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf /etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf\n",
     "mkdir -p /etc/systemd/system/graphical.target.wants /etc/systemd/system/multi-user.target.wants\n",
     "ln -sf /etc/systemd/system/examos-kiosk.service /etc/systemd/system/graphical.target.wants/examos-kiosk.service\n",
     "ln -sf /etc/systemd/system/examos-kiosk.service /etc/systemd/system/multi-user.target.wants/examos-kiosk.service\n",

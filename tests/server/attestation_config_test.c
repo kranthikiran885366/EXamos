@@ -1,10 +1,12 @@
 #include "../../server/include/attestation_service.h"
 #include "../../server/include/attestation_config.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static unsigned int device_count;
 static unsigned int release_count;
+static char scoped_institution_id[64];
 
 int attestation_register_device(const char *device_id, const char *ek_fingerprint,
                                 const char *allowed_release) {
@@ -29,6 +31,27 @@ int attestation_register_device_identity(const char *device_id,
     return 0;
 }
 
+int attestation_register_device_identity_for_institution(
+                                         const char *device_id,
+                                         const char *institution_id,
+                                         const char *ek_fingerprint,
+                                         const char *ak_qualified_name,
+                                         const char *ak_public_pem,
+                                         const char *ak_public_sha256,
+                                         const char *allowed_release) {
+    if (!device_id || !ek_fingerprint || strlen(ek_fingerprint) != 64 ||
+        !ak_qualified_name || strlen(ak_qualified_name) != 68 ||
+        !ak_public_pem || !ak_public_pem[0] ||
+        !ak_public_sha256 || strlen(ak_public_sha256) != 64 ||
+        !allowed_release || !allowed_release[0] ||
+        (institution_id && strlen(institution_id) >= 64)) return -1;
+    if (institution_id)
+        snprintf(scoped_institution_id, sizeof(scoped_institution_id), "%s",
+                 institution_id);
+    device_count++;
+    return 0;
+}
+
 int attestation_register_release(const char *release_id, const char *uki_hash,
                                  const char *pcr0, const char *pcr4,
                                  const char *pcr7, const char *pcr11) {
@@ -47,6 +70,12 @@ int attestation_revoke_release(const char *release_id) {
 int main(void) {
     if (attestation_config_load_all(NULL) != 0 || device_count == 0 || release_count == 0) {
         fprintf(stderr, "registry configuration was rejected or empty\n");
+        return 1;
+    }
+    const char *expected_institution = getenv("EXAMOS_EXPECT_DEVICE_INSTITUTION_ID");
+    if (expected_institution &&
+        strcmp(scoped_institution_id, expected_institution) != 0) {
+        fprintf(stderr, "signed device institution binding was not loaded\n");
         return 1;
     }
     printf("registry configuration accepted: devices=%u releases=%u\n",

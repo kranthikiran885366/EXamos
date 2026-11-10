@@ -1498,7 +1498,25 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
 }
 
 int platform_update_exam_url(const char *exam_id, const char *new_url, const char *allowed_origins, const char *actor) {
-    if (!exam_id || !new_url) return -1;
+    if (!exam_id || !new_url) { errno = EINVAL; return -1; }
+
+    /* The new URL and origins are persisted and later handed to kiosk clients,
+     * so validate them at the write boundary as well as at delivery time. */
+    char validation_error[192] = {0};
+    if (platform_validate_exam_url(new_url, validation_error, sizeof(validation_error)) != 0) {
+        platform_set_error(validation_error[0] ? validation_error
+                                               : "The exam URL must be an approved HTTPS endpoint");
+        errno = EINVAL;
+        return -1;
+    }
+    if (allowed_origins && allowed_origins[0] &&
+        platform_validate_allowed_origins(allowed_origins, validation_error,
+                                          sizeof(validation_error)) != 0) {
+        platform_set_error(validation_error[0] ? validation_error
+                                               : "The allowed origins must be approved HTTPS origins");
+        errno = EINVAL;
+        return -1;
+    }
 
     enterprise_exam_t exam;
     if (platform_get_exam_by_id(exam_id, &exam) != 0) { errno = ENOTSUP; return -1; }

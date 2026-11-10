@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 if [[ "${1:-}" != "--confirm-persist" || $# -ne 1 ]]; then
-    echo "Usage: EXAMOS_TPM_EK_HANDLE=0x81010001 EXAMOS_TPM_AK_HANDLE=0x81010002 EXAMOS_DEVICE_ID=... EXAMOS_RELEASE_ID=... EXAMOS_ENROLLMENT_OUTPUT=/path/request.json $0 --confirm-persist" >&2
+    echo "Usage: EXAMOS_TPM_EK_HANDLE=0x81010001 EXAMOS_TPM_AK_HANDLE=0x81010002 EXAMOS_DEVICE_ID=... EXAMOS_INSTITUTION_ID=... EXAMOS_RELEASE_ID=... EXAMOS_ENROLLMENT_OUTPUT=/path/request.json $0 --confirm-persist" >&2
     echo "This creates and persists TPM EK/AK objects; it never clears the TPM." >&2
     exit 2
 fi
@@ -12,7 +12,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
     exit 2
 fi
 
-for name in EXAMOS_TPM_EK_HANDLE EXAMOS_TPM_AK_HANDLE EXAMOS_DEVICE_ID EXAMOS_RELEASE_ID EXAMOS_ENROLLMENT_OUTPUT EXAMOS_TPM_CA_STORE EXAMOS_TPM_CA_STORE_SHA256; do
+for name in EXAMOS_TPM_EK_HANDLE EXAMOS_TPM_AK_HANDLE EXAMOS_DEVICE_ID EXAMOS_INSTITUTION_ID EXAMOS_RELEASE_ID EXAMOS_ENROLLMENT_OUTPUT EXAMOS_TPM_CA_STORE EXAMOS_TPM_CA_STORE_SHA256; do
     if [[ -z "${!name:-}" ]]; then
         echo "FAIL: $name must be configured explicitly." >&2
         exit 1
@@ -45,8 +45,9 @@ fi
 EK_HANDLE=$(printf '0x%08x' "$EK_HANDLE_VALUE")
 AK_HANDLE=$(printf '0x%08x' "$AK_HANDLE_VALUE")
 if [[ ! "$EXAMOS_DEVICE_ID" =~ ^[A-Za-z0-9._:-]{1,63}$ ||
+      ! "$EXAMOS_INSTITUTION_ID" =~ ^[A-Za-z0-9._:-]{1,63}$ ||
       ! "$EXAMOS_RELEASE_ID" =~ ^[A-Za-z0-9._:-]{1,63}$ ]]; then
-    echo "FAIL: device and release IDs must use 1-63 ASCII letters, digits, dot, underscore, colon, or hyphen." >&2
+    echo "FAIL: device, institution, and release IDs must use 1-63 ASCII letters, digits, dot, underscore, colon, or hyphen." >&2
     exit 1
 fi
 
@@ -198,7 +199,7 @@ EK_CERT_PEM=$(cat "$WORK_DIR/ek-cert.pem")
 AK_PEM=$(cat "$WORK_DIR/ak.pem")
 TPM_PROPERTIES=$(tpm2_getcap properties-fixed)
 
-python3 - "$OUTPUT" "$EXAMOS_DEVICE_ID" "$EXAMOS_RELEASE_ID" "$EK_HANDLE" \
+python3 - "$OUTPUT" "$EXAMOS_DEVICE_ID" "$EXAMOS_INSTITUTION_ID" "$EXAMOS_RELEASE_ID" "$EK_HANDLE" \
     "$AK_HANDLE" "$EK_FINGERPRINT" "$CREATED_NAME" "$AK_QUALIFIED_NAME" "$AK_PUBLIC_SHA256" \
     "$EK_CERT_PEM" "$AK_PEM" "$TPM_PROPERTIES" "$CA_STORE_DIGEST" <<'PY'
 import json
@@ -206,7 +207,7 @@ import pathlib
 import sys
 
 (
-    output, device_id, release_id, ek_handle, ak_handle, ek_fingerprint, ak_name,
+    output, device_id, institution_id, release_id, ek_handle, ak_handle, ek_fingerprint, ak_name,
     ak_qualified_name, ak_public_sha256, ek_certificate, ak_public, properties,
     ca_store_sha256,
 ) = sys.argv[1:]
@@ -214,6 +215,7 @@ record = {
     "_schema": "examos-physical-tpm-enrollment-request-v1",
     "enrollment_status": "PENDING_EXTERNAL_APPROVAL",
     "device_id": device_id,
+    "institution_id": institution_id,
     "allowed_release": release_id,
     "tpm_ek_handle": ek_handle,
     "tpm_ak_handle": ak_handle,

@@ -2,6 +2,8 @@
 Description=ExamOS Secure Examination Kiosk Session (Cage + Chromium)
 After=network.target sound.target systemd-user-sessions.service examos-server.service nftables.service
 Wants=examos-server.service
+Requires=examos-preflight.service
+After=examos-preflight.service
 
 [Service]
 Type=simple
@@ -9,18 +11,26 @@ User=exam
 Group=exam
 SupplementaryGroups=video audio input render
 
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WAYLAND_DISPLAY=wayland-0
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+RuntimeDirectory=examos-kiosk
+RuntimeDirectoryMode=0700
+Environment=LIBSEAT_BACKEND=logind
 Environment=WLR_LIBINPUT_NO_DEVICES=1
 Environment=WLR_RENDERER=auto
 Environment=GDK_BACKEND=wayland
 Environment=QT_QPA_PLATFORM=wayland
-Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu
+Environment=XDG_CONFIG_HOME=/run/examos-kiosk
+Environment=XDG_CACHE_HOME=/run/examos-kiosk
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app
 
-ExecStartPre=/usr/bin/mkdir -p /run/user/1000
-ExecStartPre=+/usr/bin/chown exam:exam /run/user/1000
-ExecStartPre=+/usr/bin/chmod 0700 /run/user/1000
-ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
+# PAM resets XDG_RUNTIME_DIR, so set the private compositor directory after PAM.
+ExecStart=/usr/bin/env XDG_RUNTIME_DIR=/run/examos-kiosk /usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
 Restart=always
 RestartSec=3
 LimitNOFILE=65536
@@ -29,10 +39,17 @@ LimitNOFILE=65536
 ProtectSystem=strict
 ProtectHome=true
 NoNewPrivileges=true
-ReadWritePaths=/run/user/1000 /tmp
+ReadWritePaths=/run/examos-kiosk /tmp
 PrivateTmp=true
 LockPersonality=true
-CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
+# Chromium's unprivileged user-namespace sandbox needs to acquire these
+# capabilities inside its own user namespace in order to set up the PID/mount
+# namespace and write its UID/GID maps. The service runs as the unprivileged
+# 'exam' user with no ambient capabilities, so these remain unavailable in the
+# host user namespace; they only become usable inside Chromium's namespace.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_SYS_TTY_CONFIG
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=graphical.target

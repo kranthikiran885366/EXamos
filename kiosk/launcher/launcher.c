@@ -102,6 +102,11 @@ static int create_ephemeral_profile(char *out_path, size_t max_len) {
             return -1;
         }
     }
+    char crashpad_dir[512];
+    snprintf(crashpad_dir, sizeof(crashpad_dir), "%s/Crashpad", out_path);
+    if (mkdir(crashpad_dir, 0700) != 0 && errno != EEXIST) {
+        log_msg("WARN", "Failed to pre-create Crashpad directory in ephemeral profile");
+    }
     log_msg("INFO", "Created ephemeral browser profile in RAM");
     return 0;
 }
@@ -249,6 +254,16 @@ int main(int argc, char *argv[]) {
         char user_data_flag[300];
         snprintf(user_data_flag, sizeof(user_data_flag), "--user-data-dir=%s", g_profile_dir);
 
+        /*
+         * Debian's unbranded Chromium build compiles out --crash-dumps-dir but
+         * retains the BREAKPAD_DUMP_LOCATION environment variable check in
+         * GetCrashDumpLocation().  We set the env var in the child process so
+         * Crashpad receives a valid --database path and does not exit, which
+         * would otherwise reset the IPC socket and SIGTRAP Chromium.
+         */
+        char crashpad_dir[512];
+        snprintf(crashpad_dir, sizeof(crashpad_dir), "%s/Crashpad", g_profile_dir);
+
         char app_flag[600];
         snprintf(app_flag, sizeof(app_flag), "--app=%s", exam_url);
 
@@ -317,6 +332,14 @@ int main(int argc, char *argv[]) {
 
             args[arg_idx++] = app_flag;
             args[arg_idx] = NULL;
+
+            /* Ensure all user directory pointers point into the ephemeral profile in RAM,
+             * avoiding systemd ProtectHome restrictions and guaranteeing Crashpad database resolution. */
+            setenv("HOME", g_profile_dir, 1);
+            setenv("XDG_CONFIG_HOME", g_profile_dir, 1);
+            setenv("XDG_CACHE_HOME", g_profile_dir, 1);
+            setenv("CHROME_CONFIG_HOME", g_profile_dir, 1);
+            setenv("BREAKPAD_DUMP_LOCATION", crashpad_dir, 1);
 
             execvp(CHROMIUM_BIN, args);
             fprintf(stderr, "Fatal: execvp failed for %s: %s\n", CHROMIUM_BIN, strerror(errno));

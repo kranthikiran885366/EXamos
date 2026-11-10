@@ -49,7 +49,7 @@ done
 # as a build-tool leak. However, document the justification in the audit log.
 if printf '%s\n' "$CONTENT_PKGS" | grep -qE '^\s+python3\s*$'; then
     # PG-15: Verify python3 is confined by AppArmor profile before allowing it
-    APPARMOR_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"
+    APPARMOR_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk"
     PYTHON_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.python3"
     if [ -f "$PYTHON_PROFILE" ]; then
         p "S-01: python3 retained and confined by AppArmor profile: $PYTHON_PROFILE"
@@ -149,8 +149,20 @@ done
 # ---------------------------------------------------------------------------
 # S-06 (P2-17): No secrets in source
 # ---------------------------------------------------------------------------
-SECRET_HITS=$(find "$WORKSPACE" -type f \( -name "*.pem" -o -name "*.key" -o -name "id_rsa" -o -name "id_ed25519" \) \
-    ! -path "*/.git/*" ! -path "*/image/trust/*" ! -path "*/build/*" 2>/dev/null || true)
+# A .pem file can legitimately carry a public key (for example a TPM
+# attestation key exported as PEM). Match on key material, not the extension,
+# so public evidence is not reported as a leaked secret. Scan tracked files:
+# generated local TLS directories such as _pg_tls/ are gitignored test
+# infrastructure, not source.
+if git -C "$WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    SECRET_HITS=$(git -C "$WORKSPACE" ls-files -z -- '*.pem' '*.key' 'id_rsa' 'id_ed25519' \
+        ':!image/trust/*' 2>/dev/null |
+        xargs -0 -r grep -lE -- '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' 2>/dev/null || true)
+else
+    SECRET_HITS=$(find "$WORKSPACE" -type f \( -name "*.pem" -o -name "*.key" -o -name "id_rsa" -o -name "id_ed25519" \) \
+        ! -path "*/.git/*" ! -path "*/image/trust/*" ! -path "*/build/*" ! -path "*/_pg_tls/*" \
+        -exec grep -lE -- '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' {} + 2>/dev/null || true)
+fi
 if [ -z "$SECRET_HITS" ]; then
     p "S-06: No private key files in source tree"
 else
@@ -255,6 +267,17 @@ if grep -Fq 'enable_required_unit usbguard.service' "$LOCKDOWN_SCRIPT" &&
     p "S-12: USBGuard is enabled and required before preflight"
 else
     f "S-12: USBGuard boot enablement/preflight dependency is missing"
+fi
+
+# ---------------------------------------------------------------------------
+# S-14: The kiosk itself must fail closed when mandatory preflight fails
+# ---------------------------------------------------------------------------
+KIOSK_UNIT="$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service"
+if grep -Fxq 'Requires=examos-preflight.service' "$KIOSK_UNIT" &&
+   grep -Fxq 'After=examos-preflight.service' "$KIOSK_UNIT"; then
+    p "S-14: kiosk startup requires successful mandatory preflight"
+else
+    f "S-14: kiosk can start without successful mandatory preflight"
 fi
 
 # ---------------------------------------------------------------------------

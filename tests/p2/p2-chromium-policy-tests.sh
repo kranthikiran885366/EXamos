@@ -213,9 +213,9 @@ if [ -n "$CHROMIUM_PID" ]; then
 else
     record "CP-04" "BLOCKED" "BLOCKED: Chromium not running — sandbox check deferred"
     # PG-14: Static check — verify AppArmor profile exists and is in enforce mode
-    AA_PROFILE="/etc/apparmor.d/usr.bin.chromium"
+    AA_PROFILE="/etc/apparmor.d/examos-kiosk"
     if [ ! -f "$AA_PROFILE" ]; then
-        AA_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"
+        AA_PROFILE="$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk"
     fi
     if [ -f "$AA_PROFILE" ]; then
         # Profile must not contain 'flags=(complain)' — that would be non-enforcing

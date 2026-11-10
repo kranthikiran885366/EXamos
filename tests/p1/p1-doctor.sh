@@ -97,7 +97,9 @@ LAUNCHER_C="$WORKSPACE/kiosk/launcher/launcher.c"
 [ -f "$LAUNCHER_C" ] && ! grep -q "127.0.0.1:8000"  "$LAUNCHER_C" 2>/dev/null && chk "launcher: no hardcoded fallback URL" "PASS" || chk "launcher: no hardcoded fallback URL" "FAIL"
 
 # ── Security overlays ─────────────────────────────────────────────────────────
-[ -f "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ]                          && chk "AppArmor Chromium profile"          "PASS" || chk "AppArmor Chromium profile" "FAIL"
+[ -f "$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk" ] && [ ! -e "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ] \
+    && chk "canonical AppArmor Chromium profile without competing legacy attachment" "PASS" \
+    || chk "canonical AppArmor Chromium profile without competing legacy attachment" "FAIL"
 [ -f "$WORKSPACE/image/overlay/etc/chromium/policies/managed/examos_policies.json" ]       && chk "Chromium managed policies"          "PASS" || chk "Chromium managed policies" "FAIL"
 [ -f "$WORKSPACE/image/overlay/etc/nftables.conf" ]                                        && chk "nftables.conf exists"               "PASS" || chk "nftables.conf exists" "FAIL"
 [ -f "$WORKSPACE/image/overlay/etc/sysctl.d/99-examos-security.conf" ]                     && chk "sysctl hardening conf"              "PASS" || chk "sysctl hardening conf" "FAIL"
@@ -107,7 +109,8 @@ LAUNCHER_C="$WORKSPACE/kiosk/launcher/launcher.c"
 SECRET_FINDINGS=$(find "$WORKSPACE" -type f \
     \( -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" \
        -o -name "id_rsa" -o -name "id_ed25519" \) \
-    ! -path "*/.git/*" ! -path "*/build/*" ! -path "*/image/trust/*" 2>/dev/null || true)
+    ! -path "*/.git/*" ! -path "*/build/*" ! -path "*/image/trust/*" \
+    ! -path "*/tests/virtual-hardware/evidence/*" ! -path "*/_pg_tls/*" 2>/dev/null || true)
 [ -z "$SECRET_FINDINGS" ]                                   && chk "No production secrets committed"   "PASS" || { chk "No production secrets committed" "FAIL"; echo "  Found: $SECRET_FINDINGS"; }
 
 # ── admin.conf: no plaintext password in comment ──────────────────────────────

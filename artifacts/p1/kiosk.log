@@ -3,5 +3,11 @@
 [KIOSK-CHECK] PASS: Kiosk service hooked to graphical.target
 [KIOSK-CHECK] PASS: No conventional desktop environments installed (pure Cage kiosk)
 [KIOSK-CHECK] PASS: /etc/examos/exam.conf configuration source exists
-[KIOSK-CHECK] PASS: Chromium AppArmor security profile exists
+[KIOSK-CHECK] PASS: canonical Chromium AppArmor profile exists without a competing legacy attachment
+[KIOSK-CHECK] PASS: Chromium wrapper has its empty-config sentinel
 [KIOSK-CHECK] PASS: Chromium enterprise managed policies configured
+[KIOSK-CHECK] PASS: Kiosk launcher binary is a valid ELF x86-64 executable
+[KIOSK-CHECK] PASS: Kiosk service ExecStart references correct binary
+[KIOSK-CHECK] PASS: Kiosk service has required systemd hardening directives
+[KIOSK-CHECK] PASS: Chromium Crashpad database is scoped to the ephemeral kiosk profile
+[P1-KIOSK] PASS: All kiosk static verification checks passed

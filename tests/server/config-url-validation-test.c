@@ -11,6 +11,7 @@ int main(void) {
     static const url_case_t cases[] = {
         {"https://exam.alpha.edu/exam/start", 1},
         {"https://portal.beta.edu:8443/session", 1},
+        {"https://sppio-os.vercel.app/candidate-login", 1},
         {"https://127.0.0.1/exam", 1},
         {"http://127.0.0.1:8000/exam", 1},
         {"http://localhost:8000/exam", 1},
@@ -25,6 +26,7 @@ int main(void) {
         {"https://exam.alpha.edu:99999/exam", 0},
         {"https:///missing-host", 0},
         {"https://*.exam.alpha.edu/exam", 0},
+        {"https://evil.sppio-os.vercel.app/candidate-login", 0},
         {"https://exam..alpha.edu/exam", 0},
         {"https://example.com/exam", 0},
         {"https://DEPLOYMENT_REQUIRED/exam", 0},
@@ -49,6 +51,11 @@ int main(void) {
                     index + 1, platform_actual, cases[index].expected, error);
             return 1;
         }
+    }
+
+    if (!config_validate_exam_url("https://sppio-os.vercel.app/candidate-login")) {
+        fprintf(stderr, "FAIL: configured candidate portal URL must be approved\n");
+        return 1;
     }
 
     printf("PASS: %zu cases across both exam URL validators\n",

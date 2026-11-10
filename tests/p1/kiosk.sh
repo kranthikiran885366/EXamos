@@ -43,11 +43,19 @@ else
     exit 1
 fi
 
-# Check AppArmor profile
-if [ -f "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ]; then
-    echo "[KIOSK-CHECK] PASS: Chromium AppArmor security profile exists"
+# Check the single canonical AppArmor attachment
+if [ -f "$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk" ] &&
+   [ ! -e "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ]; then
+    echo "[KIOSK-CHECK] PASS: canonical Chromium AppArmor profile exists without a competing legacy attachment"
 else
-    echo "[KIOSK-CHECK] FAIL: Chromium AppArmor profile missing"
+    echo "[KIOSK-CHECK] FAIL: Chromium AppArmor profile missing or competing legacy attachment exists"
+    exit 1
+fi
+
+if [ -s "$WORKSPACE/image/overlay/etc/chromium.d/README" ]; then
+    echo "[KIOSK-CHECK] PASS: Chromium wrapper has its empty-config sentinel"
+else
+    echo "[KIOSK-CHECK] FAIL: Chromium wrapper config sentinel is missing"
     exit 1
 fi
 
@@ -87,6 +95,18 @@ for directive in "NoNewPrivileges=true" "ProtectSystem=strict" "PrivateTmp=true"
     fi
 done
 echo "[KIOSK-CHECK] PASS: Kiosk service has required systemd hardening directives"
+
+# Ensure Chromium's Crashpad database stays in the ephemeral kiosk profile.
+# Debian's unbranded Chromium compiles out --crash-dumps-dir but honours the
+# BREAKPAD_DUMP_LOCATION environment variable in GetCrashDumpLocation().
+LAUNCHER_SRC="$WORKSPACE/kiosk/launcher/launcher.c"
+if grep -Fq 'setenv("BREAKPAD_DUMP_LOCATION", crashpad_dir, 1)' "$LAUNCHER_SRC" &&
+   grep -Fq 'snprintf(crashpad_dir, sizeof(crashpad_dir), "%s/Crashpad", g_profile_dir)' "$LAUNCHER_SRC"; then
+    echo "[KIOSK-CHECK] PASS: Chromium Crashpad database is scoped to the ephemeral kiosk profile"
+else
+    echo "[KIOSK-CHECK] FAIL: Chromium Crashpad database must use the ephemeral kiosk profile"
+    exit 1
+fi
 
 echo "[P1-KIOSK] PASS: All kiosk static verification checks passed"
 exit 0

@@ -1795,6 +1795,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
             if (activating) {
                 const char *gate_vals[1] = { inst_id };
                 int gate_lens[1] = { (int)strlen(inst_id) };
+                /* P3 trusted challenges expire after 10 minutes even if the
+                   institution policy requests a longer evidence window. */
                 PGresult *gate_res = db_simple(conn,
                     "SELECT "
                     "  EXISTS (SELECT 1 FROM institution_agreements "
@@ -1821,7 +1823,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     "                 AND EXISTS (SELECT 1 FROM device_trust_policies p "
                     "                             WHERE p.institution_id = $1 AND p.status = 'active' "
                     "                               AND e.verified_at >= EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
-                    "                                   - p.max_evidence_age_sec::BIGINT * 1000))) = COUNT(*) "
+                    "                                   - LEAST(p.max_evidence_age_sec::BIGINT, 600) * 1000))) = COUNT(*) "
                     "   FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1) AS devices_attested, "
                     "  (SELECT COUNT(*) > 0 AND COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled')) = COUNT(*) "
                     "   FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1) AS devices_locked, "
@@ -2487,7 +2489,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
             /* 1. Institution devices and persisted enrollment / evidence state.
              * Approval uses 'registered'; 'enrolled' remains a supported legacy
              * lifecycle state. Only fresh evidence marked TRUSTED under one active
-             * policy counts; this does not perform quote verification itself. */
+             * policy counts; this does not perform quote verification itself.
+             * P3 trusted challenges expire after 10 minutes regardless of policy. */
             PGresult *dev_res = db_simple(conn,
                 "SELECT COUNT(*) AS total, "
                 "  COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled') AND "
@@ -2502,7 +2505,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "              AND EXISTS (SELECT 1 FROM device_trust_policies p "
                 "                          WHERE p.institution_id = $1 AND p.status = 'active' "
                 "                            AND e.verified_at >= EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 "
-                "                                - p.max_evidence_age_sec::BIGINT * 1000))) AS attested, "
+                "                                - LEAST(p.max_evidence_age_sec::BIGINT, 600) * 1000))) AS attested, "
                 "  COUNT(*) FILTER (WHERE d.status IN ('registered','enrolled')) AS registered, "
                 "  COUNT(*) FILTER (WHERE d.status = 'enrolled') AS enrolled "
                 "FROM devices d WHERE d.tenant_id = $1 OR d.institution_id = $1",
@@ -2868,6 +2871,27 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "campusId", campus_id, sizeof(campus_id));
             ctrl_json_string(body, "username", username, sizeof(username));
 
+            size_t email_length = strlen(email);
+            size_t email_start = 0;
+            while (email_start < email_length &&
+                   (email[email_start] == ' ' || email[email_start] == '\t' ||
+                    email[email_start] == '\r' || email[email_start] == '\n')) {
+                email_start++;
+            }
+            while (email_length > email_start &&
+                   (email[email_length - 1] == ' ' || email[email_length - 1] == '\t' ||
+                    email[email_length - 1] == '\r' || email[email_length - 1] == '\n')) {
+                email_length--;
+            }
+            if (email_start > 0) {
+                memmove(email, email + email_start, email_length - email_start);
+            }
+            email[email_length - email_start] = '\0';
+            for (size_t i = 0; email[i]; i++) {
+                if (email[i] >= 'A' && email[i] <= 'Z')
+                    email[i] = (char)(email[i] - 'A' + 'a');
+            }
+
             if (!email[0] || !name[0]) {
                 db_release(conn, 0);
                 inst_send_error(client_fd, 400, "Name and institutional email are required", origin, extra_headers, extra_len);
@@ -3005,17 +3029,18 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, 'active', $9::bigint, 0) "
                 "ON CONFLICT (username) DO NOTHING "
                 "RETURNING id, username", 9, pvals, lens);
-
             if (!ins || PQresultStatus(ins) != PGRES_TUPLES_OK) {
-                char err_detail[512] = {0};
+                int duplicate_email =
+                    db_is_constraint_violation(ins, "users_active_email_normalized_key");
                 if (ins) {
-                    snprintf(err_detail, sizeof(err_detail), "%s", PQresultErrorMessage(ins));
                     PQclear(ins);
                 }
                 db_release(conn, 0);
-                char client_err[1024];
-                snprintf(client_err, sizeof(client_err), "Failed to create administrator account in database: %s", err_detail[0] ? err_detail : "Database error");
-                inst_send_error(client_fd, 500, client_err, origin, extra_headers, extra_len);
+                if (duplicate_email) {
+                    inst_send_error(client_fd, 409, "An active account with this email already exists", origin, extra_headers, extra_len);
+                } else {
+                    inst_send_error(client_fd, 500, "Failed to create administrator account in database", origin, extra_headers, extra_len);
+                }
                 return;
             }
             if (PQntuples(ins) == 0) {

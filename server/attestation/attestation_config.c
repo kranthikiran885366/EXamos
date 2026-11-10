@@ -77,6 +77,16 @@ static void cfg_json_str(const char *buf, const char *key,
     out[i] = '\0';
 }
 
+static int cfg_valid_identifier(const char *value) {
+    if (!value || !value[0] || strlen(value) > 63) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p) {
+        if (!( (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+               (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' ||
+               *p == ':' || *p == '-')) return 0;
+    }
+    return 1;
+}
+
 static int cfg_json_bool_strict(const char *buf, const char *key) {
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
@@ -341,6 +351,7 @@ int attestation_config_load_devices(const char *json_path) {
 
         /* Extract fields */
         char device_id[64]    = {0};
+        char institution_id[64] = {0};
         char ek_fp[65]        = {0};
         char ak_qualified_name[69] = {0};
         char ak_pub_sha256[65] = {0};
@@ -349,6 +360,8 @@ int attestation_config_load_devices(const char *json_path) {
         char status_str[32]   = {0};
 
         cfg_json_str(obj, "device_id",       device_id,   sizeof(device_id));
+        cfg_json_str(obj, "institution_id",  institution_id,
+                     sizeof(institution_id));
         cfg_json_str(obj, "ek_fingerprint",  ek_fp,       sizeof(ek_fp));
         cfg_json_str(obj, "ak_qualified_name", ak_qualified_name,
                      sizeof(ak_qualified_name));
@@ -358,7 +371,9 @@ int attestation_config_load_devices(const char *json_path) {
         cfg_json_str(obj, "status",          status_str,  sizeof(status_str));
 
         if (production && !emulate &&
-            (!device_id[0] || !is_sha256_hex(ek_fp, 1) ||
+            (!cfg_valid_identifier(device_id) ||
+             !cfg_valid_identifier(institution_id) ||
+             !is_sha256_hex(ek_fp, 1) ||
              strlen(ak_qualified_name) != 68 ||
              strncmp(ak_qualified_name, "000b", 4) != 0 ||
              !is_sha256_hex(ak_qualified_name + 4, 1) ||
@@ -384,11 +399,15 @@ int attestation_config_load_devices(const char *json_path) {
             /* If AK identity fields are present, register with full identity
              * even in development mode — the dev-mode verify path needs AK
              * public key and qualified name to verify TPM quotes. */
-            int rc = ((production && !emulate) || (ak_qualified_name[0] && ak_public_pem[0] && ak_pub_sha256[0]))
-                ? attestation_register_device_identity(
-                    device_id, ek_fp, ak_qualified_name, ak_public_pem,
-                    ak_pub_sha256, allowed_rel)
-                : attestation_register_device(device_id, ek_fp, allowed_rel);
+            int rc;
+            if ((production && !emulate) ||
+                (ak_qualified_name[0] && ak_public_pem[0] && ak_pub_sha256[0])) {
+                rc = attestation_register_device_identity_for_institution(
+                    device_id, institution_id, ek_fp, ak_qualified_name,
+                    ak_public_pem, ak_pub_sha256, allowed_rel);
+            } else {
+                rc = attestation_register_device(device_id, ek_fp, allowed_rel);
+            }
             if (rc == 0) {
                 count++;
                 fprintf(stdout, "[AttestConfig]   + device: %s (%s)\n",

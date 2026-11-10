@@ -6,6 +6,7 @@ ConditionPathExists=/etc/examos/appliance-identity
 StartLimitIntervalSec=300
 StartLimitBurst=3
 Requires=examos-unseal.service
+Requires=examos-kiosk.service
 After=network.target sound.target examos-kiosk.service examos-unseal.service
 PartOf=examos-kiosk.service
 
@@ -16,7 +17,7 @@ Group=exam
 SupplementaryGroups=audio
 EnvironmentFile=/etc/examos/proctor.env
 EnvironmentFile=/run/examos/secrets/proctor.env
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XDG_RUNTIME_DIR=/run/examos-kiosk
 Environment=WAYLAND_DISPLAY=wayland-0
 
 # The detector inventory and the detector identity. The worker verifies every
@@ -37,7 +38,7 @@ StandardError=journal
 # Sandboxing
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/run/user/1000 /tmp
+ReadWritePaths=/run/examos-kiosk /tmp
 PrivateTmp=yes
 NoNewPrivileges=yes
 PrivateDevices=no

@@ -3055,15 +3055,26 @@ static void* handle_client(void *arg) {
             char new_url[4096] = {0}, allowed_origins[2048] = {0};
             parse_json_string(req_body, "exam_url",        new_url,         sizeof(new_url));
             parse_json_string(req_body, "allowed_origins", allowed_origins, sizeof(allowed_origins));
+            enterprise_exam_t exam; memset(&exam, 0, sizeof(exam));
             if (!exam_id[0] || !new_url[0]) {
                 send_http_response(client_fd, 400, "application/json",
                                    "{\"error\":\"exam_id (path) and exam_url required\"}");
+            } else if (platform_get_exam_by_id(exam_id, &exam) != 0 ||
+                       (sess.role != ROLE_PLATFORM_OWNER &&
+                        strcmp(sess.institution_id, exam.institution_id) != 0)) {
+                /* Do not let an institution-scoped operator retarget another
+                 * tenant's examination to a URL they control. */
+                send_http_response(client_fd, 403, "application/json",
+                                   "{\"error\":\"Exam scope denied\"}");
+                OPENSSL_cleanse(&exam, sizeof(exam));
             } else if (platform_update_exam_url(exam_id, new_url, allowed_origins, sess.user_id) == 0) {
                 send_http_response(client_fd, 200, "application/json",
                                    "{\"status\":\"url_updated\"}");
+                OPENSSL_cleanse(&exam, sizeof(exam));
             } else {
                 send_http_response(client_fd, 400, "application/json",
-                                   "{\"error\":\"URL update failed\"}");
+                                   "{\"error\":\"URL update failed: the exam URL must be an approved HTTPS endpoint\"}");
+                OPENSSL_cleanse(&exam, sizeof(exam));
             }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));
@@ -4656,10 +4667,23 @@ static int valid_startup_secret(const char *name, int required) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    if (argc > 1 && strcmp(argv[1], "--bootstrap-schema-only") == 0) {
+        if (db_init(NULL) != 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: database pool initialization failed.\n");
+            return 1;
+        }
+        if (db_create_schema() != 0) {
+            fprintf(stderr, "[ExamOS-Server] FATAL: database schema creation failed.\n");
+            db_shutdown();
+            return 1;
+        }
+        db_shutdown();
+        printf("[ExamOS-Server] Database base schema bootstrapped successfully.\n");
+        return 0;
+    }
 
     const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
     if (!tpm_mode || (strcmp(tpm_mode, "development") != 0 && strcmp(tpm_mode, "production") != 0)) {

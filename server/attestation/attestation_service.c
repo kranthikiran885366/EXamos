@@ -55,6 +55,17 @@ static int                   g_session_count = 0;
 
 static pthread_mutex_t      g_trust_lock = PTHREAD_MUTEX_INITIALIZER;
 
+typedef struct {
+    char attestation_id[64];
+    char device_id[64];
+    char institution_id[64];
+    char nonce[128];
+    char ak_public_pem[2048];
+    char quote_signature_hex[2049];
+    char pcr_digest_hex[65];
+    char pcr_values_json[384];
+} institution_attestation_evidence_t;
+
 /* -----------------------------------------------------------------------
  * Internal helpers
  * ----------------------------------------------------------------------- */
@@ -523,12 +534,125 @@ static int load_exam_key_release(const char *identifier, const char *device_id,
     return rc;
 }
 
-static int complete_persisted_challenge(const char *nonce, int verified,
-                                        const char *failure_code) {
+static int persist_institution_attestation_evidence(
+    PGconn *conn, const institution_attestation_evidence_t *evidence) {
+    if (!conn || !evidence || !evidence->attestation_id[0] ||
+        !evidence->device_id[0] || !evidence->institution_id[0] ||
+        !evidence->nonce[0] || !evidence->ak_public_pem[0] ||
+        !evidence->quote_signature_hex[0] || !evidence->pcr_digest_hex[0] ||
+        !evidence->pcr_values_json[0]) return -1;
+
+    const char *lookup_params[] = {
+        evidence->device_id, evidence->institution_id, evidence->ak_public_pem
+    };
+    PGresult *lookup = PQexecParams(conn,
+        "SELECT k.id FROM devices d "
+        "JOIN device_attestation_keys k ON k.device_id=d.id AND k.status='active' "
+        " AND k.public_key_pem=$3 "
+        "JOIN device_registrations r ON r.device_id=d.id "
+        " AND r.institution_id=d.institution_id AND r.decision='approved' "
+        "JOIN device_trust_policies p ON p.institution_id=d.institution_id "
+        " AND p.status='active' "
+        "WHERE d.id=$1 AND d.institution_id=$2 "
+        " AND d.status IN ('registered','enrolled') "
+        "GROUP BY k.id HAVING COUNT(DISTINCT p.id)=1 "
+        " AND COUNT(DISTINCT r.id)=1",
+        3, NULL, lookup_params, NULL, NULL, 0);
+    if (!lookup || PQresultStatus(lookup) != PGRES_TUPLES_OK) {
+        if (lookup) PQclear(lookup);
+        return -1;
+    }
+    if (PQntuples(lookup) == 0) {
+        fprintf(stderr,
+                "[Attestation] Institution readiness evidence was not persisted: "
+                "device registration, AK, approval, or active-policy binding is incomplete.\n");
+        PQclear(lookup);
+        return -1;
+    }
+    if (PQntuples(lookup) != 1) {
+        PQclear(lookup);
+        return -1;
+    }
+
+    char key_id[64];
+    snprintf(key_id, sizeof(key_id), "%s", PQgetvalue(lookup, 0, 0));
+    PQclear(lookup);
+
+    char evidence_id[64];
+    snprintf(evidence_id, sizeof(evidence_id), "ev_%.58s",
+             evidence->attestation_id);
+    const char *challenge_params[] = {
+        evidence->attestation_id, evidence->device_id, evidence->nonce
+    };
+    PGresult *insert_challenge = PQexecParams(conn,
+        "INSERT INTO device_attestation_challenges "
+        "(id,device_id,nonce,used,expires_at,created_at) "
+        "VALUES ($1,$2,$3,TRUE,"
+        "EXTRACT(EPOCH FROM clock_timestamp())::BIGINT*1000,"
+        "EXTRACT(EPOCH FROM clock_timestamp())::BIGINT*1000)",
+        3, NULL, challenge_params, NULL, NULL, 0);
+    if (!insert_challenge ||
+        PQresultStatus(insert_challenge) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdTuples(insert_challenge), "1") != 0) {
+        if (insert_challenge) PQclear(insert_challenge);
+        return -1;
+    }
+    PQclear(insert_challenge);
+
+    char verified_at[32];
+    snprintf(verified_at, sizeof(verified_at), "%lld",
+             (long long)time(NULL) * 1000);
+    const char *evidence_params[] = {
+        evidence_id, evidence->device_id, evidence->attestation_id, key_id,
+        evidence->quote_signature_hex, evidence->pcr_digest_hex,
+        evidence->pcr_values_json, verified_at
+    };
+    PGresult *insert_evidence = PQexecParams(conn,
+        "INSERT INTO device_attestation_evidence "
+        "(id,device_id,challenge_id,ak_key_id,quote_signature,pcr_digest,"
+        "pcr_values_json,verification_result,verified_at) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,'TRUSTED',$8::bigint)",
+        8, NULL, evidence_params, NULL, NULL, 0);
+    if (!insert_evidence ||
+        PQresultStatus(insert_evidence) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdTuples(insert_evidence), "1") != 0) {
+        if (insert_evidence) PQclear(insert_evidence);
+        return -1;
+    }
+    PQclear(insert_evidence);
+
+    const char *device_params[] = {
+        evidence->device_id, verified_at, evidence->institution_id
+    };
+    PGresult *update_device = PQexecParams(conn,
+        "UPDATE devices SET last_attestation_at=$2::bigint,"
+        "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 "
+        "WHERE id=$1 AND institution_id=$3",
+        3, NULL, device_params, NULL, NULL, 0);
+    if (!update_device || PQresultStatus(update_device) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdTuples(update_device), "1") != 0) {
+        if (update_device) PQclear(update_device);
+        return -1;
+    }
+    PQclear(update_device);
+    return 0;
+}
+
+static int complete_persisted_challenge(
+    const char *nonce, int verified, const char *failure_code,
+    const institution_attestation_evidence_t *institution_evidence) {
     char nonce_hash[65];
     if (hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
+    PGresult *begin = PQexec(conn, "BEGIN");
+    int ok = begin && PQresultStatus(begin) == PGRES_COMMAND_OK;
+    if (begin) PQclear(begin);
+    if (!ok) {
+        release_db_connection(conn, 0);
+        OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
+        return -1;
+    }
     const char *state = verified ? "TRUSTED" : "FAILED";
     const char *reason = verified ? "" : failure_code;
     const char *params[] = {nonce_hash, state, reason};
@@ -540,6 +664,12 @@ static int complete_persisted_challenge(const char *nonce, int verified,
     int updated = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
                   strcmp(PQcmdTuples(result), "1") == 0;
     if (result) PQclear(result);
+    if (updated && verified && institution_evidence &&
+        persist_institution_attestation_evidence(conn, institution_evidence) != 0)
+        updated = 0;
+    PGresult *finish = PQexec(conn, updated ? "COMMIT" : "ROLLBACK");
+    if (!finish || PQresultStatus(finish) != PGRES_COMMAND_OK) updated = 0;
+    if (finish) PQclear(finish);
     release_db_connection(conn, 0);
     OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
     return updated ? 0 : -1;
@@ -687,7 +817,22 @@ int attestation_register_device_identity(const char *device_id,
                                           const char *ak_public_pem,
                                           const char *ak_public_sha256,
                                           const char *allowed_release) {
+    return attestation_register_device_identity_for_institution(
+        device_id, "", ek_fingerprint, ak_qualified_name, ak_public_pem,
+        ak_public_sha256, allowed_release);
+}
+
+int attestation_register_device_identity_for_institution(
+                                          const char *device_id,
+                                          const char *institution_id,
+                                          const char *ek_fingerprint,
+                                          const char *ak_qualified_name,
+                                          const char *ak_public_pem,
+                                          const char *ak_public_sha256,
+                                          const char *allowed_release) {
     if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(g_devices[0].device_id) ||
+        (institution_id && strlen(institution_id) >= sizeof(g_devices[0].institution_id) &&
+         institution_id[0]) ||
         !is_sha256_hex(ek_fingerprint) || !allowed_release || !allowed_release[0] ||
         strlen(allowed_release) >= sizeof(g_devices[0].allowed_release)) return -1;
 
@@ -739,6 +884,9 @@ int attestation_register_device_identity(const char *device_id,
         if (strcmp(g_devices[i].device_id, device_id) == 0) {
             safe_copy(g_devices[i].ek_fingerprint, sizeof(g_devices[i].ek_fingerprint),
                       ek_fingerprint);
+            safe_copy(g_devices[i].institution_id,
+                      sizeof(g_devices[i].institution_id),
+                      institution_id ? institution_id : "");
             g_devices[i].status = DEVICE_STATUS_ENROLLED;
             safe_copy(g_devices[i].allowed_release,
                       sizeof(g_devices[i].allowed_release), allowed_release);
@@ -757,6 +905,8 @@ int attestation_register_device_identity(const char *device_id,
     if (g_device_count < MAX_DEVICES) {
         enrolled_device_t *dev = &g_devices[g_device_count++];
         safe_copy(dev->device_id,      sizeof(dev->device_id),      device_id);
+        safe_copy(dev->institution_id, sizeof(dev->institution_id),
+                  institution_id ? institution_id : "");
         safe_copy(dev->ek_fingerprint, sizeof(dev->ek_fingerprint), ek_fingerprint);
         dev->status = DEVICE_STATUS_ENROLLED;
         safe_copy(dev->allowed_release, sizeof(dev->allowed_release),
@@ -772,6 +922,29 @@ int attestation_register_device_identity(const char *device_id,
 
     pthread_mutex_unlock(&g_trust_lock);
     return -1;
+}
+
+int attestation_device_identity_matches(const char *device_id,
+                                         const char *institution_id,
+                                         const char *ak_public_pem) {
+    if (!device_id || !device_id[0] || !institution_id || !institution_id[0] ||
+        !ak_public_pem || !ak_public_pem[0]) return 0;
+    int matches = 0;
+    pthread_mutex_lock(&g_trust_lock);
+    for (int i = 0; i < g_device_count; ++i) {
+        const enrolled_device_t *device = &g_devices[i];
+        if (strcmp(device->device_id, device_id) == 0 &&
+            strcmp(device->institution_id, institution_id) == 0 &&
+            strcmp(device->ak_public_pem, ak_public_pem) == 0 &&
+            device->status != DEVICE_STATUS_SUSPENDED &&
+            device->status != DEVICE_STATUS_REVOKED &&
+            device->status != DEVICE_STATUS_RETIRED) {
+            matches = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_trust_lock);
+    return matches;
 }
 
 /* -----------------------------------------------------------------------
@@ -1005,21 +1178,53 @@ int attestation_verify_evidence(const char *evidence_json,
         }
         unsigned char *attest = NULL, *signature = NULL;
         size_t attest_len = 0, signature_len = 0;
+        char pcr_digest_hex[65] = {0};
         int decoded = decode_hex_bytes(quote_message_hex, &attest,
                                        &attest_len, 4096) == 0 &&
                       decode_hex_bytes(quote_signature_hex, &signature,
                                        &signature_len, 1024) == 0;
-        int verified = decoded && tpm_quote_verify_sha256_rsa(
+        int verified = decoded && tpm_quote_verify_sha256_rsa_with_pcr_digest(
             attest, attest_len, signature, signature_len,
             production_device.ak_public_pem,
             production_device.ak_qualified_name, nonce,
             production_release.pcr0, production_release.pcr4,
-            production_release.pcr7, production_release.pcr11) == 0;
+            production_release.pcr7, production_release.pcr11,
+            pcr_digest_hex, sizeof(pcr_digest_hex)) == 0;
         if (attest) OPENSSL_clear_free(attest, attest_len);
         if (signature) OPENSSL_clear_free(signature, signature_len);
         const char *failure = decoded ? "P3_INVALID_TPM_QUOTE"
                                       : "P3_MALFORMED_TPM_QUOTE";
-        if (complete_persisted_challenge(nonce, verified, failure) != 0) {
+        institution_attestation_evidence_t institution_evidence;
+        institution_attestation_evidence_t *institution_evidence_ptr = NULL;
+        memset(&institution_evidence, 0, sizeof(institution_evidence));
+        if (verified && production_device.institution_id[0]) {
+            safe_copy(institution_evidence.attestation_id,
+                      sizeof(institution_evidence.attestation_id), persisted_id);
+            safe_copy(institution_evidence.device_id,
+                      sizeof(institution_evidence.device_id), device_id);
+            safe_copy(institution_evidence.institution_id,
+                      sizeof(institution_evidence.institution_id),
+                      production_device.institution_id);
+            safe_copy(institution_evidence.nonce,
+                      sizeof(institution_evidence.nonce), nonce);
+            safe_copy(institution_evidence.ak_public_pem,
+                      sizeof(institution_evidence.ak_public_pem),
+                      production_device.ak_public_pem);
+            safe_copy(institution_evidence.quote_signature_hex,
+                      sizeof(institution_evidence.quote_signature_hex),
+                      quote_signature_hex);
+            safe_copy(institution_evidence.pcr_digest_hex,
+                      sizeof(institution_evidence.pcr_digest_hex),
+                      pcr_digest_hex);
+            snprintf(institution_evidence.pcr_values_json,
+                     sizeof(institution_evidence.pcr_values_json),
+                     "{\"pcr0\":\"%s\",\"pcr4\":\"%s\",\"pcr7\":\"%s\",\"pcr11\":\"%s\"}",
+                     production_release.pcr0, production_release.pcr4,
+                     production_release.pcr7, production_release.pcr11);
+            institution_evidence_ptr = &institution_evidence;
+        }
+        if (complete_persisted_challenge(nonce, verified, failure,
+                                         institution_evidence_ptr) != 0) {
             safe_copy(out_reason, 64, "P3_ATTESTATION_STATE_STORE_FAILED");
             return -1;
         }

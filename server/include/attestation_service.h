@@ -32,6 +32,7 @@ typedef enum {
 
 typedef struct {
     char              device_id[64];
+    char              institution_id[64];
     char              ek_fingerprint[65];   /* SHA-256 hex of EK public key */
     char              ak_qualified_name[69]; /* TPM2B_NAME from TPMS_ATTEST */
     char              ak_public_pem[2048];   /* pinned RSA signing key */
@@ -91,6 +92,17 @@ int  attestation_register_device_identity(const char *device_id,
                                            const char *ak_public_pem,
                                            const char *ak_public_sha256,
                                            const char *allowed_release);
+int  attestation_register_device_identity_for_institution(
+                                           const char *device_id,
+                                           const char *institution_id,
+                                           const char *ek_fingerprint,
+                                           const char *ak_qualified_name,
+                                           const char *ak_public_pem,
+                                           const char *ak_public_sha256,
+                                           const char *allowed_release);
+int  attestation_device_identity_matches(const char *device_id,
+                                          const char *institution_id,
+                                          const char *ak_public_pem);
 int  attestation_register_release(const char *release_id, const char *uki_hash,
                                    const char *pcr0, const char *pcr4,
                                    const char *pcr7, const char *pcr11);

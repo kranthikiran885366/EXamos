@@ -134,6 +134,7 @@ def audit_credential_image_inputs():
             if "=" in line and not line.lstrip().startswith("#")
         }
         if proctor_values != {
+            "EXAMOS_AGENT_API_TOKEN": "NOT_PROVISIONED",
             "EXAMOS_PROCTOR_API_TOKEN": "NOT_PROVISIONED",
             "EXAMOS_EVENT_SIGNING_KEY": "NOT_PROVISIONED",
             "EXAMOS_VARIANT_SECRET": "NOT_PROVISIONED",

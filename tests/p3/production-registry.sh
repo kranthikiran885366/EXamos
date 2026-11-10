@@ -76,6 +76,7 @@ devices = {
     "version": "1",
     "devices": [{
         "device_id": "production-registry-test-device",
+        "institution_id": "production-registry-test-institution",
         "ek_fingerprint": "b" * 64,
         "ak_qualified_name": "000b" + "c" * 64,
         "ak_pub_sha256": ak_pub_sha256,
@@ -123,6 +124,7 @@ production_env() {
         EXAMOS_RELEASES_PUBLIC_KEY="$TMP_DIR/release-registry-test.pub" \
         EXAMOS_DEVICES_PUBLIC_KEY_SHA256="$EXAMOS_DEVICES_PUBLIC_KEY_SHA256" \
         EXAMOS_RELEASES_PUBLIC_KEY_SHA256="$EXAMOS_RELEASES_PUBLIC_KEY_SHA256" \
+        EXAMOS_EXPECT_DEVICE_INSTITUTION_ID="production-registry-test-institution" \
         "$REGISTRY_CHECK"
 }
 
@@ -225,6 +227,21 @@ PY
 openssl dgst -sha256 -sign "$TMP_DIR/device-registry-test.key" \
     -out "$TMP_DIR/devices.json.sig" "$TMP_DIR/devices.json"
 expect_rejection signed-device-missing-ak-public-key-binding
+
+cp "$TMP_DIR/valid-devices.json" "$TMP_DIR/devices.json"
+python3 - "$TMP_DIR/devices.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+data["devices"][0].pop("institution_id")
+path.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+openssl dgst -sha256 -sign "$TMP_DIR/device-registry-test.key" \
+    -out "$TMP_DIR/devices.json.sig" "$TMP_DIR/devices.json"
+expect_rejection signed-device-missing-institution-binding
 
 EXAMOS_DEVICES_CONFIG="$WORKSPACE/server/config/devices.json" \
 EXAMOS_RELEASES_CONFIG="$WORKSPACE/server/config/releases.json" \

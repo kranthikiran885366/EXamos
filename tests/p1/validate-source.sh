@@ -27,9 +27,9 @@ REQUIRED_FILES=(
     "image/overlay/etc/systemd/system/examos-kiosk-readiness.service"
     "image/overlay/usr/local/bin/examos-kiosk-readiness"
     "image/overlay/etc/apparmor.d/examos-kiosk"
+    "image/overlay/etc/chromium.d/README"
     "image/scripts/p2-startup-validator.sh"
     "image/overlay/usr/lib/sysusers.d/examos.conf"
-    "image/overlay/etc/apparmor.d/usr.bin.chromium"
     "image/overlay/etc/chromium/policies/managed/examos_policies.json"
     "image/overlay/etc/nftables.conf"
     "image/overlay/etc/sysctl.d/99-examos-security.conf"
@@ -59,6 +59,11 @@ elif [ "$KIOSK_LINK_POINTER" = "/etc/systemd/system/examos-kiosk.service" ] && \
 else
     fail "kiosk target link/pointer or BUILDROOT materializer is invalid"
 fi
+if [ -e "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium" ]; then
+    fail "legacy Chromium AppArmor attachment must not compete with examos-kiosk"
+else
+    pass "legacy Chromium AppArmor attachment is absent"
+fi
 
 # ── mkosi.conf syntax ─────────────────────────────────────────────────────────
 MKOSI="$WORKSPACE/image/mkosi.conf"
@@ -74,9 +79,7 @@ APPARMOR_PARSER=$(command -v apparmor_parser 2>/dev/null || true)
 if [ -z "$APPARMOR_PARSER" ]; then
     blocked "apparmor_parser is unavailable; cannot validate kiosk confinement profiles"
 else
-    for profile in \
-        "$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk" \
-        "$WORKSPACE/image/overlay/etc/apparmor.d/usr.bin.chromium"; do
+    for profile in "$WORKSPACE/image/overlay/etc/apparmor.d/examos-kiosk"; do
         if "$APPARMOR_PARSER" -Q "$profile" >/dev/null 2>&1; then
             pass "AppArmor profile syntax valid: ${profile##*/}"
         else
@@ -120,7 +123,9 @@ grep -q "nologin" "$SYSUSERS" 2>/dev/null && pass "sysusers: exam nologin shell"
 SECRET_FINDINGS=$(find "$WORKSPACE" \
     \( -path "$WORKSPACE/.git" -o -path "$WORKSPACE/artifacts" \
        -o -path "$WORKSPACE/build" -o -path "$WORKSPACE/cache" \
-       -o -path "$WORKSPACE/output" -o -path "$WORKSPACE/image/trust" \) -prune -o \
+       -o -path "$WORKSPACE/output" -o -path "$WORKSPACE/image/trust" \
+       -o -path "$WORKSPACE/tests/virtual-hardware/evidence" \
+       -o -path "$WORKSPACE/_pg_tls" \) -prune -o \
     -type f \( -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" \
        -o -name "id_rsa" -o -name "id_ed25519" \) -print 2>/dev/null || true)
 [ -z "$SECRET_FINDINGS" ] && pass "no production secrets committed" || { fail "production secrets found: $SECRET_FINDINGS"; }

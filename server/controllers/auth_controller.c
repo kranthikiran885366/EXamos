@@ -23,6 +23,7 @@
 #include "../include/candidate_login.h"
 #include "../include/session_store.h"
 #include "../include/attestation_service.h"
+#include "../include/enterprise_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1202,6 +1203,21 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
             return;
         }
 
+        /* exam_url is delivered to the kiosk as the navigation target. A stored
+         * value is not automatically a safe value: reject anything that is not
+         * an approved HTTPS (or loopback development) endpoint before it can be
+         * handed out, so a corrupted or malicious DB row cannot redirect the
+         * candidate session to an arbitrary destination. */
+        char exam_url_error[192] = {0};
+        if (platform_validate_exam_url(exam_url, exam_url_error, sizeof(exam_url_error)) != 0) {
+            db_release(conn, 0);
+            send_json_cors(client_fd, 503,
+                "{\"status\":\"FAIL\",\"error\":\"The assigned assessment URL is not an approved HTTPS endpoint. Contact the exam desk.\"}",
+                origin, extra_headers, extra_len);
+            audit_log(candidate_id, "CANDIDATE_EXAM_URL_REJECTED", exam_url_error);
+            return;
+        }
+
         if (strcmp(checkin_status, "approved") == 0) {
             char student_id[64] = {0}, device_id[64] = {0}, release_id[64] = {0};
             int assigned = candidate_assigned_exam_device(conn, exam_id, institution_id,
@@ -2081,6 +2097,20 @@ void auth_candidate_login(int client_fd, const char *req_body,
             origin, extra_headers, extra_len);
         audit_log(db_id[0] ? db_id : candidate_id, "CANDIDATE_LOGIN_DENIED",
                   "assigned exam portal URL is not configured");
+        db_release(conn, 0);
+        goto done;
+    }
+
+    /* The URL below is returned to the candidate client and used as the kiosk
+     * navigation target. Validate the stored value first: only approved HTTPS
+     * (or exact loopback development) endpoints may be delivered. */
+    char exam_url_error[192] = {0};
+    if (platform_validate_exam_url(exam_url, exam_url_error, sizeof(exam_url_error)) != 0) {
+        send_json_cors(client_fd, 503,
+            "{\"status\":\"FAIL\",\"error\":\"The assigned assessment URL is not an approved HTTPS endpoint. Contact the exam desk.\"}",
+            origin, extra_headers, extra_len);
+        audit_log(db_id[0] ? db_id : candidate_id, "CANDIDATE_LOGIN_DENIED",
+                  exam_url_error);
         db_release(conn, 0);
         goto done;
     }

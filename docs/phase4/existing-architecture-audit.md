@@ -7,7 +7,7 @@ ExamOS Phase 4 introduces a prevention-first, tamper-evident examination proctor
 
 | Component | Current P0–P3 Implementation | Phase 3 Dependency | Phase 4 Integration Point | Files Modified / Added | Security Assumptions |
 |---|---|---|---|---|---|
-| **Kiosk & Browser** | Cage Wayland + Chromium kiosk profile | Restricted exam URL | WebRTC media permission restricted strictly to exam origin, in-browser consent flow | `server/login/candidate_login.c`, `image/overlay/etc/apparmor.d/usr.bin.chromium` | Camera/mic blocked outside exam origin |
+| **Kiosk & Browser** | Cage Wayland + Chromium kiosk profile | Restricted exam URL | WebRTC media permission restricted strictly to exam origin, in-browser consent flow | `server/login/candidate_login.c`, `image/overlay/etc/apparmor.d/examos-kiosk` | Camera/mic blocked outside exam origin |
 | **Server Engine** | Native C multi-threaded HTTP server | Session & token management | WebRTC signaling, event ingestion, second-camera QR pairing, retention control | `server/main.c`, `server/include/event_chain.h`, `server/events/event_chain.c` | Port 8000/9099 default-deny firewall allowlisted |
 | **Analysis Worker** | `examos-proctor` native C++ binary | V4L2 device enumeration | Real frame sampling, face count, no-face, head pose estimation, phone/book detection | `proctoring/main.cpp`, `proctoring/analysis/vision_engine.cpp`, `proctoring/include/vision_engine.h` | Emits normalized events, never raw video |
 | **Event Store** | Hash-chained event ledger | Append-only SHA-256 block ledger | Structured proctoring event schema, SHA-256 hash chaining, periodic signing | `server/events/event_chain.c`, `server/include/event_chain.h` | Strict `UNIQUE(sessionId, sequence)` ordering |

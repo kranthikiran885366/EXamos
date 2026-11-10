@@ -1,90 +1,60 @@
 {
-  "_comment": "ExamOS Chromium Managed Policy — GENERATED ORIGINS — do not edit manually",
-  "_comment_generate": "URLAllowlist / VideoCaptureAllowedUrls / AudioCaptureAllowedUrls are written",
-  "_comment_generate2": "at boot time by examos-chromium-policy.service from /etc/examos/exam.conf.",
-  "_comment_generate3": "The only hard-coded entry here is the local admin server (loopback only).",
-  "_comment_version": "Policy names validated against Chromium 130+ (Debian Trixie package series).",
-
-  "URLBlocklist": [
-    "*"
-  ],
-
+  "_note": "This policy is a TEMPLATE. The URLAllowlist, VideoCaptureAllowedUrls, and AudioCaptureAllowedUrls fields MUST be regenerated at deployment time by image/scripts/generate-chromium-policy.sh using the provisioned EXAM_URL from /etc/examos/exam.conf. The loopback admin origin (127.0.0.1:8000) must NEVER appear in these lists — it is the server admin port, not an exam origin. A static policy file here is a placeholder only; the gate tests/p1/kiosk.sh and tests/p4/p4-gate.sh will reject a policy that does not match the provisioned EXAM_URL.",
+  "_status": "PLACEHOLDER — regenerate with generate-chromium-policy.sh before deployment",
   "URLAllowlist": [
-    "http://127.0.0.1:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
-
-  "ExtensionInstallBlocklist": [
-    "*"
-  ],
-
-  "DeveloperToolsAvailability": 2,
-
-  "DownloadRestrictions": 3,
-
-  "PrintingEnabled": false,
-
-  "DefaultPopupsSetting": 2,
-
-  "IncognitoModeAvailability": 1,
-
-  "AllowFileSelectionDialogs": false,
-
+  "URLBlocklist": ["*"],
   "VideoCaptureAllowedUrls": [
-    "http://127.0.0.1:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
-
   "AudioCaptureAllowedUrls": [
-    "http://127.0.0.1:8000/*"
+    "https://staging.examos.example.edu/*"
   ],
-
-  "ScreenCaptureAllowed": false,
-  "ScreenCaptureAllowedByOrigins": [],
-
+  "VideoCaptureAllowed": false,
+  "AudioCaptureAllowed": false,
+  "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
   "AutofillAddressEnabled": false,
   "AutofillCreditCardEnabled": false,
-
+  "PrintingEnabled": false,
+  "DownloadRestrictions": 3,
   "SavingBrowserHistoryDisabled": true,
-
-  "BrowserSignin": 0,
-  "SyncDisabled": true,
-  "MetricsReportingEnabled": false,
-
+  "IncognitoModeAvailability": 1,
+  "ScreenCaptureAllowed": false,
+  "ExtensionInstallBlocklist": ["*"],
   "BookmarkBarEnabled": false,
   "SpellCheckServiceEnabled": false,
   "TranslateEnabled": false,
-
   "DefaultSearchProviderEnabled": false,
-
   "BrowserAddPersonEnabled": false,
   "BrowserGuestModeEnabled": false,
-
-  "DefaultClipboardSetting": 2,
-
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "MetricsReportingEnabled": false,
+  "SafeBrowsingProtectionLevel": 1,
+  "DefaultClipboardSetting": 1,
+  "AllowFileSelectionDialogs": false,
+  "DefaultPopupsSetting": 2,
   "PromptForDownloadLocation": false,
-
   "AllowDinosaurEasterEgg": false,
-
   "ExternalProtocolDialogShowAlwaysOpenCheckbox": false,
-
-  "SafeBrowsingProtectionLevel": 0,
-
+  "HardwareAccelerationModeEnabled": true,
   "NetworkPredictionOptions": 2,
-
-  "AlternateErrorPagesEnabled": false,
-
-  "SearchSuggestEnabled": false,
-
-  "ImportBookmarks": false,
-  "ImportHistory": false,
-  "ImportHomepage": false,
-  "ImportSavedPasswords": false,
-  "ImportSearchEngine": false,
-
-  "RestoreOnStartup": 4,
-  "RestoreOnStartupURLs": [],
-
-  "HomepageIsNewTabPage": false,
-
-  "NewTabPageLocation": "about:blank"
+  "AutoplayAllowed": true,
+  "DefaultWebBluetoothGuardSetting": 2,
+  "DefaultWebUsbGuardSetting": 2,
+  "DefaultGeolocationSetting": 2,
+  "DefaultNotificationsSetting": 2,
+  "DefaultSensorsSetting": 2,
+  "DefaultSerialGuardSetting": 2,
+  "DefaultWindowManagementSetting": 2,
+  "DefaultLocalFontsSetting": 2,
+  "DefaultFileSystemReadGuardSetting": 2,
+  "DefaultFileSystemWriteGuardSetting": 2,
+  "SSLErrorOverrideAllowed": false,
+  "SafeSitesFilterBehavior": 0,
+  "CertificateTransparencyEnforcementDisabledForUrls": [],
+  "RemoteAccessHostFirewallTraversal": false,
+  "RemoteAccessHostAllowRemoteAccessConnections": false
 }

@@ -332,15 +332,19 @@ fi
 # -----------------------------------------------------------------------
 log_info "--- 6. AppArmor Enforcement Check ---"
 
-APPARMOR_PROFILE="${ROOTFS_PATH}/etc/apparmor.d/usr.bin.chromium"
+APPARMOR_PROFILE="${ROOTFS_PATH}/etc/apparmor.d/examos-kiosk"
+LEGACY_APPARMOR_PROFILE="${ROOTFS_PATH}/etc/apparmor.d/usr.bin.chromium"
 if [ -z "$ROOTFS_PATH" ]; then
-    APPARMOR_PROFILE="$(dirname "$0")/../overlay/etc/apparmor.d/usr.bin.chromium"
+    APPARMOR_PROFILE="$(dirname "$0")/../overlay/etc/apparmor.d/examos-kiosk"
+    LEGACY_APPARMOR_PROFILE="$(dirname "$0")/../overlay/etc/apparmor.d/usr.bin.chromium"
 fi
-if [ -f "$APPARMOR_PROFILE" ]; then
-    if grep -q "flags=(complain)" "$APPARMOR_PROFILE"; then
-        log_fail "Chromium AppArmor profile is in complain mode — must be enforce mode in release"
+if [ -e "$LEGACY_APPARMOR_PROFILE" ]; then
+    log_fail "Competing legacy Chromium AppArmor attachment is present: $LEGACY_APPARMOR_PROFILE"
+elif [ -f "$APPARMOR_PROFILE" ]; then
+    if ! grep -Fq 'profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {' "$APPARMOR_PROFILE"; then
+        log_fail "Canonical Chromium AppArmor profile is missing or not enforcing"
     else
-        log_pass "Chromium AppArmor profile is not in complain mode"
+        log_pass "Canonical Chromium AppArmor profile is enforcing with no competing legacy attachment"
     fi
 else
     log_fail "Chromium AppArmor profile missing: $APPARMOR_PROFILE"

@@ -117,16 +117,20 @@ static int verify_quote_signature(const unsigned char *attest, size_t attest_len
     return valid ? 0 : -1;
 }
 
-int tpm_quote_verify_sha256_rsa(const unsigned char *attest, size_t attest_len,
+int tpm_quote_verify_sha256_rsa_with_pcr_digest(
+                                const unsigned char *attest, size_t attest_len,
                                 const unsigned char *signature, size_t signature_len,
                                 const char *ak_public_pem,
                                 const char *ak_qualified_name_hex,
                                 const char *nonce_hex,
                                 const char *pcr0_hex, const char *pcr4_hex,
-                                const char *pcr7_hex, const char *pcr11_hex)
+                                const char *pcr7_hex, const char *pcr11_hex,
+                                char *out_pcr_digest_hex, size_t out_digest_size)
 {
+    if (out_pcr_digest_hex && out_digest_size) out_pcr_digest_hex[0] = '\0';
     if (!attest || !signature || !ak_public_pem || !ak_qualified_name_hex || !nonce_hex ||
         !pcr0_hex || !pcr4_hex || !pcr7_hex || !pcr11_hex ||
+        (out_pcr_digest_hex && out_digest_size < 65) ||
         attest_len < 100 || attest_len > 4096 ||
         signature_len < 8 || signature_len > 1024) return -1;
 
@@ -171,6 +175,29 @@ int tpm_quote_verify_sha256_rsa(const unsigned char *attest, size_t attest_len,
 
     OPENSSL_cleanse(pcrs, sizeof(pcrs));
     OPENSSL_cleanse(expected_digest, sizeof(expected_digest));
-    return verify_quote_signature(attest, attest_len, signature, signature_len,
-                                  ak_public_pem);
+    if (verify_quote_signature(attest, attest_len, signature, signature_len,
+                               ak_public_pem) != 0) return -1;
+    if (out_pcr_digest_hex) {
+        static const char hex[] = "0123456789abcdef";
+        for (size_t i = 0; i < pcr_digest_len; ++i) {
+            out_pcr_digest_hex[i * 2] = hex[pcr_digest[i] >> 4];
+            out_pcr_digest_hex[i * 2 + 1] = hex[pcr_digest[i] & 15];
+        }
+        out_pcr_digest_hex[64] = '\0';
+    }
+    return 0;
+}
+
+int tpm_quote_verify_sha256_rsa(const unsigned char *attest, size_t attest_len,
+                                const unsigned char *signature, size_t signature_len,
+                                const char *ak_public_pem,
+                                const char *ak_qualified_name_hex,
+                                const char *nonce_hex,
+                                const char *pcr0_hex, const char *pcr4_hex,
+                                const char *pcr7_hex, const char *pcr11_hex)
+{
+    return tpm_quote_verify_sha256_rsa_with_pcr_digest(
+        attest, attest_len, signature, signature_len, ak_public_pem,
+        ak_qualified_name_hex, nonce_hex, pcr0_hex, pcr4_hex, pcr7_hex,
+        pcr11_hex, NULL, 0);
 }

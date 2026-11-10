@@ -148,6 +148,73 @@ find "$STAGE_DIR/usr/local/sbin" -type f -exec chmod 0755 {} +
 [[ -f "$STAGE_DIR/etc/examos/browser_policies.json" ]] && chmod 0644 "$STAGE_DIR/etc/examos/browser_policies.json"
 [[ -f "$STAGE_DIR/etc/examos/appliance-identity" ]]    && chmod 0644 "$STAGE_DIR/etc/examos/appliance-identity"
 [[ -d "$STAGE_DIR/etc/examos/sealed" ]]          && chmod 0700 "$STAGE_DIR/etc/examos/sealed"
+KIOSK_UNIT="$STAGE_DIR/etc/systemd/system/examos-kiosk.service"
+PROCTOR_UNIT="$STAGE_DIR/etc/systemd/system/examos-proctor.service"
+if ! grep -Fxq 'User=exam' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'Requires=examos-preflight.service' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'After=examos-preflight.service' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'PAMName=login' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'TTYPath=/dev/tty1' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'StandardInput=tty' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'RuntimeDirectory=examos-kiosk' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'RuntimeDirectoryMode=0700' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'Environment=LIBSEAT_BACKEND=logind' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'ReadWritePaths=/run/examos-kiosk /tmp' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_SYS_TTY_CONFIG' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'StandardOutput=journal' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'StandardError=journal' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'ExecStart=/usr/bin/env XDG_RUNTIME_DIR=/run/examos-kiosk /usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher' "$KIOSK_UNIT" ||
+   grep -Eq '^(User|Group)=root$|/run/user/|--no-sandbox|ExecStartPre=.*(mkdir|chown|chmod)|^Environment=WAYLAND_DISPLAY=' "$KIOSK_UNIT"; then
+    echo "ERROR: kiosk service must use the unprivileged account and systemd-managed runtime directory." >&2
+    exit 1
+fi
+APPARMOR_PROFILE="$STAGE_DIR/etc/apparmor.d/examos-kiosk"
+if [[ ! -s "$STAGE_DIR/etc/chromium.d/README" ]] ||
+   [[ -e "$STAGE_DIR/etc/apparmor.d/usr.bin.chromium" ]] ||
+   ! grep -Fxq 'profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/usr/bin/uname             ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/usr/bin/expr              ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/usr/bin/findmnt            ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/usr/lib/chromium/chromium Px -> examos-kiosk,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq 'userns,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq 'capability sys_admin,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/usr/lib/chromium/chrome_crashpad_handler ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq 'owner /proc/[0-9]*/mountinfo r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq 'owner /proc/[0-9]*/fd/      r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/etc/chromium.d/           r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/etc/chromium.d/*          r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/run/examos-kiosk/wayland-[0-9]* rw,' "$APPARMOR_PROFILE" ||
+   ! grep -Fxq '/run/examos-kiosk/examos_kiosk_*/** rwkl,' "$APPARMOR_PROFILE" ||
+   grep -Fq 'deny capability ptrace,' "$APPARMOR_PROFILE"; then
+    echo "ERROR: Chromium AppArmor policy must allow its confined launcher/runtime paths without invalid ptrace capability rules." >&2
+    exit 1
+fi
+if ! grep -Fxq 'Environment=XDG_RUNTIME_DIR=/run/examos-kiosk' "$PROCTOR_UNIT" ||
+   ! grep -Fxq 'ReadWritePaths=/run/examos-kiosk /tmp' "$PROCTOR_UNIT" ||
+   ! grep -Fxq 'Requires=examos-kiosk.service' "$PROCTOR_UNIT" ||
+   grep -Fq '/run/user/1000' "$PROCTOR_UNIT"; then
+    echo "ERROR: proctor service must use the kiosk-owned Wayland runtime directory." >&2
+    exit 1
+fi
+READINESS_UNIT="$STAGE_DIR/etc/systemd/system/examos-kiosk-readiness.service"
+READINESS_SCRIPT="$STAGE_DIR/usr/local/bin/examos-kiosk-readiness"
+READINESS_TARGET_DROPIN="$STAGE_DIR/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
+if ! grep -Fxq 'Environment=XDG_RUNTIME_DIR=/run/examos-kiosk' "$READINESS_UNIT" ||
+   ! grep -Fxq 'Wants=examos-kiosk.service' "$READINESS_UNIT" ||
+   ! grep -Fxq 'After=examos-kiosk.service' "$READINESS_UNIT" ||
+   grep -Fxq 'Requires=examos-kiosk.service' "$READINESS_UNIT" ||
+   ! grep -Fxq 'Wants=examos-kiosk-readiness.service' "$READINESS_TARGET_DROPIN" ||
+   ! grep -Fxq 'TimeoutStartSec=90' "$READINESS_UNIT" ||
+   ! grep -Fxq 'ExecStart=/usr/local/bin/examos-kiosk-readiness' "$READINESS_UNIT" ||
+   ! grep -Fq 'XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is required}/wayland-0' "$READINESS_SCRIPT" ||
+   ! grep -Fq 'EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1' "$READINESS_SCRIPT" ||
+   ! grep -Fq 'stable_seconds=10' "$READINESS_SCRIPT" ||
+   ! grep -Fq 'EXAMOS_KIOSK_DIAGNOSTICS_COMPLETE' "$READINESS_SCRIPT" ||
+   grep -Fq '/run/user/1000' "$READINESS_SCRIPT"; then
+    echo "ERROR: kiosk readiness must verify the live compositor socket and Chromium in the managed runtime directory." >&2
+    exit 1
+fi
 echo "  Overlay staged at $STAGE_DIR"
 
 # ── Step 5: Build disk image with mkosi ──────────────────────────────────────
@@ -180,6 +247,28 @@ if [[ -z "$IMAGE_FILE" ]]; then
     echo "ERROR: No image artifact found in $OUTPUT_DIR" >&2
     echo "Contents of $OUTPUT_DIR:" >&2
     ls -lh "$OUTPUT_DIR" >&2
+    exit 1
+fi
+
+systemd-dissect --validate "$IMAGE_FILE"
+VERIFY_DIR="$STAGE_DIR/image-verify"
+mkdir -p "$VERIFY_DIR/etc/apparmor.d"
+mkdir -p "$VERIFY_DIR/etc/chromium.d"
+systemd-dissect --copy-from "$IMAGE_FILE" /etc/apparmor.d/examos-kiosk \
+    "$VERIFY_DIR/etc/apparmor.d/examos-kiosk"
+if ! cmp -s "$APPARMOR_PROFILE" "$VERIFY_DIR/etc/apparmor.d/examos-kiosk"; then
+    echo "ERROR: Built image does not contain the canonical Chromium AppArmor profile." >&2
+    exit 1
+fi
+systemd-dissect --copy-from "$IMAGE_FILE" /etc/chromium.d/README \
+    "$VERIFY_DIR/etc/chromium.d/README"
+if ! cmp -s "$STAGE_DIR/etc/chromium.d/README" "$VERIFY_DIR/etc/chromium.d/README"; then
+    echo "ERROR: Built image is missing the Chromium wrapper's empty-config sentinel." >&2
+    exit 1
+fi
+if systemd-dissect --copy-from "$IMAGE_FILE" /etc/apparmor.d/usr.bin.chromium \
+    "$VERIFY_DIR/etc/apparmor.d/usr.bin.chromium" >/dev/null 2>&1; then
+    echo "ERROR: Built image contains a competing legacy Chromium AppArmor profile." >&2
     exit 1
 fi
 

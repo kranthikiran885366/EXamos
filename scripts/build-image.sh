@@ -28,6 +28,12 @@ echo "[2/4] Staging a permission-normalized rootfs overlay..."
 mkdir -p "$OVERLAY_DIR"
 cp -a "$IMAGE_DIR/overlay/." "$OVERLAY_DIR/"
 mkdir -p "$OVERLAY_DIR/usr/local/bin"
+# The overlay carries a deliberately fail-closed validator placeholder so a
+# direct mkosi invocation cannot ship the obsolete partial script. Install the
+# complete runtime validator here, exactly as the production build does, or the
+# P2 lockdown post-install script will refuse to build.
+install -D -m 0755 "$IMAGE_DIR/scripts/p2-startup-validator.sh" \
+    "$OVERLAY_DIR/usr/local/bin/p2-startup-validator.sh"
 install -D -m 0755 "$ROOT/kiosk/launcher/examos-kiosk-launcher" "$OVERLAY_DIR/usr/local/bin/examos-kiosk-launcher"
 install -D -m 0755 "$ROOT/agent/examos-agent" "$OVERLAY_DIR/usr/local/bin/examos-agent"
 install -D -m 0755 "$ROOT/proctoring/examos-proctor" "$OVERLAY_DIR/usr/local/bin/examos-proctor"
@@ -65,16 +71,21 @@ required_image_paths=(
   /usr/local/bin/examos-kiosk-launcher
   /usr/local/bin/examos-agent
   /usr/local/bin/examos-proctor
+  /usr/local/bin/examos-kiosk-readiness
   /usr/local/bin/examos-server
   /usr/local/sbin/tpm-seal-secrets.sh
   /usr/local/sbin/examos-setup-postgres-tls
   /usr/local/sbin/examos-provision-remote-postgres
   /etc/systemd/system/examos-agent.service
   /etc/systemd/system/examos-kiosk.service
+  /etc/systemd/system/examos-kiosk-readiness.service
+  /etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf
+  /etc/chromium.d/README
   /etc/systemd/system/examos-proctor.service
   /etc/systemd/system/examos-server.service
   /etc/systemd/system/graphical.target.wants/examos-kiosk.service
   /etc/systemd/system/multi-user.target.wants/examos-agent.service
+  /etc/apparmor.d/examos-kiosk
   /usr/lib/sysusers.d/examos.conf
 )
 for image_path in "${required_image_paths[@]}"; do
@@ -86,6 +97,84 @@ for image_path in "${required_image_paths[@]}"; do
     exit 1
   fi
 done
+if ! cmp -s "$OVERLAY_DIR/etc/apparmor.d/examos-kiosk" "$VERIFY_DIR/etc/apparmor.d/examos-kiosk"; then
+  echo "ERROR: Built image does not contain the canonical Chromium AppArmor profile." >&2
+  exit 1
+fi
+if ! cmp -s "$OVERLAY_DIR/etc/chromium.d/README" "$VERIFY_DIR/etc/chromium.d/README"; then
+  echo "ERROR: Built image is missing the Chromium wrapper's empty-config sentinel." >&2
+  exit 1
+fi
+if systemd-dissect --copy-from "$IMAGE_FILE" /etc/apparmor.d/usr.bin.chromium \
+    "$VERIFY_DIR/etc/apparmor.d/usr.bin.chromium" >/dev/null 2>&1; then
+  echo "ERROR: Built image contains a competing legacy Chromium AppArmor profile." >&2
+  exit 1
+fi
+kiosk_unit="$VERIFY_DIR/etc/systemd/system/examos-kiosk.service"
+if ! grep -Fxq 'User=exam' "$kiosk_unit" ||
+   ! grep -Fxq 'Group=exam' "$kiosk_unit" ||
+   ! grep -Fxq 'PAMName=login' "$kiosk_unit" ||
+   ! grep -Fxq 'TTYPath=/dev/tty1' "$kiosk_unit" ||
+   ! grep -Fxq 'Requires=examos-preflight.service' "$kiosk_unit" ||
+   ! grep -Fxq 'After=examos-preflight.service' "$kiosk_unit" ||
+   ! grep -Fxq 'StandardInput=tty' "$kiosk_unit" ||
+   ! grep -Fxq 'RuntimeDirectory=examos-kiosk' "$kiosk_unit" ||
+   ! grep -Fxq 'RuntimeDirectoryMode=0700' "$kiosk_unit" ||
+   ! grep -Fxq 'Environment=LIBSEAT_BACKEND=logind' "$kiosk_unit" ||
+   ! grep -Fxq 'Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app' "$kiosk_unit" ||
+   ! grep -Fxq 'ReadWritePaths=/run/examos-kiosk /tmp' "$kiosk_unit" ||
+   ! grep -Fxq 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_SYS_TTY_CONFIG' "$kiosk_unit" ||
+   ! grep -Fxq 'StandardOutput=journal' "$kiosk_unit" ||
+   ! grep -Fxq 'StandardError=journal' "$kiosk_unit" ||
+   ! grep -Fxq 'ExecStart=/usr/bin/env XDG_RUNTIME_DIR=/run/examos-kiosk /usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher' "$kiosk_unit" ||
+   grep -Eq '^(User|Group)=root$|/run/user/|--no-sandbox|ExecStartPre=.*(mkdir|chown|chmod)|^Environment=WAYLAND_DISPLAY=' "$kiosk_unit"; then
+  echo "ERROR: Kiosk service must use the dedicated unprivileged exam account and canonical launcher." >&2
+  exit 1
+fi
+apparmor_profile="$VERIFY_DIR/etc/apparmor.d/examos-kiosk"
+if ! grep -Fxq '/usr/bin/uname             ix,' "$apparmor_profile" ||
+   ! grep -Fxq '/usr/bin/expr              ix,' "$apparmor_profile" ||
+! grep -Fxq '/usr/bin/findmnt            ix,' "$apparmor_profile" ||
+! grep -Fxq '/usr/lib/chromium/chromium Px -> examos-kiosk,' "$apparmor_profile" ||
+! grep -Fxq '/usr/lib/chromium/chrome_crashpad_handler ix,' "$apparmor_profile" ||
+! grep -Fq 'userns,' "$apparmor_profile" ||
+! grep -Fq 'capability sys_admin,' "$apparmor_profile" ||
+! grep -Fxq 'owner /proc/[0-9]*/mountinfo r,' "$apparmor_profile" ||
+! grep -Fxq 'owner /proc/[0-9]*/fd/      r,' "$apparmor_profile" ||
+! grep -Fxq '/etc/chromium.d/           r,' "$apparmor_profile" ||
+   ! grep -Fxq '/etc/chromium.d/*          r,' "$apparmor_profile" ||
+   ! grep -Fxq '/run/examos-kiosk/wayland-[0-9]* rw,' "$apparmor_profile" ||
+   ! grep -Fxq '/run/examos-kiosk/examos_kiosk_*/** rwkl,' "$apparmor_profile" ||
+   grep -Fq 'deny capability ptrace,' "$apparmor_profile"; then
+  echo "ERROR: Chromium AppArmor policy must allow its confined launcher/runtime paths without invalid ptrace capability rules." >&2
+  exit 1
+fi
+proctor_unit="$VERIFY_DIR/etc/systemd/system/examos-proctor.service"
+if ! grep -Fxq 'Environment=XDG_RUNTIME_DIR=/run/examos-kiosk' "$proctor_unit" ||
+   ! grep -Fxq 'ReadWritePaths=/run/examos-kiosk /tmp' "$proctor_unit" ||
+   ! grep -Fxq 'Requires=examos-kiosk.service' "$proctor_unit" ||
+   grep -Fq '/run/user/1000' "$proctor_unit"; then
+  echo "ERROR: Proctor service must use the kiosk-owned Wayland runtime directory." >&2
+  exit 1
+fi
+readiness_unit="$VERIFY_DIR/etc/systemd/system/examos-kiosk-readiness.service"
+readiness_script="$VERIFY_DIR/usr/local/bin/examos-kiosk-readiness"
+readiness_target_dropin="$VERIFY_DIR/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
+if ! grep -Fxq 'Environment=XDG_RUNTIME_DIR=/run/examos-kiosk' "$readiness_unit" ||
+   ! grep -Fxq 'Wants=examos-kiosk.service' "$readiness_unit" ||
+   ! grep -Fxq 'After=examos-kiosk.service' "$readiness_unit" ||
+   grep -Fxq 'Requires=examos-kiosk.service' "$readiness_unit" ||
+   ! grep -Fxq 'Wants=examos-kiosk-readiness.service' "$readiness_target_dropin" ||
+   ! grep -Fxq 'TimeoutStartSec=90' "$readiness_unit" ||
+   ! grep -Fxq 'ExecStart=/usr/local/bin/examos-kiosk-readiness' "$readiness_unit" ||
+   ! grep -Fq 'XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is required}/wayland-0' "$readiness_script" ||
+   ! grep -Fq 'EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1' "$readiness_script" ||
+   ! grep -Fq 'stable_seconds=10' "$readiness_script" ||
+   ! grep -Fq 'EXAMOS_KIOSK_DIAGNOSTICS_COMPLETE' "$readiness_script" ||
+   grep -Fq '/run/user/1000' "$readiness_script"; then
+  echo "ERROR: Kiosk readiness must verify the live compositor socket and Chromium in the managed runtime directory." >&2
+  exit 1
+fi
 for binary in examos-kiosk-launcher examos-agent examos-proctor examos-server; do
   if [[ ! -x "$VERIFY_DIR/usr/local/bin/$binary" ]]; then
     echo "ERROR: ExamOS image binary is not executable: $binary" >&2

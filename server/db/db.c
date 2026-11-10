@@ -214,6 +214,15 @@ PGresult *db_simple(PGconn *conn, const char *sql,
                         params, lens, NULL, 0);
 }
 
+int db_is_constraint_violation(PGresult *result, const char *constraint) {
+    const char *sqlstate = result ? PQresultErrorField(result, PG_DIAG_SQLSTATE) : NULL;
+    const char *constraint_name =
+        result ? PQresultErrorField(result, PG_DIAG_CONSTRAINT_NAME) : NULL;
+    return sqlstate && strcmp(sqlstate, "23505") == 0 &&
+           constraint_name && constraint &&
+           strcmp(constraint_name, constraint) == 0;
+}
+
 int db_health(void) {
     PGconn *conn = db_acquire();
     int ok = 0;
@@ -1136,9 +1145,9 @@ static void db_ensure_database_extensions(PGconn *conn) {
      * Keep upgrades idempotent so an existing production database receives
      * the same columns as a fresh install.
      */
-    exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);");
-    exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';");
-    exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS institution_id VARCHAR(64);");
+     exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);");
+     exec_sql_step(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';");
+     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS institution_id VARCHAR(64);");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS reviewed_at BIGINT;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS review_checklist JSONB NOT NULL DEFAULT '{}'::jsonb;");
     exec_sql_step(conn, "ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS updated_at BIGINT;");
@@ -1294,14 +1303,76 @@ static void db_ensure_database_extensions(PGconn *conn) {
     fprintf(stderr, "[DB] Administrative schema verified.\n");
 }
 
+static int db_install_active_user_email_guard(PGconn *conn) {
+    static const char *function_sql =
+        "CREATE OR REPLACE FUNCTION examos_enforce_unique_active_user_email() "
+        "RETURNS trigger LANGUAGE plpgsql AS $$ "
+        "DECLARE normalized_email TEXT; "
+        "BEGIN "
+        "  normalized_email := lower(btrim(COALESCE(NEW.email, ''))); "
+        "  IF normalized_email = '' OR lower(COALESCE(NEW.status, '')) <> 'active' THEN "
+        "    RETURN NEW; "
+        "  END IF; "
+        "  PERFORM pg_advisory_xact_lock(hashtextextended(normalized_email, 72819431)); "
+        "  IF EXISTS ("
+        "    SELECT 1 FROM users u "
+        "    WHERE u.id IS DISTINCT FROM NEW.id "
+        "      AND lower(btrim(COALESCE(u.email, ''))) = normalized_email "
+        "      AND lower(COALESCE(u.status, '')) = 'active'"
+        "  ) THEN "
+        "    RAISE EXCEPTION 'An active account already uses this email address' "
+        "      USING ERRCODE = '23505', CONSTRAINT = 'users_active_email_normalized_key'; "
+        "  END IF; "
+        "  RETURN NEW; "
+        "END; "
+        "$$;";
+
+    PGresult *result = PQexec(conn, "BEGIN");
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+
+    if (ok) {
+        result = PQexec(conn, function_sql);
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+    if (ok) {
+        result = PQexec(conn,
+            "DROP TRIGGER IF EXISTS users_active_email_unique_guard ON users");
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+    if (ok) {
+        result = PQexec(conn,
+            "CREATE TRIGGER users_active_email_unique_guard "
+            "BEFORE INSERT OR UPDATE OF email, status ON users "
+            "FOR EACH ROW EXECUTE FUNCTION examos_enforce_unique_active_user_email()");
+        ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+        if (result) PQclear(result);
+    }
+
+    result = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
+    int committed = ok && result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    if (!committed) {
+        result = PQexec(conn, "ROLLBACK");
+        if (result) PQclear(result);
+        fprintf(stderr, "[DB] FATAL: active-user email uniqueness guard could not be installed.\n");
+        return -1;
+    }
+    return 0;
+}
+
 int db_create_schema(void) {
     PGconn *conn = db_acquire();
     int rc = -1;
     PGresult *res = PQexec(conn, migration_sql);
     if (res && PQresultStatus(res) == PGRES_COMMAND_OK) {
-        rc = 0;
-        fprintf(stderr, "[DB] Schema created/verified.\n");
         db_ensure_database_extensions(conn);
+        if (db_install_active_user_email_guard(conn) == 0) {
+            rc = 0;
+            fprintf(stderr, "[DB] Schema created/verified.\n");
+        }
     } else {
         fprintf(stderr, "[DB] Schema creation failed: %s\n",
                 res ? PQresultErrorMessage(res) : PQerrorMessage(conn));

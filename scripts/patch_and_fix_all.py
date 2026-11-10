@@ -98,85 +98,19 @@ LOCKDOWN_EOF
     "cat << 'TIMEOUT_EOF' > /etc/systemd/system.conf.d/timeout.conf\n[Manager]\nDefaultDeviceTimeoutSec=5s\nDefaultTimeoutStartSec=10s\nTIMEOUT_EOF\n",
 
     # 6. Configure robust kiosk launcher
-    """cat << 'LAUNCHER_EOF' > /usr/local/bin/examos-kiosk-launcher
-#!/bin/bash
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
-export GDK_BACKEND=wayland
-export QT_QPA_PLATFORM=wayland
-
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 0700 "$XDG_RUNTIME_DIR"
-
-if [ -f /run/examos/lockdown.flag ] || [ -f /run/examos/lockdown_error ]; then
-  TARGET_URL="file:///usr/share/examos/lockdown_error.html"
-else
-  TARGET_URL="file:///usr/share/examos/onboarding.html"
-fi
-
-if [ -n "$1" ]; then
-  TARGET_URL="$1"
-fi
-
-echo "[ExamOS-Launcher] Launching target: $TARGET_URL" > /dev/ttyS0 2>/dev/null || true
-
-PROFILE_DIR=$(mktemp -d /tmp/examos_kiosk_XXXXXX)
-trap "rm -rf $PROFILE_DIR" EXIT INT TERM
-
-exec /usr/lib/chromium/chromium \\
-  --kiosk \\
-  --no-sandbox \\
-  --test-type \\
-  --no-first-run \\
-  --no-default-browser-check \\
-  --ozone-platform=wayland \\
-  --enable-features=UseOzonePlatform \\
-  --disable-gpu \\
-  --disable-software-rasterizer \\
-  --user-data-dir="$PROFILE_DIR" \\
-  --app="$TARGET_URL" 2>&1 | tee -a /dev/ttyS0
-LAUNCHER_EOF
-""",
-    "chmod 755 /usr/local/bin/examos-kiosk-launcher\n",
+    "test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher || { echo 'Missing canonical kiosk launcher' >&2; exit 1; }\n",
+    "install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher /usr/local/bin/examos-kiosk-launcher\n",
     
     # 7. Configure examos-kiosk.service with active TTYPath on tty1
-    """cat << 'SERVICE_EOF' > /etc/systemd/system/examos-kiosk.service
-[Unit]
-Description=ExamOS Secure Examination Kiosk Desktop
-Documentation=https://examos.example.edu/docs/kiosk
-After=network.target sound.target systemd-user-sessions.service
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal+console
-StandardError=journal+console
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
-
-Environment=XDG_RUNTIME_DIR=/run/user/0
-Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=pixman
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=LIBSEAT_BACKEND=builtin
-Environment=GDK_BACKEND=wayland
-Environment=QT_QPA_PLATFORM=wayland
-Environment=XDG_SESSION_TYPE=wayland
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/0
-ExecStartPre=/usr/bin/chmod 0700 /run/user/0
-ExecStart=/bin/sh -c "/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher 2>&1 | tee -a /dev/ttyS0"
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-SERVICE_EOF
-""",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service || { echo 'Missing canonical kiosk unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service /etc/systemd/system/examos-kiosk.service\n",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service || { echo 'Missing canonical proctor unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service /etc/systemd/system/examos-proctor.service\n",
+    "test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness || { echo 'Missing canonical kiosk readiness probe' >&2; exit 1; }\n",
+    "install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness /usr/local/bin/examos-kiosk-readiness\n",
+    "test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service || { echo 'Missing canonical kiosk readiness unit' >&2; exit 1; }\n",
+    "install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service /etc/systemd/system/examos-kiosk-readiness.service\n",
+    "install -D -m 0644 /mnt/host/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf /etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf\n",
     
     # 8. Ensure service links exist and eliminate 90s device timeouts
     "mkdir -p /etc/systemd/system/graphical.target.wants /etc/systemd/system/multi-user.target.wants\n",

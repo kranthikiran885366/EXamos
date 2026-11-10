@@ -32,11 +32,53 @@ static void cleanup_test_database(void) {
     }
 }
 
-int main(void) {
+static int verify_persistence_after_restart(void) {
+    if (admin_auth_store_init() != 0) {
+        fprintf(stderr, "FAIL: auth store could not reconnect after PostgreSQL restart\n");
+        return 1;
+    }
+
+    auth_session_t session;
+    memset(&session, 0, sizeof(session));
+    if (admin_auth_store_login("exam_manager_1",
+                               "BrandNewManagerPassword#2026!",
+                               NULL, &session) != AUTH_LOGIN_SUCCESS ||
+        strlen(session.session_token) != 64) {
+        fprintf(stderr, "FAIL: password update did not persist across PostgreSQL restart\n");
+        admin_auth_store_shutdown();
+        return 1;
+    }
+
+    char user_list[4096];
+    if (admin_auth_store_list_users_json(user_list, sizeof(user_list)) != 0 ||
+        !strstr(user_list, "owner_admin") ||
+        !strstr(user_list, "exam_manager_1") ||
+        !strstr(user_list, "institution_admin_1") ||
+        !strstr(user_list, "auditor_user")) {
+        fprintf(stderr, "FAIL: account reads did not persist across PostgreSQL restart\n");
+        admin_auth_store_shutdown();
+        return 1;
+    }
+
+    admin_auth_store_shutdown();
+    puts("PASS: updated account authenticated and all test users were listed after PostgreSQL restart");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--verify-persistence") != 0)) {
+        fprintf(stderr, "Usage: %s [--verify-persistence]\n", argv[0]);
+        return 2;
+    }
+
     puts("=== Starting ExamOS Enterprise Authentication & MFA E2E Test Suite ===");
 
     if (!getenv("EXAMOS_DATABASE_URL_FILE")) {
         setenv("EXAMOS_DATABASE_URL_FILE", "/etc/examos/secrets/test_db_url", 1);
+    }
+
+    if (argc == 2) {
+        return verify_persistence_after_restart();
     }
 
     cleanup_test_database();
@@ -76,14 +118,13 @@ int main(void) {
     }
     puts("[2/10] PASS: Initial Platform Owner provisioned and duplicate creation strictly prevented");
 
-    /* 3. Provision Subordinate Accounts (Institution Admin, Exam Manager, Readonly Auditor) */
+    /* 3. Provision tenant-scoped and operational subordinate accounts */
     user_account_t manager;
     memset(&manager, 0, sizeof(manager));
     snprintf(manager.user_id, sizeof(manager.user_id), "USR-MGR-TEST-2");
     snprintf(manager.username, sizeof(manager.username), "exam_manager_1");
     snprintf(manager.full_name, sizeof(manager.full_name), "Lead Exam Manager");
     snprintf(manager.email, sizeof(manager.email), "manager@university.edu");
-    snprintf(manager.institution_id, sizeof(manager.institution_id), "INST-UNIV-01");
     manager.role = ROLE_EXAM_MANAGER;
     manager.active = 1;
     char manager_password[] = "ManagerSecret#2026!ExamOS";
@@ -91,6 +132,24 @@ int main(void) {
 
     if (admin_auth_store_create_user(&manager, owner.user_id) != 0) {
         fprintf(stderr, "FAIL: failed to create exam manager account\n");
+        return 1;
+    }
+
+    user_account_t institution_admin;
+    memset(&institution_admin, 0, sizeof(institution_admin));
+    snprintf(institution_admin.user_id, sizeof(institution_admin.user_id), "USR-INST-ADMIN-4");
+    snprintf(institution_admin.username, sizeof(institution_admin.username), "institution_admin_1");
+    snprintf(institution_admin.full_name, sizeof(institution_admin.full_name), "University Institution Admin");
+    snprintf(institution_admin.email, sizeof(institution_admin.email), "institution-admin@university.edu");
+    snprintf(institution_admin.institution_id, sizeof(institution_admin.institution_id), "INST-UNIV-01");
+    institution_admin.role = ROLE_INSTITUTION_ADMIN;
+    institution_admin.active = 1;
+    char institution_admin_password[] = "InstitutionAdmin#2026!ExamOS";
+    if (config_create_password_hash(institution_admin_password,
+                                    institution_admin.password_hash,
+                                    sizeof(institution_admin.password_hash)) != 0 ||
+        admin_auth_store_create_user(&institution_admin, owner.user_id) != 0) {
+        fprintf(stderr, "FAIL: failed to create institution-scoped administrator account\n");
         return 1;
     }
 
@@ -118,6 +177,13 @@ int main(void) {
     if (admin_auth_store_login(manager.username, manager_password, NULL, &session) != AUTH_LOGIN_SUCCESS ||
         strlen(session.session_token) != 64 || session.role != ROLE_EXAM_MANAGER) {
         fprintf(stderr, "FAIL: valid login failed for exam manager\n");
+        return 1;
+    }
+    if (admin_auth_store_login(institution_admin.username,
+                               institution_admin_password, NULL, &session) != AUTH_LOGIN_SUCCESS ||
+        session.role != ROLE_INSTITUTION_ADMIN ||
+        strcmp(session.institution_id, institution_admin.institution_id) != 0) {
+        fprintf(stderr, "FAIL: institution administrator login lost its tenant scope\n");
         return 1;
     }
 

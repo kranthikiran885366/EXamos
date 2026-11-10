@@ -67,6 +67,10 @@ echo "=== 6. Installing & Enabling Kiosk, Server, and Agent Services ==="
 sudo install -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/examos-server.service" /mnt/examos_root/etc/systemd/system/
 sudo install -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/examos-agent.service" /mnt/examos_root/etc/systemd/system/
 sudo install -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk.service" /mnt/examos_root/etc/systemd/system/
+sudo install -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/examos-proctor.service" /mnt/examos_root/etc/systemd/system/
+sudo install -m 755 "$WORKSPACE/image/overlay/usr/local/bin/examos-kiosk-readiness" /mnt/examos_root/usr/local/bin/
+sudo install -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/examos-kiosk-readiness.service" /mnt/examos_root/etc/systemd/system/
+sudo install -D -m 644 "$WORKSPACE/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" /mnt/examos_root/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf
 
 sudo ln -sf /usr/lib/systemd/system/graphical.target /mnt/examos_root/etc/systemd/system/default.target
 sudo mkdir -p /mnt/examos_root/etc/systemd/system/graphical.target.wants

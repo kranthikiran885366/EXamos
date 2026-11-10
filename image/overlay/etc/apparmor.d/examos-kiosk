@@ -19,9 +19,10 @@
 #     positives on loopback/Wayland socket traffic.
 # =============================================================================
 
+abi <abi/4.0>,
 #include <tunables/global>
 
-profile examos-kiosk /usr/bin/chromium flags=(enforce) {
+profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {
     #include <abstractions/base>
     #include <abstractions/nameservice>
     #include <abstractions/fonts>
@@ -29,6 +30,13 @@ profile examos-kiosk /usr/bin/chromium flags=(enforce) {
 
     # Allow unprivileged user namespace creation for Chromium Layer-1 sandbox
     userns,
+    capability sys_admin,
+    capability sys_chroot,
+    capability setuid,
+    capability setgid,
+
+    # Allow UNIX domain socket communication (Wayland, crashpad, ProcessSingleton)
+    unix,
 
     # -------------------------------------------------------------------------
     # Filesystem reads — minimum required for Chromium to start
@@ -37,15 +45,26 @@ profile examos-kiosk /usr/bin/chromium flags=(enforce) {
     # System binaries and libraries
     /usr/bin/chromium          mr,
     /usr/bin/chromium-*        mr,
+    /usr/bin/uname             ix,
+    /usr/bin/expr              ix,
+    /usr/bin/grep              ix,
+    /usr/bin/find              ix,
+    /usr/bin/findmnt            ix,
+    /usr/bin/rm                ix,
+    /usr/bin/tr                ix,
+    /usr/bin/cut               ix,
     /usr/lib/**                mr,
     /usr/lib64/**              mr,
     /usr/share/**              r,
     /usr/share/chromium/**     r,
     /usr/share/fonts/**        r,
     /usr/share/ca-certificates/** r,
+    /etc/chromium.d/           r,
+    /etc/chromium.d/*          r,
 
     # Chromium sandbox helper
     /usr/lib/chromium/chrome-sandbox rix,
+    /usr/lib/chromium/chrome_crashpad_handler ix,
 
     # Locale and timezone data
     /usr/share/locale/**       r,
@@ -58,9 +77,35 @@ profile examos-kiosk /usr/bin/chromium flags=(enforce) {
     /etc/ssl/certs/**          r,
     /etc/ca-certificates/**    r,
 
-    # /proc/self — required by Chromium's zygote and sandbox machinery
+    # /proc/self and namespace mappings — required by Chromium's zygote and sandbox machinery
+    /proc/                     r,
     /proc/self/                r,
     /proc/self/**              r,
+    owner /proc/[0-9]*/mountinfo r,
+    owner /proc/[0-9]*/fd/      r,
+    owner /proc/[0-9]*/status   r,
+    owner /proc/[0-9]*/stat     r,
+    owner /proc/[0-9]*/statm    r,
+    owner /proc/[0-9]*/cmdline  r,
+    owner /proc/[0-9]*/setgroups rw,
+    owner /proc/[0-9]*/uid_map   rw,
+    owner /proc/[0-9]*/gid_map   rw,
+    owner /proc/self/setgroups   rw,
+    owner /proc/self/uid_map     rw,
+    owner /proc/self/gid_map     rw,
+    /proc/cpuinfo              r,
+    /proc/meminfo              r,
+    /proc/stat                 r,
+    /proc/sys/kernel/yama/ptrace_scope r,
+
+    # Graphics and DRM device access
+    /dev/dri/                  r,
+    /dev/dri/**                rw,
+    /sys/devices/**            r,
+    /sys/bus/pci/devices/      r,
+    /sys/bus/pci/devices/**    r,
+    /sys/class/drm/            r,
+    /sys/class/drm/**          r,
 
     # /dev entries Chromium may probe
     /dev/null                  rw,
@@ -70,28 +115,33 @@ profile examos-kiosk /usr/bin/chromium flags=(enforce) {
 
     # Wayland socket (path varies; allow under /run)
     /run/user/[0-9]*/wayland-[0-9]* rw,
+    /run/examos-kiosk/wayland-[0-9]* rw,
 
-    # Ephemeral profile directory (under $XDG_RUNTIME_DIR or /tmp)
-    /run/user/[0-9]*/examos_kiosk_*/** rwkl,
-    /tmp/examos_kiosk_*/       rwkl,
-    /tmp/examos_kiosk_*/**     rwkl,
+    # Ephemeral profile directory and temporary runtime files (under /run and /tmp)
+    /run/user/[0-9]*/          r,
+    /run/user/[0-9]*/**        rwklm,
+    /run/examos-kiosk/         r,
+    /run/examos-kiosk/**       rwklm,
+    /tmp/                      r,
+    /tmp/**                    rwklm,
+    /var/tmp/                  r,
+    /var/tmp/**                rwklm,
 
     # -------------------------------------------------------------------------
     # Explicit DENY rules
     # -------------------------------------------------------------------------
 
-    # Deny reading memory of any other process by PID path
+    # Deny reading process memory; other processes' procfs files are not
+    # granted by the /proc/self-only read rules above.
     deny /proc/[0-9]*/mem      rw,
-    deny /proc/[0-9]*/maps     r,
-    deny /proc/[0-9]*/fd/      r,
-    deny /proc/[0-9]*/task/    r,
 
     # Deny ptrace capability — prevents renderer process from tracing parent/
     # sibling processes or attaching a debugger.
+    # deny capability ptrace
     deny capability sys_ptrace,
+    deny ptrace,
 
-    # Deny acquiring elevated capabilities
-    deny capability sys_admin,
+    # Deny acquiring raw hardware and network administrative capabilities
     deny capability sys_rawio,
     deny capability net_admin,
     deny capability net_raw,
@@ -115,6 +165,7 @@ profile examos-kiosk /usr/bin/chromium flags=(enforce) {
     # Allow Chromium to spawn its own sandboxed renderer/GPU sub-processes.
     # Each sub-process re-exec's the same binary under the same profile.
     /usr/bin/chromium          Px -> examos-kiosk,
+    /usr/lib/chromium/chromium Px -> examos-kiosk,
 
     # Zygote and GPU process helpers
     /usr/bin/chromium-renderer  Px -> examos-kiosk,

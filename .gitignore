@@ -116,6 +116,10 @@ image/overlay/etc/examos/sealed/
 # swtpm state directories
 /tmp/examos-p3-tpm/
 
+# Per-run virtual hardware evidence, TPM state, and copy-on-write disks.
+# Retain locally for audit; never add generated evidence to source control.
+tests/virtual-hardware/evidence/
+
 # =============================================================================
 # Production gate outputs (regenerated; never treat local JSON as certification)
 artifacts/production/*.json

@@ -1,4 +1,5 @@
 #include "../../server/include/tpm_quote.h"
+#include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,10 +62,25 @@ int main(int argc, char **argv)
     bytes_to_hex(name, name_len, name_hex);
     const char *nonce = getenv("EXAMOS_TEST_TPM_NONCE");
     const char *zero_pcr = "0000000000000000000000000000000000000000000000000000000000000000";
+    char quoted_pcr_digest[65] = {0};
+    unsigned char expected_digest[32] = {0};
+    unsigned int expected_digest_len = 0;
+    unsigned char zero_pcrs[128] = {0};
+    char expected_digest_hex[65] = {0};
+    if (EVP_Digest(zero_pcrs, sizeof(zero_pcrs), expected_digest,
+                   &expected_digest_len, EVP_sha256(), NULL) != 1 ||
+        expected_digest_len != sizeof(expected_digest)) {
+        fputs("FAIL: could not calculate expected PCR digest\n", stderr);
+        free(attest); free(signature); free(name);
+        return 1;
+    }
+    bytes_to_hex(expected_digest, sizeof(expected_digest), expected_digest_hex);
     if (!nonce || strlen(nonce) != 64 ||
-        tpm_quote_verify_sha256_rsa(attest, attest_len, signature, signature_len,
-                                    public_pem, name_hex, nonce,
-                                    zero_pcr, zero_pcr, zero_pcr, zero_pcr) != 0) {
+        tpm_quote_verify_sha256_rsa_with_pcr_digest(
+            attest, attest_len, signature, signature_len, public_pem, name_hex,
+            nonce, zero_pcr, zero_pcr, zero_pcr, zero_pcr, quoted_pcr_digest,
+            sizeof(quoted_pcr_digest)) != 0 ||
+        strcmp(quoted_pcr_digest, expected_digest_hex) != 0) {
         fputs("FAIL: valid TPM quote was rejected\n", stderr);
         free(attest); free(signature); free(name);
         return 1;

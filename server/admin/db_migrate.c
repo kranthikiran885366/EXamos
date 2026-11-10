@@ -58,6 +58,8 @@ static const migration_t migrations[] = {
     {"036_candidate_exam_deadlines.sql",                    "candidate_exam_runtime",     2},
     {"037_institution_application_assessment_url.sql",       "institutions",               2},
     {"038_institution_application_review_checklist.sql",     "institutions",               3},
+    {"039_approval_execution_separation.sql",                 "approval_governance",        2},
+    {"040_candidate_exam_url_assignments.sql",                "candidate_exam_url_assignments", 1},
 };
 
 /*
@@ -244,9 +246,14 @@ static int has_migration_table(PGconn *conn) {
         "  WHERE table_schema='public' AND table_name='examos_schema_migrations' "
         "    AND column_name='component'"
         ")");
-    int exists = r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1 &&
-                 strcmp(PQgetvalue(r, 0, 0), "t") == 0;
-    if (r) PQclear(r);
+    if (!r || PQresultStatus(r) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "[migrate] has_migration_table query failed: %s\n",
+                r ? PQresultErrorMessage(r) : PQerrorMessage(conn));
+        if (r) PQclear(r);
+        return -1;
+    }
+    int exists = PQntuples(r) == 1 && strcmp(PQgetvalue(r, 0, 0), "t") == 0;
+    PQclear(r);
     return exists;
 }
 
@@ -451,7 +458,13 @@ int main(int argc, char **argv) {
         }
 
         int table_exists = has_migration_table(conn);
-        int applied      = table_exists ? is_applied(conn, m) : 0;
+        if (table_exists < 0) {
+            exec_command(conn, "ROLLBACK");
+            if (PQstatus(conn) == CONNECTION_OK) {
+                table_exists = has_migration_table(conn);
+            }
+        }
+        int applied      = (table_exists > 0) ? is_applied(conn, m) : 0;
 
         /* Guard: if is_applied() returned -1 the query itself failed, which
          * means the connection may be in an aborted-transaction state.  Attempt
@@ -461,11 +474,11 @@ int main(int argc, char **argv) {
             /* Try to clear any aborted transaction and retry once. */
             exec_command(conn, "ROLLBACK");
             if (PQstatus(conn) == CONNECTION_OK) {
-                applied = table_exists ? is_applied(conn, m) : 0;
+                applied = (table_exists > 0) ? is_applied(conn, m) : 0;
             }
         }
 
-        if (applied < 0 || (!table_exists && i != 0)) {
+        if (table_exists < 0 || applied < 0 || (!table_exists && i != 0)) {
             OPENSSL_cleanse(sql, length); free(sql);
             fprintf(stderr, "Database migration stopped: migration registry is inconsistent "
                             "(file=%s, table_exists=%d, applied=%d).\n",

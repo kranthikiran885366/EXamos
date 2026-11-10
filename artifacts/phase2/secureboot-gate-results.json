@@ -1,7 +1,7 @@
 {
   "phase": "P2-SB",
-  "timestamp": "2026-11-05T06:55:00Z",
-  "started_at": "2026-11-05T06:55:00Z",
+  "timestamp": "2026-11-10T04:33:22Z",
+  "started_at": "2026-11-10T04:33:21Z",
   "checks": {
     "SB-01_uki_signature_valid":         "see_log",
     "SB-02_unsigned_binary_rejected":    "see_log",

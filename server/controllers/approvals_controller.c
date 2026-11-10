@@ -533,6 +533,401 @@ static int approval_actor_active(PGconn *conn, const auth_session_t *actor) {
     return active;
 }
 
+/* =========================================================================
+ * Resource fingerprints and structured conflict evidence
+ *
+ * A fingerprint is a SHA-256 over the canonical current state of the target
+ * resource.  It is captured when the request is submitted and recomputed from
+ * the database before every decision and every execution.  A mismatch is a
+ * blocking concurrent-modification conflict: an approval for state A can never
+ * silently apply to state B.
+ * ========================================================================= */
+static int approval_fingerprint(PGconn *conn, const char *kind, const char *target_id,
+                                const char *tenant_id, const char *proposed_data,
+                                char *out, size_t out_len) {
+    PGresult *res = NULL;
+    const char *tenant = tenant_id ? tenant_id : "";
+    const int target_len = (int)strlen(target_id);
+    const int tenant_len = (int)strlen(tenant);
+
+    if (strcmp(kind, "role-change") == 0) {
+        res = db_simple(conn,
+            "SELECT (id||'|'||role::text||'|'||COALESCE(tenant_id,'')||'|'||status) "
+            "FROM users WHERE id=$1 "
+            "UNION ALL "
+            "SELECT (user_id||'|'||role::text||'|'||COALESCE(institution_id,'')||'|'||"
+            "CASE WHEN active THEN 'active' ELSE 'inactive' END) "
+            "FROM examos_admin_users WHERE user_id=$1 LIMIT 1",
+            1, (const char *[]){ target_id }, (const int []){ target_len });
+    } else if (strcmp(kind, "release-approve") == 0) {
+        res = db_simple(conn,
+            "SELECT (r.status||'|'||r.created_by||'|'||r.manifest_digest||'|'||"
+            "m.manifest_digest||'|'||m.signature_value||'|'||m.verified::text||'|'||"
+            "k.status||'|'||k.key_type) "
+            "FROM os_releases r "
+            "JOIN os_release_manifests m ON m.release_id=r.id "
+            "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
+            "WHERE r.id=$1",
+            1, (const char *[]){ target_id }, (const int []){ target_len });
+    } else if (strcmp(kind, "policy-publish") == 0) {
+        res = db_simple(conn,
+            "SELECT (data->>'status'||'|'||data->>'name'||'|'||data->>'version'||'|'||"
+            "md5(COALESCE(data->'config','{}'::jsonb)::text)) "
+            "FROM console_records WHERE collection='policies' AND record_id=$1 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else if (strcmp(kind, "policy-rollback") == 0) {
+        int target_version = 0;
+        if (!ctrl_json_int(proposed_data, "targetVersion", &target_version))
+            target_version = 0;
+        char version_text[16];
+        snprintf(version_text, sizeof(version_text), "%d", target_version);
+        res = db_simple(conn,
+            "SELECT (e.policy_version::text||'|'||"
+            "COALESCE((SELECT p.policy_version::text FROM examos_exam_policies p "
+            "WHERE p.exam_id=e.exam_id AND p.status='ACTIVE' LIMIT 1),'-')||'|'||"
+            "COALESCE((SELECT p.signature FROM examos_exam_policies p "
+            "WHERE p.exam_id=e.exam_id AND p.policy_version=$3::integer LIMIT 1),'-')) "
+            "FROM examos_exams e WHERE e.exam_id=$1 AND e.institution_id=$2",
+            3, (const char *[]){ target_id, tenant, version_text },
+            (const int []){ target_len, tenant_len, (int)strlen(version_text) });
+    } else if (strcmp(kind, "device-reauth") == 0) {
+        res = db_simple(conn,
+            "SELECT status FROM devices WHERE id=$1 AND institution_id=$2",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else if (strcmp(kind, "exam-approve") == 0) {
+        res = db_simple(conn,
+            "SELECT (state||'|'||policy_version::text||'|'||COALESCE(policy_signature,'')) "
+            "FROM examos_exams WHERE exam_id=$1 AND institution_id=$2",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else if (strcmp(kind, "config-change") == 0) {
+        res = db_simple(conn,
+            "SELECT md5(COALESCE(data->'value','{}'::jsonb)::text) "
+            "FROM console_records WHERE collection='configs' AND record_id=$1",
+            1, (const char *[]){ target_id }, (const int []){ target_len });
+    } else if (strcmp(kind, "billing-change") == 0) {
+        res = db_simple(conn,
+            "SELECT (data->>'planId'||'|'||data->>'status'||'|'||"
+            "data->>'seats'||'|'||data->>'autoRenew') "
+            "FROM console_records WHERE collection='subscriptions' AND record_id=$1 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else if (strcmp(kind, "privacy-deletion") == 0) {
+        res = db_simple(conn,
+            "SELECT (data->>'status'||'|'||data->>'type'||'|'||data->>'subjectId') "
+            "FROM console_records WHERE collection='privacy' AND record_id=$1 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else if (strcmp(kind, "support-recovery") == 0) {
+        res = db_simple(conn,
+            "SELECT (state||'|'||kind||'|'||target) FROM support_recoveries "
+            "WHERE id=$1 AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    } else {
+        res = db_simple(conn,
+            "SELECT md5(data::text) FROM console_records WHERE record_id=$1 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
+    }
+
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        return -1;
+    }
+    char canonical[16385];
+    if (PQntuples(res) == 1 && !PQgetisnull(res, 0, 0)) {
+        snprintf(canonical, sizeof(canonical), "%s", PQgetvalue(res, 0, 0));
+    } else {
+        snprintf(canonical, sizeof(canonical), "absent");
+    }
+    PQclear(res);
+
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    static const char hex[] = "0123456789abcdef";
+    SHA256((const unsigned char *)canonical, strlen(canonical), digest);
+    if (out_len < 7 + sizeof(digest) * 2 + 1) return -1;
+    memcpy(out, "sha256:", 7);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out[7 + i * 2] = hex[digest[i] >> 4];
+        out[7 + i * 2 + 1] = hex[digest[i] & 15];
+    }
+    out[7 + sizeof(digest) * 2] = '\0';
+    return 0;
+}
+
+typedef struct {
+    char conflicts[8192];
+    size_t conflicts_len;
+    char warnings[8192];
+    size_t warnings_len;
+    int blocking_count;
+    int warning_count;
+} approval_conflict_set;
+
+static void approval_conflict_entry(char *buffer, size_t buffer_len, size_t *used,
+                                    const char *code, const char *message) {
+    char entry[512];
+    snprintf(entry, sizeof(entry),
+             "%s{\"code\":\"%s\",\"message\":\"%s\"}",
+             *used ? "," : "", code, message);
+    size_t entry_len = strlen(entry);
+    if (*used + entry_len + 1 >= buffer_len) return;
+    memcpy(buffer + *used, entry, entry_len + 1);
+    *used += entry_len;
+}
+
+static void approval_conflict_add(approval_conflict_set *set, int blocking,
+                                  const char *code, const char *message) {
+    if (blocking) {
+        approval_conflict_entry(set->conflicts, sizeof(set->conflicts),
+                                &set->conflicts_len, code, message);
+        set->blocking_count++;
+    } else {
+        approval_conflict_entry(set->warnings, sizeof(set->warnings),
+                                &set->warnings_len, code, message);
+        set->warning_count++;
+    }
+}
+
+static int approval_identity_active(PGconn *conn, const char *user_id,
+                                    const char *role_name) {
+    int role_id = approval_role_id(role_name);
+    char role_num[8];
+    snprintf(role_num, sizeof(role_num), "%d", role_id);
+    const char *canonical = role_id ? approval_role_name(role_id) : role_name;
+    const char *alias = role_id ? approval_role_alias((user_role_t)role_id) : role_name;
+    const char *params[4] = { user_id, canonical, alias, role_num };
+    int lengths[4] = {
+        (int)strlen(params[0]), (int)strlen(params[1]),
+        (int)strlen(params[2]), (int)strlen(params[3])
+    };
+    PGresult *res = db_simple(conn,
+        "SELECT (EXISTS (SELECT 1 FROM users WHERE id=$1 AND status='active' "
+        "AND role IN ($2,$3)) OR EXISTS (SELECT 1 FROM examos_admin_users "
+        "WHERE user_id=$1 AND active=TRUE AND role=$4::smallint))::text",
+        4, params, lengths);
+    int active = res && PQresultStatus(res) == PGRES_TUPLES_OK &&
+                 PQntuples(res) == 1 && strcmp(PQgetvalue(res, 0, 0), "true") == 0;
+    if (res) PQclear(res);
+    return active;
+}
+
+/* Collects the full conflict report for one stage.  Authorization failures are
+ * also returned as blocking conflicts so a caller can never forget one. */
+static int approval_conflicts_evaluate(PGconn *conn, const auth_session_t *actor,
+                                       const char *stage, const char *request_id,
+                                       const char *policy_key, int policy_version,
+                                       int policy_active, const char *requester_id,
+                                       const char *tenant_id, const char *target_id,
+                                       const char *proposed_data,
+                                       const char *stored_fingerprint,
+                                       const char *status, long long expires_at,
+                                       int required_approvals, int actor_role_allowed,
+                                       approval_conflict_set *set,
+                                       char *current_fingerprint,
+                                       size_t fingerprint_len) {
+    memset(set, 0, sizeof(*set));
+    if (approval_fingerprint(conn, policy_key, target_id, tenant_id, proposed_data,
+                             current_fingerprint, fingerprint_len) != 0)
+        return -1;
+
+    if (stored_fingerprint && stored_fingerprint[0] &&
+        strcmp(stored_fingerprint, current_fingerprint) != 0)
+        approval_conflict_add(set, 1, "RESOURCE_CHANGED",
+            "The target resource changed after the request was submitted; a new review is required");
+
+    if (strcmp(stage, "submission") == 0) {
+        if (!stored_fingerprint || !stored_fingerprint[0])
+            approval_conflict_add(set, 0, "FINGERPRINT_UNAVAILABLE",
+                "The target resource did not exist at submission; the request will be rechecked before execution");
+    } else {
+        if (strcmp(actor->user_id, requester_id) == 0)
+            approval_conflict_add(set, 1, "SELF_APPROVAL",
+                "The requester cannot approve their own request");
+        if (actor->role != ROLE_PLATFORM_OWNER &&
+            (!actor->institution_id[0] ||
+             strcmp(actor->institution_id, tenant_id ? tenant_id : "") != 0))
+            approval_conflict_add(set, 1, "CROSS_TENANT",
+                "The actor is outside the institution that owns this request");
+        if (!actor_role_allowed && actor->role != ROLE_PLATFORM_OWNER)
+            approval_conflict_add(set, 1, "UNAUTHORIZED_APPROVER",
+                "The actor's current role is not an authorized approver for this policy");
+        if (!policy_active)
+            approval_conflict_add(set, 1, "POLICY_INACTIVE",
+                "The policy version used by this request is no longer active");
+        long long now_ms = (long long)time(NULL) * 1000;
+        if (expires_at > 0 && expires_at < now_ms)
+            approval_conflict_add(set, 1, "REQUEST_EXPIRED",
+                "The approval request has expired");
+
+        const char *expected = strcmp(stage, "decision") == 0
+            ? "pending_review" : "execution_pending";
+        if (strcmp(status, expected) != 0)
+            approval_conflict_add(set, 1, "INVALID_STATE",
+                "The request is not in the state required for this action");
+
+        char version_text[16];
+        snprintf(version_text, sizeof(version_text), "%d", policy_version);
+        const char *dup_params[4] = { policy_key, target_id,
+                                      tenant_id ? tenant_id : "", request_id };
+        int dup_lengths[4] = {
+            (int)strlen(dup_params[0]), (int)strlen(dup_params[1]),
+            (int)strlen(dup_params[2]), (int)strlen(dup_params[3])
+        };
+        PGresult *dup = db_simple(conn,
+            "SELECT count(*)::text FROM approval_requests "
+            "WHERE policy_key=$1 AND resource_type=$1 AND resource_id=$2 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($3,'') "
+            "AND status IN ('pending_review','approved','execution_pending','executing') "
+            "AND id<>$4",
+            4, dup_params, dup_lengths);
+        if (!dup || PQresultStatus(dup) != PGRES_TUPLES_OK || PQntuples(dup) != 1) {
+            if (dup) PQclear(dup);
+            return -1;
+        }
+        int other_open = atoi(PQgetvalue(dup, 0, 0)) > 0;
+        PQclear(dup);
+        if (other_open)
+            approval_conflict_add(set, 1, "DUPLICATE_OPEN_REQUEST",
+                "Another open approval request already exists for this resource");
+
+        if (strcmp(stage, "execution") == 0) {
+            PGresult *roles = db_simple(conn,
+                "SELECT count(DISTINCT actor_role)::text FROM approval_decisions "
+                "WHERE request_id=$1 AND decision='approved'",
+                1, (const char *[]){ request_id },
+                (const int []){ (int)strlen(request_id) });
+            if (!roles || PQresultStatus(roles) != PGRES_TUPLES_OK || PQntuples(roles) != 1) {
+                if (roles) PQclear(roles);
+                return -1;
+            }
+            int approved_roles = atoi(PQgetvalue(roles, 0, 0));
+            PQclear(roles);
+            if (approved_roles < required_approvals)
+                approval_conflict_add(set, 1, "INSUFFICIENT_APPROVALS",
+                    "The number of independent approved roles is below the policy requirement");
+
+            PGresult *decisions = db_simple(conn,
+                "SELECT actor_id,actor_role FROM approval_decisions "
+                "WHERE request_id=$1 AND decision='approved'",
+                1, (const char *[]){ request_id },
+                (const int []){ (int)strlen(request_id) });
+            if (!decisions || PQresultStatus(decisions) != PGRES_TUPLES_OK) {
+                if (decisions) PQclear(decisions);
+                return -1;
+            }
+            int inactive = 0;
+            for (int i = 0; i < PQntuples(decisions); i++) {
+                if (!approval_identity_active(conn, PQgetvalue(decisions, i, 0),
+                                              PQgetvalue(decisions, i, 1)))
+                    inactive = 1;
+            }
+            PQclear(decisions);
+            if (inactive)
+                approval_conflict_add(set, 1, "APPROVER_INACTIVE",
+                    "At least one approver is no longer active or no longer holds the approving role");
+        }
+        (void)version_text;
+    }
+    return 0;
+}
+
+static const char *approval_conflict_result(const approval_conflict_set *set) {
+    if (set->blocking_count > 0) return "BLOCKED";
+    if (set->warning_count > 0) return "WARNING";
+    return "CLEAR";
+}
+
+static int approval_record_conflict(PGconn *conn, const auth_session_t *actor,
+                                    const char *request_id, int policy_version,
+                                    const char *stage, const char *stored_fingerprint,
+                                    const char *current_fingerprint,
+                                    const approval_conflict_set *set,
+                                    const char *result, char *detail_out,
+                                    size_t detail_len) {
+    char detail[17408];
+    snprintf(detail, sizeof(detail),
+        "{\"result\":\"%s\",\"stage\":\"%s\",\"policyVersion\":%d,"
+        "\"storedFingerprint\":\"%s\",\"resourceFingerprint\":\"%s\","
+        "\"blockingCount\":%d,\"warningCount\":%d,"
+        "\"conflicts\":[%s],\"warnings\":[%s]}",
+        result, stage, policy_version,
+        stored_fingerprint ? stored_fingerprint : "",
+        current_fingerprint ? current_fingerprint : "",
+        set->blocking_count, set->warning_count,
+        set->conflicts, set->warnings);
+    if (detail_out && detail_len) snprintf(detail_out, detail_len, "%s", detail);
+
+    char conflict_id[64];
+    if (approval_id(conflict_id, sizeof(conflict_id), "apc_") != 0) return -1;
+    char version_text[16], blocking_text[16];
+    snprintf(version_text, sizeof(version_text), "%d", policy_version);
+    snprintf(blocking_text, sizeof(blocking_text), "%d", set->blocking_count);
+    const char *params[13] = {
+        conflict_id, request_id, stage, result, version_text, actor->user_id,
+        actor->username, security_role_to_string(actor->role),
+        set->conflicts_len ? set->conflicts : "[]",
+        set->warnings_len ? set->warnings : "[]",
+        blocking_text, current_fingerprint ? current_fingerprint : "",
+        detail
+    };
+    int lengths[13];
+    for (int i = 0; i < 13; i++) lengths[i] = (int)strlen(params[i]);
+    PGresult *insert = db_simple(conn,
+        "INSERT INTO approval_conflicts "
+        "(id,request_id,check_stage,result,policy_version,checked_by,checked_by_name,"
+        "checked_by_role,conflicts,warnings,blocking_count,resource_fingerprint) "
+        "VALUES ($1,$2,$3,$4,$5::int,$6,$7,$8,$9::jsonb,$10::jsonb,$11::smallint,$12)",
+        12, params, lengths);
+    if (!insert || PQresultStatus(insert) != PGRES_COMMAND_OK) {
+        if (insert) PQclear(insert);
+        return -1;
+    }
+    PQclear(insert);
+
+    const char *update_params[3] = { request_id, result, detail };
+    const int update_lengths[3] = {
+        (int)strlen(request_id), (int)strlen(result), (int)strlen(detail)
+    };
+    PGresult *update = db_simple(conn,
+        "UPDATE approval_requests SET conflict_status=$2,conflict_detail=$3::jsonb,"
+        "updated_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE id=$1",
+        3, update_params, update_lengths);
+    int ok = update && PQresultStatus(update) == PGRES_COMMAND_OK;
+    if (update) PQclear(update);
+    return ok ? 0 : -1;
+}
+
+static int approval_record_execution(PGconn *conn, const auth_session_t *actor,
+                                     const char *request_id, const char *operation,
+                                     const char *result, const char *detail,
+                                     const char *reason) {
+    char execution_id[64];
+    if (approval_id(execution_id, sizeof(execution_id), "apx_") != 0) return -1;
+    const char *params[9] = {
+        execution_id, request_id, actor->user_id, actor->username,
+        security_role_to_string(actor->role), operation, result,
+        detail ? detail : "{}", reason ? reason : ""
+    };
+    int lengths[9];
+    for (int i = 0; i < 9; i++) lengths[i] = (int)strlen(params[i]);
+    PGresult *res = db_simple(conn,
+        "INSERT INTO approval_executions "
+        "(id,request_id,actor_id,actor_name,actor_role,operation,result,detail,reason) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)",
+        9, params, lengths);
+    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (res) PQclear(res);
+    return ok ? 0 : -1;
+}
+
 static int approval_policy_publish_target_valid(PGconn *conn, const char *target_id,
                                                 const char *tenant_id,
                                                 const char *proposed_data) {

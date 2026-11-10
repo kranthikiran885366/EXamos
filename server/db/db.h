@@ -53,6 +53,7 @@ PGresult *db_query(const char *sql, int n_params, const char **params);
 /* Simplified PQexecParams wrapper (paramTypes = NULL, formats = 0). */
 PGresult *db_simple(PGconn *conn, const char *sql,
                     int n_params, const char **params, const int *lens);
+int db_is_constraint_violation(PGresult *result, const char *constraint);
 
 /* =========================================================================
  * Schema initialization

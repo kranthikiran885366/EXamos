@@ -35,6 +35,13 @@ echo "--- 4. Restoring production examos-kiosk.service (unprivileged 'exam' user
 cp -f "$OVERLAY/etc/systemd/system/examos-kiosk.service" "$MNT/etc/systemd/system/examos-kiosk.service"
 chmod 644 "$MNT/etc/systemd/system/examos-kiosk.service"
 chown root:root "$MNT/etc/systemd/system/examos-kiosk.service"
+cp -f "$OVERLAY/etc/systemd/system/examos-proctor.service" "$MNT/etc/systemd/system/examos-proctor.service"
+chmod 644 "$MNT/etc/systemd/system/examos-proctor.service"
+chown root:root "$MNT/etc/systemd/system/examos-proctor.service"
+install -m 0755 "$OVERLAY/usr/local/bin/examos-kiosk-readiness" "$MNT/usr/local/bin/examos-kiosk-readiness"
+install -m 0644 "$OVERLAY/etc/systemd/system/examos-kiosk-readiness.service" "$MNT/etc/systemd/system/examos-kiosk-readiness.service"
+install -D -m 0644 "$OVERLAY/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" "$MNT/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
+chown root:root "$MNT/usr/local/bin/examos-kiosk-readiness" "$MNT/etc/systemd/system/examos-kiosk-readiness.service" "$MNT/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
 
 echo "--- 5. Restoring production examos-lockdown-failed.target (strict fail-closed, no graphical kiosk) ---"
 cp -f "$OVERLAY/etc/systemd/system/examos-lockdown-failed.target" "$MNT/etc/systemd/system/examos-lockdown-failed.target"

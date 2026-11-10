@@ -50,6 +50,34 @@ enable_required_unit() {
     fi
 }
 
+# mkosi runs "systemctl preset-all" after this post-install script. A unit that
+# has already been masked makes preset-all fail when a vendor preset still tries
+# to enable it, which aborts the image build. Record the units to mask here,
+# drop their enablement, and let the finalize script apply the actual mask
+# symlinks after preset-all has completed.
+MASK_LIST="${BR}/etc/examos/p2-mask.list"
+mkdir -p "${BR}/etc/examos"
+: > "$MASK_LIST"
+
+defer_mask() {
+    local unit
+    for unit in "$@"; do
+        [ -n "$unit" ] || continue
+        printf '%s\n' "$unit" >> "$MASK_LIST"
+        systemctl --root="${BR}" disable "$unit" 2>/dev/null || true
+    done
+}
+
+# The overlay may already ship mask symlinks (for example getty@tty1..6). Those
+# are applied before this script runs, and a mask for a unit with a
+# DefaultInstance makes mkosi's later "systemctl preset-all" return failure.
+# Fold every pre-existing mask into the deferred list and remove the symlink
+# here; the finalize script re-applies it after preset-all has completed.
+while IFS= read -r -d '' masked_link; do
+    printf '%s\n' "${masked_link##*/}" >> "$MASK_LIST"
+    rm -f -- "$masked_link"
+done < <(find "${BR}/etc/systemd/system" -maxdepth 1 -type l -lname '/dev/null' -print0 2>/dev/null)
+
 # ---------------------------------------------------------------------------
 # A. OS identity
 # ---------------------------------------------------------------------------
@@ -68,15 +96,15 @@ echo "[P2] A: os-release updated"
 # B. Login path removal — mask every getty / autovt / serial / emergency path
 # ---------------------------------------------------------------------------
 for i in 1 2 3 4 5 6 7 8 9; do
-    systemctl --root="${BR}" mask "getty@tty${i}.service"    2>/dev/null || true
+    defer_mask "getty@tty${i}.service"
 done
-systemctl --root="${BR}" mask "autovt@.service"             2>/dev/null || true
-systemctl --root="${BR}" mask "serial-getty@.service"       2>/dev/null || true
-systemctl --root="${BR}" mask "emergency.service"           2>/dev/null || true
-systemctl --root="${BR}" mask "emergency.target"            2>/dev/null || true
-systemctl --root="${BR}" mask "rescue.service"              2>/dev/null || true
-systemctl --root="${BR}" mask "rescue.target"               2>/dev/null || true
-systemctl --root="${BR}" mask "systemd-debug-shell.service" 2>/dev/null || true
+defer_mask "autovt@.service"
+defer_mask "serial-getty@.service"
+defer_mask "emergency.service"
+defer_mask "emergency.target"
+defer_mask "rescue.service"
+defer_mask "rescue.target"
+defer_mask "systemd-debug-shell.service"
 echo "[P2] B: all getty/autovt/serial/emergency paths masked"
 
 # ---------------------------------------------------------------------------
@@ -84,7 +112,7 @@ echo "[P2] B: all getty/autovt/serial/emergency paths masked"
 # ---------------------------------------------------------------------------
 for svc in ssh sshd openssh-server openssh-daemon; do
     systemctl --root="${BR}" disable "${svc}.service" 2>/dev/null || true
-    systemctl --root="${BR}" mask    "${svc}.service" 2>/dev/null || true
+    defer_mask "${svc}.service"
 done
 rm -f  "${BR}/etc/ssh/sshd_config"
 rm -rf "${BR}/etc/ssh/sshd_config.d"
@@ -135,7 +163,7 @@ fi
 # Mask every known swap service
 for svc in systemd-zram-setup@.service zram-config.service dphys-swapfile.service \
            zramswap.service swapfile.service; do
-    systemctl --root="${BR}" mask "$svc" 2>/dev/null || true
+    defer_mask "$svc"
 done
 echo "[P2] F: swap disabled"
 
@@ -168,19 +196,21 @@ root soft    core    0
 LIMEOF
 
 # Disable systemd-coredump.service and socket if they exist
-systemctl --root="${BR}" mask systemd-coredump.service  2>/dev/null || true
-systemctl --root="${BR}" mask systemd-coredump.socket   2>/dev/null || true
+defer_mask systemd-coredump.service systemd-coredump.socket
 echo "[P2] G: core dump disabled (coredump.conf + limits.d + service masked)"
 
 # ---------------------------------------------------------------------------
 # H. AppArmor — verify enforce mode, enable at boot
 # ---------------------------------------------------------------------------
-CHROMIUM_PROFILE="${BR}/etc/apparmor.d/usr.bin.chromium"
-if [ -f "$CHROMIUM_PROFILE" ]; then
-    # Remove any complain-mode flag — this profile must be in enforce mode
-    sed -i 's/flags\s*=\s*(complain)//' "$CHROMIUM_PROFILE"
-    echo "[P2] H: AppArmor chromium profile enforce-mode confirmed"
+CHROMIUM_PROFILE="${BR}/etc/apparmor.d/examos-kiosk"
+LEGACY_CHROMIUM_PROFILE="${BR}/etc/apparmor.d/usr.bin.chromium"
+if [ ! -s "$CHROMIUM_PROFILE" ] ||
+   ! grep -Fxq 'profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {' "$CHROMIUM_PROFILE"; then
+    echo "[P2] FAIL: canonical Chromium AppArmor profile is missing or not enforcing" >&2
+    exit 1
 fi
+rm -f -- "$LEGACY_CHROMIUM_PROFILE"
+echo "[P2] H: canonical AppArmor profile enforced; conflicting legacy attachment removed"
 enable_required_unit apparmor.service
 echo "[P2] H: AppArmor enabled"
 
@@ -273,7 +303,7 @@ for svc in \
     systemd-rfkill.service systemd-rfkill.socket \
     fwupd fwupd-refresh.service \
     whoopsie apport; do
-    systemctl --root="${BR}" mask "$svc" 2>/dev/null || true
+    defer_mask "$svc"
 done
 echo "[P2] O: unnecessary services masked"
 
@@ -359,5 +389,10 @@ done
 enable_required_unit examos-kiosk.service
 
 echo "[P2] Q: systemd wants symlinks created"
+
+# A unit can be deferred by the overlay scan and again by an explicit rule.
+sort -u -o "$MASK_LIST" "$MASK_LIST"
+
+echo "[P2] R: $(wc -l < "$MASK_LIST") unit masks deferred to the post-preset finalize step"
 
 echo "=== [ExamOS P2] All lockdown controls applied ==="

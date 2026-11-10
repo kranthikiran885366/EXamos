@@ -1,4 +1,4 @@
-=== [SB-GATE] ExamOS Secure Boot + dm-verity Gate: 2026-11-05T06:55:00Z ===
+=== [SB-GATE] ExamOS Secure Boot + dm-verity Gate: 2026-11-10T04:33:21Z ===
   UKI:         /mnt/d/SEB BRO/image/examos.efi
   SquashFS:    /mnt/d/SEB BRO/artifacts/phase2/examos-root.squashfs
   Verity tree: /mnt/d/SEB BRO/artifacts/phase2/examos-root.verity

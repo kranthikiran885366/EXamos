@@ -30,45 +30,18 @@ cp -f "$OVERLAY/usr/share/examos/onboarding.html" "$MNT/usr/share/examos/onboard
 chmod 644 "$MNT/usr/share/examos/"*.html
 
 echo "--- 4. Updating examos-kiosk.service ---"
-cat << 'SERVICE' > "$MNT/etc/systemd/system/examos-kiosk.service"
-[Unit]
-Description=ExamOS Secure Graphical Kiosk Desktop
-Documentation=https://examos.example.edu/docs/kiosk
-After=network.target systemd-user-sessions.service
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal+console
-StandardError=journal+console
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
-
-Environment=XDG_RUNTIME_DIR=/run/user/0
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=pixman
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=LIBSEAT_BACKEND=builtin
-Environment=GDK_BACKEND=wayland
-Environment=QT_QPA_PLATFORM=wayland
-Environment=XDG_SESSION_TYPE=wayland
-Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1,192.168.19.1
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/0
-ExecStartPre=/usr/bin/chmod 0700 /run/user/0
-ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-SERVICE
+cp -f "$OVERLAY/etc/systemd/system/examos-kiosk.service" \
+  "$MNT/etc/systemd/system/examos-kiosk.service"
+chmod 0644 "$MNT/etc/systemd/system/examos-kiosk.service"
+cp -f "$OVERLAY/etc/systemd/system/examos-proctor.service" \
+  "$MNT/etc/systemd/system/examos-proctor.service"
+chmod 0644 "$MNT/etc/systemd/system/examos-proctor.service"
+install -m 0755 "$OVERLAY/usr/local/bin/examos-kiosk-readiness" \
+  "$MNT/usr/local/bin/examos-kiosk-readiness"
+install -m 0644 "$OVERLAY/etc/systemd/system/examos-kiosk-readiness.service" \
+  "$MNT/etc/systemd/system/examos-kiosk-readiness.service"
+install -D -m 0644 "$OVERLAY/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" \
+  "$MNT/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
 
 echo "--- 5. Configuring Lockdown Failure Diagnostic Display ---"
 cat << 'TARGET' > "$MNT/etc/systemd/system/examos-lockdown-failed.target"

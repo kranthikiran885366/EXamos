@@ -693,10 +693,11 @@ else
     log_check "config" "nftables default-deny" "WARN" "nftables.conf not in overlay"
 fi
 
-if [ -f "$OVERLAY/etc/apparmor.d/usr.bin.chromium" ]; then
-    log_check "config" "AppArmor chromium profile" "PASS" "Profile present"
+if [ -f "$OVERLAY/etc/apparmor.d/examos-kiosk" ] &&
+   [ ! -e "$OVERLAY/etc/apparmor.d/usr.bin.chromium" ]; then
+    log_check "config" "AppArmor chromium profile" "PASS" "Canonical profile present; competing legacy attachment absent"
 else
-    log_check "config" "AppArmor chromium profile" "WARN" "Profile missing"
+    log_check "config" "AppArmor chromium profile" "FAIL" "Canonical profile missing or competing legacy attachment present"
 fi
 
 echo ""

@@ -36,102 +36,45 @@ chown -R exam:exam /home/exam /run/user/1000
 chmod 0700 /run/user/1000
 
 # 4. Install updated kiosk launcher
-cat << 'LAUNCHER_EOF' > /usr/local/bin/examos-kiosk-launcher
-#!/bin/bash
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
-export GDK_BACKEND=wayland
-export QT_QPA_PLATFORM=wayland
-
-mkdir -p "$XDG_RUNTIME_DIR"
-chown exam:exam "$XDG_RUNTIME_DIR" 2>/dev/null || true
-chmod 0700 "$XDG_RUNTIME_DIR"
-
-# Determine target URL: check exam.conf, then fallback to onboarding.html
-TARGET_URL="file:///usr/share/examos/onboarding.html"
-if [ -f /etc/examos/exam.conf ]; then
-  CONF_URL=$(grep '^EXAM_URL=' /etc/examos/exam.conf | cut -d'=' -f2 | tr -d ' \r\n')
-  if [ -n "$CONF_URL" ]; then
-    TARGET_URL="$CONF_URL"
-  fi
-fi
-
-# Allow command line override
-if [ -n "$1" ]; then
-  TARGET_URL="$1"
-fi
-
-echo "[ExamOS-Launcher] Launching target: $TARGET_URL"
-
-# Ephemeral user profile
-PROFILE_DIR=$(mktemp -d /tmp/examos_kiosk_XXXXXX)
-chown -R exam:exam "$PROFILE_DIR" 2>/dev/null || true
-
-trap "rm -rf $PROFILE_DIR" EXIT INT TERM
-
-exec /usr/lib/chromium/chromium \
-  --kiosk \
-  --no-first-run \
-  --no-default-browser-check \
-  --ozone-platform=wayland \
-  --enable-features=UseOzonePlatform \
-  --disable-gpu \
-  --disable-software-rasterizer \
-  --user-data-dir="$PROFILE_DIR" \
-  --app="$TARGET_URL"
-LAUNCHER_EOF
-chmod 755 /usr/local/bin/examos-kiosk-launcher
+test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher || {
+  echo "Missing canonical kiosk launcher" >&2
+  exit 1
+}
+install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-launcher \
+  /usr/local/bin/examos-kiosk-launcher
 
 # 5. Write corrected examos-kiosk.service
-cat << 'SERVICE_EOF' > /etc/systemd/system/examos-kiosk.service
-[Unit]
-Description=ExamOS Secure Examination Kiosk Desktop
-After=network.target sound.target systemd-user-sessions.service
-Conflicts=getty@tty1.service
+test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service || {
+  echo "Missing canonical kiosk unit" >&2
+  exit 1
+}
+install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk.service \
+  /etc/systemd/system/examos-kiosk.service
 
-[Service]
-Type=simple
-User=exam
-Group=exam
-SupplementaryGroups=video audio input render
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal+console
-StandardError=journal+console
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
+test -r /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service || {
+  echo "Missing canonical proctor unit" >&2
+  exit 1
+}
+install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-proctor.service \
+  /etc/systemd/system/examos-proctor.service
 
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=pixman
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=LIBSEAT_BACKEND=builtin
-Environment=XDG_SESSION_TYPE=wayland
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/1000
-ExecStartPre=+/usr/bin/chown exam:exam /run/user/1000
-ExecStartPre=+/usr/bin/chmod 0700 /run/user/1000
-ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-SERVICE_EOF
+test -x /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness || {
+  echo "Missing canonical kiosk readiness probe" >&2
+  exit 1
+}
+install -m 0755 /mnt/host/image/overlay/usr/local/bin/examos-kiosk-readiness \
+  /usr/local/bin/examos-kiosk-readiness
+test -r /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service || {
+  echo "Missing canonical kiosk readiness unit" >&2
+  exit 1
+}
+install -m 0644 /mnt/host/image/overlay/etc/systemd/system/examos-kiosk-readiness.service \
+  /etc/systemd/system/examos-kiosk-readiness.service
+install -D -m 0644 /mnt/host/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf \
+  /etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf
 
 # Enable the service
 systemctl enable examos-kiosk.service 2>/dev/null || true
-
-# 6. Ensure root can login on tty2 for diagnostics
-mkdir -p /etc/systemd/system/getty@tty2.service.d
-cat << 'GETTY_EOF' > /etc/systemd/system/getty@tty2.service.d/override.conf
-[Service]
-ExecStart=
-ExecStart=-/bin/bash
-StandardInput=tty
-StandardOutput=tty
-GETTY_EOF
 
 sync
 echo "=== IN-GUEST PATCHING COMPLETE ==="

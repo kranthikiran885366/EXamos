@@ -66,7 +66,7 @@ P1 invariants preserved:
 | USBGuard policy | usbguard/rules.conf | Implemented |
 | Chromium URLBlocklist=* | examos_policies.json p2.1 | Implemented |
 | Camera/mic scoped | AudioCaptureAllowedUrls | Implemented |
-| AppArmor enforce | usr.bin.chromium | Implemented |
+| AppArmor enforce | examos-kiosk (single canonical attachment) | Implemented |
 | Module lock service | examos-module-lock.service | Implemented |
 | All getty/autovt masked | 03-p2-lockdown.sh | Implemented |
 | SSH masked+removed | 03-p2-lockdown.sh | Implemented |

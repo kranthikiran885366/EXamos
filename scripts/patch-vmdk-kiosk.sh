@@ -16,45 +16,18 @@ cp -f "$LAUNCHER_SRC" "$MNT/usr/local/bin/examos-kiosk-launcher"
 chmod 755 "$MNT/usr/local/bin/examos-kiosk-launcher"
 
 echo "=== 2. Updating /etc/systemd/system/examos-kiosk.service ==="
-cat << 'SERVICE' > "$MNT/etc/systemd/system/examos-kiosk.service"
-[Unit]
-Description=ExamOS Secure Graphical Kiosk Desktop
-Documentation=https://examos.example.edu/docs/kiosk
-After=network.target systemd-user-sessions.service
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=journal+console
-StandardError=journal+console
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
-
-Environment=XDG_RUNTIME_DIR=/run/user/0
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=pixman
-Environment=WLR_NO_HARDWARE_CURSORS=1
-Environment=LIBSEAT_BACKEND=builtin
-Environment=GDK_BACKEND=wayland
-Environment=QT_QPA_PLATFORM=wayland
-Environment=XDG_SESSION_TYPE=wayland
-Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,localhost,127.0.0.1,192.168.19.1
-
-ExecStartPre=/usr/bin/mkdir -p /run/user/0
-ExecStartPre=/usr/bin/chmod 0700 /run/user/0
-ExecStart=/usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-
-[Install]
-WantedBy=graphical.target multi-user.target
-SERVICE
+cp -f "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-kiosk.service" \
+  "$MNT/etc/systemd/system/examos-kiosk.service"
+chmod 0644 "$MNT/etc/systemd/system/examos-kiosk.service"
+cp -f "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-proctor.service" \
+  "$MNT/etc/systemd/system/examos-proctor.service"
+chmod 0644 "$MNT/etc/systemd/system/examos-proctor.service"
+install -m 0755 "/mnt/d/SEB BRO/image/overlay/usr/local/bin/examos-kiosk-readiness" \
+  "$MNT/usr/local/bin/examos-kiosk-readiness"
+install -m 0644 "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/examos-kiosk-readiness.service" \
+  "$MNT/etc/systemd/system/examos-kiosk-readiness.service"
+install -D -m 0644 "/mnt/d/SEB BRO/image/overlay/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" \
+  "$MNT/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf"
 
 echo "=== 3. Blacklisting problematic VMware kernel modules ==="
 mkdir -p "$MNT/etc/modprobe.d"
@@ -63,22 +36,7 @@ blacklist i2c_piix4
 blacklist piix4_smbus
 CONF
 
-echo "=== 4. Setting up diagnostic auto-login on tty2 ==="
-mkdir -p "$MNT/etc/systemd/system/getty@tty2.service.d"
-cat << 'CONF' > "$MNT/etc/systemd/system/getty@tty2.service.d/override.conf"
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty -o '-p -- \\u' --noclear -a root tty2 linux
-Type=idle
-StandardInput=tty
-StandardOutput=tty
-TTYVTDisallocate=no
-CONF
-
-mkdir -p "$MNT/etc/systemd/system/getty.target.wants"
-ln -sf /usr/lib/systemd/system/getty@.service "$MNT/etc/systemd/system/getty.target.wants/getty@tty2.service"
-
-echo "=== 5. Enabling seatd service if binary exists or ensure fallback ==="
+echo "=== 4. Enabling seatd service if binary exists or ensure fallback ==="
 if [ ! -f "$MNT/usr/bin/seatd" ]; then
     echo "seatd binary not present; LIBSEAT_BACKEND=builtin will handle direct DRM/input access"
     rm -f "$MNT/etc/systemd/system/multi-user.target.wants/seatd.service" || true

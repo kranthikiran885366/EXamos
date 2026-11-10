@@ -27,6 +27,13 @@ chmod 644 /mnt/examos_root/usr/share/examos/onboarding.html
 cp -f "$OVERLAY/etc/examos/exam.conf" /mnt/examos_root/etc/examos/exam.conf
 chmod 644 /mnt/examos_root/etc/examos/exam.conf
 
+# Keep the compositor and Wayland client on the same kiosk-owned runtime directory.
+install -m 0644 "$OVERLAY/etc/systemd/system/examos-kiosk.service" /mnt/examos_root/etc/systemd/system/examos-kiosk.service
+install -m 0644 "$OVERLAY/etc/systemd/system/examos-proctor.service" /mnt/examos_root/etc/systemd/system/examos-proctor.service
+install -m 0755 "$OVERLAY/usr/local/bin/examos-kiosk-readiness" /mnt/examos_root/usr/local/bin/examos-kiosk-readiness
+install -m 0644 "$OVERLAY/etc/systemd/system/examos-kiosk-readiness.service" /mnt/examos_root/etc/systemd/system/examos-kiosk-readiness.service
+install -D -m 0644 "$OVERLAY/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf" /mnt/examos_root/etc/systemd/system/graphical.target.d/examos-kiosk-readiness.conf
+
 # Ensure permanent graphical target
 ln -sf /usr/lib/systemd/system/graphical.target /mnt/examos_root/etc/systemd/system/default.target
 ln -sf /dev/null /mnt/examos_root/etc/systemd/system/getty@tty1.service

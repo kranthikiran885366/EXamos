@@ -66,7 +66,9 @@ Configured Examination URL (HTTPS) / Candidate Authentication Portal
 - **Default-Deny Firewall (`etc/nftables.conf`)**: Inbound connections dropped; outbound restricted to DNS (53), HTTPS (443), and HTTP (80 for CRL/OCSP).
 - **Kernel Sysctl Hardening (`etc/sysctl.d/99-examos-security.conf`)**: Ptrace scope 3 (YAMA), unprivileged BPF disabled, ASLR fully randomized, kptr restrict level 2.
 - **Hardware & USB Guard (`etc/udev/rules.d/99-examos-usb-lockdown.rules`)**: Blocks USB Mass Storage (Class 08h) and unauthorized network adapters; authorizes only HID devices and system webcams.
-- **AppArmor Mandatory Access Control (`etc/apparmor.d/usr.bin.chromium`)**: Restricts Chromium filesystem, process, and capability boundaries.
+- **AppArmor Mandatory Access Control (`etc/apparmor.d/examos-kiosk`)**: Restricts Chromium filesystem, process, and capability boundaries through one canonical attachment.
+- **Chromium wrapper configuration**: `etc/chromium.d/README` is an intentional empty-config sentinel for Debian's wrapper loop; the build verifies it is present so an empty fragment glob cannot become a failing shell source.
+- **Chromium procfs access**: The kiosk profile limits `mountinfo` and file-descriptor directory reads to owner-matched processes, needed by Chromium's shared-memory helper and Crashpad without granting general procfs access.
 
 ---
 

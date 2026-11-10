@@ -124,6 +124,7 @@ else:
             isinstance(entry, dict) and
             str(entry.get("ek_fingerprint", "")).lower() == ek_fingerprint and
             isinstance(entry.get("device_id"), str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,63}", entry["device_id"]) and
+            isinstance(entry.get("institution_id"), str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,63}", entry["institution_id"]) and
             isinstance(entry.get("ak_qualified_name"), str) and re.fullmatch(r"000b[0-9a-fA-F]{64}", entry["ak_qualified_name"]) and
             isinstance(entry.get("ak_pub_sha256"), str) and re.fullmatch(r"[0-9a-fA-F]{64}", entry["ak_pub_sha256"]) and
             re.search(r"[1-9a-fA-F]", entry["ak_pub_sha256"]) and
