@@ -10,6 +10,7 @@ EXAM_PAGES="$ROOT/frontend/src/modules/exams/pages.jsx"
 EXAM_SERVICE="$ROOT/frontend/src/modules/exams/service.js"
 MODULES="$ROOT/server/controllers/modules_controller.c"
 POLICIES="$ROOT/server/controllers/policy_controller.c"
+DB="$ROOT/server/db/db.c"
 
 require_text() {
     local file="$1"
@@ -46,5 +47,11 @@ require_text "$MODULES" 'Record not found'
 require_text "$POLICIES" 'FROM console_records WHERE collection='\''policies'\'' '
 require_text "$POLICIES" 'AND ($2::boolean OR institution_id=$1)'
 require_text "$EXAM_PAGES" 'loadInstitutionPolicies(tenantId)'
+require_text "$EXAM_PAGES" 'Array.isArray(policyData) ? policyData : []'
+require_text "$EXAM_PAGES" 'No active center mapped'
+require_text "$EXAM_PAGES" 'Array.isArray(backendCenters) ? backendCenters : []'
+require_text "$INSTITUTIONS" '[campus] create insert failed sqlstate=%s constraint=%s column=%s'
+require_text "$DB" 'EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT'
+require_text "$DB" 'EXTRACT(EPOCH FROM updated_at) * 1000)::BIGINT'
 
 echo "[PILOT-EXAM] PASS: pilot setup, live exam centres/assignments/policies, diagnostics, and bounded save requests."

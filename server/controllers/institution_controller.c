@@ -4212,6 +4212,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 8, pvals, plens);
             int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
             if (!ok) {
+                const char *sqlstate = res ? PQresultErrorField(res, PG_DIAG_SQLSTATE) : NULL;
+                const char *constraint = res ? PQresultErrorField(res, PG_DIAG_CONSTRAINT_NAME) : NULL;
+                const char *column = res ? PQresultErrorField(res, PG_DIAG_COLUMN_NAME) : NULL;
+                fprintf(stderr,
+                    "[campus] create insert failed sqlstate=%s constraint=%s column=%s\n",
+                    sqlstate ? sqlstate : "unavailable",
+                    constraint ? constraint : "unavailable",
+                    column ? column : "unavailable");
                 if (res) PQclear(res);
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Failed to create campus", origin, extra_headers, extra_len);

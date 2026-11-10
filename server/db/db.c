@@ -1122,7 +1122,28 @@ static const char *migration_sql =
 ");"
 
 "ALTER TABLE campuses ADD COLUMN IF NOT EXISTS updated_at BIGINT;"
-"ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at BIGINT;";
+"ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at BIGINT;"
+"DO $$ DECLARE created_type TEXT; updated_type TEXT; created_default TEXT; updated_default TEXT; BEGIN "
+"SELECT data_type, column_default INTO created_type, created_default FROM information_schema.columns "
+"WHERE table_schema = current_schema() AND table_name = 'campuses' AND column_name = 'created_at'; "
+"SELECT data_type, column_default INTO updated_type, updated_default FROM information_schema.columns "
+"WHERE table_schema = current_schema() AND table_name = 'campuses' AND column_name = 'updated_at'; "
+"IF created_type IN ('timestamp with time zone', 'timestamp without time zone') THEN "
+"ALTER TABLE campuses ALTER COLUMN created_at DROP DEFAULT; "
+"ALTER TABLE campuses ALTER COLUMN created_at TYPE BIGINT "
+"USING (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT; "
+"IF created_default IS NOT NULL THEN "
+"ALTER TABLE campuses ALTER COLUMN created_at SET DEFAULT "
+"((EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT); END IF; "
+"END IF; "
+"IF updated_type IN ('timestamp with time zone', 'timestamp without time zone') THEN "
+"ALTER TABLE campuses ALTER COLUMN updated_at DROP DEFAULT; "
+"ALTER TABLE campuses ALTER COLUMN updated_at TYPE BIGINT "
+"USING (EXTRACT(EPOCH FROM updated_at) * 1000)::BIGINT; "
+"IF updated_default IS NOT NULL THEN "
+"ALTER TABLE campuses ALTER COLUMN updated_at SET DEFAULT "
+"((EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT); END IF; "
+"END IF; END $$;";
 
 static void exec_sql_step(PGconn *conn, const char *sql) {
     if (!conn || !sql) return;

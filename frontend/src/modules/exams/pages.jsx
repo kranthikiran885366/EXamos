@@ -106,7 +106,8 @@ export function ExamNewPage() {
   const may = usePerm();
   const navigate = useNavigate();
   const { rows: centers, loaded: centersLoaded, error: centersError } = useInstitutionCenters(tenantId);
-  const { data: policies = [], loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(tenantId), [tenantId]);
+  const { data: policyData, loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(tenantId), [tenantId]);
+  const policies = Array.isArray(policyData) ? policyData : [];
   const { msg, setMsg, run, busy } = useFlash();
   const [v, setV] = useState({
     code: '', title: '', type: 'internal', course: '', departmentId: '', academicYear: '', description: '',
@@ -400,7 +401,8 @@ export function ExamDetailPage() {
   }, [id]);
   const examTenantId = backendExam?.tenantId || tenantId;
   const { rows: centers, loaded: centersLoaded, error: centersError } = useInstitutionCenters(examTenantId);
-  const { data: policies = [], loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(examTenantId), [examTenantId]);
+  const { data: policyData, loading: policiesLoading, error: policiesError } = useLoad(() => loadInstitutionPolicies(examTenantId), [examTenantId]);
+  const policies = Array.isArray(policyData) ? policyData : [];
   const examCatalogsReady = centersLoaded && !policiesLoading && !centersError && !policiesError;
   const { data: assignedRoster = [], loading: assignmentsLoading, error: assignmentsError, reload: reloadAssignments } = useLoad(async () => {
     if (!backendExam) return [];
@@ -766,12 +768,13 @@ export function ExamCandidatesPage() {
   const exams = backendExam ? [backendExam] : [];
   const {
     data: backendCenters,
+    loading: centersLoading,
     error: centersError,
     reload: reloadCenters,
   } = useLoad(async () => (
     backendExam?.tenantId ? listBackendCenters(backendExam.tenantId) : []
   ), [backendExam?.tenantId]);
-  const centers = backendCenters || [];
+  const centers = Array.isArray(backendCenters) ? backendCenters : [];
   const devices = useCol('devices');
   const policies = useCol('policies');
   const releases = useCol('releases');
@@ -826,7 +829,9 @@ export function ExamCandidatesPage() {
   const e = exams.find((x) => x.id === id);
   const candidates = candidateDirectory || [];
   const rows = candidates.filter((c) => c.examId === id && c.tenantId === e?.tenantId);
-  const examCenters = e ? (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid && c.status === 'active')).filter(Boolean) : [];
+  const examCenters = e && Array.isArray(e.centerIds)
+    ? e.centerIds.map((cid) => centers.find((c) => c.id === cid && c.status === 'active')).filter(Boolean)
+    : [];
 
   if (examLoading) return <Page title="Candidates"><Loading /></Page>;
   if (examError) return <Page title="Candidates"><Alert tone="danger" title="Examination unavailable">{examError.message || 'The examination could not be loaded from the backend.'}</Alert></Page>;
@@ -898,6 +903,11 @@ export function ExamCandidatesPage() {
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       {centersError && <Alert tone="danger" title="Center directory unavailable">{centersError.message || 'Centers could not be loaded from the backend.'}</Alert>}
+      {centersLoading && <Alert tone="info">Loading active centers mapped to this exam…</Alert>}
+      {!centersLoading && !centersError && !examCenters.length && <Alert tone="info" title="No active center mapped">
+        Institution centers are not assigned automatically. Open exam details and edit this exam to map an active center before assigning candidates.
+        <Link to={`/college/exams/${e.id}`}> Open exam details</Link>
+      </Alert>}
       {rosterError && <Alert tone="error" title="Candidate roster unavailable">{rosterError.message || 'The backend candidate roster could not be loaded.'}</Alert>}
       {rosterLoading && <Loading />}
       <StatGrid cols={4}>
@@ -976,7 +986,7 @@ export function ExamCandidatesPage() {
               <div className="row wrap gap">
                 <Select aria-label="Centre" value={centerId} onChange={(e2) => setCenterId(e2.target.value)} options={examCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder="Choose a centre" />
                 <Input aria-label="Count" type="number" min={1} value={count} onChange={(e2) => setCount(e2.target.value)} placeholder="How many (blank = all)" />
-                <button className="btn primary" disabled={busy || !centerId} onClick={assign}>Assign</button>
+                <button className="btn primary" disabled={busy || centersLoading || Boolean(centersError) || !examCenters.some((center) => center.id === centerId)} onClick={assign}>Assign</button>
                 <span className="muted sm">{candidates.filter((c) => !c.examId).length} unassigned candidate(s) available</span>
               </div>
             </Card>
