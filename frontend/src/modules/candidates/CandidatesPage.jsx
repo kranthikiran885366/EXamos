@@ -101,7 +101,7 @@ function AssignPanel({ tenantId, exams, candidates, rosterLoading, rosterError, 
         <Field label="Exam"><Select value={examId} onChange={(e) => { setExamId(e.target.value); setCenterId(''); }} options={exams.map((e) => ({ v: e.id, l: `${e.code} · ${e.status}` }))} placeholder="Choose an exam" /></Field>
         <Field label="Centre"><Select value={centerId} onChange={(e) => setCenterId(e.target.value)} options={availableCenters.map((c) => ({ v: c.id, l: `${c.code} · ${c.capacity} seats` }))} placeholder={centersLoading ? 'Loading centres…' : 'Choose a centre'} /></Field>
         <Field label="How many" help={`${free} unassigned candidate(s) available`}><Input type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} placeholder="Blank = all" /></Field>
-        <div className="field"><span className="field-label">&nbsp;</span><button className="btn primary" disabled={!examId || !centerId || busy || rosterLoading || !!rosterError || !may('candidate.manage')} onClick={() => run(async () => {
+        <div className="field"><span className="field-label">&nbsp;</span><button className="btn primary" disabled={!examId || !centerId || free === 0 || busy || rosterLoading || !!rosterError || !may('candidate.manage')} onClick={() => run(async () => {
           try {
             const m = await assignToExam(user, { tenantId, examId, centerId, count });
             onDone?.(); return m;
@@ -417,7 +417,15 @@ export default function CandidatesPage() {
   }, [backendExams, examsError, examsLoading, fetchCandidates]);
 
   const candidates = backendCandidates || [];
-  const centers = useCol('centers');
+  const [liveCenters, setLiveCenters] = useState([]);
+  useEffect(() => {
+    if (!tenantId) return;
+    import('../centers/service').then(({ listCenters }) =>
+      listCenters(tenantId).then(setLiveCenters).catch(() => {})
+    );
+  }, [tenantId, fetchCandidates]);
+  const cachedCenters = useCol('centers');
+  const centers = liveCenters.length ? liveCenters : cachedCenters;
   const devices = useCol('devices');
   const policies = useCol('policies');
   const releases = useCol('releases');

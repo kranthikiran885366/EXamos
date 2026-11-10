@@ -101,13 +101,13 @@ static void campus_list(int client_fd, const char *auth_header,
     } else {
         const char *pv[1] = { sess.institution_id };
         int lens[1] = { (int)strlen(sess.institution_id) };
-        res = PQexecParams(conn,
+        res = db_simple(conn,
             "SELECT id, tenant_id, name, code, address, city, state, country, "
                     "postal_code, contact_name, contact_phone, contact_email, "
                     "campus_type, timezone, exam_capacity, device_capacity, "
                     "status, approval_status, created_at, updated_at "
             "FROM campuses WHERE tenant_id = $1 ORDER BY created_at DESC",
-            1, pv, lens)
+            1, pv, lens);
     }
 
     char json[262144] = {0};
@@ -125,25 +125,25 @@ static void campus_list(int client_fd, const char *auth_header,
                 "\"contact_email\":\"%s\",\"campus_type\":\"%s\",\"timezone\":\"%s\","
                 "\"exam_capacity\":%s,\"device_capacity\":%s,\"status\":\"%s\","
                 "\"approval_status\":\"%s\",\"created_at\":%s,\"updated_at\":%s}",
-                PQgetvalue(res, 0, 0) ? PQgetvalue(res, 0, 0) : "",
-                PQgetvalue(res, 0, 1) ? PQgetvalue(res, 0, 1) : "",
-                PQgetvalue(res, 0, 2) ? PQgetvalue(res, 0, 2) : "",
-                PQgetvalue(res, 0, 3) ? PQgetvalue(res, 0, 3) : "",
-                PQgetvalue(res, 0, 4) ? PQgetvalue(res, 0, 4) : "",
-                PQgetvalue(res, 0, 5) ? PQgetvalue(res, 0, 5) : "",
-                PQgetvalue(res, 0, 6) ? PQgetvalue(res, 0, 6) : "",
-                PQgetvalue(res, 0, 7) ? PQgetvalue(res, 0, 7) : "",
-                PQgetvalue(res, 0, 8) ? PQgetvalue(res, 0, 8) : "",
-                PQgetvalue(res, 0, 9) ? PQgetvalue(res, 0, 9) : "",
-                PQgetvalue(res, 0, 10) ? PQgetvalue(res, 0, 10) : "",
-                PQgetvalue(res, 0, 11) ? PQgetvalue(res, 0, 11) : "",
-                PQgetvalue(res, 0, 12) ? PQgetvalue(res, 0, 12) : "",
-                PQgetvalue(res, 0, 13) ? PQgetvalue(res, 0, 13) : "",
-                PQgetvalue(res, 0, 14) ? PQgetvalue(res, 0, 14) : "",
-                PQgetvalue(res, 0, 15) ? PQgetvalue(res, 0, 15) : "",
-                PQgetvalue(res, 0, 16) ? PQgetvalue(res, 0, 16) : "",
-                PQgetvalue(res, 0, 17) ? PQgetvalue(res, 0, 17) : "0",
-                PQgetvalue(res, 0, 18) ? PQgetvalue(res, 0, 18) : "0");
+                PQgetvalue(res, i, 0) ? PQgetvalue(res, i, 0) : "",
+                PQgetvalue(res, i, 1) ? PQgetvalue(res, i, 1) : "",
+                PQgetvalue(res, i, 2) ? PQgetvalue(res, i, 2) : "",
+                PQgetvalue(res, i, 3) ? PQgetvalue(res, i, 3) : "",
+                PQgetvalue(res, i, 4) ? PQgetvalue(res, i, 4) : "",
+                PQgetvalue(res, i, 5) ? PQgetvalue(res, i, 5) : "",
+                PQgetvalue(res, i, 6) ? PQgetvalue(res, i, 6) : "",
+                PQgetvalue(res, i, 7) ? PQgetvalue(res, i, 7) : "",
+                PQgetvalue(res, i, 8) ? PQgetvalue(res, i, 8) : "",
+                PQgetvalue(res, i, 9) ? PQgetvalue(res, i, 9) : "",
+                PQgetvalue(res, i, 10) ? PQgetvalue(res, i, 10) : "",
+                PQgetvalue(res, i, 11) ? PQgetvalue(res, i, 11) : "",
+                PQgetvalue(res, i, 12) ? PQgetvalue(res, i, 12) : "",
+                PQgetvalue(res, i, 13) ? PQgetvalue(res, i, 13) : "",
+                PQgetvalue(res, i, 14) ? PQgetvalue(res, i, 14) : "",
+                PQgetvalue(res, i, 15) ? PQgetvalue(res, i, 15) : "",
+                PQgetvalue(res, i, 16) ? PQgetvalue(res, i, 16) : "",
+                PQgetvalue(res, i, 17) ? PQgetvalue(res, i, 17) : "0",
+                PQgetvalue(res, i, 18) ? PQgetvalue(res, i, 18) : "0");
         }
     }
     if (res) PQclear(res);
@@ -780,15 +780,15 @@ static void campus_approvals_list(int client_fd, const char *auth_header,
                 "{\"id\":\"%s\",\"campus_id\":\"%s\",\"institution_id\":\"%s\","
                 "\"action\":\"%s\",\"requested_by\":\"%s\",\"requested_at\":%s,"
                 "\"status\":\"%s\",\"requester_name\":\"%s\",\"campus_name\":\"%s\"}",
-                PQgetvalue(res, 0, 0) ? PQgetvalue(res, 0, 0) : "",
-                PQgetvalue(res, 0, 1) ? PQgetvalue(res, 0, 1) : "",
-                PQgetvalue(res, 0, 2) ? PQgetvalue(res, 0, 2) : "",
-                PQgetvalue(res, 0, 3) ? PQgetvalue(res, 0, 3) : "",
-                PQgetvalue(res, 0, 4) ? PQgetvalue(res, 0, 4) : "",
-                PQgetvalue(res, 0, 5) ? PQgetvalue(res, 0, 5) : "0",
-                PQgetvalue(res, 0, 6) ? PQgetvalue(res, 0, 6) : "",
-                PQgetvalue(res, 0, 7) ? PQgetvalue(res, 0, 7) : "",
-                PQgetvalue(res, 0, 8) ? PQgetvalue(res, 0, 8) : "");
+                PQgetvalue(res, i, 0) ? PQgetvalue(res, i, 0) : "",
+                PQgetvalue(res, i, 1) ? PQgetvalue(res, i, 1) : "",
+                PQgetvalue(res, i, 2) ? PQgetvalue(res, i, 2) : "",
+                PQgetvalue(res, i, 3) ? PQgetvalue(res, i, 3) : "",
+                PQgetvalue(res, i, 4) ? PQgetvalue(res, i, 4) : "",
+                PQgetvalue(res, i, 5) ? PQgetvalue(res, i, 5) : "0",
+                PQgetvalue(res, i, 6) ? PQgetvalue(res, i, 6) : "",
+                PQgetvalue(res, i, 7) ? PQgetvalue(res, i, 7) : "",
+                PQgetvalue(res, i, 8) ? PQgetvalue(res, i, 8) : "");
         }
     }
     if (res) PQclear(res);
@@ -945,19 +945,19 @@ static void campus_user_assignments_list(int client_fd, const char *auth_header,
                 "\"assigned_by\":\"%s\",\"assigned_at\":%s,\"expires_at\":%s,"
                 "\"reason\":\"%s\",\"username\":\"%s\",\"user_name\":\"%s\","
                 "\"campus_name\":\"%s\"}",
-                PQgetvalue(res, 0, 0) ? PQgetvalue(res, 0, 0) : "",
-                PQgetvalue(res, 0, 1) ? PQgetvalue(res, 0, 1) : "",
-                PQgetvalue(res, 0, 2) ? PQgetvalue(res, 0, 2) : "",
-                PQgetvalue(res, 0, 3) ? PQgetvalue(res, 0, 3) : "",
-                PQgetvalue(res, 0, 4) ? PQgetvalue(res, 0, 4) : "",
-                PQgetvalue(res, 0, 5) ? PQgetvalue(res, 0, 5) : "",
-                PQgetvalue(res, 0, 6) ? PQgetvalue(res, 0, 6) : "",
-                PQgetvalue(res, 0, 7) ? PQgetvalue(res, 0, 7) : "0",
-                PQgetvalue(res, 0, 8) ? PQgetvalue(res, 0, 8) : "0",
-                PQgetvalue(res, 0, 9) ? PQgetvalue(res, 0, 9) : "",
-                PQgetvalue(res, 0, 10) ? PQgetvalue(res, 0, 10) : "",
-                PQgetvalue(res, 0, 11) ? PQgetvalue(res, 0, 11) : "",
-                PQgetvalue(res, 0, 12) ? PQgetvalue(res, 0, 12) : "");
+                PQgetvalue(res, i, 0) ? PQgetvalue(res, i, 0) : "",
+                PQgetvalue(res, i, 1) ? PQgetvalue(res, i, 1) : "",
+                PQgetvalue(res, i, 2) ? PQgetvalue(res, i, 2) : "",
+                PQgetvalue(res, i, 3) ? PQgetvalue(res, i, 3) : "",
+                PQgetvalue(res, i, 4) ? PQgetvalue(res, i, 4) : "",
+                PQgetvalue(res, i, 5) ? PQgetvalue(res, i, 5) : "",
+                PQgetvalue(res, i, 6) ? PQgetvalue(res, i, 6) : "",
+                PQgetvalue(res, i, 7) ? PQgetvalue(res, i, 7) : "0",
+                PQgetvalue(res, i, 8) ? PQgetvalue(res, i, 8) : "0",
+                PQgetvalue(res, i, 9) ? PQgetvalue(res, i, 9) : "",
+                PQgetvalue(res, i, 10) ? PQgetvalue(res, i, 10) : "",
+                PQgetvalue(res, i, 11) ? PQgetvalue(res, i, 11) : "",
+                PQgetvalue(res, i, 12) ? PQgetvalue(res, i, 12) : "");
         }
     }
     if (res) PQclear(res);

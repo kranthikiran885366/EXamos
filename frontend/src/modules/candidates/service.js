@@ -160,6 +160,11 @@ export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   if (n > freeSeats.length) fail(`Only ${freeSeats.length} free seat(s) at ${ce.code}.`);
   const selected = pool.slice(0, n);
   await persistAssignments(examId, selected, freeSeats, centerId, ex, ce);
+  // Create Module 10 registration records for each newly seated student so
+  // eligibility is visible in Student 360 without a separate manual step.
+  await Promise.allSettled(selected.map((student) =>
+    Api.registerStudentForExam(examId, { student_id: student.id, roll_no: student.roll_no, name: student.name })
+  ));
   await log(a, 'CANDIDATES_ASSIGNED', `${n} -> ${ex.code} @ ${ce.code}`);
   return `${n} candidate(s) seated at ${ce.code}.`;
 }
