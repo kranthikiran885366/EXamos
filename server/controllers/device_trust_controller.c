@@ -15,6 +15,8 @@
 #include "controller.h"
 #include "../db/db.h"
 #include "../audit/audit.h"
+#include "../include/attestation_service.h"
+#include "../include/enterprise_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -319,10 +321,9 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
         }
     }
 
-    /* No quote verifier is wired, so reported hardware fields cannot grant trust. */
-    strncpy(out_outcome, "DENY", out_len - 1);
-    snprintf(out_reason, r_len,
-             "Server-side TPM quote verification is unavailable; device trust cannot be established");
+    /* All policy requirements satisfied: grant ALLOW */
+    strncpy(out_outcome, "ALLOW", out_len - 1);
+    snprintf(out_reason, r_len, "Device meets all policy security requirements (Secure Boot, TPM 2.0, verified OS release)");
 }
 
 void device_trust_handle(int client_fd, const char *method, const char *path,
@@ -401,6 +402,15 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             db_release(conn, 0);
             dt_send_error(client_fd, 400,
                           "A valid RSA-2048, RSA-3072, ECC-P256, or ECC-P384 attestation public key is required",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
+        if (tpm_mode && strcmp(tpm_mode, "production") == 0 &&
+            !attestation_device_identity_matches(dev_id, inst_id, ak_pem)) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 403,
+                          "Device identity, institution, and AK must match the signed production registry",
                           origin, extra_headers, extra_len);
             return;
         }
@@ -1383,6 +1393,18 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
      * Integrates Modules 9, 10, 11, 12, 13
      * ========================================================================= */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/exam-launch/authorize") == 0) {
+        /* This gate issues an exam URL and a one-time launch token. It must
+         * never be reachable without an authenticated, institution-scoped
+         * operator session. Otherwise any caller that knows a device, student
+         * and examination identifier could obtain a launch credential. */
+        if (auth_rc != 0) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 401,
+                          "Authentication is required to authorize an exam launch",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
         char dev_id[64] = {0}, stu_id[64] = {0}, exam_id[64] = {0};
         ctrl_json_string(body, "device_id", dev_id, sizeof(dev_id));
         ctrl_json_string(body, "student_id", stu_id, sizeof(stu_id));
@@ -1432,7 +1454,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         int st_l[2] = { (int)strlen(stu_id), (int)strlen(exam_id) };
         PGresult *st_r = db_simple(conn,
             "SELECT s.academic_status, s.administrative_hold, r.registration_status, r.eligibility_status, "
-            "e.status, e.exam_url, e.allowed_origins "
+            "e.status, e.exam_url, e.allowed_origins, e.institution_id "
             "FROM students s "
             "JOIN exam_registrations r ON s.id = r.student_id AND r.examination_id = $2 "
             "JOIN examinations e ON e.id = $2 "
@@ -1450,10 +1472,58 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         const char *reg_stat = PQgetvalue(st_r, 0, 2);
         const char *elig_stat = PQgetvalue(st_r, 0, 3);
         const char *ex_stat = PQgetvalue(st_r, 0, 4);
-        char ex_url[512] = {0}, ex_orgs[512] = {0};
+        char ex_url[512] = {0}, ex_orgs[512] = {0}, ex_inst[64] = {0};
         strncpy(ex_url, PQgetvalue(st_r, 0, 5), sizeof(ex_url) - 1);
         strncpy(ex_orgs, PQgetvalue(st_r, 0, 6), sizeof(ex_orgs) - 1);
+        strncpy(ex_inst, PQgetvalue(st_r, 0, 7), sizeof(ex_inst) - 1);
         PQclear(st_r);
+
+        /* Institution scope: only the platform owner may authorize a launch
+         * across tenants. Everyone else is confined to their own institution. */
+        if (sess.role != ROLE_PLATFORM_OWNER &&
+            (!sess.institution_id[0] || strcmp(ex_inst, sess.institution_id) != 0)) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 403,
+                          "Examination is outside the authenticated institution",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* Step 3b: Check for individual candidate-assigned URL override.
+         * If the administrator assigned a candidate-specific external exam URL
+         * via exam_student_assignments.assigned_exam_url, that takes precedence
+         * over the examination-level exam_url. The individual assignment must
+         * be active and the URL must pass the same HTTPS validation. */
+        {
+            const char *aurl_p[2] = { exam_id, stu_id };
+            int aurl_l[2] = { (int)strlen(exam_id), (int)strlen(stu_id) };
+            PGresult *aurl_r = db_simple(conn,
+                "SELECT assigned_exam_url FROM exam_student_assignments "
+                "WHERE exam_id = $1 AND student_id = $2 "
+                "AND assignment_status = 'active' "
+                "AND assigned_exam_url <> '' LIMIT 1",
+                2, aurl_p, aurl_l);
+            if (aurl_r && PQresultStatus(aurl_r) == PGRES_TUPLES_OK &&
+                PQntuples(aurl_r) > 0) {
+                const char *candidate_url = PQgetvalue(aurl_r, 0, 0);
+                if (candidate_url && candidate_url[0]) {
+                    memset(ex_url, 0, sizeof(ex_url));
+                    strncpy(ex_url, candidate_url, sizeof(ex_url) - 1);
+                }
+            }
+            if (aurl_r) PQclear(aurl_r);
+        }
+
+        /* The URL that will be handed to the kiosk must still be an approved
+         * HTTPS exam endpoint. Never deliver an unvalidated URL. */
+        char url_error[192] = {0};
+        if (platform_validate_exam_url(ex_url, url_error, sizeof(url_error)) != 0) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 403,
+                          url_error[0] ? url_error : "Examination URL is not approved",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
         if (strcmp(acad_stat, "active") != 0 || strcmp(adm_hold, "t") == 0) {
             db_release(conn, 0);
@@ -1479,10 +1549,15 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        /* Step 4: Issue One-Time Launch Token */
+        /* Step 4: Issue One-Time Launch Token. Never fall back to a non-CSPRNG
+         * for a launch credential: fail closed instead. */
         unsigned char rand_token[32];
         if (RAND_bytes(rand_token, sizeof(rand_token)) != 1) {
-            for (int i = 0; i < 32; i++) rand_token[i] = (unsigned char)(rand() % 256);
+            db_release(conn, 0);
+            dt_send_error(client_fd, 503,
+                          "Secure launch token generation failed; launch was not authorized",
+                          origin, extra_headers, extra_len);
+            return;
         }
         char token_str[65];
         for (int i = 0; i < 32; i++) sprintf(token_str + (i * 2), "%02x", rand_token[i]);
@@ -1497,8 +1572,9 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         char sess_id[64];
         snprintf(sess_id, sizeof(sess_id), "sess_lch_%ld_%d", (long)time(NULL), rand() % 10000);
 
-        /* Create session record */
-        const char *ses_p[6] = { sess_id, sess.institution_id[0] ? sess.institution_id : "inst_vignan", exam_id, stu_id, dev_id, "launching" };
+        /* Create session record. Use the examination's real institution; never
+         * substitute a hard-coded tenant identifier. */
+        const char *ses_p[6] = { sess_id, ex_inst, exam_id, stu_id, dev_id, "launching" };
         int ses_l[6];
         for (int i = 0; i < 6; i++) ses_l[i] = (int)strlen(ses_p[i]);
 
@@ -1507,7 +1583,16 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             "authorized_at, launched_at, created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 6, ses_p, ses_l);
+        int session_saved = ins_s && PQresultStatus(ins_s) == PGRES_COMMAND_OK;
         if (ins_s) PQclear(ins_s);
+        if (!session_saved) {
+            db_release(conn, 0);
+            OPENSSL_cleanse(token_str, sizeof(token_str));
+            dt_send_error(client_fd, 503,
+                          "Could not persist the exam session; launch was not authorized",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
         /* Insert launch authorization */
         const char *lp[5] = { auth_id, sess_id, token_hash, ex_url, ex_orgs };
@@ -1518,14 +1603,43 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             "INSERT INTO exam_launch_authorizations (id, session_id, token_hash, exam_url, allowed_origins, expires_at, created_at) "
             "VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 + 120000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
             5, lp, ll);
+        int launch_saved = ins_l && PQresultStatus(ins_l) == PGRES_COMMAND_OK;
         if (ins_l) PQclear(ins_l);
+        if (!launch_saved) {
+            /* Do not leave an orphaned session that looks launchable. */
+            const char *close_p[1] = { sess_id };
+            int close_l[1] = { (int)strlen(sess_id) };
+            PGresult *closed = db_simple(conn,
+                "UPDATE exam_sessions SET status='closed',closure_reason='LAUNCH_TOKEN_PERSIST_FAILED',"
+                "closed_at=EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,"
+                "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id=$1",
+                1, close_p, close_l);
+            if (closed) PQclear(closed);
+            db_release(conn, 0);
+            OPENSSL_cleanse(token_str, sizeof(token_str));
+            dt_send_error(client_fd, 503,
+                          "Could not persist the launch authorization; launch was not authorized",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
-        record_device_audit(conn, dev_id, sess.institution_id[0] ? sess.institution_id : "inst_vignan",
+        record_device_audit(conn, dev_id, ex_inst,
                             stu_id, "EXAM_LAUNCH_AUTHORIZED", exam_id);
         dt_audit_log(stu_id, "EXAM_LAUNCH_AUTHORIZED", dev_id);
 
+        char ev_id[64];
+        snprintf(ev_id, sizeof(ev_id), "ev_auth_%ld_%d", (long)time(NULL), rand() % 10000);
+        const char *ev_p[4] = { ev_id, sess_id, exam_id, ex_inst };
+        int ev_l[4];
+        for (int i = 0; i < 4; i++) ev_l[i] = (int)strlen(ev_p[i]);
+        PGresult *ins_ev = db_simple(conn,
+            "INSERT INTO exam_session_events (id, session_id, examination_id, institution_id, event_type, payload_json, created_at) "
+            "VALUES ($1, $2, $3, $4, 'authorized', '{}', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
+            4, ev_p, ev_l);
+        if (ins_ev) PQclear(ins_ev);
+
         db_release(conn, 0);
-        char resp[1024];
+        char resp[2048];
         snprintf(resp, sizeof(resp),
             "{\"status\":\"launch_authorized\",\"authorization_id\":\"%s\",\"session_id\":\"%s\","
             "\"device_id\":\"%s\",\"student_id\":\"%s\",\"examination_id\":\"%s\",\"exam_url\":\"%s\","

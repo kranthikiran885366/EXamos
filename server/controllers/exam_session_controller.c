@@ -255,9 +255,7 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
         ses_send_error(client_fd, 401, "Authentication required", origin, extra_headers, extra_len);
         return;
     }
-    int is_owner = (auth_rc == 0 && (sess.role == ROLE_PLATFORM_OWNER ||
-                    strcmp(sess.username, "admin") == 0 ||
-                    strcmp(sess.username, "root") == 0));
+    int is_owner = (auth_rc == 0 && sess.role == ROLE_PLATFORM_OWNER);
 
     PGconn *conn = db_acquire();
     if (!conn) {
@@ -391,6 +389,20 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
+        /* The response below hands the candidate/admin the URL that the kiosk
+         * will navigate to, so it must be an approved HTTPS endpoint. Never
+         * return an unvalidated target from the database. */
+        char url_error[192] = {0};
+        if (!exam_url[0] ||
+            platform_validate_exam_url(exam_url, url_error, sizeof(url_error)) != 0) {
+            db_release(conn, 0);
+            ses_send_error(client_fd, 503,
+                url_error[0] ? url_error
+                             : "A valid, approved external assessment URL is not configured for this exam",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
         const char *initial_status = (res == 2) ? "pending" : "authorized";
 
         char sess_id[64];
@@ -409,7 +421,15 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
             "authorized_at, created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, "
             "EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)", 6, sp, sl);
+        int session_saved = ins_s && PQresultStatus(ins_s) == PGRES_COMMAND_OK;
         if (ins_s) PQclear(ins_s);
+        if (!session_saved) {
+            db_release(conn, 1);
+            ses_send_error(client_fd, 503,
+                "Could not persist the exam session; no exam URL was delivered",
+                origin, extra_headers, extra_len);
+            return;
+        }
 
         /* Link device record */
         if (device_id[0]) {
@@ -709,7 +729,10 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
                 }
             }
 
-            const char *hb_status = strcmp(s_status, "resuming") == 0 ? "active" : s_status;
+            if (strcmp(s_status, "launching") == 0) {
+                record_session_event(conn, session_id, s_exam, s_inst, "launched", "{\"source\":\"kiosk_heartbeat\"}");
+            }
+            const char *hb_status = (strcmp(s_status, "resuming") == 0 || strcmp(s_status, "launching") == 0) ? "active" : s_status;
             const char *hb_p[2] = { hb_status, session_id };
             int hb_l[2] = { (int)strlen(hb_status), (int)strlen(session_id) };
 
@@ -902,7 +925,10 @@ void exam_session_handle(int client_fd, const char *method, const char *path,
 
             if (strcmp(s_status, "closed") == 0) {
                 db_release(conn, 0);
-                ses_send_json(client_fd, 200, "{\"status\":\"already_closed\",\"session_id\":\"...\"}", origin, extra_headers, extra_len);
+                char already[256];
+                snprintf(already, sizeof(already),
+                    "{\"status\":\"already_closed\",\"session_id\":\"%s\"}", session_id);
+                ses_send_json(client_fd, 200, already, origin, extra_headers, extra_len);
                 return;
             }
 

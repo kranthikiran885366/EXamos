@@ -9,6 +9,7 @@
 #include "../audit/audit.h"
 #include "../security/security.h"
 #include "../include/ledger.h"
+#include "../include/enterprise_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -477,7 +478,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
             "accommodations, auth_mode, identity_required, origins, navigation, allowed_destinations, compatibility_profile, "
             "attestation_level, session_timeout_min, reconnect_policy, submission_mode, required_checks, policy_id, exam_url, "
             "created_at, updated_at, status) "
-            "SELECT $1, $2, $3, $4, COALESCE($7::jsonb->>'description',''), COALESCE($7::jsonb->>'course',''), "
+            "SELECT $1, $2, $3, $4, COALESCE($7::jsonb->>'description',''), COALESCE($7::jsonb->>'course', $5::varchar), "
             "NULLIF($7::jsonb->>'departmentId',''), COALESCE($7::jsonb->>'academicYear',''), "
             "COALESCE($7::jsonb->>'type','internal'), COALESCE($7::jsonb->'centerIds','[]'::jsonb), "
             "($7::jsonb->>'startAt')::bigint, ($7::jsonb->>'durationMin')::integer, "
@@ -1230,7 +1231,8 @@ void exam_handle(int client_fd, const char *method, const char *path,
         /* ---------------- GET /api/v1/examinations/:id/students (Assigned roster) ---------------- */
         if (strcmp(method, "GET") == 0 && strcmp(suffix, "/students") == 0) {
             PGresult *assigned = db_simple(conn,
-                "SELECT student_id, roll_no, name, COALESCE(campus_id, ''), COALESCE(seat_no, '') "
+                "SELECT student_id, roll_no, name, COALESCE(campus_id, ''), COALESCE(seat_no, ''), "
+                "COALESCE(assigned_exam_url, ''), COALESCE(assignment_status, 'active') "
                 "FROM exam_student_assignments WHERE exam_id=$1 AND institution_id=$2 "
                 "ORDER BY roll_no ASC",
                 2, (const char *[]){ eid, ex_inst_id },
@@ -1256,16 +1258,19 @@ void exam_handle(int client_fd, const char *method, const char *path,
             for (int i = 0; i < PQntuples(assigned); i++) {
                 char escaped_id[160], escaped_roll[160], escaped_name[320];
                 char escaped_center[160], escaped_seat[96];
+                char escaped_url[512], escaped_status[64];
                 json_escape(PQgetvalue(assigned, i, 0), escaped_id, sizeof(escaped_id));
                 json_escape(PQgetvalue(assigned, i, 1), escaped_roll, sizeof(escaped_roll));
                 json_escape(PQgetvalue(assigned, i, 2), escaped_name, sizeof(escaped_name));
                 json_escape(PQgetvalue(assigned, i, 3), escaped_center, sizeof(escaped_center));
                 json_escape(PQgetvalue(assigned, i, 4), escaped_seat, sizeof(escaped_seat));
+                json_escape(PQgetvalue(assigned, i, 5), escaped_url, sizeof(escaped_url));
+                json_escape(PQgetvalue(assigned, i, 6), escaped_status, sizeof(escaped_status));
                 offset += (size_t)snprintf(json + offset, capacity - offset,
                     "%s{\"exam_id\":\"%s\",\"student_id\":\"%s\",\"roll_no\":\"%s\",\"name\":\"%s\","
-                    "\"center_id\":\"%s\",\"seat_no\":\"%s\"}",
+                    "\"center_id\":\"%s\",\"seat_no\":\"%s\",\"assigned_exam_url\":\"%s\",\"assignment_status\":\"%s\"}",
                     i ? "," : "", eid, escaped_id, escaped_roll, escaped_name,
-                    escaped_center, escaped_seat);
+                    escaped_center, escaped_seat, escaped_url, escaped_status);
             }
             snprintf(json + offset, capacity - offset, "]}");
             PQclear(assigned);
@@ -1402,11 +1407,25 @@ void exam_handle(int client_fd, const char *method, const char *path,
 
             char student_id[64] = {0}, roll_no[64] = {0}, sname[128] = {0};
             char center_id[64] = {0}, seat_no[32] = {0};
+            char assigned_exam_url[512] = {0};
             ctrl_json_string(body, "student_id", student_id, sizeof(student_id));
             ctrl_json_string(body, "roll_no", roll_no, sizeof(roll_no));
             ctrl_json_string(body, "name", sname, sizeof(sname));
             ctrl_json_string(body, "center_id", center_id, sizeof(center_id));
             ctrl_json_string(body, "seat_no", seat_no, sizeof(seat_no));
+            ctrl_json_string(body, "assigned_exam_url", assigned_exam_url, sizeof(assigned_exam_url));
+
+            if (assigned_exam_url[0]) {
+                char url_error[192] = {0};
+                if (platform_validate_exam_url(assigned_exam_url, url_error, sizeof(url_error)) != 0) {
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 400,
+                        url_error[0] ? url_error : "Assigned examination URL is not approved",
+                        origin, extra_headers, extra_len);
+                    return;
+                }
+            }
 
             if (!student_id[0] || !roll_no[0]) {
                 PQclear(exam_res);
@@ -1609,20 +1628,39 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            const char *asg_p[8] = {
-                assign_id, eid, ex_inst_id, student_id, roll_no, sname, center_id, seat_no
+            const char *asg_p[10] = {
+                assign_id, eid, ex_inst_id, student_id, roll_no, sname, center_id, seat_no,
+                assigned_exam_url, sess.username
             };
-            int asg_l[8];
-            for (int i = 0; i < 8; i++) asg_l[i] = (int)strlen(asg_p[i]);
+            int asg_l[10];
+            for (int i = 0; i < 10; i++) asg_l[i] = (int)strlen(asg_p[i]);
             PGresult *asg_res = db_simple(conn,
                 "INSERT INTO exam_student_assignments "
-                "(id, exam_id, institution_id, student_id, roll_no, name, campus_id, seat_no, created_at) "
-                "VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,EXTRACT(EPOCH FROM NOW())::BIGINT*1000) "
+                "(id, exam_id, institution_id, student_id, roll_no, name, campus_id, seat_no, created_at, assigned_exam_url, created_by) "
+                "VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,EXTRACT(EPOCH FROM NOW())::BIGINT*1000,$9,$10) "
                 "ON CONFLICT (exam_id, student_id) DO UPDATE SET roll_no=EXCLUDED.roll_no, "
-                "name=EXCLUDED.name, campus_id=EXCLUDED.campus_id, seat_no=EXCLUDED.seat_no",
-                8, asg_p, asg_l);
+                "name=EXCLUDED.name, campus_id=EXCLUDED.campus_id, seat_no=EXCLUDED.seat_no, "
+                "assigned_exam_url=CASE WHEN EXCLUDED.assigned_exam_url <> '' THEN EXCLUDED.assigned_exam_url ELSE exam_student_assignments.assigned_exam_url END, "
+                "created_by=CASE WHEN EXCLUDED.created_by <> '' THEN EXCLUDED.created_by ELSE exam_student_assignments.created_by END",
+                10, asg_p, asg_l);
             int transaction_ok = asg_res && PQresultStatus(asg_res) == PGRES_COMMAND_OK;
             if (asg_res) PQclear(asg_res);
+
+            if (transaction_ok && assigned_exam_url[0]) {
+                char audit_id[64];
+                snprintf(audit_id, sizeof(audit_id), "asga_%ld_%d", (long)time(NULL), rand() % 10000);
+                const char *aud_p[7] = {
+                    audit_id, assign_id, eid, student_id, ex_inst_id, assigned_exam_url, sess.username
+                };
+                int aud_l[7];
+                for (int i = 0; i < 7; i++) aud_l[i] = (int)strlen(aud_p[i]);
+                PGresult *aud_res = db_simple(conn,
+                    "INSERT INTO candidate_exam_assignment_audit "
+                    "(id, assignment_id, exam_id, student_id, institution_id, action, new_url, performed_by, timestamp) "
+                    "VALUES ($1, $2, $3, $4, $5, 'url_updated', $6, $7, EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+                    7, aud_p, aud_l);
+                if (aud_res) PQclear(aud_res);
+            }
 
             const char *candidate_params[7] = {
                 eid, center_id, seat_no, sname, ex_inst_id, roll_no, now_text
@@ -1699,8 +1737,10 @@ void exam_handle(int client_fd, const char *method, const char *path,
             PQclear(exam_res);
             db_release(conn, 0);
 
-            char resp[256];
-            snprintf(resp, sizeof(resp), "{\"status\":\"assigned\",\"assignment_id\":\"%s\",\"exam_id\":\"%s\",\"student_id\":\"%s\"}", assign_id, eid, student_id);
+            char resp[512];
+            char escaped_assigned_url[384] = {0};
+            json_escape(assigned_exam_url, escaped_assigned_url, sizeof(escaped_assigned_url));
+            snprintf(resp, sizeof(resp), "{\"status\":\"assigned\",\"assignment_id\":\"%s\",\"exam_id\":\"%s\",\"student_id\":\"%s\",\"assigned_exam_url\":\"%s\"}", assign_id, eid, student_id, escaped_assigned_url);
             ex_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
             return;
         }
