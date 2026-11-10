@@ -247,7 +247,7 @@ export async function updateExam(a, ex, patch) {
   }
   if (patch.title !== undefined) { const t = clean(patch.title, 100); if (t.length < 4) fail('Title needs 4+ characters.'); set('title', t); }
   if (patch.type !== undefined) { if (!TYPES.includes(patch.type)) fail('Choose a valid exam type.'); set('type', patch.type); }
-  if (patch.startAt !== undefined) { const st = startOf(patch.startAt); if (!Number.isFinite(st)) fail('Choose a valid start time.'); set('startAt', st); }
+  if (patch.startAt !== undefined) { const st = startOf(patch.startAt); if (!Number.isFinite(st) || st <= 0) fail('Set a valid exam start date and time before saving.'); set('startAt', st); }
   if (patch.durationMin !== undefined) { const d = Number(patch.durationMin); if (!(d >= 15 && d <= 300)) fail('Duration must be 15–300 minutes.'); set('durationMin', d); }
   if (patch.authMode !== undefined && !AUTH_MODES.some((mode) => mode.v === patch.authMode)) fail('Choose a valid candidate authentication mode.');
   for (const k of ['description', 'course', 'academicYear', 'instructions', 'resources', 'accommodations', 'timeZone', 'compatibilityProfile', 'authMode', 'submissionMode', 'reconnectPolicy']) if (patch[k] !== undefined) set(k, clean(patch[k], k === 'instructions' ? 3000 : 1000));
@@ -633,6 +633,7 @@ export async function configureExamPolicy(a, ex, config, publish = false, reason
 }
 
 export async function policyPreview(ex, draft) {
+  if (!draft?.config && !ex?.policyId) return null;
   const cfg = draft?.config || (await get('policies', ex.policyId))?.config;
   if (!cfg) return null;
   return {

@@ -1,0 +1,1 @@
+{"error":"DEVICE_TRUST_FAILED","outcome":"DENY","device_id":"dev_nist_workstation_01","reason":"Server-side TPM quote verification is unavailable; device trust cannot be established"}

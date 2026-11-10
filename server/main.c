@@ -1435,7 +1435,11 @@ static void* handle_client(void *arg) {
              strncmp(route_path, "/api/v1/admin/centers", 21) == 0 ||
              strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
              strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
-        institution_handle(client_fd, method, route_path, req_body,
+        /* Pass the original path (which retains the query string) so that
+         * institution_handle can read query parameters such as institution_id
+         * via inst_query_param(). route_path has '?' stripped and cannot be
+         * used for query-string parsing. */
+        institution_handle(client_fd, method, path, req_body,
                            auth_header, origin, extra, sizeof(extra));
         goto client_done;
     }
@@ -2758,29 +2762,8 @@ static void* handle_client(void *arg) {
     }
     /* GET /api/v1/admin/policies -> Policy list (optional ?exam_id=) */
     else if (strcmp(route_path, "/api/v1/admin/policies") == 0 && strcmp(method, "GET") == 0) {
-        static const char prefix[] = "Bearer ";
-        const char *tok = strncmp(auth_header, prefix, sizeof(prefix)-1) == 0
-                          ? auth_header + sizeof(prefix)-1 : NULL;
-        auth_session_t sess; memset(&sess, 0, sizeof(sess));
-        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_READ, &sess) != 0) {
-            send_http_response(client_fd, 403, "application/json",
-                               "{\"error\":\"Exam read permission required\"}");
-        } else {
-            char exam_id[128] = {0};
-            parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
-            char *pol_buf = malloc(65536);
-            if (!pol_buf) {
-                send_http_response(client_fd, 503, "application/json", "{\"error\":\"Out of memory\"}");
-            } else {
-                if (platform_get_policies_json(exam_id[0] ? exam_id : NULL, pol_buf, 65536) == 0)
-                    send_http_response(client_fd, 200, "application/json", pol_buf);
-                else
-                    send_http_response(client_fd, 503, "application/json",
-                                       "{\"error\":\"Policy service unavailable\"}");
-                free(pol_buf);
-            }
-        }
-        OPENSSL_cleanse(&sess, sizeof(sess));
+        policy_handle(client_fd, method, route_path, req_body, auth_header,
+                      origin, extra, sizeof(extra));
     }
     /* GET /api/v1/admin/policies/catalog -> Provisioned browser policy catalog */
     else if (strcmp(route_path, "/api/v1/admin/policies/catalog") == 0 && strcmp(method, "GET") == 0) {
@@ -4462,7 +4445,8 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/admin/centers", 21) == 0 ||
                 strncmp(route_path, "/api/v1/admin/departments", 25) == 0 ||
                 strncmp(route_path, "/api/v1/admin/staff", 19) == 0) {
-                institution_handle(client_fd, method, route_path, req_body,
+                /* Pass original path so inst_query_param can read query parameters. */
+                institution_handle(client_fd, method, path, req_body,
                                    auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
@@ -4594,7 +4578,7 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/admin/campus-os-policies", 33) == 0 ||
                 strncmp(route_path, "/api/v1/admin/campus-capacity", 31) == 0 ||
                 strncmp(route_path, "/api/v1/admin/org/change-history", 33) == 0) {
-                institution_handle(client_fd, method, route_path, req_body,
+                institution_handle(client_fd, method, path, req_body,
                                    auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
@@ -4604,7 +4588,7 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/admin/department-approvals", 36) == 0 ||
                 strncmp(route_path, "/api/v1/admin/department-user-assignments", 42) == 0 ||
                 strncmp(route_path, "/api/v1/admin/academic-programs", 33) == 0) {
-                institution_handle(client_fd, method, route_path, req_body,
+                institution_handle(client_fd, method, path, req_body,
                                    auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }

@@ -1752,9 +1752,10 @@ void institution_handle(int client_fd, const char *method, const char *path,
             ctrl_json_string(body, "status", st, sizeof(st));
             ctrl_json_string(body, "reason", reason, sizeof(reason));
 
-            if (strcmp(st, "active") != 0 && strcmp(st, "suspended") != 0 && strcmp(st, "archived") != 0) {
+            if (strcmp(st, "pilot") != 0 && strcmp(st, "active") != 0 &&
+                strcmp(st, "suspended") != 0 && strcmp(st, "archived") != 0) {
                 db_release(conn, 0);
-                inst_send_error(client_fd, 400, "Invalid status: must be active, suspended, or archived", origin, extra_headers, extra_len);
+                inst_send_error(client_fd, 400, "Invalid status: must be pilot, active, suspended, or archived", origin, extra_headers, extra_len);
                 return;
             }
             if (strlen(reason) < 8) {
@@ -1901,7 +1902,9 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 }
             }
 
-            const char *s_vals[2] = { strcmp(st, "active") == 0 ? "true" : "false", inst_id };
+            /* 'pilot' and 'active' are both operational states; reflect them
+             * as active=true in the legacy mirror. Suspended/archived → false. */
+            const char *s_vals[2] = { (strcmp(st, "active") == 0 || strcmp(st, "pilot") == 0) ? "true" : "false", inst_id };
             int s_lens[2] = { (int)strlen(s_vals[0]), (int)strlen(s_vals[1]) };
             PGresult *s_res = db_simple(conn, "UPDATE examos_institutions SET active = $1::boolean WHERE institution_id = $2", 2, s_vals, s_lens);
             int s_ok = s_res && PQresultStatus(s_res) == PGRES_COMMAND_OK;
@@ -3766,9 +3769,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            char json[32768] = "{\"centers\":[";
-            size_t pos = strlen(json);
+            /* Dynamic response buffer: pre-compute upper bound from row count
+             * so we never truncate a valid list of centres. Each centre row
+             * can produce at most ~700 bytes of JSON, plus 20 bytes overhead. */
             int row_count = PQntuples(res);
+            size_t buf_size = (size_t)row_count * 720 + 64;
+            if (buf_size < 256) buf_size = 256;
+            char *json = malloc(buf_size);
+            if (!json) {
+                PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Out of memory building centers response", origin, extra_headers, extra_len);
+                return;
+            }
+            memcpy(json, "{\"centers\":[", 12);
+            size_t pos = 12;
             for (int i = 0; i < row_count; i++) {
                 char id[128] = {0}, tenant[128] = {0}, campus[128] = {0};
                 char code[64] = {0}, name[256] = {0}, city[128] = {0}, status[64] = {0};
@@ -3779,7 +3794,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 escape_json_str(PQgetvalue(res, i, 4), name, sizeof(name));
                 escape_json_str(PQgetvalue(res, i, 5), city, sizeof(city));
                 escape_json_str(PQgetvalue(res, i, 9), status, sizeof(status));
-                int written = snprintf(json + pos, sizeof(json) - pos,
+                int written = snprintf(json + pos, buf_size - pos,
                     "%s{\"id\":\"%s\",\"tenantId\":\"%s\",\"campusId\":\"%s\","
                     "\"code\":\"%s\",\"name\":\"%s\",\"city\":\"%s\","
                     "\"labs\":%s,\"seatsPerLab\":%s,\"capacity\":%s,"
@@ -3787,24 +3802,27 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     i ? "," : "", id, tenant, campus, code, name, city,
                     PQgetvalue(res, i, 6), PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
                     status, PQgetvalue(res, i, 10));
-                if (written < 0 || (size_t)written >= sizeof(json) - pos) {
+                if (written < 0 || (size_t)written >= buf_size - pos) {
                     PQclear(res);
+                    free(json);
                     db_release(conn, 0);
                     inst_send_error(client_fd, 500, "Centers response exceeds the supported size", origin, extra_headers, extra_len);
                     return;
                 }
                 pos += (size_t)written;
             }
-            if (pos + 2 >= sizeof(json)) {
+            if (pos + 2 >= buf_size) {
                 PQclear(res);
+                free(json);
                 db_release(conn, 0);
                 inst_send_error(client_fd, 500, "Centers response exceeds the supported size", origin, extra_headers, extra_len);
                 return;
             }
-            snprintf(json + pos, sizeof(json) - pos, "]}");
+            snprintf(json + pos, buf_size - pos, "]}");
             PQclear(res);
             db_release(conn, 0);
             inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+            free(json);
             return;
         }
 
@@ -4095,12 +4113,21 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            char json[32768] = {0};
-            size_t pos = 0;
-            pos += snprintf(json + pos, sizeof(json) - pos, "{\"campuses\":[");
             int n = PQntuples(res);
+            /* Dynamic buffer: each campus row produces at most ~600 bytes. */
+            size_t camp_buf = (size_t)n * 650 + 32;
+            if (camp_buf < 32) camp_buf = 32;
+            char *json = malloc(camp_buf);
+            if (!json) {
+                PQclear(res);
+                db_release(conn, 0);
+                inst_send_error(client_fd, 500, "Out of memory building campuses response", origin, extra_headers, extra_len);
+                return;
+            }
+            size_t pos = 0;
+            pos += snprintf(json + pos, camp_buf - pos, "{\"campuses\":[");
             for (int i = 0; i < n; i++) {
-                if (i > 0 && pos < sizeof(json) - 1) pos += snprintf(json + pos, sizeof(json) - pos, ",");
+                if (i > 0 && pos < camp_buf - 1) pos += snprintf(json + pos, camp_buf - pos, ",");
                 char c_id[64] = {0}, c_tid[64] = {0}, c_name[256] = {0}, c_code[64] = {0}, c_city[128] = {0}, c_addr[256] = {0};
                 escape_json_str(PQgetvalue(res, i, 0), c_id, sizeof(c_id));
                 escape_json_str(PQgetvalue(res, i, 1), c_tid, sizeof(c_tid));
@@ -4109,7 +4136,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 escape_json_str(PQgetvalue(res, i, 4), c_city, sizeof(c_city));
                 escape_json_str(PQgetvalue(res, i, 5), c_addr, sizeof(c_addr));
 
-                pos += snprintf(json + pos, sizeof(json) - pos,
+                pos += snprintf(json + pos, camp_buf - pos,
                     "{\"id\":\"%s\",\"tenantId\":\"%s\",\"name\":\"%s\",\"code\":\"%s\","
                     "\"city\":\"%s\",\"address\":\"%s\",\"capacity\":%s,\"status\":\"%s\",\"createdAt\":%s}",
                     c_id, c_tid, c_name, c_code, c_city, c_addr,
@@ -4117,10 +4144,11 @@ void institution_handle(int client_fd, const char *method, const char *path,
                     PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "unknown",
                     PQgetvalue(res, i, 8)[0] ? PQgetvalue(res, i, 8) : "0");
             }
-            snprintf(json + pos, sizeof(json) - pos, "]}");
+            snprintf(json + pos, camp_buf - pos, "]}");
             if (res) PQclear(res);
             db_release(conn, 0);
             inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+            free(json);
             return;
         }
 

@@ -125,15 +125,24 @@ static void console_data_routes(int fd, const char *method, const char *path,
             : "SELECT COALESCE(jsonb_agg(data ORDER BY updated_at DESC),'[]'::jsonb)::text "
               "FROM console_records WHERE collection=$1 AND ($3::boolean OR institution_id=$2 OR record_id=$2)";
         PGresult *res;
-        char response[131072];
         if (record_id[0]) {
             const char *by_id_params[4] = { collection, record_id, sess.institution_id,
                 sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
             res = db_query(sql, 4, by_id_params);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
-                snprintf(response, sizeof(response), "%s", PQgetvalue(res, 0, 0));
+                /* Dynamic allocation so we never truncate large JSONB blobs. */
+                const char *raw = PQgetvalue(res, 0, 0);
+                size_t raw_len = strlen(raw);
+                char *response = malloc(raw_len + 1);
+                if (!response) {
+                    PQclear(res);
+                    mod_send_json(fd, 500, "{\"error\":\"Out of memory\"}", origin, extra, extra_len);
+                    return;
+                }
+                memcpy(response, raw, raw_len + 1);
                 PQclear(res);
                 mod_send_json(fd, 200, response, origin, extra, extra_len);
+                free(response);
                 return;
             }
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 0) {
@@ -146,9 +155,20 @@ static void console_data_routes(int fd, const char *method, const char *path,
                 sess.role == ROLE_PLATFORM_OWNER ? "true" : "false" };
             res = db_query(sql, 3, list_params);
             if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
-                snprintf(response, sizeof(response), "%s", PQgetvalue(res, 0, 0));
+                /* Dynamic allocation so the full aggregated JSON array is never
+                 * silently truncated, regardless of collection size. */
+                const char *raw = PQgetvalue(res, 0, 0);
+                size_t raw_len = strlen(raw);
+                char *response = malloc(raw_len + 1);
+                if (!response) {
+                    PQclear(res);
+                    mod_send_json(fd, 500, "{\"error\":\"Out of memory\"}", origin, extra, extra_len);
+                    return;
+                }
+                memcpy(response, raw, raw_len + 1);
                 PQclear(res);
                 mod_send_json(fd, 200, response, origin, extra, extra_len);
+                free(response);
                 return;
             }
         }

@@ -1,0 +1,1 @@
+{"device_id":"dev_nist_workstation_01","institution_id":"ins_1794314046_f022","outcome":"DENY","reason":"Server-side TPM quote verification is unavailable; device trust cannot be established","policy_id":"dtpol_ins_1794314046_f022","secure_boot":"enabled","tpm_present":true,"os_release":"ExamOS 2.0"}

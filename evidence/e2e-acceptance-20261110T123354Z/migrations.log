@@ -1,0 +1,86 @@
+WARNING:  there is no transaction in progress
+NOTICE:  relation "examos_schema_migrations" already exists, skipping
+NOTICE:  relation "examos_admin_login_throttle" already exists, skipping
+NOTICE:  relation "examinations" already exists, skipping
+NOTICE:  relation "exam_status_history" already exists, skipping
+NOTICE:  relation "exam_audit_logs" already exists, skipping
+NOTICE:  column "entity_type" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "tenants" already exists, skipping
+NOTICE:  column "industry_sector" of relation "tenants" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "tenants" already exists, skipping
+NOTICE:  column "tech_stack" of relation "tenants" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "tenants" already exists, skipping
+NOTICE:  column "website_url" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "institution_applications" already exists, skipping
+NOTICE:  column "industry_sector" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "institution_applications" already exists, skipping
+NOTICE:  column "tech_stack" of relation "institution_applications" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "website_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "annual_exam_count" of relation "institution_applications" already exists, skipping
+NOTICE:  column "job_roles_targeted" of relation "institution_applications" already exists, skipping
+NOTICE:  relation "examos_admin_mfa_enrollments" already exists, skipping
+NOTICE:  relation "console_records" already exists, skipping
+NOTICE:  relation "idx_console_records_tenant" already exists, skipping
+NOTICE:  relation "candidate_exam_auth_tokens" already exists, skipping
+NOTICE:  relation "idx_candidate_exam_auth_tokens_lookup" already exists, skipping
+NOTICE:  relation "uq_candidate_exam_auth_tokens_active" already exists, skipping
+NOTICE:  relation "candidate_exam_checkins" already exists, skipping
+NOTICE:  relation "idx_candidate_exam_checkins_queue" already exists, skipping
+NOTICE:  relation "uq_candidate_exam_checkins_open" already exists, skipping
+NOTICE:  trigger "approval_events_append_only" for relation "approval_events" does not exist, skipping
+NOTICE:  trigger "approval_decisions_append_only" for relation "approval_decisions" does not exist, skipping
+NOTICE:  trigger "support_events_append_only" for relation "support_events" does not exist, skipping
+NOTICE:  trigger "report_exports_append_only" for relation "report_exports" does not exist, skipping
+NOTICE:  column "target_exam_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "review_checklist" of relation "institution_applications" already exists, skipping
+NOTICE:  constraint "approval_policies_required_approvals_roles_check" of relation "approval_policies" does not exist, skipping
+NOTICE:  trigger "approval_conflicts_append_only" for relation "approval_conflicts" does not exist, skipping
+NOTICE:  trigger "approval_executions_append_only" for relation "approval_executions" does not exist, skipping
+NOTICE:  constraint "chk_exam_student_assignment_status" of relation "exam_student_assignments" does not exist, skipping
+NOTICE:  constraint "chk_exam_student_approval_state" of relation "exam_student_assignments" does not exist, skipping
+[migrate] Applied 001_admin_auth.sql (admin_auth v1)
+[migrate] Applied 002_admin_mfa_and_rbac.sql (admin_auth v2)
+[migrate] Applied 003_exam_lifecycle.sql (exam_lifecycle v3)
+[migrate] Applied 004_device_fleet.sql (device_fleet v4)
+[migrate] Applied 005_remove_fabricated_fleet_defaults.sql (device_fleet v5)
+[migrate] Applied 006_agent_heartbeat_records.sql (device_fleet v6)
+[migrate] Applied 007_admin_login_throttle.sql (admin_auth v7)
+[migrate] Applied 008_require_explicit_exam_policy.sql (exam_lifecycle v4)
+[migrate] Applied 009_require_explicit_device_group.sql (device_fleet v7)
+[migrate] Applied 010_attestation_challenge_state.sql (device_fleet v8)
+[migrate] Applied 011_attestation_revocations.sql (device_fleet v9)
+[migrate] Applied 012_incidents_and_releases.sql (operations v1)
+[migrate] Applied 013_session_journal_and_audit_completions.sql (admin_auth v8)
+[migrate] Applied 014_exam_key_releases.sql (exam_key_releases v1)
+[migrate] Applied 015_audit_event_catalogue.sql (admin_auth v9)
+[migrate] Applied 016_exam_questions.sql (exam_lifecycle v5)
+[migrate] Applied 017_session_risk_table.sql (operations v2)
+[migrate] Applied 018_campus_department_management.sql (campus_dept v1)
+[migrate] Applied 019_examination_management.sql (examination_management v19)
+[migrate] Applied 020_examination_registration_and_eligibility.sql (examination_registration v20)
+[migrate] Applied 021_exam_session_management.sql (exam_lifecycle v6)
+[migrate] Applied 022_device_trust_registration_and_attestation.sql (device_fleet v10)
+[migrate] Applied 023_secure_os_release_updates_and_deployment.sql (os_releases v1)
+[migrate] Applied 024_student_management_system.sql (students v1)
+[migrate] Applied 025_corporate_entity_support.sql (institutions v1)
+[migrate] Applied 026_mfa_enrollment_table.sql (admin_auth v10)
+[migrate] Applied 027_console_record_store.sql (console_record_store v1)
+[migrate] Applied 028_candidate_authentication_workflows.sql (candidate_authentication v1)
+[migrate] Applied 029_student_import_profile_fields.sql (students v2)
+[migrate] Applied 030_release_evidence_integrity.sql (os_releases v2)
+[migrate] Applied 031_centralized_approval_governance.sql (approval_governance v1)
+[migrate] Applied 032_support_module.sql (support_module v1)
+[migrate] Applied 033_reporting_module.sql (reporting_module v1)
+[migrate] Applied 034_device_trust_policy_approvals.sql (device_fleet v11)
+[migrate] Applied 035_candidate_exam_runtime.sql (candidate_exam_runtime v1)
+[migrate] Applied 036_candidate_exam_deadlines.sql (candidate_exam_runtime v2)
+[migrate] Applied 037_institution_application_assessment_url.sql (institutions v2)
+[migrate] Applied 038_institution_application_review_checklist.sql (institutions v3)
+[migrate] Applied 039_approval_execution_separation.sql (approval_governance v2)
+[migrate] Applied 040_candidate_exam_url_assignments.sql (candidate_exam_url_assignments v1)
+[migrate] All 40 schema migrations are current and checksummed.

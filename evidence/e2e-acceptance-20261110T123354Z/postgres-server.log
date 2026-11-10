@@ -1,0 +1,151 @@
+2026-11-10 12:34:00.016 UTC [729] LOG:  starting PostgreSQL 18.6 (Ubuntu 18.6-0ubuntu0.26.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, 64-bit
+2026-11-10 12:34:00.017 UTC [729] LOG:  listening on IPv4 address "127.0.0.1", port 52599
+2026-11-10 12:34:00.017 UTC [729] LOG:  listening on Unix socket "/tmp/sppio-e2e-pg.PHSibe/socket/.s.PGSQL.52599"
+2026-11-10 12:34:00.024 UTC [735] LOG:  database system was shut down at 2026-11-10 12:33:59 UTC
+2026-11-10 12:34:00.030 UTC [729] LOG:  database system is ready to accept connections
+2026-11-10 12:34:00.729 UTC [745] ERROR:  relation "users" does not exist
+2026-11-10 12:34:00.729 UTC [745] STATEMENT:  ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
+2026-11-10 12:34:00.731 UTC [745] ERROR:  relation "users" does not exist
+2026-11-10 12:34:00.731 UTC [745] STATEMENT:  ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
+2026-11-10 12:34:00.732 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.732 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS institution_id VARCHAR(64);
+2026-11-10 12:34:00.732 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.732 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS reviewed_at BIGINT;
+2026-11-10 12:34:00.733 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.733 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS review_checklist JSONB NOT NULL DEFAULT '{}'::jsonb;
+2026-11-10 12:34:00.734 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.734 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+2026-11-10 12:34:00.738 UTC [745] ERROR:  relation "exams" does not exist
+2026-11-10 12:34:00.738 UTC [745] STATEMENT:  ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_url TEXT;
+2026-11-10 12:34:00.739 UTC [745] ERROR:  relation "examinations" does not exist
+2026-11-10 12:34:00.739 UTC [745] STATEMENT:  ALTER TABLE examinations ADD COLUMN IF NOT EXISTS exam_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+2026-11-10 12:34:00.747 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.747 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS entity_type VARCHAR(40) NOT NULL DEFAULT 'enterprise';
+2026-11-10 12:34:00.748 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.748 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS company_size VARCHAR(30);
+2026-11-10 12:34:00.749 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.749 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS industry_sector VARCHAR(80);
+2026-11-10 12:34:00.750 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.750 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hiring_volume INTEGER DEFAULT 0;
+2026-11-10 12:34:00.751 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.751 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hr_contact_name VARCHAR(120);
+2026-11-10 12:34:00.751 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.751 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS hr_contact_email VARCHAR(120);
+2026-11-10 12:34:00.752 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.752 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS tech_stack TEXT;
+2026-11-10 12:34:00.753 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.753 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255);
+2026-11-10 12:34:00.753 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.753 UTC [745] STATEMENT:  ALTER TABLE tenants ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);
+2026-11-10 12:34:00.754 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.754 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS company_size VARCHAR(30);
+2026-11-10 12:34:00.791 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.791 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS industry_sector VARCHAR(80);
+2026-11-10 12:34:00.792 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.792 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hiring_volume INTEGER DEFAULT 0;
+2026-11-10 12:34:00.792 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.792 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hr_contact_name VARCHAR(120);
+2026-11-10 12:34:00.793 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.793 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS hr_contact_email VARCHAR(120);
+2026-11-10 12:34:00.793 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.793 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS tech_stack TEXT;
+2026-11-10 12:34:00.794 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.794 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(255);
+2026-11-10 12:34:00.796 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.796 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS website_url VARCHAR(255);
+2026-11-10 12:34:00.797 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.797 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS annual_exam_count INTEGER DEFAULT 0;
+2026-11-10 12:34:00.797 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.797 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS job_roles_targeted TEXT;
+2026-11-10 12:34:00.798 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.798 UTC [745] STATEMENT:  ALTER TABLE institution_applications ADD COLUMN IF NOT EXISTS target_exam_url TEXT NOT NULL DEFAULT '';
+2026-11-10 12:34:00.799 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.799 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN region DROP DEFAULT;
+2026-11-10 12:34:00.799 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.799 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN timezone DROP DEFAULT;
+2026-11-10 12:34:00.800 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.800 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN plan DROP DEFAULT;
+2026-11-10 12:34:00.800 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.800 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN max_centers DROP DEFAULT;
+2026-11-10 12:34:00.801 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.801 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN max_candidates DROP DEFAULT;
+2026-11-10 12:34:00.801 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.801 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN deployment_model DROP DEFAULT;
+2026-11-10 12:34:00.802 UTC [745] ERROR:  relation "tenants" does not exist
+2026-11-10 12:34:00.802 UTC [745] STATEMENT:  ALTER TABLE tenants ALTER COLUMN entity_type DROP DEFAULT;
+2026-11-10 12:34:00.802 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.802 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN entity_type DROP DEFAULT;
+2026-11-10 12:34:00.802 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.802 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN country DROP DEFAULT;
+2026-11-10 12:34:00.803 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.803 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN state DROP DEFAULT;
+2026-11-10 12:34:00.803 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.803 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN campus_count DROP DEFAULT;
+2026-11-10 12:34:00.804 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.804 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN student_count DROP DEFAULT;
+2026-11-10 12:34:00.804 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.804 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN device_count DROP DEFAULT;
+2026-11-10 12:34:00.804 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.804 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN deployment_model DROP DEFAULT;
+2026-11-10 12:34:00.805 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.805 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN hardware_profile DROP DEFAULT;
+2026-11-10 12:34:00.805 UTC [745] ERROR:  relation "institution_applications" does not exist
+2026-11-10 12:34:00.805 UTC [745] STATEMENT:  ALTER TABLE institution_applications ALTER COLUMN plan DROP DEFAULT;
+2026-11-10 12:34:00.806 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.806 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN plan DROP DEFAULT;
+2026-11-10 12:34:00.806 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.806 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN grace_period_days DROP DEFAULT;
+2026-11-10 12:34:00.807 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.807 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN max_campuses DROP DEFAULT;
+2026-11-10 12:34:00.807 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.807 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN max_devices DROP DEFAULT;
+2026-11-10 12:34:00.807 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.807 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN max_candidates DROP DEFAULT;
+2026-11-10 12:34:00.808 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.808 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN max_exams DROP DEFAULT;
+2026-11-10 12:34:00.808 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.808 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN allowed_channels DROP DEFAULT;
+2026-11-10 12:34:00.808 UTC [745] ERROR:  relation "institution_licenses" does not exist
+2026-11-10 12:34:00.808 UTC [745] STATEMENT:  ALTER TABLE institution_licenses ALTER COLUMN enabled_modules DROP DEFAULT;
+2026-11-10 12:34:00.809 UTC [745] ERROR:  relation "institution_os_deployments" does not exist
+2026-11-10 12:34:00.809 UTC [745] STATEMENT:  ALTER TABLE institution_os_deployments ALTER COLUMN channel DROP DEFAULT;
+2026-11-10 12:34:00.809 UTC [745] ERROR:  relation "institution_os_deployments" does not exist
+2026-11-10 12:34:00.809 UTC [745] STATEMENT:  ALTER TABLE institution_os_deployments ALTER COLUMN hardware_profile DROP DEFAULT;
+2026-11-10 12:34:00.810 UTC [745] ERROR:  relation "institution_os_deployments" does not exist
+2026-11-10 12:34:00.810 UTC [745] STATEMENT:  ALTER TABLE institution_os_deployments ALTER COLUMN security_profile DROP DEFAULT;
+2026-11-10 12:34:00.810 UTC [745] ERROR:  relation "departments" does not exist
+2026-11-10 12:34:00.810 UTC [745] STATEMENT:  ALTER TABLE departments ALTER COLUMN type DROP DEFAULT;
+2026-11-10 12:34:00.814 UTC [745] ERROR:  relation "auth_sessions" does not exist
+2026-11-10 12:34:00.814 UTC [745] STATEMENT:  ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64);
+2026-11-10 12:34:00.815 UTC [745] ERROR:  relation "auth_sessions" does not exist
+2026-11-10 12:34:00.815 UTC [745] STATEMENT:  ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
+2026-11-10 12:34:00.816 UTC [745] ERROR:  relation "auth_sessions" does not exist
+2026-11-10 12:34:00.816 UTC [745] STATEMENT:  ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS last_seen_at BIGINT;
+2026-11-10 12:34:00.817 UTC [745] ERROR:  relation "auth_sessions" does not exist
+2026-11-10 12:34:00.817 UTC [745] STATEMENT:  ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
+2026-11-10 12:34:00.817 UTC [745] ERROR:  relation "auth_sessions" does not exist
+2026-11-10 12:34:00.817 UTC [745] STATEMENT:  ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS revoked_at BIGINT;
+2026-11-10 12:34:01.191 UTC [754] WARNING:  there is no transaction in progress
+2026-11-10 12:34:10.777 UTC [777] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [779] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [780] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [774] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [773] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.794 UTC [773] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.777 UTC [772] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [775] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.777 UTC [771] LOG:  SSL error: unexpected eof while reading
+2026-11-10 12:34:10.806 UTC [771] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.780 UTC [777] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.782 UTC [779] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.785 UTC [780] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.786 UTC [774] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.802 UTC [729] LOG:  received fast shutdown request
+2026-11-10 12:34:10.803 UTC [772] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.805 UTC [775] LOG:  could not receive data from client: Connection reset by peer
+2026-11-10 12:34:10.825 UTC [729] LOG:  aborting any active transactions
+2026-11-10 12:34:10.839 UTC [729] LOG:  background worker "logical replication launcher" (PID 738) exited with exit code 1
+2026-11-10 12:34:10.840 UTC [733] LOG:  shutting down
+2026-11-10 12:34:10.842 UTC [733] LOG:  checkpoint starting: shutdown immediate
+2026-11-10 12:34:10.884 UTC [733] LOG:  checkpoint complete: wrote 1679 buffers (10.2%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 1 recycled; write=0.036 s, sync=0.005 s, total=0.042 s; sync files=1094, longest=0.001 s, average=0.001 s; distance=10566 kB, estimate=10566 kB; lsn=0/21B7708, redo lsn=0/21B7708
+2026-11-10 12:34:10.935 UTC [729] LOG:  database system is shut down

@@ -21,8 +21,8 @@ void policy_handle(int client_fd, const char *method, const char *path,
                    const char *body, const char *auth_header,
                    const char *origin, char *extra_headers, size_t extra_len) {
     auth_session_t sess;
-    if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
-        pol_send_json(client_fd, 401, "{\"error\":\"Admin credentials required\"}",
+    if (ctrl_authorize(auth_header, AUTH_PERM_EXAM_READ, &sess) != 0) {
+        pol_send_json(client_fd, 403, "{\"error\":\"Exam read permission required\"}",
                       origin, extra_headers, extra_len);
         return;
     }

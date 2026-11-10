@@ -1,0 +1,1 @@
+{"status":"MFA_SETUP_REQUIRED","mfa_setup_required":true,"username":"root","enrollment_token":"6b8fa809f357cf1e38a865468632910b602c4644fe59656f37cade058529c541","expires_in":600,"message":"Authenticator setup required for first-time management user"}

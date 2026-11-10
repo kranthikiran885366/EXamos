@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../core/auth/AuthContext';
 import { put } from '../../core/db/db';
 import { useTenant, useCol, useColLoaded } from '../../core/db/tenant';
@@ -263,7 +263,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
   const [v, setV] = useState({
     code: exam.code, title: exam.title, type: exam.type, course: exam.course || '',
     departmentId: exam.departmentId || '', academicYear: exam.academicYear || '', description: exam.description || '',
-    startAt: local(exam.startAt), durationMin: exam.durationMin, lateEntryMin: exam.lateEntryMin || 0,
+    startAt: Number(exam.startAt) > 0 ? local(Number(exam.startAt)) : '', durationMin: exam.durationMin, lateEntryMin: exam.lateEntryMin || 0,
     capacity: exam.capacity || 0, timeZone: exam.timeZone || 'Asia/Kolkata', policyId: exam.policyId || '',
     instructions: exam.instructions || '', resources: exam.resources || '', accommodations: exam.accommodations || '',
     examUrl: exam.examUrl || '',
@@ -297,7 +297,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
           <Field label="Title"><Input value={v.title} onChange={(e) => set('title', e.target.value)} maxLength={100} /></Field>
           <Field label="Type"><Select value={v.type} onChange={(e) => set('type', e.target.value)} options={TYPES} placeholder={false} /></Field>
           <Field label="Policy"><Select value={v.policyId} onChange={(e) => set('policyId', e.target.value)} options={policies.filter((p) => p.status === 'published').map((p) => ({ v: p.id, l: `${p.name} v${p.version}` }))} placeholder="No policy" /></Field>
-          <Field label="Start"><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} /></Field>
+          <Field label="Start" help="Required for a valid exam configuration."><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} required /></Field>
           <Field label="Duration (minutes)"><Input type="number" min={15} max={300} value={v.durationMin} onChange={(e) => set('durationMin', e.target.value)} /></Field>
           <Field label="Late entry (minutes)"><Input type="number" min={0} max={60} value={v.lateEntryMin} onChange={(e) => set('lateEntryMin', e.target.value)} /></Field>
           <Field label="Capacity"><Input type="number" min={0} value={v.capacity} onChange={(e) => set('capacity', e.target.value)} /></Field>
@@ -337,6 +337,7 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
 /* ------------------------------------------------------------------ detail */
 export function ExamDetailPage() {
   const { id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const { tenantId } = useTenant();
   const may = usePerm();
@@ -438,6 +439,14 @@ export function ExamDetailPage() {
   const pol = policies.find((p) => p.id === e?.policyId);
   const { data: checks, loading: readinessLoading, error: readinessError, reload: reloadReadiness } = useLoad(async () => (e ? readiness(e, { centers, policies }) : []), [e?.id, e?.version, e?.status, centers, policies]);
   const { data: preview } = useLoad(async () => (e ? policyPreview(e) : null), [e?.id, e?.policyId]);
+
+  useEffect(() => {
+    if (searchParams.get('edit') !== 'centers' || !examCatalogsReady) return;
+    if (may('exam.manage') && e && ['draft', 'configured'].includes(e.status)) setEdit(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+  }, [e, examCatalogsReady, may, searchParams, setSearchParams]);
 
   if (!isLoaded) return <Page title="Exam"><Loading /></Page>;
   if (detailError && !backendExam) return <Page title="Exam unavailable"><Alert tone="danger" title="Backend data unavailable">{detailError}</Alert><Link className="btn" to="/college/exams">Back to exams</Link></Page>;
@@ -829,6 +838,7 @@ export function ExamCandidatesPage() {
   const e = exams.find((x) => x.id === id);
   const candidates = candidateDirectory || [];
   const rows = candidates.filter((c) => c.examId === id && c.tenantId === e?.tenantId);
+  const activeCenters = centers.filter((center) => center.status === 'active');
   const examCenters = e && Array.isArray(e.centerIds)
     ? e.centerIds.map((cid) => centers.find((c) => c.id === cid && c.status === 'active')).filter(Boolean)
     : [];
@@ -905,8 +915,12 @@ export function ExamCandidatesPage() {
       {centersError && <Alert tone="danger" title="Center directory unavailable">{centersError.message || 'Centers could not be loaded from the backend.'}</Alert>}
       {centersLoading && <Alert tone="info">Loading active centers mapped to this exam…</Alert>}
       {!centersLoading && !centersError && !examCenters.length && <Alert tone="info" title="No active center mapped">
-        Institution centers are not assigned automatically. Open exam details and edit this exam to map an active center before assigning candidates.
-        <Link to={`/college/exams/${e.id}`}> Open exam details</Link>
+        {activeCenters.length
+          ? `${activeCenters.length} active institution center(s) are available (${activeCenters.map((center) => center.code).join(', ')}), but none is saved in this exam’s center mapping. Candidate assignment only accepts centers explicitly mapped to this exam.`
+          : 'No active institution centers are available to map to this exam.'}
+        {may('exam.manage') && ['draft', 'configured'].includes(e.status)
+          ? <Link to={`/college/exams/${e.id}?edit=centers`}> Map an active center to this exam</Link>
+          : <span> Ask an exam manager to map an active center before assigning candidates.</span>}
       </Alert>}
       {rosterError && <Alert tone="error" title="Candidate roster unavailable">{rosterError.message || 'The backend candidate roster could not be loaded.'}</Alert>}
       {rosterLoading && <Loading />}

@@ -1,0 +1,162 @@
+[ExamOS-Server] WARNING: this host is not an ExamOS appliance: /etc/os-release does not identify as examos. Development mode continues without the appliance posture.
+[ExamOS-Server] Initializing ExamOS Security Server on port 32993 (Phase 4 Proctoring & Tamper-Evident Evidence)...
+[DB] Pool ready: 8/8 connections
+NOTICE:  column "totp_secret" of relation "users" already exists, skipping
+NOTICE:  column "status" of relation "users" already exists, skipping
+NOTICE:  column "institution_id" of relation "institution_applications" already exists, skipping
+NOTICE:  column "reviewed_at" of relation "institution_applications" already exists, skipping
+NOTICE:  column "review_checklist" of relation "institution_applications" already exists, skipping
+NOTICE:  column "updated_at" of relation "institution_applications" already exists, skipping
+NOTICE:  relation "institution_onboarding" already exists, skipping
+NOTICE:  column "exam_url" of relation "exams" already exists, skipping
+NOTICE:  column "exam_config" of relation "examinations" already exists, skipping
+NOTICE:  relation "examinations" already exists, skipping
+NOTICE:  relation "exam_status_history" already exists, skipping
+NOTICE:  relation "exam_audit_logs" already exists, skipping
+NOTICE:  column "entity_type" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "tenants" already exists, skipping
+NOTICE:  column "industry_sector" of relation "tenants" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "tenants" already exists, skipping
+NOTICE:  column "tech_stack" of relation "tenants" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "tenants" already exists, skipping
+NOTICE:  column "website_url" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "institution_applications" already exists, skipping
+NOTICE:  column "industry_sector" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "institution_applications" already exists, skipping
+NOTICE:  column "tech_stack" of relation "institution_applications" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "website_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "annual_exam_count" of relation "institution_applications" already exists, skipping
+NOTICE:  column "job_roles_targeted" of relation "institution_applications" already exists, skipping
+NOTICE:  column "target_exam_url" of relation "institution_applications" already exists, skipping
+NOTICE:  relation "examos_admin_login_throttle" already exists, skipping
+NOTICE:  column "ip_address" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "user_agent" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "last_seen_at" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "revocation_reason" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "revoked_at" of relation "auth_sessions" already exists, skipping
+NOTICE:  relation "user_invitations" already exists, skipping
+[DB] Administrative schema verified.
+NOTICE:  relation "examos_schema_migrations" already exists, skipping
+NOTICE:  relation "tenants" already exists, skipping
+NOTICE:  relation "campuses" already exists, skipping
+NOTICE:  relation "departments" already exists, skipping
+NOTICE:  relation "centers" already exists, skipping
+NOTICE:  relation "users" already exists, skipping
+NOTICE:  relation "exams" already exists, skipping
+NOTICE:  relation "examinations" already exists, skipping
+NOTICE:  relation "exam_status_history" already exists, skipping
+NOTICE:  relation "exam_audit_logs" already exists, skipping
+NOTICE:  relation "candidates" already exists, skipping
+NOTICE:  relation "candidate_exam_auth_tokens" already exists, skipping
+NOTICE:  relation "idx_candidate_exam_auth_tokens_lookup" already exists, skipping
+NOTICE:  relation "uq_candidate_exam_auth_tokens_active" already exists, skipping
+NOTICE:  relation "candidate_exam_checkins" already exists, skipping
+NOTICE:  relation "idx_candidate_exam_checkins_queue" already exists, skipping
+NOTICE:  relation "uq_candidate_exam_checkins_open" already exists, skipping
+NOTICE:  relation "sessions" already exists, skipping
+NOTICE:  relation "devices" already exists, skipping
+NOTICE:  relation "attestations" already exists, skipping
+NOTICE:  relation "policies" already exists, skipping
+NOTICE:  relation "releases" already exists, skipping
+NOTICE:  relation "release_evidence" already exists, skipping
+NOTICE:  relation "usbs" already exists, skipping
+NOTICE:  relation "kiosks" already exists, skipping
+NOTICE:  relation "incidents" already exists, skipping
+NOTICE:  relation "security_events" already exists, skipping
+NOTICE:  relation "vulnerabilities" already exists, skipping
+NOTICE:  relation "evidence" already exists, skipping
+NOTICE:  relation "staff" already exists, skipping
+NOTICE:  relation "approvals" already exists, skipping
+NOTICE:  relation "keys" already exists, skipping
+NOTICE:  relation "auth_sessions" already exists, skipping
+NOTICE:  relation "examos_admin_mfa_enrollments" already exists, skipping
+NOTICE:  relation "idx_mfa_enrollments_username" already exists, skipping
+NOTICE:  relation "configs" already exists, skipping
+NOTICE:  relation "meta" already exists, skipping
+NOTICE:  relation "integrations" already exists, skipping
+NOTICE:  relation "features" already exists, skipping
+NOTICE:  relation "services" already exists, skipping
+NOTICE:  relation "alerts" already exists, skipping
+NOTICE:  relation "jobs" already exists, skipping
+NOTICE:  relation "backups" already exists, skipping
+NOTICE:  relation "audit" already exists, skipping
+NOTICE:  relation "api_audit" already exists, skipping
+NOTICE:  relation "support" already exists, skipping
+NOTICE:  relation "notifications" already exists, skipping
+NOTICE:  relation "reports" already exists, skipping
+NOTICE:  relation "plans" already exists, skipping
+NOTICE:  relation "subscriptions" already exists, skipping
+NOTICE:  relation "invoices" already exists, skipping
+NOTICE:  relation "privacy" already exists, skipping
+NOTICE:  relation "retention" already exists, skipping
+NOTICE:  relation "console_records" already exists, skipping
+NOTICE:  relation "idx_console_records_tenant" already exists, skipping
+NOTICE:  relation "institution_applications" already exists, skipping
+NOTICE:  relation "institution_agreements" already exists, skipping
+NOTICE:  relation "institution_licenses" already exists, skipping
+NOTICE:  relation "institution_os_deployments" already exists, skipping
+NOTICE:  relation "institution_onboarding" already exists, skipping
+NOTICE:  column "updated_at" of relation "campuses" already exists, skipping
+NOTICE:  column "updated_at" of relation "departments" already exists, skipping
+[DB] Schema created/verified.
+NOTICE:  column "totp_secret" of relation "users" already exists, skipping
+NOTICE:  column "status" of relation "users" already exists, skipping
+NOTICE:  column "institution_id" of relation "institution_applications" already exists, skipping
+NOTICE:  column "reviewed_at" of relation "institution_applications" already exists, skipping
+NOTICE:  column "review_checklist" of relation "institution_applications" already exists, skipping
+NOTICE:  column "updated_at" of relation "institution_applications" already exists, skipping
+NOTICE:  relation "institution_onboarding" already exists, skipping
+NOTICE:  column "exam_url" of relation "exams" already exists, skipping
+NOTICE:  column "exam_config" of relation "examinations" already exists, skipping
+NOTICE:  relation "examinations" already exists, skipping
+NOTICE:  relation "exam_status_history" already exists, skipping
+NOTICE:  relation "exam_audit_logs" already exists, skipping
+NOTICE:  column "entity_type" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "tenants" already exists, skipping
+NOTICE:  column "industry_sector" of relation "tenants" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "tenants" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "tenants" already exists, skipping
+NOTICE:  column "tech_stack" of relation "tenants" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "tenants" already exists, skipping
+NOTICE:  column "website_url" of relation "tenants" already exists, skipping
+NOTICE:  column "company_size" of relation "institution_applications" already exists, skipping
+NOTICE:  column "industry_sector" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hiring_volume" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_name" of relation "institution_applications" already exists, skipping
+NOTICE:  column "hr_contact_email" of relation "institution_applications" already exists, skipping
+NOTICE:  column "tech_stack" of relation "institution_applications" already exists, skipping
+NOTICE:  column "linkedin_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "website_url" of relation "institution_applications" already exists, skipping
+NOTICE:  column "annual_exam_count" of relation "institution_applications" already exists, skipping
+NOTICE:  column "job_roles_targeted" of relation "institution_applications" already exists, skipping
+NOTICE:  column "target_exam_url" of relation "institution_applications" already exists, skipping
+NOTICE:  relation "examos_admin_login_throttle" already exists, skipping
+NOTICE:  column "ip_address" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "user_agent" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "last_seen_at" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "revocation_reason" of relation "auth_sessions" already exists, skipping
+NOTICE:  column "revoked_at" of relation "auth_sessions" already exists, skipping
+NOTICE:  relation "user_invitations" already exists, skipping
+[DB] Administrative schema verified.
+[ExamOS-Server] NOTE: EXAMOS_CONSOLE_PUBLIC_KEY not set; console request signing verification will be permissive in development.
+[AttestConfig] Loading devices from: /mnt/d/SEB BRO/server/config/devices.json
+[AttestConfig] Loaded 0 device(s).
+[AttestConfig] Loading releases from: /mnt/d/SEB BRO/server/config/releases.json
+[AttestConfig] Loaded 0 release(s).
+[AttestConfig] WARNING: config not found, invalid, or empty (devices=0 releases=0).
+[PolicyCatalog] Loaded 3 browser policies from /mnt/d/SEB BRO/server/config/browser_policies.json.
+[BehaviourEngine] Phase 5 behaviour engine ready. Store: /var/lib/examos/behaviour
+[BehaviourEngine] Relay thresholds: pause=120000 ms, burst=80 ms
+[BehaviourEngine] Score weights: F1=0.20 F2=0.20 F3=0.10 F4=0.20 F5f=0.10 F5g=0.10 F6=0.10
+[VariantEngine] Phase 5 variant engine ready. Store: /var/lib/examos/variants Templates: 2
+[VivaEngine] Phase 5 viva engine ready. Store: /var/lib/examos/viva Timeout: 300s
+[ExamOS-Server] Production posture active: Enterprise platform APIs, PostgreSQL stores, and hardware attestation ready.
+[ExamOS-Server] No external Exam URL configured; Candidate Portal active at http://127.0.0.1:32993/
+[ExamOS-Server] Server listening on port 32993 (Candidate Portal: /, Admin Dashboard: /admin, Attestation API: /api/v1/attestation/verify)
+[ExamOS-Server] Clean shutdown complete.

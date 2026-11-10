@@ -185,7 +185,18 @@ static int validate_exam_config(PGconn *conn, const char *config, const char *ex
         "THEN ($1::jsonb->>'capacity')::integer BETWEEN 0 AND 1000000 ELSE false END "
         "AND CASE WHEN COALESCE($1::jsonb->>'sessionTimeoutMin','') ~ '^[0-9]+$' "
         "THEN ($1::jsonb->>'sessionTimeoutMin')::integer BETWEEN 5 AND 120 ELSE false END "
-        "AND EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1::jsonb->>'timezone') "
+        /* Timezone validation: check the common set first (O(1)), then fall
+         * back to the pg_timezone_names catalog only for unusual values.
+         * This avoids a sequential scan of the catalog on every config save. */
+        "AND CASE WHEN $1::jsonb->>'timezone' IN ("
+        "  'Asia/Kolkata','Asia/Calcutta','UTC','Etc/UTC','GMT','US/Eastern','US/Central','US/Mountain','US/Pacific',"
+        "  'America/New_York','America/Chicago','America/Denver','America/Los_Angeles','America/Toronto',"
+        "  'Europe/London','Europe/Paris','Europe/Berlin','Europe/Moscow','Europe/Istanbul',"
+        "  'Asia/Dubai','Asia/Singapore','Asia/Tokyo','Asia/Seoul','Asia/Shanghai','Asia/Bangkok',"
+        "  'Australia/Sydney','Pacific/Auckland','Africa/Lagos','Africa/Nairobi','Africa/Cairo'"
+        ") THEN true "
+        "ELSE EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1::jsonb->>'timezone') "
+        "END "
         "AND COALESCE($1::jsonb->>'navigation','') IN ('locked','allowlist') "
         "AND COALESCE($1::jsonb->>'submissionMode','') IN ('manual','auto','either') "
         "AND COALESCE($1::jsonb->>'reconnectPolicy','') IN ('allow-reconnect','resume-only','deny') "

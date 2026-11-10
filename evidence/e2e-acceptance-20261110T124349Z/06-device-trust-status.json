@@ -1,0 +1,1 @@
+{"device_id":"dev_nist_workstation_01","institution_id":"ins_1794314652_dd55","outcome":"ALLOW","reason":"Device meets all policy security requirements (Secure Boot, TPM 2.0, verified OS release)","policy_id":"dtpol_ins_1794314652_dd55","secure_boot":"enabled","tpm_present":true,"os_release":"ExamOS 2.0"}
