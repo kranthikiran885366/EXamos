@@ -1,6 +1,6 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../../core/auth/AuthContext';
-import { useTenant, useCol } from '../../core/db/tenant';
+import { useTenant } from '../../core/db/tenant';
 import { usePerm, useLoad } from '../../core/ui/hooks';
 import * as Api from '../../core/api/services';
 import {
@@ -417,18 +417,145 @@ export default function CandidatesPage() {
   }, [backendExams, examsError, examsLoading, fetchCandidates]);
 
   const candidates = backendCandidates || [];
-  const [liveCenters, setLiveCenters] = useState([]);
-  useEffect(() => {
+
+  // ── Live backend collections ─────────────────────────────────────────────
+  // All four collections are fetched exclusively from the real API.
+  // IndexedDB / useCol() is never used here — it is never populated from the
+  // backend and would always return stale or empty data.
+  const [centers, setCenters] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [policies, setPolicies] = useState([]);
+  const [releases, setReleases] = useState([]);
+
+  const fetchSupportingData = useCallback(async () => {
     if (!tenantId) return;
-    import('../centers/service').then(({ listCenters }) =>
-      listCenters(tenantId).then(setLiveCenters).catch(() => {})
-    );
-  }, [tenantId, fetchCandidates]);
-  const cachedCenters = useCol('centers');
-  const centers = liveCenters.length ? liveCenters : cachedCenters;
-  const devices = useCol('devices');
-  const policies = useCol('policies');
-  const releases = useCol('releases');
+
+    // 1. Centers — GET /api/v1/admin/centers?institution_id=…
+    Api.listCenters(tenantId)
+      .then((res) => {
+        const rows = res?.centers || (Array.isArray(res) ? res : []);
+        setCenters(rows.map((c) => ({
+          ...c,
+          id: c.id || c.center_id,
+          code: c.code,
+          tenantId: c.institution_id || c.tenant_id || c.tenantId,
+          capacity: Number(c.capacity || c.exam_capacity || 0),
+          status: c.status,
+        })).filter((c) => c.tenantId === tenantId));
+      })
+      .catch(() => {});
+
+    // 2. Devices — GET /api/v1/devices
+    //    Then for each device fetch its live trust-status from
+    //    GET /api/v1/devices/:id/trust-status.
+    //    The device list does NOT carry center_id or seat_no — those live in
+    //    device_assignments. readinessFor() matches by centerId+seat on the
+    //    device object; we populate those fields from the student's
+    //    device-assignments endpoint fetched per-candidate below.
+    Api.listRegisteredDevices()
+      .then(async (res) => {
+        const rows = res?.devices || [];
+        if (!Array.isArray(rows)) return;
+        const enriched = await Promise.all(rows.map(async (d) => {
+          // Fetch live trust outcome from the backend trust-status endpoint.
+          let trustOutcome = null;
+          try {
+            const ts = await Api.getDeviceTrustStatus(d.id);
+            trustOutcome = ts?.outcome || null;
+          } catch { /* non-fatal — device may not have a policy yet */ }
+          return {
+            id: d.id,
+            tenantId: d.institution_id || d.tenant_id,
+            hostname: d.hostname,
+            status: d.status,
+            // os_release_id is the version string the device reported at
+            // registration; used to match against the OS releases list.
+            releaseId: d.os_release_id || '',
+            backendTrustOutcome: trustOutcome,
+            // centerId and seat are populated below once we have per-student
+            // device-assignment data.
+            centerId: null,
+            seat: null,
+          };
+        }));
+        setDevices(enriched);
+      })
+      .catch(() => {});
+
+    // 3. Policies — GET /api/v1/admin/policies
+    Api.listPolicies()
+      .then((res) => {
+        const rows = res?.policies || (Array.isArray(res) ? res : []);
+        if (!Array.isArray(rows)) return;
+        setPolicies(rows.map((p) => ({
+          ...p,
+          id: p.id || p.policy_id,
+          status: p.status,
+          version: p.version,
+        })));
+      })
+      .catch(() => {});
+
+    // 4. OS Releases — GET /api/v1/os/releases
+    //    Map backend status values to the tokens readinessFor() checks:
+    //    'active' → 'approved', 'revoked' → 'revoked', everything else kept.
+    Api.listOsReleases()
+      .then((res) => {
+        const rows = res?.releases || (Array.isArray(res) ? res : []);
+        if (!Array.isArray(rows)) return;
+        setReleases(rows.map((r) => ({
+          ...r,
+          id: r.id || r.release_id,
+          version: r.version,
+          status: r.status === 'active' ? 'approved'
+            : r.status === 'revoked' ? 'revoked'
+            : r.status || 'unknown',
+        })));
+      })
+      .catch(() => {});
+  }, [tenantId]);
+
+  useEffect(() => { fetchSupportingData(); }, [fetchSupportingData]);
+
+  // ── Per-candidate device-assignment enrichment ───────────────────────────
+  // Once we have both candidates and devices, fetch each assigned candidate's
+  // device assignments from GET /api/v1/students/:id/device-assignments.
+  // That endpoint returns device_id + assignment details. We use it to attach
+  // centerId and seat onto the matching device object so readinessFor() can
+  // find the device by centerId+seat.
+  useEffect(() => {
+    if (!candidates.length || !devices.length) return;
+    const assigned = candidates.filter((c) => c.examId && c.centerId && c.seat);
+    if (!assigned.length) return;
+    let active = true;
+    Promise.allSettled(
+      assigned.map((c) =>
+        Api.getStudentAssignedDevices(c.id)
+          .then((res) => ({ candidate: c, assignments: res?.assigned_devices || [] }))
+          .catch(() => ({ candidate: c, assignments: [] }))
+      )
+    ).then((results) => {
+      if (!active) return;
+      // Build a map: deviceId → { centerId, seat } from the candidate's seat assignment.
+      const seatByDevice = new Map();
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue;
+        const { candidate, assignments } = r.value;
+        for (const asg of assignments) {
+          const devId = asg.device_id || asg.id;
+          if (devId && !seatByDevice.has(devId)) {
+            seatByDevice.set(devId, { centerId: candidate.centerId, seat: candidate.seat });
+          }
+        }
+      }
+      if (!seatByDevice.size) return;
+      setDevices((prev) => prev.map((d) => {
+        const loc = seatByDevice.get(d.id);
+        return loc ? { ...d, centerId: loc.centerId, seat: loc.seat } : d;
+      }));
+    });
+    return () => { active = false; };
+  }, [candidates, devices.length]);
   const { msg, setMsg, run, busy } = useFlash();
   const [add, setAdd] = useState(false);
   const [detail, setDetail] = useState(null);

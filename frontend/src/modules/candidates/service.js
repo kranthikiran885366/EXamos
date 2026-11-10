@@ -395,9 +395,16 @@ export async function getStudent360(c) {
 export function readinessFor(c, ctx = {}) {
   const { devices = [], exams = [], policies = [], releases = [] } = ctx;
   const ex = exams.find((e) => e.id === c.examId);
-  const dev = devices.find((d) => d.centerId === c.centerId && d.seat === c.seat);
-  const pol = policies.find((p) => p.id === ex?.policyId);
-  const rel = releases.find((r) => r.id === dev?.releaseId);
+  // Match device by centerId+seat (camelCase from frontend) or center_id+seat_no (backend snake_case).
+  const dev = devices.find((d) =>
+    (d.centerId || d.center_id) === c.centerId &&
+    (d.seat || d.seat_no) === c.seat
+  );
+  // Match policy: exam carries policyId (from exam_config or policy_id column).
+  const pol = policies.find((p) => p.id === ex?.policyId || p.id === ex?.policy_id);
+  // Match release: device carries releaseId (mapped from os_release_id) or os_release_id directly.
+  const devReleaseId = dev?.releaseId || dev?.os_release_id || '';
+  const rel = devReleaseId ? releases.find((r) => r.id === devReleaseId || r.version === devReleaseId) : undefined;
   const out = [];
   out.push({ key: 'assignment', label: 'Exam assignment', status: c.examId ? 'PASS' : 'FAIL', detail: ex ? `${ex.code} · seat ${c.seat}` : 'Not assigned' });
   out.push({ key: 'identity', label: 'Identity check', status: c.identity === 'verified' ? 'PASS' : c.identity === 'rejected' ? 'FAIL' : 'NOT_RUN', detail: c.identity });
