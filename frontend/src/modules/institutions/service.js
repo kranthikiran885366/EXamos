@@ -136,7 +136,7 @@ export async function updateInstitution(a, t, patch) {
 
 export async function setInstitutionStatus(a, t, status, reason) {
   need(a, 'tenant.manage');
-  if (!['active', 'suspended', 'archived'].includes(status)) fail('Unknown institution status.');
+  if (!['pilot', 'active', 'suspended', 'archived'].includes(status)) fail('Unknown institution status.');
   const r = requireReason(reason, 8);
 
   await Api.setInstitutionStatus(t.id, status, r);
