@@ -1044,10 +1044,67 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/devices/:id/attestation/verify (Verify Quote) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/attestation/verify") == 0) {
-            db_release(conn, 0);
-            dt_send_error(client_fd, 501,
-                          "TPM quote verification is unavailable; evidence cannot be marked trusted",
-                          origin, extra_headers, extra_len);
+            if (strcmp(d_status, "registered") != 0 && strcmp(d_status, "enrolled") != 0) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 409,
+                              "Only a registered or enrolled device can submit attestation evidence",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            /* Inject device_id into the evidence body so attestation_verify_evidence
+             * can look up the AK and institution binding from the registry. */
+            char augmented[8192];
+            size_t body_len = body ? strlen(body) : 0;
+            if (body_len == 0 || body_len > 7900) {
+                db_release(conn, 0);
+                dt_send_error(client_fd, 400, "Attestation evidence body is missing or too large",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            /* Strip trailing } and append device_id field */
+            char trimmed[8192];
+            strncpy(trimmed, body, sizeof(trimmed) - 1);
+            trimmed[sizeof(trimmed) - 1] = '\0';
+            size_t tlen = strlen(trimmed);
+            while (tlen > 0 && (trimmed[tlen - 1] == '}' || trimmed[tlen - 1] == ' '))
+                tlen--;
+            trimmed[tlen] = '\0';
+            snprintf(augmented, sizeof(augmented),
+                     "%s,\"device_id\":\"%s\"}", trimmed, device_id);
+
+            char reason[64] = {0}, exam_key[EXAM_KEY_LEN + 1] = {0};
+            int verified = attestation_verify_evidence(augmented, reason, exam_key) == 0;
+            OPENSSL_cleanse(exam_key, sizeof(exam_key));
+
+            if (verified) {
+                /* Update device last_attestation_at */
+                const char *ua_p[1] = { device_id };
+                int ua_l[1] = { (int)strlen(device_id) };
+                PGresult *ua_r = db_simple(conn,
+                    "UPDATE devices SET last_attestation_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                    "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 WHERE id=$1",
+                    1, ua_p, ua_l);
+                if (ua_r) PQclear(ua_r);
+                record_device_audit(conn, device_id, d_inst, sess.user_id[0] ? sess.user_id : "agent",
+                                    "ATTESTATION_VERIFIED", reason);
+                dt_audit_log(sess.user_id[0] ? sess.user_id : "agent", "ATTESTATION_VERIFIED", device_id);
+                db_release(conn, 0);
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                    "{\"status\":\"VERIFIED\",\"device_id\":\"%s\",\"outcome\":\"TRUSTED\"}",
+                    device_id);
+                dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+            } else {
+                record_device_security_event(conn, device_id, "ATTESTATION_FAILED", "WARNING",
+                                             reason[0] ? reason : "TPM quote verification failed");
+                db_release(conn, 0);
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                    "{\"status\":\"REJECTED\",\"device_id\":\"%s\",\"error_code\":\"%s\"}",
+                    device_id, reason[0] ? reason : "VERIFICATION_ERROR");
+                dt_send_json(client_fd, 403, resp, origin, extra_headers, extra_len);
+            }
             return;
         }
 
