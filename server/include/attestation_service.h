@@ -66,7 +66,10 @@ typedef struct {
     char                session_id[64];
     char                device_id[64];
     char                release_id[64];
+    char                institution_id[64];
     char                nonce[128];
+    char                purpose[32];
+    char                created_by[64];
     int                 nonce_used;
     time_t              created_at;
     time_t              last_re_attestation;
@@ -113,10 +116,16 @@ int  attestation_register_release(const char *release_id, const char *uki_hash,
  *   - Generates cryptographically random nonce
  *   - Writes nonce to out_nonce (128 bytes), session ID to out_attestation_id (64 bytes)
  *   - On failure writes structured error code to out_error_code (64 bytes)
+ *   - institution_id: optional consistency check; tenant is derived from the trusted device registry
+ *   - purpose: 'enrollment', 're_attestation', or 'exam_launch' (defaults to 're_attestation')
+ *   - created_by: actor requesting the challenge (defaults to 'system')
  *   Returns 0 on success, -1 on failure.
  */
 int  attestation_create_challenge(const char *device_id, const char *session_id,
                                    const char *release_id,
+                                   const char *institution_id,
+                                   const char *purpose,
+                                   const char *created_by,
                                    char *out_nonce, char *out_attestation_id,
                                    char *out_error_code);
 
@@ -128,6 +137,7 @@ int  attestation_create_challenge(const char *device_id, const char *session_id,
  *   On failure: records the error in out_reason (64 bytes).
  */
 int  attestation_verify_evidence(const char *evidence_json,
+                                  const char *expected_purpose,
                                   char *out_reason, char *out_exam_key);
 
 /*

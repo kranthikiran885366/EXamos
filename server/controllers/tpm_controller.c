@@ -5,7 +5,9 @@
 
 #include "tpm_controller.h"
 #include "../include/attestation_service.h"
+#include "../include/credential_activation.h"
 #include "../security/security.h"
+#include "../db/db.h"
 #include <openssl/crypto.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,12 +99,18 @@ authorized:
 
         char nonce[128] = {0}, att_id[64] = {0}, error_code[64] = {0};
         if (attestation_create_challenge(dev_id, sess_id, rel_id,
+                "", "re_attestation", "system",
                 nonce, att_id, error_code) != 0) {
             OPENSSL_cleanse(nonce, sizeof(nonce));
-            tpm_send_json(client_fd, 503,
-                "{\"status\":\"REJECTED\",\"error_code\":\"ATTESTATION_CHALLENGE_FAILED\","
-                "\"error\":\"A trusted device and approved release are required\"}",
-                origin, extra_headers, extra_len);
+            int status = strcmp(error_code, "P3_CHALLENGE_STORE_UNAVAILABLE") == 0 ||
+                         strcmp(error_code, "P3_REVOCATION_STORE_UNAVAILABLE") == 0
+                ? 503 : 403;
+            char response[256];
+            snprintf(response, sizeof(response),
+                "{\"status\":\"REJECTED\",\"error_code\":\"%s\","
+                "\"error\":\"A tenant-bound trusted device and approved release are required\"}",
+                error_code[0] ? error_code : "P3_CHALLENGE_FAILED");
+            tpm_send_json(client_fd, status, response, origin, extra_headers, extra_len);
             return;
         }
 
@@ -117,10 +125,13 @@ authorized:
 
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/verify") == 0) {
         char reason[64] = {0}, exam_key[EXAM_KEY_LEN + 1] = {0};
-        if (attestation_verify_evidence(body, reason, exam_key) == 0) {
+        if (attestation_verify_evidence(body, "re_attestation", reason, exam_key) == 0) {
+            int key_release_required = exam_key[0] != '\0';
             OPENSSL_cleanse(exam_key, sizeof(exam_key));
             tpm_send_json(client_fd, 200,
-                "{\"status\":\"TRUSTED\",\"verified\":true,\"key_release_required\":true}",
+                key_release_required
+                    ? "{\"status\":\"TRUSTED\",\"verified\":true,\"key_release_required\":true}"
+                    : "{\"status\":\"TRUSTED\",\"verified\":true,\"key_release_required\":false}",
                 origin, extra_headers, extra_len);
         } else {
             OPENSSL_cleanse(exam_key, sizeof(exam_key));
@@ -128,6 +139,187 @@ authorized:
             snprintf(response, sizeof(response),
                 "{\"status\":\"FAILED\",\"verified\":false,\"error_code\":\"%s\"}",
                 reason[0] ? reason : "ATTESTATION_VERIFICATION_FAILED");
+            tpm_send_json(client_fd, 403, response, origin, extra_headers, extra_len);
+        }
+        return;
+    }
+
+    /* Phase 2: Credential Activation Endpoint */
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/activate") == 0) {
+        char device_id[64] = {0}, ak_name_hex[68] = {0};
+        ctrl_json_string(body, "device_id", device_id, sizeof(device_id));
+        ctrl_json_string(body, "ak_name_hex", ak_name_hex, sizeof(ak_name_hex));
+
+        if (!device_id[0] || !ak_name_hex[0]) {
+            tpm_send_json(client_fd, 400,
+                "{\"error\":\"device_id and ak_name_hex required\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        PGconn *conn = db_acquire();
+        if (!conn) {
+            tpm_send_json(client_fd, 503, "{\"error\":\"Database unavailable\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* Get EK public key from device_ek_certificates */
+        const char *ek_params[1] = { device_id };
+        int ek_lengths[1] = { (int)strlen(device_id) };
+        PGresult *ek_result = db_simple(conn,
+            "SELECT ek_public_key_pem FROM device_ek_certificates "
+            "WHERE device_id=$1 AND trust_status='verified' LIMIT 1",
+            1, ek_params, ek_lengths);
+
+        if (!ek_result || PQresultStatus(ek_result) != PGRES_TUPLES_OK || PQntuples(ek_result) != 1) {
+            if (ek_result) PQclear(ek_result);
+            db_release(conn, 0);
+            tpm_send_json(client_fd, 404,
+                "{\"error\":\"No verified EK certificate found for device\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        char ek_pem[2048] = {0};
+        snprintf(ek_pem, sizeof(ek_pem), "%s", PQgetvalue(ek_result, 0, 0));
+        PQclear(ek_result);
+        db_release(conn, 0);
+
+        /* Generate credential activation challenge */
+        char activation_id[64] = {0};
+        char credential_blob_hex[4096] = {0};
+        char secret_hash[65] = {0};
+        char error[256] = {0};
+
+        /* Get institution_id from device record */
+        const char *inst_params[1] = { device_id };
+        int inst_lengths[1] = { (int)strlen(device_id) };
+        PGresult *inst_result = db_simple(conn,
+            "SELECT institution_id FROM devices WHERE id=$1 LIMIT 1",
+            1, inst_params, inst_lengths);
+
+        if (!inst_result || PQresultStatus(inst_result) != PGRES_TUPLES_OK || PQntuples(inst_result) != 1) {
+            if (inst_result) PQclear(inst_result);
+            db_release(conn, 0);
+            tpm_send_json(client_fd, 404,
+                "{\"error\":\"Device not found\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        char institution_id[64] = {0};
+        snprintf(institution_id, sizeof(institution_id), "%s", PQgetvalue(inst_result, 0, 0));
+        PQclear(inst_result);
+        db_release(conn, 0);
+
+        if (credential_activation_initiate(device_id, institution_id, ak_name_hex,
+                                            activation_id, credential_blob_hex,
+                                            secret_hash, error) != 0) {
+            OPENSSL_cleanse(secret_hash, sizeof(secret_hash));
+            OPENSSL_cleanse(credential_blob_hex, sizeof(credential_blob_hex));
+            char resp[512];
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"ACTIVATION_FAILED\",\"error\":\"%s\"}",
+                error[0] ? error : "Failed to initiate credential activation");
+            tpm_send_json(client_fd, 503, resp, origin, extra_headers, extra_len);
+            return;
+        }
+
+        char resp[5120];
+        snprintf(resp, sizeof(resp),
+            "{\"status\":\"ACTIVATION_CHALLENGE\",\"activation_id\":\"%s\","
+            "\"credential_blob\":\"%s\"}",
+            activation_id, credential_blob_hex);
+        OPENSSL_cleanse(credential_blob_hex, sizeof(credential_blob_hex));
+        tpm_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/activate/complete") == 0) {
+        char activation_id[64] = {0}, activation_response_hex[4096] = {0};
+        ctrl_json_string(body, "activation_id", activation_id, sizeof(activation_id));
+        ctrl_json_string(body, "activation_response", activation_response_hex, sizeof(activation_response_hex));
+
+        if (!activation_id[0] || !activation_response_hex[0]) {
+            tpm_send_json(client_fd, 400,
+                "{\"error\":\"activation_id and activation_response required\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        PGconn *conn = db_acquire();
+        if (!conn) {
+            tpm_send_json(client_fd, 503, "{\"error\":\"Database unavailable\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+
+        /* Get the expected secret hash from the activation record */
+        const char *act_params[1] = { activation_id };
+        int act_lengths[1] = { (int)strlen(activation_id) };
+        PGresult *act_result = db_simple(conn,
+            "SELECT device_id, credential_secret_hash FROM device_credential_activations "
+            "WHERE id=$1 AND status='pending' LIMIT 1",
+            1, act_params, act_lengths);
+
+        if (!act_result || PQresultStatus(act_result) != PGRES_TUPLES_OK || PQntuples(act_result) != 1) {
+            if (act_result) PQclear(act_result);
+            db_release(conn, 0);
+            tpm_send_json(client_fd, 404,
+                "{\"error\":\"Activation record not found or already used\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+
+        char device_id[64] = {0};
+        char expected_secret_hash[65] = {0};
+        snprintf(device_id, sizeof(device_id), "%s", PQgetvalue(act_result, 0, 0));
+        snprintf(expected_secret_hash, sizeof(expected_secret_hash), "%s", PQgetvalue(act_result, 0, 1));
+        PQclear(act_result);
+        db_release(conn, 0);
+
+        char error[256] = {0};
+        int verify_result = credential_activation_verify(activation_id, device_id,
+                                                         activation_response_hex,
+                                                         expected_secret_hash, error);
+
+        if (verify_result == 0) {
+            /* Update provenance status to verified on successful activation */
+            PGconn *prov_conn = db_acquire();
+            if (prov_conn) {
+                const char *prov_params[1] = { device_id };
+                PGresult *prov_update = PQexecParams(prov_conn,
+                    "UPDATE device_attestation_keys "
+                    "SET provenance_status='verified', provenance_details='Credential activation completed at ' || clock_timestamp()::text "
+                    "WHERE device_id=$1 AND key_name='AK' AND status='active'",
+                    1, NULL, prov_params, NULL, NULL, 0);
+                if (prov_update) PQclear(prov_update);
+                db_release(prov_conn, 0);
+            }
+
+            tpm_send_json(client_fd, 200,
+                "{\"status\":\"ACTIVATION_SUCCESS\",\"verified\":true}",
+                origin, extra_headers, extra_len);
+        } else {
+            /* Update provenance status to failed on failed activation */
+            PGconn *prov_conn = db_acquire();
+            if (prov_conn) {
+                const char *prov_params[2] = { device_id, error };
+                int prov_lengths[2] = { (int)strlen(device_id), (int)strlen(error) };
+                PGresult *prov_update = PQexecParams(prov_conn,
+                    "UPDATE device_attestation_keys "
+                    "SET provenance_status='failed', provenance_details=$2 "
+                    "WHERE device_id=$1 AND key_name='AK' AND status='active'",
+                    2, NULL, prov_params, prov_lengths, NULL, 0);
+                if (prov_update) PQclear(prov_update);
+                db_release(prov_conn, 0);
+            }
+
+            char response[512];
+            snprintf(response, sizeof(response),
+                "{\"status\":\"ACTIVATION_FAILED\",\"verified\":false,\"error\":\"%s\"}",
+                error[0] ? error : "Activation verification failed");
             tpm_send_json(client_fd, 403, response, origin, extra_headers, extra_len);
         }
         return;

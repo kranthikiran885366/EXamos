@@ -1731,6 +1731,7 @@ static void* handle_client(void *arg) {
             char nonce[128] = {0}, attest_id[64] = {0}, error_code[64] = {0};
             int rc = attestation_create_challenge(
                 dev_id, sess_id, rel_id,
+                "", "re_attestation", "system",
                 nonce, attest_id, error_code);
             if (rc == 0) {
                 char resp[512];
@@ -1746,7 +1747,12 @@ static void* handle_client(void *arg) {
                          "{\"status\":\"REJECTED\",\"error_code\":\"%s\","
                          "\"error\":\"Challenge refused\"}",
                          ec);
-                send_http_response(client_fd, 403, "application/json", resp);
+                int status = strcmp(ec, "P3_CHALLENGE_STORE_UNAVAILABLE") == 0 ||
+                             strcmp(ec, "P3_REVOCATION_STORE_UNAVAILABLE") == 0
+                    ? 503 : 403;
+                OPENSSL_cleanse(nonce, sizeof(nonce));
+                OPENSSL_cleanse(attest_id, sizeof(attest_id));
+                send_http_response(client_fd, status, "application/json", resp);
             }
         }
     }
@@ -1757,7 +1763,8 @@ static void* handle_client(void *arg) {
             goto client_done;
         }
         char reason[64] = {0}, exam_key[65] = {0};
-        if (attestation_verify_evidence(req_body, reason, exam_key) == 0) {
+        if (attestation_verify_evidence(req_body, "re_attestation", reason, exam_key) == 0) {
+            int key_release_required = exam_key[0] != '\0';
             /* The exam key is deliberately not echoed here. It is bound to
                the trusted session and delivered only through the audited
                key-release path, which enforces session and device binding. */
@@ -1765,8 +1772,8 @@ static void* handle_client(void *arg) {
             char resp[512];
             snprintf(resp, sizeof(resp),
                      "{\"status\":\"TRUSTED\",\"verified\":true,\"reason\":\"%s\","
-                     "\"key_release_required\":true}",
-                     reason);
+                     "\"key_release_required\":%s}",
+                     reason, key_release_required ? "true" : "false");
             send_http_response(client_fd, 200, "application/json", resp);
         } else {
             OPENSSL_cleanse(exam_key, sizeof(exam_key));

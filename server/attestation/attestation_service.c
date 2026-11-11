@@ -312,19 +312,25 @@ static int persistently_revoked(const char *type, const char *identifier) {
 
 static int persist_challenge(const attestation_session_t *session) {
     char nonce_hash[65];
-    if (!session || hash_nonce_hex(session->nonce, nonce_hash) != 0) return -1;
+    if (!session || !session->session_id[0] || !session->device_id[0] ||
+        !session->release_id[0] || !session->institution_id[0] ||
+        !session->purpose[0] || !session->created_by[0] ||
+        hash_nonce_hex(session->nonce, nonce_hash) != 0) return -1;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
     PGresult *result = PQexec(conn, "BEGIN");
     int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
     if (ok) {
-        const char *params[] = {session->session_id};
+        const char *params[] = {
+            session->session_id, session->device_id, session->institution_id
+        };
         result = PQexecParams(conn,
             "UPDATE examos_attestation_challenges SET state='STALE', "
             "failure_code='RE_ATTESTATION_STARTED' "
-            "WHERE session_id=$1 AND state='TRUSTED'",
-            1, NULL, params, NULL, NULL, 0);
+            "WHERE session_id=$1 AND device_id=$2 AND institution_id=$3 "
+            "AND state='TRUSTED'",
+            3, NULL, params, NULL, NULL, 0);
         ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
         if (result) PQclear(result);
     }
@@ -332,16 +338,36 @@ static int persist_challenge(const attestation_session_t *session) {
         char created[32];
         snprintf(created, sizeof(created), "%lld", (long long)session->created_at);
         const char *params[] = {session->attestation_id, session->session_id,
-            session->device_id, session->release_id, nonce_hash, created};
+            session->device_id, session->release_id, session->institution_id,
+            session->purpose, session->created_by, nonce_hash, created};
         result = PQexecParams(conn,
             "INSERT INTO examos_attestation_challenges "
-            "(attestation_id,session_id,device_id,release_id,nonce_sha256,state,created_at,expires_at) "
-            "SELECT $1,$2,$3,$4,$5,'PENDING',to_timestamp($6::double precision), "
-            "to_timestamp($6::double precision)+interval '120 seconds' "
-            "WHERE NOT EXISTS (SELECT 1 FROM examos_attestation_revocations "
+            "(attestation_id,session_id,device_id,release_id,institution_id,purpose,created_by,nonce_sha256,state,created_at,expires_at) "
+            "SELECT $1::varchar(63),$2::varchar(63),$3::varchar(63),$4::varchar(63),"
+            "d.institution_id,$6::varchar(32),$7::varchar(64),$8,'PENDING',"
+            "to_timestamp($9::double precision), "
+            "to_timestamp($9::double precision)+interval '120 seconds' "
+            "FROM devices d "
+            "JOIN device_registrations r ON r.device_id=d.id "
+            "AND r.institution_id=d.institution_id AND r.decision='approved' "
+            "JOIN device_trust_policies p ON p.institution_id=d.institution_id "
+            "AND p.status='active' "
+            "WHERE d.id=$3 AND d.institution_id=$5 "
+            "AND d.institution_id<>'' AND d.status IN ('registered','enrolled') "
+            "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=$2) "
+            "OR EXISTS (SELECT 1 FROM exam_sessions s "
+            "WHERE s.id=$2 AND s.device_id=d.id "
+            "AND s.institution_id=d.institution_id "
+            "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
+            "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
+            "WHERE ci.exam_session_id=$2 AND ci.institution_id=d.institution_id "
+            "AND ci.status IN ('attesting','consumed') "
+            "AND (ci.status='consumed' OR "
+            "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
+            "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations "
             "WHERE (target_type='DEVICE' AND target_id=$3) OR "
             "(target_type='RELEASE' AND target_id=$4))",
-            6, NULL, params, NULL, NULL, 0);
+            9, NULL, params, NULL, NULL, 0);
         ok = result && PQresultStatus(result) == PGRES_COMMAND_OK &&
              strcmp(PQcmdTuples(result), "1") == 0;
         if (result) PQclear(result);
@@ -356,28 +382,57 @@ static int persist_challenge(const attestation_session_t *session) {
 
 static int claim_persisted_challenge(const char *nonce, const char *device_id,
                                      const char *release_id,
+                                     const char *institution_id,
+                                     const char *purpose,
                                      char out_attestation_id[64],
-                                     char out_session_id[64]) {
+                                     char out_session_id[64],
+                                     int *out_exam_session_bound) {
     char nonce_hash[65];
-    if (hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
+    if (!institution_id || !institution_id[0] || !purpose || !purpose[0] ||
+        hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
+    if (out_exam_session_bound) *out_exam_session_bound = 0;
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
-    const char *params[] = {nonce_hash, device_id, release_id};
+    const char *params[] = {
+        nonce_hash, device_id, release_id, institution_id, purpose
+    };
     PGresult *result = PQexecParams(conn,
-        "UPDATE examos_attestation_challenges "
+        "UPDATE examos_attestation_challenges AS c "
         "SET state='VERIFYING',claimed_at=clock_timestamp() "
-        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 "
-        "AND state='PENDING' AND expires_at>clock_timestamp() "
+        "WHERE c.nonce_sha256=$1 AND c.device_id=$2 AND c.release_id=$3 "
+        "AND c.institution_id=$4 AND c.purpose=$5 "
+        "AND c.state='PENDING' AND c.expires_at>clock_timestamp() "
+        "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id) "
+        "OR EXISTS (SELECT 1 FROM exam_sessions s "
+        "WHERE s.id=c.session_id AND s.device_id=c.device_id "
+        "AND s.institution_id=c.institution_id "
+        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
+        "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
+        "WHERE ci.exam_session_id=c.session_id AND ci.institution_id=c.institution_id "
+        "AND ci.status IN ('attesting','consumed') "
+        "AND (ci.status='consumed' OR "
+        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
-        "WHERE (r.target_type='DEVICE' AND r.target_id=$2) OR "
-        "(r.target_type='RELEASE' AND r.target_id=$3)) "
-        "RETURNING attestation_id, session_id",
-        3, NULL, params, NULL, NULL, 0);
+        "WHERE (r.target_type='DEVICE' AND r.target_id=c.device_id) OR "
+        "(r.target_type='RELEASE' AND r.target_id=c.release_id)) "
+        "RETURNING c.attestation_id, c.session_id, "
+        "EXISTS (SELECT 1 FROM exam_sessions s "
+        "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+        "AND ci.institution_id=s.institution_id "
+        "WHERE s.id=c.session_id AND s.device_id=c.device_id "
+        "AND s.institution_id=c.institution_id "
+        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
+        "AND ci.status IN ('attesting','consumed') "
+        "AND (ci.status='consumed' OR "
+        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000))",
+        5, NULL, params, NULL, NULL, 0);
     int claimed = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                   PQntuples(result) == 1;
     if (claimed) {
         snprintf(out_attestation_id, 64, "%s", PQgetvalue(result, 0, 0));
         snprintf(out_session_id, 64, "%s", PQgetvalue(result, 0, 1));
+        if (out_exam_session_bound)
+            *out_exam_session_bound = strcmp(PQgetvalue(result, 0, 2), "t") == 0;
     }
     if (result) PQclear(result);
     release_db_connection(conn, 0);
@@ -474,6 +529,14 @@ static int load_exam_key_release(const char *identifier, const char *device_id,
         "SELECT k.attestation_id, k.device_id, k.key_ciphertext, k.key_nonce, k.key_tag "
         "FROM examos_exam_key_releases k "
         "JOIN examos_attestation_challenges c ON c.attestation_id = k.attestation_id "
+        "JOIN exam_sessions s ON s.id=k.session_id AND s.device_id=k.device_id "
+        "AND s.institution_id=c.institution_id "
+        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
+        "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+        "AND ci.institution_id=s.institution_id "
+        "AND ci.status IN ('attesting','consumed') "
+        "AND (ci.status='consumed' OR "
+        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000) "
         "WHERE (k.session_id=$1 OR k.attestation_id=$1) "
         "AND k.device_id=$2 "
         "AND k.revoked_at IS NULL "
@@ -764,7 +827,24 @@ int attestation_store_health(void) {
     PGresult *result = PQexec(conn,
         "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
         "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL "
-        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL");
+        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL "
+        "AND to_regclass('public.exam_sessions') IS NOT NULL "
+        "AND to_regclass('public.candidate_exam_checkins') IS NOT NULL "
+        "AND (SELECT COUNT(*)=3 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='examos_attestation_challenges' "
+        "AND column_name IN ('institution_id','purpose','created_by')) "
+        "AND (SELECT COUNT(*)=4 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='exam_sessions' "
+        "AND column_name IN ('id','institution_id','device_id','status')) "
+        "AND (SELECT COUNT(*)=4 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='candidate_exam_checkins' "
+        "AND column_name IN ('exam_session_id','institution_id','status','expires_at')) "
+        "AND EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conrelid=to_regclass('public.examos_attestation_challenges') "
+        "AND conname='examos_attestation_institution_nonempty_check') "
+        "AND EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conrelid=to_regclass('public.examos_attestation_challenges') "
+        "AND conname='examos_attestation_purpose_check')");
     int healthy = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                   PQntuples(result) == 1 &&
                   strcmp(PQgetvalue(result, 0, 0), "t") == 0;
@@ -779,7 +859,24 @@ int attestation_store_init(void) {    if (!production_attestation_mode()) return
     PGresult *result = PQexec(conn,
         "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
         "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL "
-        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL");
+        "AND to_regclass('public.examos_exam_key_releases') IS NOT NULL "
+        "AND to_regclass('public.exam_sessions') IS NOT NULL "
+        "AND to_regclass('public.candidate_exam_checkins') IS NOT NULL "
+        "AND (SELECT COUNT(*)=3 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='examos_attestation_challenges' "
+        "AND column_name IN ('institution_id','purpose','created_by')) "
+        "AND (SELECT COUNT(*)=4 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='exam_sessions' "
+        "AND column_name IN ('id','institution_id','device_id','status')) "
+        "AND (SELECT COUNT(*)=4 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='candidate_exam_checkins' "
+        "AND column_name IN ('exam_session_id','institution_id','status','expires_at')) "
+        "AND EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conrelid=to_regclass('public.examos_attestation_challenges') "
+        "AND conname='examos_attestation_institution_nonempty_check') "
+        "AND EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conrelid=to_regclass('public.examos_attestation_challenges') "
+        "AND conname='examos_attestation_purpose_check')");
     int ready = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                 PQntuples(result) == 1 && strcmp(PQgetvalue(result, 0, 0), "t") == 0;
     if (result) PQclear(result);
@@ -990,9 +1087,15 @@ int attestation_register_release(const char *release_id, const char *uki_hash,
  * Unknown devices → P3_UNKNOWN_DEVICE.
  * Revoked devices → P3_REVOKED_DEVICE.
  * Only enrolled/trusted devices receive a challenge nonce.
+ *
+ * The institution is derived from the trusted device registry. A caller may
+ * provide the tenant as an additional consistency check, but cannot supply it.
  * ----------------------------------------------------------------------- */
 int attestation_create_challenge(const char *device_id, const char *session_id,
                                    const char *release_id,
+                                   const char *institution_id,
+                                   const char *purpose,
+                                   const char *created_by,
                                    char *out_nonce, char *out_attestation_id,
                                    char *out_error_code) {
     if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(g_devices[0].device_id) ||
@@ -1000,6 +1103,21 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
         !release_id || !release_id[0] || strlen(release_id) >= sizeof(g_sessions[0].release_id) ||
         !out_nonce || !out_attestation_id) return -1;
     if (out_error_code) out_error_code[0] = '\0';
+
+    /* Set defaults for optional parameters */
+    const char *requested_inst_id =
+        (institution_id && institution_id[0]) ? institution_id : "";
+    const char *inst_id = "";
+    const char *ch_purpose = (purpose && purpose[0]) ? purpose : "re_attestation";
+    const char *actor = (created_by && created_by[0]) ? created_by : "system";
+
+    /* Validate purpose against allowed values */
+    if (strcmp(ch_purpose, "enrollment") != 0 &&
+        strcmp(ch_purpose, "re_attestation") != 0 &&
+        strcmp(ch_purpose, "exam_launch") != 0) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_INVALID_PURPOSE");
+        return -1;
+    }
 
     if (production_attestation_mode()) {
         int device_revoked = persistently_revoked("DEVICE", device_id);
@@ -1030,6 +1148,19 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
         pthread_mutex_unlock(&g_trust_lock);
         return -1;
     }
+
+    if (!dev->institution_id[0]) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_DEVICE_TENANT_UNBOUND");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
+    if (requested_inst_id[0] &&
+        strcmp(requested_inst_id, dev->institution_id) != 0) {
+        if (out_error_code) safe_copy(out_error_code, 64, "P3_INSTITUTION_MISMATCH");
+        pthread_mutex_unlock(&g_trust_lock);
+        return -1;
+    }
+    inst_id = dev->institution_id;
 
     /* Step 2: Device must not be revoked */
     if (dev->status == DEVICE_STATUS_REVOKED) {
@@ -1092,7 +1223,10 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
     safe_copy(s->session_id,  sizeof(s->session_id), session_id);
     safe_copy(s->device_id,   sizeof(s->device_id),  device_id);
     safe_copy(s->release_id,  sizeof(s->release_id), release_id);
+    safe_copy(s->institution_id, sizeof(s->institution_id), inst_id);
     safe_copy(s->nonce,       sizeof(s->nonce),       nonce);
+    safe_copy(s->purpose,     sizeof(s->purpose),     ch_purpose);
+    safe_copy(s->created_by,  sizeof(s->created_by),  actor);
     s->nonce_used  = 0;
     s->created_at  = time(NULL);
     s->state       = ATTESTATION_STATE_PENDING;
@@ -1104,9 +1238,22 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
 
     pthread_mutex_unlock(&g_trust_lock);
     if (production_attestation_mode() && persist_challenge(&persisted_copy) != 0) {
+        pthread_mutex_lock(&g_trust_lock);
+        for (int i = 0; i < MAX_ATTESTATION_SESSIONS; i++) {
+            if (g_sessions[i].created_at &&
+                strcmp(g_sessions[i].attestation_id, persisted_copy.attestation_id) == 0) {
+                OPENSSL_cleanse(&g_sessions[i], sizeof(g_sessions[i]));
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_trust_lock);
+        OPENSSL_cleanse(&persisted_copy, sizeof(persisted_copy));
+        OPENSSL_cleanse(out_nonce, 128);
+        OPENSSL_cleanse(out_attestation_id, 64);
         safe_copy(out_error_code, 64, "P3_CHALLENGE_STORE_UNAVAILABLE");
         return -1;
     }
+    OPENSSL_cleanse(&persisted_copy, sizeof(persisted_copy));
     return 0;
 }
 
@@ -1118,10 +1265,22 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
  * and revocation state are backed by PostgreSQL; key release is separate.
  * ----------------------------------------------------------------------- */
 int attestation_verify_evidence(const char *evidence_json,
+                                  const char *expected_purpose,
                                   char *out_reason, char *out_exam_key) {
-    if (!evidence_json || !out_reason) return -1;
+    if (!out_reason) return -1;
     out_reason[0] = '\0';
     if (out_exam_key) out_exam_key[0] = '\0';
+    if (!evidence_json) {
+        safe_copy(out_reason, 64, "P3_MALFORMED_REQUEST");
+        return -1;
+    }
+    if (!expected_purpose ||
+        (strcmp(expected_purpose, "enrollment") != 0 &&
+         strcmp(expected_purpose, "re_attestation") != 0 &&
+         strcmp(expected_purpose, "exam_launch") != 0)) {
+        safe_copy(out_reason, 64, "P3_INVALID_PURPOSE");
+        return -1;
+    }
 
     char nonce[128] = {0}, device_id[64] = {0}, release_id[64] = {0};
     char quote_message_hex[8193] = {0}, quote_signature_hex[2049] = {0};
@@ -1171,10 +1330,38 @@ int attestation_verify_evidence(const char *evidence_json,
 
         char persisted_id[64] = {0};
         char persisted_session[64] = {0};
+        int exam_session_bound = 0;
         if (claim_persisted_challenge(nonce, device_id, release_id,
-                                      persisted_id, persisted_session) != 0) {
+                                      production_device.institution_id,
+                                      expected_purpose,
+                                      persisted_id, persisted_session,
+                                      &exam_session_bound) != 0) {
             safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
             return -1;
+        }
+
+        /* Phase 2: Verify EK-to-AK provenance if EK certificate was provided */
+        PGconn *prov_conn = acquire_db_connection();
+        if (prov_conn) {
+            const char *prov_params[1] = { device_id };
+            PGresult *prov_result = PQexecParams(prov_conn,
+                "SELECT provenance_status FROM device_attestation_keys "
+                "WHERE device_id=$1 AND key_name='AK' AND status='active' LIMIT 1",
+                1, NULL, prov_params, NULL, NULL, 0);
+            if (prov_result && PQresultStatus(prov_result) == PGRES_TUPLES_OK && PQntuples(prov_result) == 1) {
+                const char *prov_status = PQgetvalue(prov_result, 0, 0);
+                if (prov_status && strcmp(prov_status, "verified") != 0 && strcmp(prov_status, "pending") != 0) {
+                    /* Only require verified provenance if not pending (pending = EK cert not provided) */
+                    if (strcmp(prov_status, "failed") == 0) {
+                        PQclear(prov_result);
+                        release_db_connection(prov_conn, 0);
+                        safe_copy(out_reason, 64, "P3_PROVENANCE_FAILED");
+                        return -1;
+                    }
+                }
+            }
+            if (prov_result) PQclear(prov_result);
+            release_db_connection(prov_conn, 0);
         }
         unsigned char *attest = NULL, *signature = NULL;
         size_t attest_len = 0, signature_len = 0;
@@ -1231,6 +1418,12 @@ int attestation_verify_evidence(const char *evidence_json,
         if (!verified) {
             safe_copy(out_reason, 64, failure);
             return -1;
+        }
+
+        if (!exam_session_bound) {
+            platform_update_device_attestation(device_id, "TRUSTED", NULL);
+            safe_copy(out_reason, 64, "TPM_QUOTE_VERIFIED");
+            return 0;
         }
 
         /*
@@ -1328,6 +1521,8 @@ int attestation_verify_evidence(const char *evidence_json,
             if (sess->nonce_used || sess->state != ATTESTATION_STATE_PENDING ||
                 strcmp(sess->device_id, device_id) != 0 ||
                 strcmp(sess->release_id, release_id) != 0 ||
+                strcmp(sess->institution_id, device->institution_id) != 0 ||
+                strcmp(sess->purpose, expected_purpose) != 0 ||
                 time(NULL) - sess->created_at > 120) {
                 safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
                 pthread_mutex_unlock(&g_trust_lock);
@@ -1425,7 +1620,8 @@ int attestation_re_attest_challenge(const char *session_id, const char *device_i
                                             persisted_device, persisted_session,
                                             persisted_release) != 0 ||
             attestation_create_challenge(persisted_device, persisted_session,
-                                         persisted_release, out_new_nonce,
+                                         persisted_release, "", "re_attestation",
+                                         "system", out_new_nonce,
                                          new_attestation_id, error_code) != 0)
             return -1;
         return 0;

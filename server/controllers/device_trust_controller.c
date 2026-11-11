@@ -17,6 +17,7 @@
 #include "../audit/audit.h"
 #include "../include/attestation_service.h"
 #include "../include/enterprise_platform.h"
+#include "../include/ek_certificate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -167,14 +168,12 @@ static int device_ak_key_algorithm(const char *public_key_pem,
     int valid = 1;
     int key_type = EVP_PKEY_base_id(key);
     int key_bits = EVP_PKEY_bits(key);
+    /* Option A: RSA-only. ECC is not supported until the quote verifier
+     * implements ECDSA verification end-to-end. */
     if (key_type == EVP_PKEY_RSA && key_bits == 2048) {
         snprintf(algorithm, algorithm_len, "RSA-2048");
     } else if (key_type == EVP_PKEY_RSA && key_bits == 3072) {
         snprintf(algorithm, algorithm_len, "RSA-3072");
-    } else if (key_type == EVP_PKEY_EC && key_bits == 256) {
-        snprintf(algorithm, algorithm_len, "ECC-P256");
-    } else if (key_type == EVP_PKEY_EC && key_bits == 384) {
-        snprintf(algorithm, algorithm_len, "ECC-P384");
     } else {
         valid = 0;
     }
@@ -293,32 +292,36 @@ static void evaluate_device_trust(PGconn *conn, const char *device_id,
     }
 
     /* 6. Check OS Release Integrity */
-    if (req_rel && d_osrel[0]) {
+    if (req_rel && !d_osrel[0]) {
+        strncpy(out_outcome, "DENY", out_len - 1);
+        snprintf(out_reason, r_len, "An approved OS release identity is required by device trust policy");
+        return;
+    }
+    if (req_rel) {
         const char *rel_p[1] = { d_osrel };
         int rel_l[1] = { (int)strlen(d_osrel) };
         PGresult *rel_res = db_simple(conn,
             "SELECT status FROM device_os_releases WHERE release_version = $1", 1, rel_p, rel_l);
-        if (rel_res && PQntuples(rel_res) > 0) {
-            const char *r_stat = PQgetvalue(rel_res, 0, 0);
-            if (strcmp(r_stat, "revoked") == 0) {
-                PQclear(rel_res);
-                strncpy(out_outcome, "DENY", out_len - 1);
-                snprintf(out_reason, r_len, "ExamOS release has been revoked due to security advisory: %s", d_osrel);
-                return;
-            }
-            if (strcmp(r_stat, "active") != 0) {
-                PQclear(rel_res);
-                strncpy(out_outcome, "DENY", out_len - 1);
-                snprintf(out_reason, r_len, "ExamOS release is not approved for examination use: %s", d_osrel);
-                return;
-            }
-            PQclear(rel_res);
-        } else {
+        if (!rel_res || PQresultStatus(rel_res) != PGRES_TUPLES_OK) {
             if (rel_res) PQclear(rel_res);
             strncpy(out_outcome, "DENY", out_len - 1);
-            snprintf(out_reason, r_len, "Unrecognized ExamOS release: %s", d_osrel);
+            snprintf(out_reason, r_len, "OS release trust registry could not be verified");
             return;
         }
+        if (PQntuples(rel_res) != 1) {
+            PQclear(rel_res);
+            strncpy(out_outcome, "DENY", out_len - 1);
+            snprintf(out_reason, r_len, "OS release is missing or ambiguous in the trust registry: %s", d_osrel);
+            return;
+        }
+        const char *r_stat = PQgetvalue(rel_res, 0, 0);
+        if (strcmp(r_stat, "active") != 0) {
+            PQclear(rel_res);
+            strncpy(out_outcome, "DENY", out_len - 1);
+            snprintf(out_reason, r_len, "ExamOS release is not approved for examination use: %s", d_osrel);
+            return;
+        }
+        PQclear(rel_res);
     }
 
     /* All policy requirements satisfied: grant ALLOW */
@@ -357,6 +360,9 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         char boot_mode[32] = "unknown", sb_state[32] = "unknown";
         char tpm_ver[32] = "unknown", os_rel[64] = "unknown", kernel_v[64] = "unknown";
         char ak_pem[2048] = {0};
+        char ek_cert_pem[4096] = {0};
+        char ak_public_area_hex[2048] = {0};
+        char ak_name_hex[68] = {0};
         int tpm_present = 0;
 
         ctrl_json_string(body, "device_id", dev_id, sizeof(dev_id));
@@ -375,6 +381,9 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "os_release_id", os_rel, sizeof(os_rel));
         ctrl_json_string(body, "kernel_version", kernel_v, sizeof(kernel_v));
         ctrl_json_string(body, "ak_public_key_pem", ak_pem, sizeof(ak_pem));
+        ctrl_json_string(body, "ek_certificate_pem", ek_cert_pem, sizeof(ek_cert_pem));
+        ctrl_json_string(body, "ak_public_area_hex", ak_public_area_hex, sizeof(ak_public_area_hex));
+        ctrl_json_string(body, "ak_name_hex", ak_name_hex, sizeof(ak_name_hex));
 
         if (sess.role != ROLE_PLATFORM_OWNER) {
             if (!sess.institution_id[0] ||
@@ -401,10 +410,30 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         if (!device_ak_key_algorithm(ak_pem, ak_algorithm, sizeof(ak_algorithm))) {
             db_release(conn, 0);
             dt_send_error(client_fd, 400,
-                          "A valid RSA-2048, RSA-3072, ECC-P256, or ECC-P384 attestation public key is required",
+                          "A valid RSA-2048 or RSA-3072 attestation public key is required (ECC is not supported in this release)",
                           origin, extra_headers, extra_len);
             return;
         }
+
+        /* Phase 2: EK Certificate Validation (if provided) */
+        char ek_anchor_id[64] = {0};
+        char ek_error[256] = {0};
+        char ek_pub_pem[2048] = {0};
+        if (ek_cert_pem[0]) {
+            int ek_valid = ek_certificate_validate(ek_cert_pem, NULL, NULL,
+                                                    ek_anchor_id, ek_error,
+                                                    ek_pub_pem, sizeof(ek_pub_pem));
+            if (ek_valid != 0) {
+                db_release(conn, 0);
+                char err_response[512];
+                snprintf(err_response, sizeof(err_response),
+                         "EK certificate validation failed: %s", ek_error);
+                dt_send_error(client_fd, 400, err_response,
+                              origin, extra_headers, extra_len);
+                return;
+            }
+        }
+
         const char *tpm_mode = getenv("EXAMOS_TPM_MODE");
         if (tpm_mode && strcmp(tpm_mode, "production") == 0 &&
             !attestation_device_identity_matches(dev_id, inst_id, ak_pem)) {
@@ -561,15 +590,22 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         char fp[65];
         sha256_hex_str((const unsigned char *)ak_pem, strlen(ak_pem), fp);
 
-        const char *ak_p[6] = { ak_id, dev_id, "AK", ak_algorithm, ak_pem, fp };
-        int ak_l[6];
-        for (int i = 0; i < 6; i++) ak_l[i] = (int)strlen(ak_p[i]);
+        const char *ak_p[10] = { ak_id, dev_id, "AK", ak_algorithm, ak_pem, fp,
+                                 ak_public_area_hex[0] ? ak_public_area_hex : NULL,
+                                 ak_name_hex[0] ? ak_name_hex : NULL,
+                                 NULL, /* qualified_name */
+                                 NULL  /* template_id */
+                               };
+        int ak_l[10];
+        for (int i = 0; i < 10; i++) ak_l[i] = ak_p[i] ? (int)strlen(ak_p[i]) : 0;
 
         PGresult *ins_ak = db_simple(conn,
             "INSERT INTO device_attestation_keys "
-            "(id,device_id,key_name,key_algorithm,public_key_pem,public_key_fingerprint,status,enrolled_at) "
-            "VALUES ($1,$2,$3,$4,$5,$6,'active',EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
-            6, ak_p, ak_l);
+            "(id,device_id,key_name,key_algorithm,public_key_pem,public_key_fingerprint,"
+            "ak_public_area_hex,ak_name_hex,ak_qualified_name_hex,template_id,"
+            "status,enrolled_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+            10, ak_p, ak_l);
         if (!ins_ak || PQresultStatus(ins_ak) != PGRES_COMMAND_OK) {
             if (ins_ak) PQclear(ins_ak);
             PQexec(conn, "ROLLBACK");
@@ -579,6 +615,40 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             return;
         }
         PQclear(ins_ak);
+
+        /* Phase 2: Store EK Certificate if provided */
+        if (ek_cert_pem[0]) {
+            char ek_id[64];
+            snprintf(ek_id, sizeof(ek_id), "ek_%ld_%d", (long)time(NULL), rand() % 10000);
+
+            /* ek_pub_pem already extracted during validation */
+            char ek_fp[65] = {0};
+            if (ek_pub_pem[0]) {
+                sha256_hex_str((const unsigned char *)ek_pub_pem, strlen(ek_pub_pem), ek_fp);
+
+                const char *ek_p[7] = { ek_id, dev_id, inst_id, ek_cert_pem, ek_pub_pem, ek_fp,
+                                        ek_anchor_id[0] ? ek_anchor_id : NULL };
+                int ek_l[7];
+                for (int i = 0; i < 7; i++) ek_l[i] = ek_p[i] ? (int)strlen(ek_p[i]) : 0;
+
+                PGresult *ins_ek = db_simple(conn,
+                    "INSERT INTO device_ek_certificates "
+                    "(id,device_id,institution_id,ek_certificate_pem,ek_public_key_pem,ek_public_key_fingerprint,"
+                    "trust_anchor_id,trust_status,created_at,updated_at) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,'verified',EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                    "EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+                    7, ek_p, ek_l);
+                if (!ins_ek || PQresultStatus(ins_ek) != PGRES_COMMAND_OK) {
+                    if (ins_ek) PQclear(ins_ek);
+                    PQexec(conn, "ROLLBACK");
+                    db_release(conn, 0);
+                    dt_send_error(client_fd, 503, "EK certificate could not be persisted",
+                                  origin, extra_headers, extra_len);
+                    return;
+                }
+                PQclear(ins_ek);
+            }
+        }
 
         const char *registration_auditor = sess.user_id[0] ? sess.user_id : "system";
         if (record_device_audit(conn, dev_id, inst_id, registration_auditor,
@@ -990,59 +1060,69 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             return;
         }
 
-        /* ---------------- POST /api/v1/devices/:id/attestation/challenge (Fresh Nonce) ---------------- */
+        /* ---------------- POST /api/v1/devices/:id/attestation/challenge ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/attestation/challenge") == 0) {
             if (strcmp(d_status, "registered") != 0 &&
                 strcmp(d_status, "enrolled") != 0) {
                 db_release(conn, 0);
                 dt_send_error(client_fd, 409,
-                              "Only an active registered device can request an attestation challenge",
+                              "Only a registered or enrolled device can request an attestation challenge",
                               origin, extra_headers, extra_len);
                 return;
             }
-            unsigned char rand_buf[48];
-            if (RAND_bytes(rand_buf, sizeof(rand_buf)) != 1) {
+            /* Resolve the release_id this device is bound to from the
+             * attestation service registry. If the device is not enrolled
+             * in the attestation registry the challenge cannot be issued. */
+            char rel_id[64] = {0};
+            if (attestation_get_device_release(device_id, rel_id, sizeof(rel_id)) != 0) {
                 db_release(conn, 0);
-                dt_send_error(client_fd, 503,
-                              "Cryptographic randomness is unavailable",
+                dt_send_error(client_fd, 409,
+                              "Device has no approved attestation release; enroll the device in the attestation registry first",
                               origin, extra_headers, extra_len);
                 return;
             }
-            char nonce[65];
-            for (int i = 0; i < 32; i++) sprintf(nonce + (i * 2), "%02x", rand_buf[i]);
-            nonce[64] = '\0';
-
-            char ch_id[40] = "dch_";
-            for (int i = 0; i < 16; i++)
-                sprintf(ch_id + 4 + (i * 2), "%02x", rand_buf[32 + i]);
-
-            const char *cp[3] = { ch_id, device_id, nonce };
-            int cl[3] = { (int)strlen(ch_id), (int)strlen(device_id), (int)strlen(nonce) };
-
-            PGresult *ins_ch = db_simple(conn,
-                "INSERT INTO device_attestation_challenges (id, device_id, nonce, used, expires_at, created_at) "
-                "VALUES ($1, $2, $3, FALSE, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 + 120000, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)",
-                3, cp, cl);
-            if (!ins_ch || PQresultStatus(ins_ch) != PGRES_COMMAND_OK) {
-                if (ins_ch) PQclear(ins_ch);
+            /* Build a per-request session_id. */
+            unsigned char sid_rand[8];
+            if (RAND_bytes(sid_rand, sizeof(sid_rand)) != 1) {
                 db_release(conn, 0);
-                dt_send_error(client_fd, 503,
-                              "Attestation challenge could not be persisted",
+                dt_send_error(client_fd, 503, "Cryptographic randomness is unavailable",
                               origin, extra_headers, extra_len);
                 return;
             }
-            PQclear(ins_ch);
-
+            char sess_id[32] = "sess_dt_";
+            for (int i = 0; i < 8; i++)
+                sprintf(sess_id + 8 + (i * 2), "%02x", sid_rand[i]);
             db_release(conn, 0);
+            conn = NULL;
+
+            char nonce[128] = {0}, att_id[64] = {0}, error_code[64] = {0};
+            const char *actor = sess.user_id[0] ? sess.user_id : "agent";
+            if (attestation_create_challenge(device_id, sess_id, rel_id,
+                                             d_inst, "re_attestation", actor,
+                                             nonce, att_id, error_code) != 0) {
+                int http_status =
+                    strcmp(error_code, "P3_CHALLENGE_STORE_UNAVAILABLE") == 0 ||
+                    strcmp(error_code, "P3_REVOCATION_STORE_UNAVAILABLE") == 0
+                    ? 503 : 409;
+                char errbuf[256];
+                snprintf(errbuf, sizeof(errbuf),
+                         "Attestation challenge could not be issued: %s",
+                         error_code[0] ? error_code : "P3_CHALLENGE_FAILED");
+                dt_send_error(client_fd, http_status, errbuf,
+                              origin, extra_headers, extra_len);
+                return;
+            }
             char resp[512];
             snprintf(resp, sizeof(resp),
-                "{\"status\":\"CHALLENGE_ISSUED\",\"challenge_id\":\"%s\",\"device_id\":\"%s\",\"nonce\":\"%s\",\"expires_in_sec\":120}",
-                ch_id, device_id, nonce);
+                "{\"status\":\"CHALLENGE_ISSUED\",\"attestation_id\":\"%s\","
+                "\"device_id\":\"%s\",\"nonce\":\"%s\",\"expires_in_sec\":120}",
+                att_id, device_id, nonce);
+            OPENSSL_cleanse(nonce, sizeof(nonce));
             dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             return;
         }
 
-        /* ---------------- POST /api/v1/devices/:id/attestation/verify (Verify Quote) ---------------- */
+        /* ---------------- POST /api/v1/devices/:id/attestation/verify ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/attestation/verify") == 0) {
             if (strcmp(d_status, "registered") != 0 && strcmp(d_status, "enrolled") != 0) {
                 db_release(conn, 0);
@@ -1051,10 +1131,8 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                               origin, extra_headers, extra_len);
                 return;
             }
-
             /* Inject device_id into the evidence body so attestation_verify_evidence
              * can look up the AK and institution binding from the registry. */
-            char augmented[8192];
             size_t body_len = body ? strlen(body) : 0;
             if (body_len == 0 || body_len > 7900) {
                 db_release(conn, 0);
@@ -1062,7 +1140,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                               origin, extra_headers, extra_len);
                 return;
             }
-            /* Strip trailing } and append device_id field */
+            char augmented[8192];
             char trimmed[8192];
             strncpy(trimmed, body, sizeof(trimmed) - 1);
             trimmed[sizeof(trimmed) - 1] = '\0';
@@ -1072,33 +1150,28 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             trimmed[tlen] = '\0';
             snprintf(augmented, sizeof(augmented),
                      "%s,\"device_id\":\"%s\"}", trimmed, device_id);
+            db_release(conn, 0);
+            conn = NULL;
 
             char reason[64] = {0}, exam_key[EXAM_KEY_LEN + 1] = {0};
-            int verified = attestation_verify_evidence(augmented, reason, exam_key) == 0;
+            int verified = attestation_verify_evidence(augmented, "re_attestation", reason, exam_key) == 0;
             OPENSSL_cleanse(exam_key, sizeof(exam_key));
-
             if (verified) {
-                /* Update device last_attestation_at */
-                const char *ua_p[1] = { device_id };
-                int ua_l[1] = { (int)strlen(device_id) };
-                PGresult *ua_r = db_simple(conn,
-                    "UPDATE devices SET last_attestation_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
-                    "updated_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 WHERE id=$1",
-                    1, ua_p, ua_l);
-                if (ua_r) PQclear(ua_r);
-                record_device_audit(conn, device_id, d_inst, sess.user_id[0] ? sess.user_id : "agent",
-                                    "ATTESTATION_VERIFIED", reason);
-                dt_audit_log(sess.user_id[0] ? sess.user_id : "agent", "ATTESTATION_VERIFIED", device_id);
-                db_release(conn, 0);
+                PGconn *audit_conn = db_acquire();
+                if (audit_conn) {
+                    record_device_audit(audit_conn, device_id, d_inst,
+                                        sess.user_id[0] ? sess.user_id : "agent",
+                                        "ATTESTATION_VERIFIED", reason);
+                    db_release(audit_conn, 0);
+                }
+                dt_audit_log(sess.user_id[0] ? sess.user_id : "agent",
+                             "ATTESTATION_VERIFIED", device_id);
                 char resp[256];
                 snprintf(resp, sizeof(resp),
                     "{\"status\":\"VERIFIED\",\"device_id\":\"%s\",\"outcome\":\"TRUSTED\"}",
                     device_id);
                 dt_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
             } else {
-                record_device_security_event(conn, device_id, "ATTESTATION_FAILED", "WARNING",
-                                             reason[0] ? reason : "TPM quote verification failed");
-                db_release(conn, 0);
                 char resp[256];
                 snprintf(resp, sizeof(resp),
                     "{\"status\":\"REJECTED\",\"device_id\":\"%s\",\"error_code\":\"%s\"}",

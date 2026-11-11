@@ -23,6 +23,7 @@ SRCS = main.c \
        admin/enterprise_platform.c \
        admin/policy_catalog.c \
        security/secure_token.c \
+       security/release_signature.c \
        security/totp.c \
        login/candidate_login.c \
        login/session_store.c \
@@ -30,6 +31,8 @@ SRCS = main.c \
        attestation/attestation_service.c \
        attestation/attestation_config.c \
        attestation/tpm_quote.c \
+       attestation/ek_certificate.c \
+       attestation/credential_activation.c \
        gateway/key_release.c \
        proctoring/second_camera.c \
        db/db.c \
@@ -105,6 +108,9 @@ test-attestation-db:
 		$(LDFLAGS) -o "$$test_binary"; \
 	"$$test_binary"
 
+test-challenge-lifecycle:
+	bash ../tests/server/challenge-lifecycle-isolated-test.sh
+
 test-ledger:
 	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-ledger-test.XXXXXX"); \
 	trap 'rm -f -- "$$test_binary"' EXIT; \
@@ -137,7 +143,14 @@ test-session-store:
 		login/session_store.c login/candidate_login.c -lcrypto -lpthread -o "$$test_binary"; \
 	"$$test_binary"
 
+test-release-signature:
+	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-release-signature-test.XXXXXX"); \
+	trap 'rm -f -- "$$test_binary"' EXIT; \
+	$(CC) $(CFLAGS) ../tests/server/release-signature-verification-test.c \
+		security/release_signature.c -lcrypto -o "$$test_binary"; \
+	"$$test_binary"
+
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store
+.PHONY: all install clean test-attestation-db test-challenge-lifecycle test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store test-release-signature
