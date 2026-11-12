@@ -64,6 +64,20 @@ high-water sequence from durable, trusted state and commits a newly accepted
 sequence atomically with feed application. That persistence and application
 transaction are not yet integrated.
 
+## Non-production signing
+
+`tools/nonprod_signing.py sign-trust-feed` can sign an exact-byte feed with a
+separately provisioned, non-production AWS KMS ECDSA P-256 key and independently
+verify the resulting signature locally. It requires the public-key fingerprint
+to be supplied separately and validates the key's non-production alias, tags,
+region, and usage. Its mock-backed tests use ephemeral software keys only.
+
+The resulting bundle is not a production trust configuration. The server does
+not yet load the bundle, persist its sequence, or atomically apply its EK roots
+and revocations to enrolled devices. See
+[`non-production-signing.md`](non-production-signing.md) for the non-production
+workflow and its key prerequisites.
+
 ## Pending administrator decisions
 
 - Confirm the SPPIO Trust Authority identity and its enrollment/provisioning
