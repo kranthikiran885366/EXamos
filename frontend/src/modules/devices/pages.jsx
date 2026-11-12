@@ -149,7 +149,8 @@ export function EnrollmentPage() {
     manufacturer: '', model: '', cpu_arch: 'x86_64', boot_mode: 'UEFI',
     secure_boot_state: 'enabled', tpm_present: true, tpm_version: '2.0',
     os_release_id: '', kernel_version: '', ak_public_key_pem: '',
-    ek_certificate_pem: '', ak_public_area_hex: '', ak_name_hex: '',
+    ek_certificate_pem: '', ek_certificate_chain: '',
+    ak_public_area_hex: '', ak_name_hex: '',
   });
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -178,8 +179,9 @@ export function EnrollmentPage() {
   return (
     <Page title="Device Enrollment" desc="Register a hardware-backed device identity with the ExamOS trust backend.">
       {step === 'done' && (
-        <Alert tone="success" title="Device registered">
-          Device <b>{result?.device_id}</b> registered with status <b>{result?.status}</b>.
+        <Alert tone="success" title="Device registration recorded">
+          Device <b>{result?.device_id}</b> has status <b>{result?.status}</b>. Registration does not establish
+          TPM provenance: the device must complete credential activation and pass a fresh attestation before it is trusted.
           Secure Boot: {result?.secure_boot}, TPM: {result?.tpm_present ? 'present' : 'absent'}, OS: {result?.os_release}.
         </Alert>
       )}
@@ -240,17 +242,22 @@ export function EnrollmentPage() {
                 placeholder="-----BEGIN PUBLIC KEY-----&#10;...&#10;-----END PUBLIC KEY-----" />
             </Field>
             <Field label="EK certificate (PEM)" className="span2"
-              help="Optional: Endorsement Key certificate from TPM manufacturer. Required for EK-to-AK provenance in production mode.">
+              help="Must chain to a provisioned manufacturer or institutional trust anchor. Required for production provenance.">
               <Textarea rows={8} value={form.ek_certificate_pem || ''} onChange={(e) => set('ek_certificate_pem', e.target.value)}
                 placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" />
             </Field>
+            <Field label="EK intermediate certificate chain (PEM)" className="span2"
+              help="Optional intermediate CA certificates, in issuer order. Do not include an untrusted root.">
+              <Textarea rows={6} value={form.ek_certificate_chain || ''} onChange={(e) => set('ek_certificate_chain', e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" />
+            </Field>
             <Field label="AK public area (hex)" className="span2"
-              help="Optional: TPM public area of the AK in hexadecimal format. Can be omitted if device provides it during activation.">
+              help="Required TPMT_PUBLIC bytes, with or without the TPM2B size prefix. The server validates the approved RSA AK template.">
               <Textarea rows={4} value={form.ak_public_area_hex || ''} onChange={(e) => set('ak_public_area_hex', e.target.value)}
-                placeholder="000b..." />
+                placeholder="0001000b..." />
             </Field>
             <Field label="AK Name (hex)" className="span2"
-              help="Optional: TPM Name of the AK (SHA-256 hash of public area, 68 hex chars). Can be omitted if device provides it during activation.">
+              help="Required 34-byte TPM Name returned by the TPM for this public area (68 hex characters).">
               <Input value={form.ak_name_hex || ''} onChange={(e) => set('ak_name_hex', e.target.value)} maxLength={68} placeholder="000b64..." />
             </Field>
             <div className="span2">
@@ -267,7 +274,8 @@ export function EnrollmentPage() {
           <li>Institution must exist and have an active device trust policy.</li>
           <li>Device ID must be unique — duplicate registrations are rejected.</li>
           <li>AK public key must be RSA-2048 or RSA-3072. ECC is not supported in this release. Validated server-side.</li>
-          <li>Optional EK certificate enables EK-to-AK provenance validation in production mode.</li>
+          <li>AK public area attributes, RSASSA-SHA256 scheme, modulus, and TPM Name must match the submitted PEM.</li>
+          <li>EK certificate is optional at initial registration but required for credential activation and production trust.</li>
           <li>In production mode, device identity must match the signed production registry.</li>
           <li>If the policy requires admin approval, the device enters <b>pending_approval</b> state.</li>
           <li>TPM attestation challenge/verify is a separate step after approval.</li>

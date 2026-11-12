@@ -212,7 +212,7 @@ static int verify_schema(PGconn *connection) {
         "SELECT "
         "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='admin_auth'),0)>=8,"
         "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='exam_lifecycle'),0)>=4,"
-        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='device_fleet'),0)>=9");
+        "COALESCE((SELECT MAX(version) FROM examos_schema_migrations WHERE component='device_fleet'),0)>=44");
     int valid = 0;
     if (result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1) {
         valid = strcmp(PQgetvalue(result, 0, 0), "t") == 0 &&

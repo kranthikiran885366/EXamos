@@ -17,6 +17,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 
 static void os_audit_log(const char *actor, const char *event, const char *detail) {
@@ -52,14 +53,6 @@ static void os_json_escape(const char *input, char *output, size_t output_len) {
         }
     }
     output[pos] = '\0';
-}
-
-static void os_sha256_hex(const unsigned char *data, size_t data_len, char *output) {
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(data, data_len, digest);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        snprintf(output + i * 2, 3, "%02x", digest[i]);
-    }
 }
 
 static int os_evidence_digest(const char *test_type, const char *title,
@@ -129,6 +122,14 @@ static int semver_cmp(const char *v1, const char *v2) {
     if (maj1 != maj2) return maj1 - maj2;
     if (min1 != min2) return min1 - min2;
     return pat1 - pat2;
+}
+
+static int os_release_trust_valid(PGconn *conn, const char *release_pk) {
+    (void)conn;
+    (void)release_pk;
+    fprintf(stderr,
+            "[OSRelease] Release trust is blocked: the server does not yet verify RFC 8785 canonical bytes and authenticated revocation evidence.\n");
+    return -1;
 }
 
 void os_release_handle(int client_fd, const char *method, const char *path,
@@ -247,52 +248,6 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         }
         PQclear(mr);
 
-        const char *manifest_id_params[1] = { pk_id };
-        int manifest_id_lengths[1] = { (int)strlen(pk_id) };
-        PGresult *canonical = db_simple(conn,
-            "SELECT manifest_json::text FROM os_release_manifests WHERE release_id = $1",
-            1, manifest_id_params, manifest_id_lengths);
-        if (!canonical || PQresultStatus(canonical) != PGRES_TUPLES_OK ||
-            PQntuples(canonical) != 1) {
-            if (canonical) PQclear(canonical);
-            os_rollback_transaction(conn);
-            db_release(conn, 0);
-            os_send_error(client_fd, 503, "Persisted release manifest could not be read for digest calculation",
-                          origin, extra_headers, extra_len);
-            return;
-        }
-        char canonical_digest[SHA256_DIGEST_LENGTH * 2 + 1];
-        os_sha256_hex((const unsigned char *)PQgetvalue(canonical, 0, 0),
-                      (size_t)PQgetlength(canonical, 0, 0), canonical_digest);
-        PQclear(canonical);
-        snprintf(digest_value, sizeof(digest_value), "sha256:%s", canonical_digest);
-        const char *digest_params[2] = { digest_value, pk_id };
-        int digest_lengths[2] = { (int)strlen(digest_value), (int)strlen(pk_id) };
-        PGresult *digest_update = db_simple(conn,
-            "UPDATE os_releases SET manifest_digest = $1 WHERE id = $2",
-            2, digest_params, digest_lengths);
-        if (!digest_update || PQresultStatus(digest_update) != PGRES_COMMAND_OK) {
-            if (digest_update) PQclear(digest_update);
-            os_rollback_transaction(conn);
-            db_release(conn, 0);
-            os_send_error(client_fd, 503, "Release manifest digest could not be persisted",
-                          origin, extra_headers, extra_len);
-            return;
-        }
-        PQclear(digest_update);
-        digest_update = db_simple(conn,
-            "UPDATE os_release_manifests SET manifest_digest = $1 WHERE release_id = $2",
-            2, digest_params, digest_lengths);
-        if (!digest_update || PQresultStatus(digest_update) != PGRES_COMMAND_OK) {
-            if (digest_update) PQclear(digest_update);
-            os_rollback_transaction(conn);
-            db_release(conn, 0);
-            os_send_error(client_fd, 503, "Manifest digest record could not be persisted",
-                          origin, extra_headers, extra_len);
-            return;
-        }
-        PQclear(digest_update);
-
         PGresult *commit = PQexec(conn, "COMMIT");
         if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
             if (commit) PQclear(commit);
@@ -331,7 +286,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             "WHEN g.rollout_stage LIKE 'stage-%' THEN NULLIF(substring(g.rollout_stage FROM 7), '')::int "
             "ELSE 0 END) FROM os_deployment_groups g WHERE g.target_release_id = r.id), 0) "
             ", COALESCE(r.manifest_digest, ''), COALESCE(m.manifest_json::text, '{}'), "
-            "COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+            "FALSE, COALESCE(m.signature_value, '') "
             "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
             "ORDER BY r.created_at DESC");
 
@@ -414,14 +369,29 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             "SELECT r.id, r.release_id, r.version, r.kernel_version, r.status, r.minimum_supported_version, "
             "r.rollback_permitted, r.created_by, r.approved_by, r.approved_at, r.source_commit, r.toolchain_version, "
             "r.manifest_digest, r.manifest_signature, COALESCE(m.manifest_json::text, '{}'), "
-            "COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
+            "FALSE, COALESCE(m.signature_value, '') "
             "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
             "WHERE r.id = $1 OR r.release_id = $1", 1, qp, ql);
 
-        if (!r_res || PQntuples(r_res) == 0) {
+        if (!r_res || PQresultStatus(r_res) != PGRES_TUPLES_OK) {
             if (r_res) PQclear(r_res);
             db_release(conn, 0);
-            os_send_error(client_fd, 404, "OS release not found", origin, extra_headers, extra_len);
+            os_send_error(client_fd, 503, "OS release lookup failed",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        if (PQntuples(r_res) == 0) {
+            PQclear(r_res);
+            db_release(conn, 0);
+            os_send_error(client_fd, 404, "OS release not found",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        if (PQntuples(r_res) != 1) {
+            PQclear(r_res);
+            db_release(conn, 0);
+            os_send_error(client_fd, 409, "OS release identifier is ambiguous",
+                          origin, extra_headers, extra_len);
             return;
         }
 
@@ -441,6 +411,16 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         strncpy(r_verified, PQgetvalue(r_res, 0, 15), sizeof(r_verified) - 1);
         strncpy(r_manifest_sig, PQgetvalue(r_res, 0, 16), sizeof(r_manifest_sig) - 1);
         PQclear(r_res);
+
+        /* ---------------- POST /api/v1/os/releases/:id/verify-signature ---------------- */
+        if (strcmp(method, "POST") == 0 &&
+            strcmp(action, "/verify-signature") == 0) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 503,
+                          "Release verification is blocked until the server can verify RFC 8785 canonical bytes and authenticated revocation evidence",
+                          origin, extra_headers, extra_len);
+            return;
+        }
 
         /* ---------------- GET /api/v1/os/releases/:id (Details) ---------------- */
         if (strcmp(method, "GET") == 0 && action[0] == '\0') {
@@ -612,8 +592,14 @@ void os_release_handle(int client_fd, const char *method, const char *path,
 
         /* ---------------- POST /api/v1/os/releases/:id/activate (Make Active for Rollout) ---------------- */
         if (strcmp(method, "POST") == 0 && strcmp(action, "/activate") == 0) {
-            if (strcmp(r_stat, "approved") != 0 || strcmp(r_verified, "t") != 0 ||
-                !r_manifest_sig[0]) {
+            int trust_valid = os_release_trust_valid(conn, r_pk);
+            if (trust_valid < 0) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Release trust evidence could not be verified",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (strcmp(r_stat, "approved") != 0 || !trust_valid) {
                 db_release(conn, 0);
                 os_send_error(client_fd, 409, "Only a trusted, approved release can be activated",
                               origin, extra_headers, extra_len);
@@ -629,7 +615,15 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             PGresult *ur = db_simple(conn,
                 "UPDATE os_releases SET status = $1, rollback_permitted = $2, "
                 "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000 WHERE id = $3", 3, up, ul);
-            if (ur) PQclear(ur);
+            if (!ur || PQresultStatus(ur) != PGRES_COMMAND_OK ||
+                strcmp(PQcmdTuples(ur), "1") != 0) {
+                if (ur) PQclear(ur);
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Release activation could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(ur);
 
             os_audit_log(sess.username, "OS_RELEASE_ACTIVATED", r_id);
             db_release(conn, 0);
@@ -770,20 +764,19 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         const char *rp[1] = { target_rel };
         int rl[1] = { (int)strlen(target_rel) };
         PGresult *r_chk = db_simple(conn,
-            "SELECT r.id, r.status, COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
-            "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+            "SELECT r.id, r.status FROM os_releases r "
             "WHERE r.id = $1 OR r.release_id = $1", 1, rp, rl);
-        if (!r_chk || PQntuples(r_chk) == 0) {
+        if (!r_chk || PQresultStatus(r_chk) != PGRES_TUPLES_OK ||
+            PQntuples(r_chk) != 1) {
             if (r_chk) PQclear(r_chk);
             db_release(conn, 0);
-            os_send_error(client_fd, 404, "Target release does not exist", origin, extra_headers, extra_len);
+            os_send_error(client_fd, 404, "Target release does not exist or is ambiguous",
+                          origin, extra_headers, extra_len);
             return;
         }
-        char rel_pk[64], rel_stat[32], rel_verified[8], rel_signature[4096];
+        char rel_pk[64] = {0}, rel_stat[32] = {0};
         strncpy(rel_pk, PQgetvalue(r_chk, 0, 0), sizeof(rel_pk) - 1);
         strncpy(rel_stat, PQgetvalue(r_chk, 0, 1), sizeof(rel_stat) - 1);
-        strncpy(rel_verified, PQgetvalue(r_chk, 0, 2), sizeof(rel_verified) - 1);
-        strncpy(rel_signature, PQgetvalue(r_chk, 0, 3), sizeof(rel_signature) - 1);
         PQclear(r_chk);
 
         if (strcmp(rel_stat, "revoked") == 0) {
@@ -791,9 +784,15 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             os_send_error(client_fd, 403, "Cannot create deployment for revoked release", origin, extra_headers, extra_len);
             return;
         }
+        int trust_valid = os_release_trust_valid(conn, rel_pk);
+        if (trust_valid < 0) {
+            db_release(conn, 0);
+            os_send_error(client_fd, 503, "Release trust evidence could not be verified",
+                          origin, extra_headers, extra_len);
+            return;
+        }
         if ((strcmp(rel_stat, "approved") != 0 && strcmp(rel_stat, "active") != 0 &&
-             strcmp(rel_stat, "staged") != 0) || strcmp(rel_verified, "t") != 0 ||
-            !rel_signature[0]) {
+             strcmp(rel_stat, "staged") != 0) || !trust_valid) {
             db_release(conn, 0);
             os_send_error(client_fd, 409, "A trusted, verified release must be approved before deployment",
                           origin, extra_headers, extra_len);
@@ -1043,7 +1042,21 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 "r.signing_key_id, r.manifest_signature "
                 "FROM os_releases r "
                 "JOIN os_release_manifests m ON m.release_id = r.id AND m.verified = TRUE "
+                "JOIN os_release_signing_keys k ON k.key_id = r.signing_key_id "
                 "WHERE r.status = 'active' AND m.signature_value IS NOT NULL AND m.signature_value <> '' "
+                "AND m.signature_verified = TRUE AND m.signature_verified_at IS NOT NULL "
+                "AND r.trust_status = 'verified' AND r.verification_state = 'verified' "
+                "AND r.manifest_digest <> '' AND r.manifest_digest = m.manifest_digest "
+                "AND r.manifest_digest = m.signed_digest "
+                "AND r.manifest_digest = r.verification_digest "
+                "AND r.verification_at IS NOT NULL "
+                "AND r.verification_at > 0 "
+                "AND r.verification_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
+                "AND r.verification_expires_at > (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
+                "AND m.signature_verified_at > 0 "
+                "AND m.signature_verified_at <= (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000) "
+                "AND k.status = 'active' AND k.key_type = 'production' "
+                "AND k.public_key_pem <> '' AND k.key_fingerprint <> '' "
                 "AND EXISTS (SELECT 1 FROM os_deployment_assignments a "
                 "JOIN os_deployment_groups g ON g.id = a.group_id "
                 "WHERE a.device_id = $1 AND a.target_release_id = r.id AND g.status = 'active' "
@@ -1068,6 +1081,21 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             strncpy(t_key, PQgetvalue(rel_r, 0, 6), sizeof(t_key) - 1);
             strncpy(t_sig, PQgetvalue(rel_r, 0, 7), sizeof(t_sig) - 1);
             PQclear(rel_r);
+
+            int target_trust_valid = os_release_trust_valid(conn, t_pk);
+            if (target_trust_valid < 0) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Target release trust could not be verified",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (!target_trust_valid) {
+                db_release(conn, 0);
+                os_send_json(client_fd, 200,
+                    "{\"outcome\":\"BLOCKED\",\"reason\":\"Target release failed current cryptographic trust verification\"}",
+                    origin, extra_headers, extra_len);
+                return;
+            }
 
             /* Check if already running target release */
             if (strcmp(cur_release, t_id) == 0 || strcmp(cur_release, t_ver) == 0) {
@@ -1248,19 +1276,19 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             int rl[1] = { (int)strlen(rec_rel) };
             PGresult *rel_r = db_simple(conn,
                 "SELECT r.id, r.release_id, r.status, r.rollback_permitted, r.minimum_supported_version, "
-                "r.version, COALESCE(m.verified, FALSE), COALESCE(m.signature_value, '') "
-                "FROM os_releases r LEFT JOIN os_release_manifests m ON m.release_id = r.id "
+                "r.version FROM os_releases r "
                 "WHERE r.id = $1 OR r.release_id = $1", 1, rp, rl);
 
-            if (!rel_r || PQntuples(rel_r) == 0) {
+            if (!rel_r || PQresultStatus(rel_r) != PGRES_TUPLES_OK ||
+                PQntuples(rel_r) != 1) {
                 if (rel_r) PQclear(rel_r);
                 db_release(conn, 0);
-                os_send_error(client_fd, 404, "Recovery release does not exist", origin, extra_headers, extra_len);
+                os_send_error(client_fd, 404, "Recovery release does not exist or is ambiguous",
+                              origin, extra_headers, extra_len);
                 return;
             }
 
             char r_pk[64] = {0}, r_id[64] = {0}, r_stat[32] = {0}, r_min[64] = {0}, r_ver[64] = {0};
-            char target_verified[8] = {0}, target_signature[4096] = {0};
             int rollback_ok = 0;
             strncpy(r_pk, PQgetvalue(rel_r, 0, 0), sizeof(r_pk) - 1);
             strncpy(r_id, PQgetvalue(rel_r, 0, 1), sizeof(r_id) - 1);
@@ -1268,8 +1296,6 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             rollback_ok = (strcmp(PQgetvalue(rel_r, 0, 3), "t") == 0);
             strncpy(r_min, PQgetvalue(rel_r, 0, 4), sizeof(r_min) - 1);
             strncpy(r_ver, PQgetvalue(rel_r, 0, 5), sizeof(r_ver) - 1);
-            strncpy(target_verified, PQgetvalue(rel_r, 0, 6), sizeof(target_verified) - 1);
-            strncpy(target_signature, PQgetvalue(rel_r, 0, 7), sizeof(target_signature) - 1);
             PQclear(rel_r);
 
             /* Anti-Downgrade Violation 1: Release is revoked */
@@ -1304,7 +1330,14 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 return;
             }
 
-            if (strcmp(target_verified, "t") != 0 || !target_signature[0] ||
+            int recovery_trust_valid = os_release_trust_valid(conn, r_pk);
+            if (recovery_trust_valid < 0) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 503, "Recovery release trust evidence could not be verified",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            if (!recovery_trust_valid ||
                 (strcmp(r_stat, "active") != 0 && strcmp(r_stat, "approved") != 0 &&
                  strcmp(r_stat, "retired") != 0)) {
                 db_release(conn, 0);

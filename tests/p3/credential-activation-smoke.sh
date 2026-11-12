@@ -65,10 +65,20 @@ AK_NAME_HEX=$(xxd -p -c 1000 "$WORK_DIR/ak.name" | tr -d '\n')
     exit 1
 }
 
-openssl rand -out "$WORK_DIR/challenge.secret" 32
-TPM2TOOLS_TCTI=none tpm2_makecredential -Q -G rsa \
-    -u "$WORK_DIR/ek.pem" -s "$WORK_DIR/challenge.secret" \
-    -n "$AK_NAME_HEX" -o "$WORK_DIR/credential.blob"
+WORKSPACE=$(cd "$(dirname "$0")/../.." && pwd)
+cc -std=c11 -Wall -Wextra -Werror -I"$WORKSPACE/server/include" \
+    "$WORKSPACE/tests/server/credential_activation_module_test.c" \
+    "$WORKSPACE/server/attestation/credential_activation.c" \
+    -lcrypto -o "$WORK_DIR/credential-activation-module-test"
+export EXAMOS_CREDENTIAL_ACTIVATION_KEY
+EXAMOS_CREDENTIAL_ACTIVATION_KEY=$(openssl rand -hex 32)
+"$WORK_DIR/credential-activation-module-test" issue \
+    "$WORK_DIR/ek.pem" "$AK_NAME_HEX" \
+    "$WORK_DIR/credential.blob.hex" "$WORK_DIR/activation.info"
+mapfile -t ACTIVATION_INFO < "$WORK_DIR/activation.info"
+ACTIVATION_ID="${ACTIVATION_INFO[0]}"
+ACTIVATION_MAC="${ACTIVATION_INFO[1]}"
+xxd -r -p "$WORK_DIR/credential.blob.hex" > "$WORK_DIR/credential.blob"
 
 # Clear transient/session slots left by provisioning without touching the
 # persistent EK. This mirrors a challenge arriving after enrollment.
@@ -80,10 +90,15 @@ tpm2_activatecredential -c "$WORK_DIR/ak.ctx" -C "$EK_HANDLE" \
     -i "$WORK_DIR/credential.blob" -o "$WORK_DIR/recovered.secret" \
     -P "session:$WORK_DIR/policy.ctx" >/dev/null
 
-if ! cmp -s "$WORK_DIR/challenge.secret" "$WORK_DIR/recovered.secret"; then
-    echo "[P3-ACTIVATE] FAIL: activated credential does not match challenge" >&2
-    exit 1
-fi
+"$WORK_DIR/credential-activation-module-test" verify \
+    "$ACTIVATION_ID" "$(xxd -p -c 1000 "$WORK_DIR/recovered.secret")" \
+    "$ACTIVATION_MAC"
+"$WORK_DIR/credential-activation-module-test" reject-device \
+    "$ACTIVATION_ID" "$(xxd -p -c 1000 "$WORK_DIR/recovered.secret")" \
+    "$ACTIVATION_MAC"
+"$WORK_DIR/credential-activation-module-test" reject-institution \
+    "$ACTIVATION_ID" "$(xxd -p -c 1000 "$WORK_DIR/recovered.secret")" \
+    "$ACTIVATION_MAC"
 
-echo "[P3-ACTIVATE] PASS: MakeCredential/ActivateCredential proved EK-AK co-residency"
+echo "[P3-ACTIVATE] PASS: server MakeCredential and TPM ActivateCredential verified with device binding"
 echo "[P3-ACTIVATE] AK TPM Name: $AK_NAME_HEX"

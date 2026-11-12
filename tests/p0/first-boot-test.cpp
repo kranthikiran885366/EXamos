@@ -182,23 +182,27 @@ bool redact_password(const char* path, const std::string& password) {
     return output.good();
 }
 
-bool wait_for_login_result(int socket, FILE* log, std::string& transcript) {
+bool valid_login_result(const std::string& transcript) {
     const std::regex result_line(
-        R"((^|\n)EXAMOS_P0_LOGIN_OK=([1-9][0-9]*)\|([^|\r\n]*)\|([^\r\n]*)\r?\n)");
+        R"((^|[\r\n])EXAMOS_P0_LOGIN_OK=([1-9][0-9]*)\|([^|\r\n]*)\|([^\r\n]*)[\r\n])");
+    const std::regex sudo_group(R"((^|\s)sudo(\s|$))");
+    const std::string normalized = strip_terminal_controls(transcript);
+    std::smatch match;
+    if (!std::regex_search(normalized, match, result_line)) return false;
+
+    const std::string uid = match[2].str();
+    const bool non_root_uid =
+        uid.size() > 4 || (uid.size() == 4 && uid >= "1000");
+    return non_root_uid &&
+           std::regex_search(match[3].str(), sudo_group) &&
+           match[4].str() == "0:0:755";
+}
+
+bool wait_for_login_result(int socket, FILE* log, std::string& transcript) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     std::vector<char> buffer(4096);
-    std::smatch match;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (std::regex_search(transcript, match, result_line)) {
-            const std::string uid = match[2].str();
-            const std::string groups = match[3].str();
-            const std::regex sudo_group(R"((^|\s)sudo(\s|$))");
-            const bool non_root_uid =
-                uid.size() > 4 || (uid.size() == 4 && uid >= "1000");
-            return non_root_uid &&
-                   std::regex_search(groups, sudo_group) &&
-                   match[4].str() == "0:0:755";
-        }
+        if (valid_login_result(transcript)) return true;
         struct pollfd descriptor { socket, POLLIN, 0 };
         const int ready = poll(&descriptor, 1, 1000);
         if (ready < 0) {
@@ -227,6 +231,22 @@ bool wait_for_login_result(int socket, FILE* log, std::string& transcript) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 && std::strcmp(argv[1], "--self-test-login-result") == 0) {
+        const std::string valid =
+            "serial output\r\n\x1b[32mEXAMOS_P0_LOGIN_OK="
+            "1000|exam-user sudo|0:0:755\r\n";
+        const std::string invalid_root =
+            "EXAMOS_P0_LOGIN_OK=0|root|0:0:755\n";
+        const std::string invalid_mode =
+            "EXAMOS_P0_LOGIN_OK=1000|exam-user sudo|0:0:644\n";
+        if (!valid_login_result(valid) || valid_login_result(invalid_root) ||
+            valid_login_result(invalid_mode)) {
+            std::cerr << "serial login result parser self-test failed\n";
+            return 1;
+        }
+        std::cout << "serial login result parser self-test passed\n";
+        return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--allocate-port") == 0) {
         const int port_socket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (port_socket < 0) {

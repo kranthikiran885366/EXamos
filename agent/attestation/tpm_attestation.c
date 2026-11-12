@@ -86,6 +86,180 @@ static int read_quote_output(const char *path, unsigned char *buffer,
     return 0;
 }
 
+static void bytes_to_hex(const unsigned char *bytes, size_t length, char *out);
+
+static int run_tpm_tool(char *const arguments[]) {
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+        if (setenv("TPM2TOOLS_TCTI", "tabrmd", 1) != 0) _exit(126);
+        execvp(arguments[0], arguments);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static int decode_hex(const char *input, unsigned char *output, size_t output_capacity,
+                      size_t *out_length) {
+    if (!input || !output || !out_length) return -1;
+    size_t input_length = strlen(input);
+    if (input_length == 0 || (input_length & 1) != 0 ||
+        input_length / 2 > output_capacity) return -1;
+    for (size_t i = 0; i < input_length / 2; ++i) {
+        unsigned int byte = 0;
+        if (sscanf(input + i * 2, "%2x", &byte) != 1 ||
+            !isxdigit((unsigned char)input[i * 2]) ||
+            !isxdigit((unsigned char)input[i * 2 + 1])) return -1;
+        output[i] = (unsigned char)byte;
+    }
+    *out_length = input_length / 2;
+    return 0;
+}
+
+static int write_tpm_private_file(const char *path, const void *data, size_t length) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return -1;
+    const unsigned char *bytes = data;
+    size_t written = 0;
+    while (written < length) {
+        ssize_t count = write(fd, bytes + written, length - written);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            close(fd);
+            return -1;
+        }
+        written += (size_t)count;
+    }
+    return close(fd);
+}
+
+int tpm_attestation_get_ak_name(char *out_name_hex, size_t out_size) {
+    if (!out_name_hex || out_size < 69 || !g_tpm_detected) return -1;
+    out_name_hex[0] = '\0';
+    const char *handle = getenv("EXAMOS_TPM_AK_HANDLE");
+    if (!valid_tpm_handle(handle)) return -1;
+    char work_dir[] = "/tmp/examos-tpm-name.XXXXXX";
+    char name_path[PATH_MAX];
+    if (!mkdtemp(work_dir)) return -1;
+    if (chmod(work_dir, 0700) != 0) {
+        rmdir(work_dir);
+        return -1;
+    }
+    int path_len = snprintf(name_path, sizeof(name_path), "%s/ak.name", work_dir);
+    if (path_len < 0 || (size_t)path_len >= sizeof(name_path)) {
+        rmdir(work_dir);
+        return -1;
+    }
+    char *const arguments[] = {
+        "tpm2_readpublic", "--object-context", (char *)handle,
+        "--name", name_path, NULL
+    };
+    unsigned char name[64] = {0};
+    size_t name_len = 0;
+    int result = run_tpm_tool(arguments) == 0 &&
+                 read_quote_output(name_path, name, sizeof(name), &name_len) == 0 &&
+                 name_len == 34 && name[0] == 0x00 && name[1] == 0x0b;
+    if (result) bytes_to_hex(name, name_len, out_name_hex);
+    unlink(name_path);
+    rmdir(work_dir);
+    OPENSSL_cleanse(name, sizeof(name));
+    return result ? 0 : -1;
+}
+
+int tpm_attestation_activate_credential(const char *credential_blob_hex,
+                                        char *out_response_hex,
+                                        size_t out_response_size) {
+    if (!credential_blob_hex || !out_response_hex || out_response_size < 65 ||
+        !g_tpm_detected) return -1;
+    out_response_hex[0] = '\0';
+    const char *ak_handle = getenv("EXAMOS_TPM_AK_HANDLE");
+    const char *ek_handle = getenv("EXAMOS_TPM_EK_HANDLE");
+    if (!valid_tpm_handle(ak_handle) || !valid_tpm_handle(ek_handle)) return -1;
+
+    unsigned char blob[4096] = {0}, secret[64] = {0};
+    size_t blob_len = 0, secret_len = 0;
+    if (decode_hex(credential_blob_hex, blob, sizeof(blob), &blob_len) != 0) {
+        OPENSSL_cleanse(blob, sizeof(blob));
+        return -1;
+    }
+    char work_dir[] = "/tmp/examos-tpm-activate.XXXXXX";
+    char blob_path[PATH_MAX] = {0}, session_path[PATH_MAX] = {0};
+    char secret_path[PATH_MAX] = {0};
+    if (!mkdtemp(work_dir)) {
+        OPENSSL_cleanse(blob, sizeof(blob));
+        return -1;
+    }
+    if (chmod(work_dir, 0700) != 0) {
+        rmdir(work_dir);
+        OPENSSL_cleanse(blob, sizeof(blob));
+        return -1;
+    }
+    int a = snprintf(blob_path, sizeof(blob_path), "%s/credential.blob", work_dir);
+    int b = snprintf(session_path, sizeof(session_path), "%s/policy.ctx", work_dir);
+    int c = snprintf(secret_path, sizeof(secret_path), "%s/secret.bin", work_dir);
+    int paths_valid = a > 0 && (size_t)a < sizeof(blob_path) &&
+                      b > 0 && (size_t)b < sizeof(session_path) &&
+                      c > 0 && (size_t)c < sizeof(secret_path);
+    int result = paths_valid &&
+        write_tpm_private_file(blob_path, blob, blob_len) == 0;
+    if (result) {
+        char *const start_arguments[] = {
+            "tpm2_startauthsession", "--policy-session", "-S", session_path, NULL
+        };
+        result = run_tpm_tool(start_arguments) == 0;
+    }
+    if (result) {
+        char *const policy_arguments[] = {
+            "tpm2_policysecret", "-S", session_path, "-c", (char *)ek_handle, NULL
+        };
+        result = run_tpm_tool(policy_arguments) == 0;
+    }
+    if (result) {
+        char password_session[PATH_MAX + 9];
+        int auth_len = snprintf(password_session, sizeof(password_session),
+                                "session:%s", session_path);
+        if (auth_len < 0 || (size_t)auth_len >= sizeof(password_session)) {
+            result = 0;
+        } else {
+            char *const activate_arguments[] = {
+                "tpm2_activatecredential", "-c", (char *)ak_handle,
+                "-C", (char *)ek_handle, "-i", blob_path, "-o", secret_path,
+                "-P", password_session, NULL
+            };
+            result = run_tpm_tool(activate_arguments) == 0;
+        }
+        OPENSSL_cleanse(password_session, sizeof(password_session));
+    }
+    if (result)
+        result = read_quote_output(secret_path, secret, sizeof(secret), &secret_len) == 0 &&
+                 secret_len == 32;
+    if (session_path[0]) {
+        char *const flush_arguments[] = {
+            "tpm2_flushcontext", session_path, NULL
+        };
+        (void)run_tpm_tool(flush_arguments);
+    }
+    if (blob_path[0]) unlink(blob_path);
+    if (session_path[0]) unlink(session_path);
+    if (secret_path[0]) unlink(secret_path);
+    rmdir(work_dir);
+    if (result) bytes_to_hex(secret, secret_len, out_response_hex);
+    OPENSSL_cleanse(blob, sizeof(blob));
+    OPENSSL_cleanse(secret, sizeof(secret));
+    if (!result) OPENSSL_cleanse(out_response_hex, out_response_size);
+    return result ? 0 : -1;
+}
+
 static void bytes_to_hex(const unsigned char *bytes, size_t length, char *out) {
     static const char digits[] = "0123456789abcdef";
     for (size_t i = 0; i < length; ++i) {

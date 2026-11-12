@@ -195,21 +195,27 @@ if [[ "$PERSISTED_NAME" != "$CREATED_NAME" ]] ||
     exit 1
 fi
 AK_PUBLIC_SHA256=$(sha256sum "$WORK_DIR/ak-public.der" | cut -d' ' -f1)
+AK_PUBLIC_AREA_HEX=$(xxd -p -c 10000 "$WORK_DIR/ak-public.tss" | tr -d '\n')
+if [[ -z "$AK_PUBLIC_AREA_HEX" || $((${#AK_PUBLIC_AREA_HEX} % 2)) -ne 0 ]]; then
+    echo "FAIL: TPM did not return a valid AK public area." >&2
+    echo "The persistent objects at $EK_HANDLE and $AK_HANDLE were not removed; preserve the device and investigate before retrying." >&2
+    exit 1
+fi
 EK_CERT_PEM=$(cat "$WORK_DIR/ek-cert.pem")
 AK_PEM=$(cat "$WORK_DIR/ak.pem")
 TPM_PROPERTIES=$(tpm2_getcap properties-fixed)
 
 python3 - "$OUTPUT" "$EXAMOS_DEVICE_ID" "$EXAMOS_INSTITUTION_ID" "$EXAMOS_RELEASE_ID" "$EK_HANDLE" \
     "$AK_HANDLE" "$EK_FINGERPRINT" "$CREATED_NAME" "$AK_QUALIFIED_NAME" "$AK_PUBLIC_SHA256" \
-    "$EK_CERT_PEM" "$AK_PEM" "$TPM_PROPERTIES" "$CA_STORE_DIGEST" <<'PY'
+    "$AK_PUBLIC_AREA_HEX" "$EK_CERT_PEM" "$AK_PEM" "$TPM_PROPERTIES" "$CA_STORE_DIGEST" <<'PY'
 import json
 import pathlib
 import sys
 
 (
     output, device_id, institution_id, release_id, ek_handle, ak_handle, ek_fingerprint, ak_name,
-    ak_qualified_name, ak_public_sha256, ek_certificate, ak_public, properties,
-    ca_store_sha256,
+    ak_qualified_name, ak_public_sha256, ak_public_area_hex, ek_certificate, ak_public,
+    properties, ca_store_sha256,
 ) = sys.argv[1:]
 record = {
     "_schema": "examos-physical-tpm-enrollment-request-v1",
@@ -221,10 +227,17 @@ record = {
     "tpm_ak_handle": ak_handle,
     "ek_fingerprint": ek_fingerprint,
     "ek_certificate_pem": ek_certificate,
+    "ek_certificate_chain": "",
     "ak_name": ak_name,
+    "ak_name_hex": ak_name,
     "ak_qualified_name": ak_qualified_name,
     "ak_pub_sha256": ak_public_sha256,
     "ak_public_pem": ak_public,
+    "ak_public_key_pem": ak_public,
+    "ak_public_area_hex": ak_public_area_hex,
+    "tpm_present": True,
+    "tpm_version": "2.0",
+    "os_release_id": release_id,
     "tpm_fixed_properties": properties,
     "tpm_manufacturer_ca_store_sha256": ca_store_sha256,
     "approval_requirements": [

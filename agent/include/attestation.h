@@ -29,6 +29,10 @@ typedef struct {
 } attestation_report_t;
 
 int tpm_attestation_init(void);
+int tpm_attestation_get_ak_name(char *out_name_hex, size_t out_size);
+int tpm_attestation_activate_credential(const char *credential_blob_hex,
+                                       char *out_response_hex,
+                                       size_t out_response_size);
 /* Generates a real TPM 2.0 Quote with the provisioned persistent AK. */
 int tpm_attestation_generate_report(const char *device_id, const char *release_id, const char *nonce, attestation_report_t *report);
 int tpm_attestation_format_json(const attestation_report_t *report, char *out_buf, size_t max_len);

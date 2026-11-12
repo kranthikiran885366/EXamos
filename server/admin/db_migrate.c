@@ -60,6 +60,10 @@ static const migration_t migrations[] = {
     {"038_institution_application_review_checklist.sql",     "institutions",               3},
     {"039_approval_execution_separation.sql",                 "approval_governance",        2},
     {"040_candidate_exam_url_assignments.sql",                "candidate_exam_url_assignments", 1},
+    {"041_release_engineering_pipeline.sql",                  "os_releases",               41},
+    {"042_challenge_lifecycle_enhancements.sql",               "device_fleet",              42},
+    {"043_rsa_only_ak_algorithm.sql",                          "device_fleet",              43},
+    {"044_tpm_credential_activation.sql",                       "device_fleet",              44},
 };
 
 /*

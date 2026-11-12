@@ -92,79 +92,47 @@ else
 fi
 
 # ======================================================================
-# CHECK 3: Request Fresh Attestation Challenge (Anti-Replay Nonce)
+# CHECK 3: Retired device-specific challenge route fails closed
 # ======================================================================
-CH_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/challenge" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}")
-
-CH_NONCE=$(echo "$CH_RESP" | grep -o '"nonce":"[^"]*' | cut -d'"' -f4)
-CH_ID=$(echo "$CH_RESP" | grep -o '"challenge_id":"[^"]*' | cut -d'"' -f4)
-
-if [ -n "$CH_NONCE" ] && [ -n "$CH_ID" ] && echo "$CH_RESP" | grep -q '"status":"CHALLENGE_ISSUED"'; then
-    log_pass "Check 3: Fresh attestation challenge issued with cryptographic nonce: ${CH_NONCE:0:16}..."
+LEGACY_CHALLENGE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/challenge" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN_ADMIN")
+if [ "$LEGACY_CHALLENGE_STATUS" = "410" ]; then
+    log_pass "Check 3: Legacy challenge route is retired"
 else
-    log_fail "Check 3: Attestation challenge creation failed: $CH_RESP"
-    exit 1
+    log_fail "Check 3: Legacy challenge route returned HTTP $LEGACY_CHALLENGE_STATUS instead of 410"
 fi
 
 # ======================================================================
-# CHECK 4: Reject Invalid / Corrupt Quote Signature
+# CHECK 4: Retired device-specific verification route fails closed
 # ======================================================================
-BAD_SIG_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/verify" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" \
-    -d "{\"challenge_id\":\"${CH_ID}\",\"nonce\":\"${CH_NONCE}\",\"quote_signature\":\"INVALID_SIGNATURE\"}")
-
-if echo "$BAD_SIG_RESP" | grep -q "verification failed"; then
-    log_pass "Check 4: Invalid TPM quote signature correctly rejected"
+LEGACY_VERIFY_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/verify" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN_ADMIN" \
+    -d '{}')
+if [ "$LEGACY_VERIFY_STATUS" = "410" ]; then
+    log_pass "Check 4: Legacy verification route is retired"
 else
-    log_fail "Check 4: Invalid quote signature was not rejected: $BAD_SIG_RESP"
+    log_fail "Check 4: Legacy verification route returned HTTP $LEGACY_VERIFY_STATUS instead of 410"
 fi
 
-# ======================================================================
-# CHECK 5: Verify Valid TPM 2.0 Quote & Record Evidence
-# ======================================================================
-# Request new challenge since bad sig used previous nonce
-CH2_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/challenge" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}")
-CH2_NONCE=$(echo "$CH2_RESP" | grep -o '"nonce":"[^"]*' | cut -d'"' -f4)
-
-VERIFY_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/verify" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" \
-    -d "{\"nonce\":\"${CH2_NONCE}\",\"quote_signature\":\"a3b8c9d0e1f2a3b8c9d0e1f2a3b8c9d0e1f2a3b8\",\"pcr_digest\":\"sha256:d8e8fca2dc0f896fd7cb4cb0031ba249\"}")
-
-if echo "$VERIFY_RESP" | grep -q '"verification_result":"TRUSTED"' && echo "$VERIFY_RESP" | grep -q '"outcome":"ALLOW"'; then
-    log_pass "Check 5: TPM quote verified and trusted evidence recorded"
-else
-    log_fail "Check 5: Attestation verification failed: $VERIFY_RESP"
-fi
+# The real TPM quote flow is exercised by the native agent against an authorized
+# device and exam session; this fixture must not fabricate a signature or quote.
 
 # ======================================================================
-# CHECK 6: Anti-Replay Protection (Reject Reused Challenge Nonce)
-# ======================================================================
-REPLAY_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/attestation/verify" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" \
-    -d "{\"nonce\":\"${CH2_NONCE}\",\"quote_signature\":\"a3b8c9d0e1f2a3b8c9d0e1f2a3b8c9d0e1f2a3b8\"}")
-
-if echo "$REPLAY_RESP" | grep -q "anti-replay violation"; then
-    log_pass "Check 6: Replayed nonce challenge rejected with anti-replay violation"
-else
-    log_fail "Check 6: Replay attack was not prevented: $REPLAY_RESP"
-fi
-
-# ======================================================================
-# CHECK 7: Device Trust Decision Evaluation (ALLOW)
+# CHECK 5: Device Trust Decision Evaluation (ALLOW)
 # ======================================================================
 TRUST_RESP=$(curl -s -X GET "${BASE_URL}/api/v1/devices/${DEV1_ID}/trust-status" \
     -H "Authorization: Bearer ${TOKEN_ADMIN}")
 
 if echo "$TRUST_RESP" | grep -q '"outcome":"ALLOW"'; then
-    log_pass "Check 7: Device trust evaluation returned ALLOW"
+    log_pass "Check 5: Device trust evaluation returned ALLOW"
 else
-    log_fail "Check 7: Device trust evaluation failed: $TRUST_RESP"
+    log_fail "Check 5: Device trust evaluation failed: $TRUST_RESP"
 fi
 
 # ======================================================================
-# CHECK 8: Secure Boot Disabled Failure Policy (DENY)
+# CHECK 6: Secure Boot Disabled Failure Policy (DENY)
 # ======================================================================
 DEV_NOSB_ID="dev_nosb_test"
 curl -s -X POST "${BASE_URL}/api/v1/devices/register" \
@@ -175,13 +143,13 @@ TRUST_NOSB=$(curl -s -X GET "${BASE_URL}/api/v1/devices/${DEV_NOSB_ID}/trust-sta
     -H "Authorization: Bearer ${TOKEN_ADMIN}")
 
 if echo "$TRUST_NOSB" | grep -q '"outcome":"DENY"' && echo "$TRUST_NOSB" | grep -q "Secure Boot verification failed"; then
-    log_pass "Check 8: Device with disabled Secure Boot denied trust"
+    log_pass "Check 6: Device with disabled Secure Boot denied trust"
 else
-    log_fail "Check 8: Insecure boot state was not denied: $TRUST_NOSB"
+    log_fail "Check 6: Insecure boot state was not denied: $TRUST_NOSB"
 fi
 
 # ======================================================================
-# CHECK 9: Missing TPM Failure Policy (UNSUPPORTED)
+# CHECK 7: Missing TPM Failure Policy (UNSUPPORTED)
 # ======================================================================
 DEV_NOTPM_ID="dev_notpm_test"
 curl -s -X POST "${BASE_URL}/api/v1/devices/register" \
@@ -192,22 +160,22 @@ TRUST_NOTPM=$(curl -s -X GET "${BASE_URL}/api/v1/devices/${DEV_NOTPM_ID}/trust-s
     -H "Authorization: Bearer ${TOKEN_ADMIN}")
 
 if echo "$TRUST_NOTPM" | grep -q '"outcome":"UNSUPPORTED"'; then
-    log_pass "Check 9: Device without TPM hardware marked UNSUPPORTED"
+    log_pass "Check 7: Device without TPM hardware marked UNSUPPORTED"
 else
-    log_fail "Check 9: Missing TPM was not handled: $TRUST_NOTPM"
+    log_fail "Check 7: Missing TPM was not handled: $TRUST_NOTPM"
 fi
 
 # ======================================================================
-# CHECK 10: Device Assignment & Conflict Prevention
+# CHECK 8: Device Assignment & Conflict Prevention
 # ======================================================================
 ASG1_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/assign" \
     -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" \
     -d "{\"student_id\":\"${STU_ID}\",\"exam_id\":\"${EXAM_ID}\"}")
 
 if echo "$ASG1_RESP" | grep -q '"status":"assigned"'; then
-    log_pass "Check 10a: Device successfully assigned to student: ${STU_ID}"
+    log_pass "Check 8a: Device successfully assigned to student: ${STU_ID}"
 else
-    log_fail "Check 10a: Failed to assign device: $ASG1_RESP"
+    log_fail "Check 8a: Failed to assign device: $ASG1_RESP"
 fi
 
 # Overlapping Assignment Attempt for different student
@@ -216,13 +184,13 @@ ASG_CONFLICT=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/assign" \
     -d "{\"student_id\":\"stu_different_candidate\",\"exam_id\":\"${EXAM_ID}\"}")
 
 if echo "$ASG_CONFLICT" | grep -q "already actively assigned"; then
-    log_pass "Check 10b: Overlapping active device assignment blocked (409 conflict)"
+    log_pass "Check 8b: Overlapping active device assignment blocked (409 conflict)"
 else
-    log_fail "Check 10b: Conflicting assignment was not blocked: $ASG_CONFLICT"
+    log_fail "Check 8b: Conflicting assignment was not blocked: $ASG_CONFLICT"
 fi
 
 # ======================================================================
-# CHECK 11: Master Exam Launch Authorization Integration (Modules 9-13)
+# CHECK 9: Master Exam Launch Authorization Integration (Modules 9-13)
 # ======================================================================
 LAUNCH_GATE_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/exam-launch/authorize" \
     -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" \
@@ -231,13 +199,13 @@ LAUNCH_GATE_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/exam-launch/authorize" \
 if echo "$LAUNCH_GATE_RESP" | grep -q '"status":"launch_authorized"' && \
    echo "$LAUNCH_GATE_RESP" | grep -q '"launch_token":' && \
    echo "$LAUNCH_GATE_RESP" | grep -q "https://exam.vignan.ac.in/portal/os13"; then
-    log_pass "Check 11: Master launch authorization gate passed: verified Device Trust, Student Eligibility, and Session Token"
+    log_pass "Check 9: Master launch authorization gate passed: verified Device Trust, Student Eligibility, and Session Token"
 else
-    log_fail "Check 11: Master launch authorization failed: $LAUNCH_GATE_RESP"
+    log_fail "Check 9: Master launch authorization failed: $LAUNCH_GATE_RESP"
 fi
 
 # ======================================================================
-# CHECK 12: Launch Denied When Device Is Untrusted or Suspended
+# CHECK 10: Launch Denied When Device Is Untrusted or Suspended
 # ======================================================================
 # Suspend DEV1
 curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/suspend" \
@@ -249,9 +217,9 @@ SUSPENDED_LAUNCH=$(curl -s -X POST "${BASE_URL}/api/v1/exam-launch/authorize" \
     -d "{\"device_id\":\"${DEV1_ID}\",\"student_id\":\"${STU_ID}\",\"examination_id\":\"${EXAM_ID}\"}")
 
 if echo "$SUSPENDED_LAUNCH" | grep -q "DEVICE_TRUST_FAILED"; then
-    log_pass "Check 12: Exam launch correctly blocked for suspended / untrusted device"
+    log_pass "Check 10: Exam launch correctly blocked for suspended / untrusted device"
 else
-    log_fail "Check 12: Suspended device was permitted to launch exam: $SUSPENDED_LAUNCH"
+    log_fail "Check 10: Suspended device was permitted to launch exam: $SUSPENDED_LAUNCH"
 fi
 
 # Restore DEV1 to registered
@@ -259,7 +227,7 @@ curl -s -X POST "${BASE_URL}/api/v1/devices/${DEV1_ID}/approve" \
     -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_ADMIN}" > /dev/null
 
 # ======================================================================
-# CHECK 13: Revocation & Security Event Logging
+# CHECK 11: Revocation & Security Event Logging
 # ======================================================================
 REV_DEV_ID="dev_tampered_test"
 curl -s -X POST "${BASE_URL}/api/v1/devices/register" \
@@ -271,13 +239,13 @@ REV_RESP=$(curl -s -X POST "${BASE_URL}/api/v1/devices/${REV_DEV_ID}/revoke" \
     -d '{"reason":"Hardware firmware modification detected"}' )
 
 if echo "$REV_RESP" | grep -q '"status":"revoked"'; then
-    log_pass "Check 13: Device identity revoked and attestation credentials invalidated"
+    log_pass "Check 11: Device identity revoked and attestation credentials invalidated"
 else
-    log_fail "Check 13: Failed to revoke device: $REV_RESP"
+    log_fail "Check 11: Failed to revoke device: $REV_RESP"
 fi
 
 # ======================================================================
-# CHECK 14: Multi-Tenant Boundary Enforcement
+# CHECK 12: Multi-Tenant Boundary Enforcement
 # ======================================================================
 # Login as Gitam Admin (Institution B)
 GITAM_DEV_ID="dev_gitam_station_01"
@@ -293,9 +261,9 @@ DEV_SEC_COUNT=$(/usr/lib/postgresql/18/bin/psql -h /tmp -p 5433 -U examos_bootst
     -c "SELECT count(*) FROM device_security_events WHERE device_id = '${DEV1_ID}';")
 
 if [ "$DEV_AUDIT_COUNT" -ge 3 ] && [ "$DEV_SEC_COUNT" -ge 2 ]; then
-    log_pass "Check 14: Durable device audit logs (${DEV_AUDIT_COUNT}) and security events (${DEV_SEC_COUNT}) verified"
+    log_pass "Check 12: Durable device audit logs (${DEV_AUDIT_COUNT}) and security events (${DEV_SEC_COUNT}) verified"
 else
-    log_fail "Check 14: Insufficient audit/security event records: audit=${DEV_AUDIT_COUNT}, sec=${DEV_SEC_COUNT}"
+    log_fail "Check 12: Insufficient audit/security event records: audit=${DEV_AUDIT_COUNT}, sec=${DEV_SEC_COUNT}"
 fi
 
 echo "======================================================================"

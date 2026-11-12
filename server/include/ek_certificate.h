@@ -32,7 +32,9 @@ int ek_certificate_validate(const char *ek_certificate_pem,
 /*
  * ek_certificate_load_trust_anchors
  *
- * Loads trust anchors from the database (production) or configuration.
+ * Loads development trust anchors from the configured directory.
+ * Production is refused until the separately provisioned, signed SPPIO TPM
+ * trust-feed adapter is configured and integrated.
  *
  * Returns:
  *   0 on success

@@ -56,6 +56,10 @@ if ! c++ -std=c++17 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 \
     echo "[P0-FIRST-BOOT-RECOVERY] FATAL: unable to build the serial recovery driver." >&2
     exit 1
 fi
+"$TEST_BINARY" --self-test-login-result || {
+    echo "[P0-FIRST-BOOT-RECOVERY] FATAL: serial login result parser self-test failed." >&2
+    exit 1
+}
 USERNAME="$("$TEST_BINARY" --make-username)" || {
     echo "[P0-FIRST-BOOT-RECOVERY] FATAL: unable to generate a recovery fixture account." >&2
     exit 1

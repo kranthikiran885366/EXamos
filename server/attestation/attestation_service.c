@@ -1340,28 +1340,47 @@ int attestation_verify_evidence(const char *evidence_json,
             return -1;
         }
 
-        /* Phase 2: Verify EK-to-AK provenance if EK certificate was provided */
+        /* Production attestation requires completed TPM credential activation. */
         PGconn *prov_conn = acquire_db_connection();
-        if (prov_conn) {
-            const char *prov_params[1] = { device_id };
-            PGresult *prov_result = PQexecParams(prov_conn,
-                "SELECT provenance_status FROM device_attestation_keys "
-                "WHERE device_id=$1 AND key_name='AK' AND status='active' LIMIT 1",
-                1, NULL, prov_params, NULL, NULL, 0);
-            if (prov_result && PQresultStatus(prov_result) == PGRES_TUPLES_OK && PQntuples(prov_result) == 1) {
-                const char *prov_status = PQgetvalue(prov_result, 0, 0);
-                if (prov_status && strcmp(prov_status, "verified") != 0 && strcmp(prov_status, "pending") != 0) {
-                    /* Only require verified provenance if not pending (pending = EK cert not provided) */
-                    if (strcmp(prov_status, "failed") == 0) {
-                        PQclear(prov_result);
-                        release_db_connection(prov_conn, 0);
-                        safe_copy(out_reason, 64, "P3_PROVENANCE_FAILED");
-                        return -1;
-                    }
-                }
+        if (!prov_conn) {
+            if (complete_persisted_challenge(
+                    nonce, 0, "P3_PROVENANCE_STORE_UNAVAILABLE", NULL) != 0) {
+                safe_copy(out_reason, 64, "P3_ATTESTATION_STATE_STORE_FAILED");
+                return -1;
             }
-            if (prov_result) PQclear(prov_result);
-            release_db_connection(prov_conn, 0);
+            safe_copy(out_reason, 64, "P3_PROVENANCE_STORE_UNAVAILABLE");
+            return -1;
+        }
+        const char *prov_params[3] = {
+            device_id, production_device.institution_id,
+            production_device.ak_public_pem
+        };
+        PGresult *prov_result = PQexecParams(prov_conn,
+            "SELECT 1 FROM device_attestation_keys k "
+            "JOIN devices d ON d.id=k.device_id "
+            "WHERE k.device_id=$1 AND d.institution_id=$2 "
+            "AND k.public_key_pem=$3 AND k.key_name='AK' AND k.status='active' "
+            "AND k.provenance_status='verified' "
+            "AND k.provenance_details LIKE 'TPM2_CREDENTIAL_ACTIVATION_V1:%' "
+            "LIMIT 1",
+            3, NULL, prov_params, NULL, NULL, 0);
+        int provenance_store_available = prov_result &&
+            PQresultStatus(prov_result) == PGRES_TUPLES_OK;
+        int provenance_verified = provenance_store_available &&
+            PQntuples(prov_result) == 1;
+        if (prov_result) PQclear(prov_result);
+        release_db_connection(prov_conn, 0);
+        if (!provenance_verified) {
+            const char *provenance_failure = provenance_store_available
+                ? "P3_PROVENANCE_NOT_VERIFIED"
+                : "P3_PROVENANCE_STORE_UNAVAILABLE";
+            if (complete_persisted_challenge(
+                    nonce, 0, provenance_failure, NULL) != 0) {
+                safe_copy(out_reason, 64, "P3_ATTESTATION_STATE_STORE_FAILED");
+                return -1;
+            }
+            safe_copy(out_reason, 64, provenance_failure);
+            return -1;
         }
         unsigned char *attest = NULL, *signature = NULL;
         size_t attest_len = 0, signature_len = 0;

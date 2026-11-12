@@ -172,8 +172,6 @@ export const ENDPOINTS = {
   deviceRevoke: (id) => `/api/v1/devices/${id}/revoke`,
   deviceRetire: (id) => `/api/v1/devices/${id}/retire`,
   deviceAssign: (id) => `/api/v1/devices/${id}/assign`,
-  deviceAttestationChallenge: (id) => `/api/v1/devices/${id}/attestation/challenge`,
-  deviceAttestationVerify: (id) => `/api/v1/devices/${id}/attestation/verify`,
   deviceTrustStatus: (id) => `/api/v1/devices/${id}/trust-status`,
   deviceSecurityEvents: (id) => `/api/v1/devices/${id}/security-events`,
   deviceTrustPolicies: '/api/v1/device-trust-policies',

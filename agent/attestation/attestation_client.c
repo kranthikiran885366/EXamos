@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 #include "../include/attestation_client.h"
+#include "../include/attestation.h"
 
 #include <curl/curl.h>
+#include <openssl/crypto.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,6 +143,62 @@ int attestation_client_verify(const char *heartbeat_url, const char *evidence_js
     char result[32] = {0};
     return json_string(response, "status", result, sizeof(result)) == 0 &&
            strcmp(result, "TRUSTED") == 0 ? 0 : -1;
+}
+
+int attestation_client_activate(const char *heartbeat_url, const char *device_id)
+{
+    if (!safe_identifier(device_id, 64)) return -1;
+    char ak_name_hex[69] = {0}, endpoint[1024], body[256];
+    char response[16384], activation_id[64] = {0};
+    char credential_blob_hex[8193] = {0}, activation_response_hex[65] = {0};
+    char status_text[40] = {0};
+    int result = -1;
+    if (tpm_attestation_get_ak_name(ak_name_hex, sizeof(ak_name_hex)) != 0 ||
+        make_endpoint(heartbeat_url, "activate", endpoint, sizeof(endpoint)) != 0 ||
+        snprintf(body, sizeof(body),
+            "{\"device_id\":\"%s\",\"ak_name_hex\":\"%s\"}",
+            device_id, ak_name_hex) >= (int)sizeof(body)) goto cleanup;
+
+    long http_status = 0;
+    if (post_json(endpoint, body, response, sizeof(response), &http_status) != 0 ||
+        http_status != 200 ||
+        json_string(response, "status", status_text, sizeof(status_text)) != 0)
+        goto cleanup;
+    if (strcmp(status_text, "ALREADY_VERIFIED") == 0) {
+        result = 0;
+        goto cleanup;
+    }
+    if (strcmp(status_text, "ACTIVATION_CHALLENGE") != 0 ||
+        json_string(response, "activation_id", activation_id, sizeof(activation_id)) != 0 ||
+        strlen(activation_id) != 32 ||
+        json_string(response, "credential_blob", credential_blob_hex,
+                    sizeof(credential_blob_hex)) != 0 ||
+        !credential_blob_hex[0] ||
+        tpm_attestation_activate_credential(credential_blob_hex,
+            activation_response_hex, sizeof(activation_response_hex)) != 0)
+        goto cleanup;
+
+    if (make_endpoint(heartbeat_url, "activate/complete", endpoint,
+                      sizeof(endpoint)) != 0 ||
+        snprintf(body, sizeof(body),
+            "{\"activation_id\":\"%s\",\"device_id\":\"%s\","
+            "\"activation_response\":\"%s\"}",
+            activation_id, device_id, activation_response_hex) >= (int)sizeof(body))
+        goto cleanup;
+    if (post_json(endpoint, body, response, sizeof(response), &http_status) != 0 ||
+        http_status != 200 ||
+        json_string(response, "status", status_text, sizeof(status_text)) != 0 ||
+        strcmp(status_text, "ACTIVATION_SUCCESS") != 0 ||
+        !strstr(response, "\"verified\":true")) goto cleanup;
+    result = 0;
+
+cleanup:
+    OPENSSL_cleanse(ak_name_hex, sizeof(ak_name_hex));
+    OPENSSL_cleanse(body, sizeof(body));
+    OPENSSL_cleanse(response, sizeof(response));
+    OPENSSL_cleanse(credential_blob_hex, sizeof(credential_blob_hex));
+    OPENSSL_cleanse(activation_response_hex, sizeof(activation_response_hex));
+    return result;
 }
 
 int attestation_client_rechallenge(const char *heartbeat_url,

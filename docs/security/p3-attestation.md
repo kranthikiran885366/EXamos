@@ -17,7 +17,7 @@ Same pattern for releases via `EXAMOS_RELEASES_CONFIG`.
 
 ## The 16-Step Verification Chain
 
-`attestation_verify_evidence()` executes these checks in strict order. Any failure stops the chain and returns a structured error code.
+`attestation_verify_evidence()` executes these checks in strict order. The expected operation purpose comes from the server route, not the evidence payload. Any failure stops the chain and returns a structured error code.
 
 | Step | Check | Error Code |
 |------|-------|-----------|
@@ -42,18 +42,46 @@ Same pattern for releases via `EXAMOS_RELEASES_CONFIG`.
 ```
 attestation_create_challenge()
     → generates 256-bit random nonce from /dev/urandom
-    → stores in session with nonce_used=0
+    → derives institution_id from the trusted device registry
+    → persists a tenant- and purpose-bound challenge in PostgreSQL
+    → requires an approved device registration and active institution policy
 
 attestation_verify_evidence()
-    → matches nonce to session
-    → sets nonce_used=1 atomically before further checks
-    → replay attempt returns P3_NONCE_REPLAY
+    → atomically claims the nonce only for the matching device, release,
+      institution, and server-selected purpose
+    → rejects legacy or unbound challenges and replay attempts
 
 attestation_re_attest_challenge()
-    → generates new 256-bit nonce
-    → resets nonce_used=0 in the existing TRUSTED session
+    → issues a new 256-bit nonce bound to the existing trusted device and session
+    → persists a new purpose-bound challenge in the authoritative store
     → client must produce a fresh quote covering the new nonce
 ```
+
+For an exam-backed session, challenge creation and claim both recheck the
+device, tenant, active exam-session state, and attesting/consumed check-in.
+Device boot attestation without an exam session remains supported, but it does
+not create or release an exam key. Key release independently rechecks the
+active exam-session and check-in binding.
+
+## EK-to-AK Provenance Status
+
+The backend activation endpoints issue TPM 2.0 MakeCredential blobs, persist
+short-lived device-, tenant-, and AK-bound challenges, and atomically claim
+each response once. The agent completes ActivateCredential with the configured
+EK and AK handles before requesting its first quote. Only a response matching
+the server-side context-bound HMAC changes AK provenance to `verified`; neither
+the secret nor the submitted response is stored. Challenges expire after two
+minutes.
+
+The local `credential-activation-smoke.sh` exercises TPM 2.0
+MakeCredential/ActivateCredential against `swtpm`; it is simulator evidence,
+not physical TPM certification. Server activation requires
+`EXAMOS_CREDENTIAL_ACTIVATION_KEY` (32 random bytes encoded as 64 hex
+characters) and a working `tpm2_makecredential` executable. Production still
+requires provisioned, verified EK trust anchors, actual device TPM validation,
+the registered device-fleet schema migration 044, and live authenticated
+database/deployment verification. Production quote
+verification rejects pending provenance and unavailable provenance storage.
 
 ## Exam Key Generation
 
@@ -112,5 +140,6 @@ The native authorization path verifies the TPM-generated `TPMS_ATTEST`
 signature using the enrolled AK public key, with nonce, PCR selection, and
 quoted PCR digest validation. It does not use a shared quote suffix. The
 separate Go verifier is a deprecated development-only prototype and must not
-authorize devices. Production enrollment and measured-boot certification
-remain external prerequisites.
+authorize devices. The device-specific `/api/v1/devices/:id/attestation/*`
+routes are retired; callers must use the authoritative agent endpoints above.
+Production enrollment and measured-boot certification remain external prerequisites.

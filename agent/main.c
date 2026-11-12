@@ -80,6 +80,11 @@ int main(int argc, char *argv[]) {
         log_info("TPM device unavailable; refusing to start without hardware attestation.");
         return 2;
     }
+    if (attestation_client_activate(server_url, device_id) != 0) {
+        log_info("TPM EK-to-AK credential activation failed; refusing to attest.");
+        return 2;
+    }
+    log_info("TPM EK-to-AK credential activation is verified.");
     hardware_guard_init();
     rf_scanner_init();
     if (heartbeat_init(server_url, device_id) != 0) {

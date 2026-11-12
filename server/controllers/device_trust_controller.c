@@ -18,6 +18,7 @@
 #include "../include/attestation_service.h"
 #include "../include/enterprise_platform.h"
 #include "../include/ek_certificate.h"
+#include "../include/tpm_public.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -361,6 +362,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         char tpm_ver[32] = "unknown", os_rel[64] = "unknown", kernel_v[64] = "unknown";
         char ak_pem[2048] = {0};
         char ek_cert_pem[4096] = {0};
+        char ek_cert_chain[8192] = {0};
         char ak_public_area_hex[2048] = {0};
         char ak_name_hex[68] = {0};
         int tpm_present = 0;
@@ -382,6 +384,8 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         ctrl_json_string(body, "kernel_version", kernel_v, sizeof(kernel_v));
         ctrl_json_string(body, "ak_public_key_pem", ak_pem, sizeof(ak_pem));
         ctrl_json_string(body, "ek_certificate_pem", ek_cert_pem, sizeof(ek_cert_pem));
+        ctrl_json_string(body, "ek_certificate_chain", ek_cert_chain,
+                         sizeof(ek_cert_chain));
         ctrl_json_string(body, "ak_public_area_hex", ak_public_area_hex, sizeof(ak_public_area_hex));
         ctrl_json_string(body, "ak_name_hex", ak_name_hex, sizeof(ak_name_hex));
 
@@ -414,13 +418,29 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
                           origin, extra_headers, extra_len);
             return;
         }
+        char computed_ak_name[69] = {0};
+        int ak_key_bits = 0;
+        if (!ak_public_area_hex[0] || !ak_name_hex[0] ||
+            tpm_public_validate_rsa_ak(ak_public_area_hex, ak_pem, ak_name_hex,
+                                       computed_ak_name, sizeof(computed_ak_name),
+                                       &ak_key_bits) != 0 ||
+            (ak_key_bits == 2048 && strcmp(ak_algorithm, "RSA-2048") != 0) ||
+            (ak_key_bits == 3072 && strcmp(ak_algorithm, "RSA-3072") != 0)) {
+            db_release(conn, 0);
+            dt_send_error(client_fd, 400,
+                          "TPM RSA AK public area, attributes, Name, and PEM key must match the approved template",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        const char *ak_template_id = ak_key_bits == 2048
+            ? "tpl_rsa2048_ak" : "tpl_rsa3072_ak";
 
         /* Phase 2: EK Certificate Validation (if provided) */
         char ek_anchor_id[64] = {0};
         char ek_error[256] = {0};
         char ek_pub_pem[2048] = {0};
         if (ek_cert_pem[0]) {
-            int ek_valid = ek_certificate_validate(ek_cert_pem, NULL, NULL,
+            int ek_valid = ek_certificate_validate(ek_cert_pem, ek_cert_chain, NULL,
                                                     ek_anchor_id, ek_error,
                                                     ek_pub_pem, sizeof(ek_pub_pem));
             if (ek_valid != 0) {
@@ -591,10 +611,10 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         sha256_hex_str((const unsigned char *)ak_pem, strlen(ak_pem), fp);
 
         const char *ak_p[10] = { ak_id, dev_id, "AK", ak_algorithm, ak_pem, fp,
-                                 ak_public_area_hex[0] ? ak_public_area_hex : NULL,
-                                 ak_name_hex[0] ? ak_name_hex : NULL,
+                                 ak_public_area_hex,
+                                 computed_ak_name,
                                  NULL, /* qualified_name */
-                                 NULL  /* template_id */
+                                 ak_template_id
                                };
         int ak_l[10];
         for (int i = 0; i < 10; i++) ak_l[i] = ak_p[i] ? (int)strlen(ak_p[i]) : 0;
@@ -602,9 +622,10 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         PGresult *ins_ak = db_simple(conn,
             "INSERT INTO device_attestation_keys "
             "(id,device_id,key_name,key_algorithm,public_key_pem,public_key_fingerprint,"
-            "ak_public_area_hex,ak_name_hex,ak_qualified_name_hex,template_id,"
-            "status,enrolled_at) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
+            "ak_public_area_hex,ak_name_hex,ak_qualified_name_hex,ak_template_id,"
+            "provenance_status,status,enrolled_at) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'template_valid','active',"
+            "EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
             10, ak_p, ak_l);
         if (!ins_ak || PQresultStatus(ins_ak) != PGRES_COMMAND_OK) {
             if (ins_ak) PQclear(ins_ak);
@@ -626,18 +647,20 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
             if (ek_pub_pem[0]) {
                 sha256_hex_str((const unsigned char *)ek_pub_pem, strlen(ek_pub_pem), ek_fp);
 
-                const char *ek_p[7] = { ek_id, dev_id, inst_id, ek_cert_pem, ek_pub_pem, ek_fp,
+                const char *ek_p[8] = { ek_id, dev_id, inst_id, ek_cert_pem,
+                                        ek_cert_chain[0] ? ek_cert_chain : NULL,
+                                        ek_pub_pem, ek_fp,
                                         ek_anchor_id[0] ? ek_anchor_id : NULL };
-                int ek_l[7];
-                for (int i = 0; i < 7; i++) ek_l[i] = ek_p[i] ? (int)strlen(ek_p[i]) : 0;
+                int ek_l[8];
+                for (int i = 0; i < 8; i++) ek_l[i] = ek_p[i] ? (int)strlen(ek_p[i]) : 0;
 
                 PGresult *ins_ek = db_simple(conn,
                     "INSERT INTO device_ek_certificates "
-                    "(id,device_id,institution_id,ek_certificate_pem,ek_public_key_pem,ek_public_key_fingerprint,"
+                    "(id,device_id,institution_id,ek_certificate_pem,ek_certificate_chain,ek_public_key_pem,ek_public_key_fingerprint,"
                     "trust_anchor_id,trust_status,created_at,updated_at) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,'verified',EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'verified',EXTRACT(EPOCH FROM NOW())::BIGINT*1000,"
                     "EXTRACT(EPOCH FROM NOW())::BIGINT*1000)",
-                    7, ek_p, ek_l);
+                    8, ek_p, ek_l);
                 if (!ins_ek || PQresultStatus(ins_ek) != PGRES_COMMAND_OK) {
                     if (ins_ek) PQclear(ins_ek);
                     PQexec(conn, "ROLLBACK");

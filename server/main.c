@@ -8,6 +8,7 @@
 #include "include/admin_dashboard.h"
 #include "include/attestation_service.h"
 #include "include/attestation_config.h"
+#include "include/ek_certificate.h"
 #include "include/event_chain.h"
 #include "include/second_camera.h"
 #include "include/firewall_service.h"
@@ -4864,6 +4865,11 @@ int main(int argc, char *argv[]) {
     if (!development_mode && attestation_store_init() != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: durable PostgreSQL attestation state is unavailable; refusing service startup.\n");
         admin_auth_store_shutdown();
+        return 1;
+    }
+    if (ek_certificate_load_trust_anchors() != 0) {
+        fprintf(stderr, "[ExamOS-Server] FATAL: approved EK trust anchors are unavailable or invalid.\n");
+        if (!development_mode) admin_auth_store_shutdown();
         return 1;
     }
     if (attestation_config_load_all(executable_path[0] ? executable_path : NULL) != 0) {

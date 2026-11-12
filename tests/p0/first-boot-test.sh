@@ -100,6 +100,10 @@ if ! c++ -std=c++17 -O2 -Wall -Wextra -Werror \
     echo "[P0-FIRST-BOOT] FATAL: unable to build the native serial test driver." >&2
     exit 1
 fi
+"$TEST_BINARY" --self-test-login-result || {
+    echo "[P0-FIRST-BOOT] FATAL: serial login result parser self-test failed." >&2
+    exit 1
+}
 SERIAL_PORT=$("$TEST_BINARY" --allocate-port) || {
     echo "[P0-FIRST-BOOT] FATAL: unable to select an available loopback serial port." >&2
     exit 1

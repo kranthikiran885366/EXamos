@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Strict, verification-only primitives for ExamOS release provenance.
 
-This foundation intentionally cannot return VERIFIED.  Production verification
-requires an independently approved JCS dependency, authenticated trust
-configuration, and authenticated revocation evidence, none of which are
-repository-controlled inputs.
+This foundation intentionally cannot return VERIFIED. Production verification
+requires independent approval of the JCS implementation, authenticated trust
+configuration, and authenticated revocation evidence.
 """
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import stat
@@ -101,15 +101,24 @@ def load_strict_json(path: Path, maximum_bytes: int) -> Any:
 
 
 def canonicalize_jcs(value: Any) -> bytes:
-    """Use only the independently approved, pinned RFC 8785 implementation."""
+    """Canonicalize JSON with the pinned RFC 8785 implementation."""
     try:
         import rfc8785  # type: ignore[import-not-found]
     except ImportError as error:
-        raise ProvenanceError("JCS_DEPENDENCY_UNAVAILABLE", "approved RFC 8785 dependency is unavailable") from error
+        raise ProvenanceError("JCS_DEPENDENCY_UNAVAILABLE", "pinned RFC 8785 dependency is unavailable") from error
     try:
         return rfc8785.dumps(value)
-    except Exception as error:  # library-specific canonicalization errors
+    except rfc8785.CanonicalizationError as error:
         raise ProvenanceError("MANIFEST_INVALID", f"JCS canonicalization failed: {error}") from error
+
+
+def canonical_manifest_digest(manifest: dict[str, Any], algorithm: str = "sha256") -> tuple[bytes, str]:
+    """Return canonical manifest bytes and a prefixed digest of those exact bytes."""
+    if algorithm not in {"sha256", "sha384"}:
+        raise ProvenanceError("DIGEST_ALGORITHM_UNSUPPORTED", f"unsupported digest algorithm {algorithm!r}")
+    canonical = canonicalize_jcs(manifest)
+    digest = hashlib.new(algorithm, canonical).hexdigest()
+    return canonical, f"{algorithm}:{digest}"
 
 
 def normalized_relative_path(value: str) -> PurePosixPath:
@@ -152,18 +161,27 @@ def open_stable_artifact(root: Path, relative_path: str) -> int:
     if capability is not None:
         raise ProvenanceError(capability.reason_code, capability.diagnostics[0])
     relative = normalized_relative_path(relative_path)
-    root_stat = root.lstat()
+    try:
+        root_stat = root.lstat()
+    except OSError as error:
+        raise ProvenanceError("ARTIFACT_ROOT_UNTRUSTED", f"cannot inspect artifact root: {error}") from error
     if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
         raise ProvenanceError("ARTIFACT_ROOT_UNTRUSTED", "artifact root is not a non-symlink directory")
     nofollow = os.O_NOFOLLOW
     directory_flag = os.O_DIRECTORY
-    current_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+    try:
+        current_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+    except OSError as error:
+        raise ProvenanceError("ARTIFACT_ROOT_UNTRUSTED", f"cannot securely open artifact root: {error}") from error
     try:
         for component in relative.parts[:-1]:
             next_fd = os.open(component, os.O_RDONLY | directory_flag | nofollow, dir_fd=current_fd)
             os.close(current_fd)
             current_fd = next_fd
         artifact_fd = os.open(relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
+    except OSError as error:
+        code = "ARTIFACT_MISSING" if error.errno == errno.ENOENT else "ARTIFACT_PATH_UNTRUSTED"
+        raise ProvenanceError(code, f"cannot securely open artifact {relative_path!r}: {error}") from error
     finally:
         os.close(current_fd)
     opened = os.fstat(artifact_fd)
@@ -171,6 +189,93 @@ def open_stable_artifact(root: Path, relative_path: str) -> int:
         os.close(artifact_fd)
         raise ProvenanceError("ARTIFACT_PATH_INVALID", "artifact is not a regular file")
     return artifact_fd
+
+
+def _artifact_file_set(root: Path) -> set[str]:
+    try:
+        root_metadata = root.lstat()
+    except OSError as error:
+        raise ProvenanceError("ARTIFACT_ROOT_UNTRUSTED", f"cannot inspect artifact root: {error}") from error
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise ProvenanceError("ARTIFACT_ROOT_UNTRUSTED", "artifact root is not a non-symlink directory")
+
+    files: set[str] = set()
+    try:
+        for path in root.rglob("*"):
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ProvenanceError("ARTIFACT_PATH_UNTRUSTED", f"symlink in artifact tree: {path}")
+            if stat.S_ISDIR(metadata.st_mode):
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ProvenanceError("ARTIFACT_PATH_UNTRUSTED", f"non-regular artifact: {path}")
+            relative = path.relative_to(root).as_posix()
+            normalized_relative_path(relative)
+            files.add(relative)
+    except OSError as error:
+        raise ProvenanceError("ARTIFACT_ACCESS_FAILED", f"cannot enumerate artifact tree: {error}") from error
+    return files
+
+
+def verify_artifact_inventory(root: Path, artifacts: Any) -> tuple[dict[str, Any], ...]:
+    """Verify an exact artifact inventory under a caller-provided immutable snapshot."""
+    capability = artifact_access_capability()
+    if capability is not None:
+        raise ProvenanceError(capability.reason_code, capability.diagnostics[0])
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > MAX_ARTIFACTS:
+        raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact inventory is empty or exceeds its limit")
+
+    expected: dict[str, dict[str, Any]] = {}
+    roles: set[str] = set()
+    total_expected = 0
+    for item in artifacts:
+        if not isinstance(item, dict):
+            raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact entries must be objects")
+        role, path, size, digest = (
+            item.get("role"), item.get("path"), item.get("size_bytes"), item.get("sha256")
+        )
+        if not isinstance(role, str) or not role or role in roles:
+            raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact roles must be non-empty and unique")
+        relative = normalized_relative_path(path)
+        path_key = relative.as_posix()
+        if path_key in expected:
+            raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact paths must be unique")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact size_bytes must be a positive integer")
+        if (not isinstance(digest, str) or len(digest) != 71 or
+                not digest.startswith("sha256:") or
+                any(character not in "0123456789abcdef" for character in digest[7:])):
+            raise ProvenanceError("ARTIFACT_INVENTORY_INVALID", "artifact sha256 must be lowercase sha256:<hex>")
+        total_expected += size
+        if total_expected > MAX_TOTAL_HASH_BYTES:
+            raise ProvenanceError("ARTIFACT_SIZE_MISMATCH", "artifact inventory exceeds configured size limit")
+        expected[path_key] = item
+        roles.add(role)
+
+    initial_files = _artifact_file_set(root)
+    if initial_files != set(expected):
+        missing = sorted(set(expected) - initial_files)
+        unexpected = sorted(initial_files - set(expected))
+        raise ProvenanceError(
+            "ARTIFACT_INVENTORY_MISMATCH",
+            f"artifact tree differs from manifest inventory (missing={missing}, unexpected={unexpected})",
+        )
+
+    verified: list[dict[str, Any]] = []
+    for path, item in expected.items():
+        descriptor = open_stable_artifact(root, path)
+        try:
+            size, digest_hex = sha256_file_descriptor(descriptor, MAX_TOTAL_HASH_BYTES)
+        finally:
+            os.close(descriptor)
+        if size != item["size_bytes"] or f"sha256:{digest_hex}" != item["sha256"]:
+            raise ProvenanceError("ARTIFACT_DIGEST_MISMATCH", f"artifact size or digest mismatch: {path}")
+        verified.append({"role": item["role"], "path": path, "size_bytes": size,
+                         "sha256": f"sha256:{digest_hex}"})
+
+    if _artifact_file_set(root) != initial_files:
+        raise ProvenanceError("ARTIFACT_ROOT_UNSTABLE", "artifact inventory changed during verification")
+    return tuple(verified)
 
 
 def sha256_file_descriptor(fd: int, maximum_bytes: int) -> tuple[int, str]:

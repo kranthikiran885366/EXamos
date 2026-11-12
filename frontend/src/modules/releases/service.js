@@ -107,10 +107,9 @@ export async function createRelease(a, { version, components }) {
   return `Draft ${version} persisted. It is not signed, vulnerability-scanned, or eligible for rollout.`;
 }
 export async function verifyRelease(r) {
-  const response = await Api.getOsReleaseDetails(r.id);
-  return response?.release?.manifest_verified === true &&
-    typeof response.release.manifest_signature === 'string' &&
-    response.release.manifest_signature.length > 0;
+  const response = await Api.verifyOsReleaseSignature(r.id);
+  return response?.signature_verified === true &&
+    response?.manifest_verified === true;
 }
 export async function approveRelease(a, r, reason) {
   need(a, 'release.approve');

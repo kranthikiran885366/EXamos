@@ -977,16 +977,6 @@ export const assignDeviceToStudentOrExam = wrap(async (deviceId, assignment) => 
   return res.data;
 });
 
-export const requestDeviceAttestationChallenge = wrap(async (deviceId) => {
-  const res = await api.post(ENDPOINTS.deviceAttestationChallenge(deviceId), {}, { actor: ACTOR });
-  return res.data;
-});
-
-export const verifyDeviceAttestationEvidence = wrap(async (deviceId, evidence) => {
-  const res = await api.post(ENDPOINTS.deviceAttestationVerify(deviceId), evidence, { actor: ACTOR, sign: true });
-  return res.data;
-});
-
 export const getDeviceTrustStatus = wrap(async (deviceId) => {
   const res = await api.get(ENDPOINTS.deviceTrustStatus(deviceId), { actor: ACTOR });
   return res.data;
@@ -1033,6 +1023,15 @@ export const listOsReleases = wrap(async () => {
 
 export const getOsReleaseDetails = wrap(async (releaseId) => {
   const res = await api.get(ENDPOINTS.osReleaseById(releaseId), { actor: ACTOR });
+  return res.data;
+});
+
+export const verifyOsReleaseSignature = wrap(async (releaseId) => {
+  const res = await api.post(
+    `${ENDPOINTS.osReleaseById(releaseId)}/verify-signature`,
+    {},
+    { actor: ACTOR, sign: true },
+  );
   return res.data;
 });
 

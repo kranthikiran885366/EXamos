@@ -12,11 +12,17 @@
 #include <string.h>
 #include <time.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
+#include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_CERT_CHAIN_DEPTH 10
 
@@ -135,8 +141,10 @@ static int validate_certificate_chain(STACK_OF(X509) *chain,
         return -1;
     }
     
-    /* Find which anchor was used */
-    X509 *trusted = X509_STORE_CTX_get0_cert(ctx);
+    /* Record the actual root selected by path validation. */
+    STACK_OF(X509) *verified_chain = X509_STORE_CTX_get1_chain(ctx);
+    X509 *trusted = verified_chain && sk_X509_num(verified_chain) > 0
+        ? sk_X509_value(verified_chain, sk_X509_num(verified_chain) - 1) : NULL;
     if (trusted) {
         char trusted_fp[65];
         if (certificate_fingerprint(trusted, trusted_fp) == 0) {
@@ -151,6 +159,7 @@ static int validate_certificate_chain(STACK_OF(X509) *chain,
         }
     }
     
+    if (verified_chain) sk_X509_pop_free(verified_chain, X509_free);
     X509_STORE_CTX_free(ctx);
     X509_STORE_free(store);
     return 0;
@@ -159,8 +168,8 @@ static int validate_certificate_chain(STACK_OF(X509) *chain,
 /* Check certificate expiration */
 static int check_certificate_expiration(X509 *cert, long long current_time_ms,
                                         char *out_error) {
-    ASN1_TIME *not_before = X509_get0_notBefore(cert);
-    ASN1_TIME *not_after = X509_get0_notAfter(cert);
+    const ASN1_TIME *not_before = X509_get0_notBefore(cert);
+    const ASN1_TIME *not_after = X509_get0_notAfter(cert);
     
     if (!not_before || !not_after) {
         if (out_error) snprintf(out_error, 256, "Certificate missing validity dates");
@@ -290,9 +299,81 @@ int ek_certificate_validate(const char *ek_certificate_pem,
 }
 
 int ek_certificate_load_trust_anchors(void) {
-    /* This would load from database in production */
-    /* For now, no anchors are loaded - they must be provisioned */
     g_anchor_count = 0;
+    const char *directory = getenv("EXAMOS_EK_TRUST_ANCHORS_DIR");
+    const char *mode = getenv("EXAMOS_TPM_MODE");
+    int production = mode && strcmp(mode, "production") == 0;
+    if (production) {
+        fprintf(stderr,
+                "[EKCert] Production trust is blocked until a provisioned, signed SPPIO TPM trust feed is verified and installed.\n");
+        return -1;
+    }
+    if (!directory || !directory[0]) return 0;
+
+    struct stat directory_stat;
+    if (lstat(directory, &directory_stat) != 0 ||
+        !S_ISDIR(directory_stat.st_mode) || S_ISLNK(directory_stat.st_mode) ||
+        (directory_stat.st_mode & 0022) != 0 || directory_stat.st_uid != 0)
+        return -1;
+
+    DIR *dir = opendir(directory);
+    if (!dir) return -1;
+    struct dirent *entry;
+    int invalid = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        size_t name_len = strlen(entry->d_name);
+        if (name_len < 5 || strcmp(entry->d_name + name_len - 4, ".pem") != 0)
+            continue;
+        if (g_anchor_count >= (int)(sizeof(g_anchors) / sizeof(g_anchors[0]))) {
+            invalid = 1;
+            break;
+        }
+        char path[PATH_MAX];
+        int path_len = snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
+        if (path_len <= 0 || (size_t)path_len >= sizeof(path)) {
+            invalid = 1;
+            break;
+        }
+        struct stat file_stat;
+        if (lstat(path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+            S_ISLNK(file_stat.st_mode) || (file_stat.st_mode & 0022) != 0 ||
+            file_stat.st_uid != 0 || file_stat.st_size <= 0 ||
+            file_stat.st_size >= (off_t)sizeof(g_anchors[0].certificate_pem)) {
+            invalid = 1;
+            break;
+        }
+        FILE *file = fopen(path, "rb");
+        if (!file) {
+            invalid = 1;
+            break;
+        }
+        char certificate[4096];
+        size_t length = fread(certificate, 1, sizeof(certificate) - 1, file);
+        int read_error = ferror(file);
+        if (fclose(file) != 0 || read_error || length == 0) {
+            OPENSSL_cleanse(certificate, sizeof(certificate));
+            invalid = 1;
+            break;
+        }
+        certificate[length] = '\0';
+        char anchor_id[64];
+        if (snprintf(anchor_id, sizeof(anchor_id), "file_%.*s",
+                     (int)(sizeof(anchor_id) - 6), entry->d_name) >=
+                (int)sizeof(anchor_id) ||
+            ek_certificate_add_trust_anchor(anchor_id, entry->d_name,
+                                            certificate, NULL) != 0) {
+            OPENSSL_cleanse(certificate, sizeof(certificate));
+            invalid = 1;
+            break;
+        }
+        OPENSSL_cleanse(certificate, sizeof(certificate));
+    }
+    if (closedir(dir) != 0) invalid = 1;
+    if (invalid || (production && g_anchor_count == 0)) {
+        OPENSSL_cleanse(g_anchors, sizeof(g_anchors));
+        g_anchor_count = 0;
+        return -1;
+    }
     return 0;
 }
 
@@ -300,13 +381,18 @@ int ek_certificate_add_trust_anchor(const char *anchor_id,
                                     const char *anchor_name,
                                     const char *certificate_pem,
                                     const char *parent_anchor_id) {
-    if (g_anchor_count >= 32) return -1;
+    if (!anchor_id || !anchor_id[0] || !anchor_name || !certificate_pem ||
+        g_anchor_count >= (int)(sizeof(g_anchors) / sizeof(g_anchors[0])))
+        return -1;
     
     BIO *bio = BIO_new_mem_buf(certificate_pem, -1);
     X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
     BIO_free(bio);
     
-    if (!cert) return -1;
+    if (!cert || X509_check_ca(cert) <= 0) {
+        X509_free(cert);
+        return -1;
+    }
     
     trust_anchor_t *anchor = &g_anchors[g_anchor_count];
     snprintf(anchor->anchor_id, sizeof(anchor->anchor_id), "%s", anchor_id);

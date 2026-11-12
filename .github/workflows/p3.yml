@@ -52,10 +52,19 @@ jobs:
             build-essential gcc g++ make \
             libssl-dev libcurl4-openssl-dev libudev-dev \
             openssl jq curl \
+            python3-venv \
             golang-go \
             tpm2-tools \
             swtpm swtpm-tools \
             qemu-system-x86 ovmf
+
+      - name: Run release canonicalization and signature tests
+        run: |
+          python3 -m venv /tmp/examos-release-tests
+          /tmp/examos-release-tests/bin/python -m pip install \
+            --disable-pip-version-check -r tools/requirements-release.txt
+          /tmp/examos-release-tests/bin/python tests/release/test_release_provenance.py
+          make -C server test-release-signature
 
       # -----------------------------------------------------------------------
       - name: Collect P3 tool versions and artifacts

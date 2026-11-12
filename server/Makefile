@@ -31,6 +31,8 @@ SRCS = main.c \
        attestation/attestation_service.c \
        attestation/attestation_config.c \
        attestation/tpm_quote.c \
+       attestation/tpm_public.c \
+       attestation/tpm_trust_feed.c \
        attestation/ek_certificate.c \
        attestation/credential_activation.c \
        gateway/key_release.c \
@@ -150,7 +152,15 @@ test-release-signature:
 		security/release_signature.c -lcrypto -o "$$test_binary"; \
 	"$$test_binary"
 
+test-tpm-trust-feed:
+	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-tpm-trust-feed.XXXXXX"); \
+	trap 'rm -f -- "$$test_binary"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) ../tests/server/tpm_trust_feed_test.c \
+		attestation/tpm_trust_feed.c attestation/ek_certificate.c \
+		$(LDFLAGS) -o "$$test_binary"; \
+	"$$test_binary"
+
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-challenge-lifecycle test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store test-release-signature
+.PHONY: all install clean test-attestation-db test-challenge-lifecycle test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store test-release-signature test-tpm-trust-feed

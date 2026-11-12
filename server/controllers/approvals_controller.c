@@ -2,6 +2,7 @@
 
 #include "../audit/audit.h"
 #include "../db/db.h"
+#include "../security/release_signature.h"
 
 #include <openssl/rand.h>
 #include <stdio.h>
@@ -394,7 +395,12 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
 
     PGresult *res = db_simple(conn,
         "SELECT r.status,r.created_by,r.manifest_digest,m.manifest_digest,"
-        "m.signature_value,m.verified,k.status,k.key_type "
+        "m.signed_digest,r.verification_digest,m.signature_value,m.verified,"
+        "m.signature_verified,m.signature_verified_at,r.trust_status,"
+        "r.verification_state,r.verification_at,r.verification_expires_at,"
+        "k.status,k.key_type,k.public_key_pem,k.key_fingerprint,"
+        "m.signature_algorithm,k.algorithm,m.signing_key_id,r.signing_key_id,"
+        "m.manifest_json::text,r.version "
         "FROM os_releases r "
         "JOIN os_release_manifests m ON m.release_id=r.id "
         "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
@@ -414,10 +420,27 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
     const char *creator = PQgetvalue(res, 0, 1);
     const char *release_digest = PQgetvalue(res, 0, 2);
     const char *manifest_digest = PQgetvalue(res, 0, 3);
-    const char *signature = PQgetvalue(res, 0, 4);
-    const char *verified = PQgetvalue(res, 0, 5);
-    const char *key_status = PQgetvalue(res, 0, 6);
-    const char *key_type = PQgetvalue(res, 0, 7);
+    const char *signed_digest = PQgetvalue(res, 0, 4);
+    const char *verification_digest = PQgetvalue(res, 0, 5);
+    const char *signature = PQgetvalue(res, 0, 6);
+    const char *verified = PQgetvalue(res, 0, 7);
+    const char *signature_verified = PQgetvalue(res, 0, 8);
+    const char *signature_verified_at = PQgetvalue(res, 0, 9);
+    const char *trust_status = PQgetvalue(res, 0, 10);
+    const char *verification_state = PQgetvalue(res, 0, 11);
+    const char *verification_at = PQgetvalue(res, 0, 12);
+    const char *verification_expires_at = PQgetvalue(res, 0, 13);
+    const char *key_status = PQgetvalue(res, 0, 14);
+    const char *key_type = PQgetvalue(res, 0, 15);
+    const char *public_key = PQgetvalue(res, 0, 16);
+    const char *key_fingerprint = PQgetvalue(res, 0, 17);
+    const char *signature_algorithm = PQgetvalue(res, 0, 18);
+    const char *key_algorithm = PQgetvalue(res, 0, 19);
+    const char *manifest_key_id = PQgetvalue(res, 0, 20);
+    const char *release_key_id = PQgetvalue(res, 0, 21);
+    const char *manifest_json = PQgetvalue(res, 0, 22);
+    const char *release_version = PQgetvalue(res, 0, 23);
+    long long now_ms = (long long)time(NULL) * 1000;
     int valid = strcmp(release_status, "signed") == 0 &&
                 creator[0] && strcmp(creator, requester_id) != 0 &&
                 (!requester_name || strcmp(creator, requester_name) != 0) &&
@@ -426,9 +449,42 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
                                    strcmp(creator, approver_name) != 0))) &&
                 strcmp(release_digest, proposed_digest) == 0 &&
                 strcmp(manifest_digest, proposed_digest) == 0 &&
+                strcmp(signed_digest, proposed_digest) == 0 &&
+                strcmp(verification_digest, proposed_digest) == 0 &&
                 signature[0] && strcmp(verified, "t") == 0 &&
+                strcmp(signature_verified, "t") == 0 &&
+                strtoll(signature_verified_at, NULL, 10) > 0 &&
+                strtoll(signature_verified_at, NULL, 10) <= now_ms &&
+                strcmp(trust_status, "verified") == 0 &&
+                strcmp(verification_state, "verified") == 0 &&
+                strtoll(verification_at, NULL, 10) > 0 &&
+                strtoll(verification_at, NULL, 10) <= now_ms &&
+                strtoll(verification_expires_at, NULL, 10) > now_ms &&
                 strcmp(key_status, "active") == 0 &&
-                strcmp(key_type, "production") == 0;
+                strcmp(key_type, "production") == 0 &&
+                public_key[0] && key_fingerprint[0] &&
+                strcmp(signature_algorithm, key_algorithm) == 0 &&
+                strcmp(manifest_key_id, release_key_id) == 0;
+    if (valid) {
+        char manifest_release_id[65] = {0}, manifest_version[65] = {0};
+        valid = ctrl_json_string(manifest_json, "release_id", manifest_release_id,
+                                 sizeof(manifest_release_id)) &&
+                ctrl_json_string(manifest_json, "version", manifest_version,
+                                 sizeof(manifest_version)) &&
+                strcmp(manifest_release_id, release_id) == 0 &&
+                strcmp(manifest_version, release_version) == 0;
+        if (valid) {
+            int signature_result = release_signature_verify(
+                manifest_json, strlen(manifest_json), release_digest,
+                manifest_digest, signed_digest, signature_algorithm,
+                key_algorithm, signature, public_key, key_fingerprint);
+            if (signature_result < 0) {
+                PQclear(res);
+                return -1;
+            }
+            valid = signature_result == 1;
+        }
+    }
     PQclear(res);
     return valid;
 }
@@ -561,9 +617,15 @@ static int approval_fingerprint(PGconn *conn, const char *kind, const char *targ
             1, (const char *[]){ target_id }, (const int []){ target_len });
     } else if (strcmp(kind, "release-approve") == 0) {
         res = db_simple(conn,
-            "SELECT (r.status||'|'||r.created_by||'|'||r.manifest_digest||'|'||"
-            "m.manifest_digest||'|'||m.signature_value||'|'||m.verified::text||'|'||"
-            "k.status||'|'||k.key_type) "
+            "SELECT (r.status||'|'||r.created_by||'|'||COALESCE(r.manifest_digest,'')||'|'||"
+            "COALESCE(m.manifest_digest,'')||'|'||COALESCE(m.signed_digest,'')||'|'||"
+            "COALESCE(r.verification_digest,'')||'|'||COALESCE(m.signature_value,'')||'|'||"
+            "COALESCE(m.verified,FALSE)::text||'|'||COALESCE(m.signature_verified,FALSE)::text||'|'||"
+            "COALESCE(m.signature_verified_at::text,'')||'|'||COALESCE(r.trust_status,'')||'|'||"
+            "COALESCE(r.verification_state,'')||'|'||COALESCE(r.verification_at::text,'')||'|'||"
+            "COALESCE(r.verification_expires_at::text,'')||'|'||"
+            "COALESCE(k.status,'')||'|'||COALESCE(k.key_type,'')||'|'||"
+            "COALESCE(k.public_key_pem,'')||'|'||COALESCE(k.key_fingerprint,'')) "
             "FROM os_releases r "
             "JOIN os_release_manifests m ON m.release_id=r.id "
             "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "

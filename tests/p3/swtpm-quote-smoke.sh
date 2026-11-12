@@ -72,7 +72,16 @@ tpm2_createak -C "$WORK_DIR/ek.ctx" -c "$WORK_DIR/ak.ctx" \
 tpm2_flushcontext -t
 tpm2_readpublic -c "$WORK_DIR/ak.ctx" -f pem \
     -o "$WORK_DIR/ak.pem" -q "$WORK_DIR/ak.qualified-name" >/dev/null
+tpm2_readpublic -c "$WORK_DIR/ak.ctx" -f tss \
+    -o "$WORK_DIR/ak.public.tss" -n "$WORK_DIR/ak.read-name" >/dev/null
 tpm2_flushcontext -t
+
+cc -Wall -Wextra -Werror -Wno-deprecated-declarations -I"$WORKSPACE/server/include" \
+    "$WORKSPACE/tests/server/tpm_public_test.c" \
+    "$WORKSPACE/server/attestation/tpm_public.c" \
+    -lssl -lcrypto -o "$WORK_DIR/tpm-public-test"
+"$WORK_DIR/tpm-public-test" "$WORK_DIR/ak.public.tss" \
+    "$WORK_DIR/ak.pem" "$WORK_DIR/ak.read-name"
 
 NONCE=$(openssl rand -hex 32)
 tpm2_pcrread -o "$WORK_DIR/pcr-read.yaml" sha256:0,4,7,11 >/dev/null

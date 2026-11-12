@@ -77,7 +77,10 @@ static int migration_ready(PGconn *connection)
         "SELECT to_regclass('public.examos_attestation_challenges') IS NOT NULL "
         "AND to_regclass('public.examos_attestation_revocations') IS NOT NULL "
         "AND (SELECT max(version) FROM examos_schema_migrations "
-        "WHERE component='device_fleet')>=9");
+        "WHERE component='device_fleet')>=42 "
+        "AND (SELECT COUNT(*)=3 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='examos_attestation_challenges' "
+        "AND column_name IN ('institution_id','purpose','created_by'))");
     int ready = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
         PQntuples(result) == 1 && strcmp(PQgetvalue(result, 0, 0), "t") == 0;
     if (result) PQclear(result);
@@ -134,32 +137,41 @@ int main(void)
     OPENSSL_cleanse(nonce_digest, sizeof(nonce_digest));
 
     if (!query_ok(connection, "BEGIN", PGRES_COMMAND_OK, -1)) goto fail;
+    const char *institution_id = "integration-test";
+    const char *purpose = "re_attestation";
+    const char *created_by = "integration-test";
     const char *challenge_params[] = {
-        attestation_id, session_id, device_id, release_id, nonce_hash
+        attestation_id, session_id, device_id, release_id, institution_id,
+        purpose, created_by, nonce_hash
     };
     PGresult *result = PQexecParams(connection,
         "INSERT INTO examos_attestation_challenges "
-        "(attestation_id,session_id,device_id,release_id,nonce_sha256,state,expires_at) "
-        "VALUES($1,$2,$3,$4,$5,'PENDING',clock_timestamp()+interval '120 seconds')",
-        5, NULL, challenge_params, NULL, NULL, 0);
+        "(attestation_id,session_id,device_id,release_id,institution_id,purpose,created_by,"
+        "nonce_sha256,state,expires_at) "
+        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,'PENDING',clock_timestamp()+interval '120 seconds')",
+        8, NULL, challenge_params, NULL, NULL, 0);
     int inserted = result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
     if (!inserted) goto rollback_fail;
 
     result = PQexecParams(connection,
         "UPDATE examos_attestation_challenges SET state='VERIFYING',claimed_at=clock_timestamp() "
-        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 AND state='PENDING' "
+        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 "
+        "AND institution_id=$4 AND purpose=$5 AND state='PENDING' "
         "AND expires_at>clock_timestamp() RETURNING attestation_id",
-        3, NULL, (const char *const[]){nonce_hash, device_id, release_id}, NULL, NULL, 0);
+        5, NULL, (const char *const[]){nonce_hash, device_id, release_id,
+                                      institution_id, purpose}, NULL, NULL, 0);
     int claimed = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 1;
     if (result) PQclear(result);
     if (!claimed) goto rollback_fail;
 
     result = PQexecParams(connection,
         "UPDATE examos_attestation_challenges SET state='VERIFYING',claimed_at=clock_timestamp() "
-        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 AND state='PENDING' "
+        "WHERE nonce_sha256=$1 AND device_id=$2 AND release_id=$3 "
+        "AND institution_id=$4 AND purpose=$5 AND state='PENDING' "
         "AND expires_at>clock_timestamp() RETURNING attestation_id",
-        3, NULL, (const char *const[]){nonce_hash, device_id, release_id}, NULL, NULL, 0);
+        5, NULL, (const char *const[]){nonce_hash, device_id, release_id,
+                                      institution_id, purpose}, NULL, NULL, 0);
     int replay_blocked = result && PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) == 0;
     if (result) PQclear(result);
     if (!replay_blocked) goto rollback_fail;
@@ -204,7 +216,7 @@ int main(void)
     if (!query_ok(connection, "ROLLBACK", PGRES_COMMAND_OK, -1)) goto fail;
     PQfinish(connection);
     OPENSSL_cleanse(nonce_hash, sizeof(nonce_hash));
-    puts("PASS: live PostgreSQL TLS, migration 9, one-time challenge claim, replay rejection, durable revocation, and rollback cleanup");
+    puts("PASS: live PostgreSQL TLS, migration 42, tenant/purpose-bound single-use claim, replay rejection, durable revocation, and rollback cleanup");
     return 0;
 
 rollback_fail:

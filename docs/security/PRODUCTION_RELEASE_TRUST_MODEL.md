@@ -44,6 +44,25 @@ external policy.
 The verifier must not generate keys, contact a signer, enroll firmware trust,
 or fall back to repository development credentials.
 
+The local Python provenance tooling uses the pinned `rfc8785==0.1.4`
+implementation. Install it with
+`python -m pip install -r tools/requirements-release.txt`; the release
+provenance unit tests include canonical property-order, UTF-16 key-order,
+Unicode, number-formatting, and digest-binding cases. This local canonicalizer
+does not supply production trust configuration or revocation evidence.
+
+The current C server does not yet consume those canonical bytes. Release draft
+creation therefore leaves the manifest digest empty, release verification
+returns an explicit service-unavailable result, and all activation, rollout,
+and recovery trust checks remain blocked. Persisted PostgreSQL JSONB text is
+not accepted as a signing representation or verification result.
+
+The current C server does not yet consume those canonical bytes. Release draft
+creation therefore leaves the manifest digest empty, release verification
+returns an explicit service-unavailable result, and all activation, rollout,
+and recovery trust checks remain blocked. Persisted PostgreSQL JSONB text is
+not accepted as a signing representation or verification result.
+
 ## External prerequisites
 
 The organization must supply and authenticate:
@@ -67,4 +86,7 @@ If immutable stable reads cannot be established, verification is `BLOCKED`.
 
 The verifier must use descriptor-relative `O_NOFOLLOW` access for every path
 component.  If the host cannot provide those operations, it must return
-`BLOCKED`; it must not weaken access to ordinary path-based reads.
+`BLOCKED`; it must not weaken access to ordinary path-based reads. The local
+`verify_artifact_inventory` helper checks exact inventory, size, and SHA-256
+under a caller-provided immutable snapshot; it does not establish that the
+snapshot is read-only or provide SBOM schema validation.
