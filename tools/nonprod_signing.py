@@ -191,12 +191,6 @@ def _validate_feed(feed: dict[str, Any]) -> None:
             or certificate.not_valid_after_utc <= certificate_now
         ):
             raise SigningError("TPM trust feed EK root certificate is not currently valid")
-        certificate_now = datetime.now(timezone.utc)
-        if (
-            certificate.not_valid_before_utc > certificate_now
-            or certificate.not_valid_after_utc <= certificate_now
-        ):
-            raise SigningError("TPM trust feed EK root certificate is not currently valid")
         actual_fingerprint = hashlib.sha256(
             certificate.public_bytes(serialization.Encoding.DER)
         ).hexdigest()
@@ -278,13 +272,6 @@ class AwsKms:
         if not isinstance(metadata, dict):
             raise SigningError("KMS did not return key metadata")
         return metadata
-
-    def aliases_for_key(self, key_id: str) -> list[dict[str, Any]]:
-        response = self._run_json(["kms", "list-aliases", "--key-id", key_id])
-        aliases = response.get("Aliases")
-        if not isinstance(aliases, list):
-            raise SigningError("KMS did not return key aliases")
-        return aliases
 
     def tags_for_key(self, key_id: str) -> dict[str, str]:
         response = self._run_json(["kms", "list-resource-tags", "--key-id", key_id])
@@ -410,21 +397,14 @@ def _validate_key(
         or metadata.get("Origin") != "AWS_KMS"
         or metadata.get("KeyUsage") != "SIGN_VERIFY"
         or metadata.get("KeySpec") != "ECC_NIST_P256"
+        or not isinstance(key_id, str)
         or len(arn_parts) != 6
         or arn_parts[2] != "kms"
         or arn_parts[3] != kms.region
         or arn_parts[4] != account
-        or arn_parts[5].split("/", 1)[0] != "key"
-        or not isinstance(key_id, str)
+        or arn_parts[5] != f"key/{key_id}"
     ):
         raise SigningError("KMS key is not an enabled same-account non-production P-256 signing key")
-    if not any(
-        alias_entry.get("AliasName") == alias
-        and alias_entry.get("TargetKeyId") == key_id
-        for alias_entry in kms.aliases_for_key(key_id)
-        if isinstance(alias_entry, dict)
-    ):
-        raise SigningError("KMS key does not have the required non-production alias")
     tags = kms.tags_for_key(key_id)
     if (
         tags.get("Environment") != "nonproduction"
@@ -460,6 +440,8 @@ def create_bundle(
 ) -> dict[str, Any]:
     if not isinstance(purpose, str) or purpose not in PURPOSES:
         raise SigningError("only non-production release or TPM trust-feed signing is supported")
+    if _parse_object(payload, "signing payload") != parsed_payload:
+        raise SigningError("signing payload bytes do not match their parsed JSON object")
     signed_payload, canonicalization = _message_for_payload(purpose, payload, parsed_payload)
     context, public_der = _validate_key(kms, purpose, expected_fingerprint)
     message = _signing_message(purpose, signed_payload)
@@ -628,11 +610,6 @@ def main(argv: list[str] | None = None) -> int:
 
         payload, parsed_payload = _read_stable_json(arguments.input)
         purpose = "release" if arguments.command == "sign-release" else "trust-feed"
-        if purpose == "release":
-            try:
-                payload = release_provenance.canonicalize_jcs(parsed_payload)
-            except release_provenance.ProvenanceError as error:
-                raise SigningError(f"release manifest cannot be canonicalized: {error}") from error
         kms = AwsKms(arguments.region, arguments.profile)
         bundle = create_bundle(
             purpose,

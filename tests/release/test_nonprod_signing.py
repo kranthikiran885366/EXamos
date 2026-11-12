@@ -43,6 +43,7 @@ class FakeKms:
         }
         self.sign_count = 0
         self.corrupt_signature = False
+        self.public_key_algorithms = ["ECDSA_SHA_256"]
 
     def identity(self):
         return {"Account": "123456789012"}
@@ -60,9 +61,6 @@ class FakeKms:
             "KeySpec": self.key_spec,
         }
 
-    def aliases_for_key(self, key_id):
-        return [{"AliasName": self.alias, "TargetKeyId": key_id}]
-
     def tags_for_key(self, key_id):
         return dict(self.tags)
 
@@ -71,7 +69,7 @@ class FakeKms:
             "KeyId": key_id,
             "KeySpec": "ECC_NIST_P256",
             "KeyUsage": "SIGN_VERIFY",
-            "SigningAlgorithms": ["ECDSA_SHA_256"],
+            "SigningAlgorithms": self.public_key_algorithms,
             "PublicKey": base64.b64encode(self.public_der).decode("ascii"),
         }
 
@@ -150,6 +148,21 @@ class NonprodSigningTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(bundle["payload_base64"]), raw)
         self.assertEqual(signing.verify_bundle(bundle, kms.expected_fingerprint)["signature"], "VALID")
 
+    def test_trust_feed_modified_with_updated_digest_fails_signature(self):
+        kms = FakeKms()
+        kms.tags["Purpose"] = "tpm-trust-feed"
+        feed = make_feed()
+        raw = json.dumps(feed, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        bundle = signing.create_bundle(
+            "trust-feed", raw, feed, kms.expected_fingerprint, kms
+        )
+        feed["sequence"] += 1
+        modified = json.dumps(feed, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        bundle["payload_base64"] = base64.b64encode(modified).decode("ascii")
+        bundle["payload_digest"] = "sha256:" + hashlib.sha256(modified).hexdigest()
+        with self.assertRaisesRegex(signing.SigningError, "signature is invalid"):
+            signing.verify_bundle(bundle, kms.expected_fingerprint)
+
     def test_wrong_independent_pin_fails_before_signing(self):
         kms = FakeKms()
         raw = b'{"schema_version":"1.0"}'
@@ -157,6 +170,16 @@ class NonprodSigningTests(unittest.TestCase):
             signing.create_bundle(
                 "release", raw, signing._parse_object(raw, "manifest"),
                 "sha256:" + "0" * 64, kms,
+            )
+        self.assertEqual(kms.sign_count, 0)
+
+    def test_signing_rejects_mismatched_parsed_payload(self):
+        kms = FakeKms()
+        raw = b'{"schema_version":"1.0","value":1}'
+        mismatched = {"schema_version": "1.0", "value": 2}
+        with self.assertRaisesRegex(signing.SigningError, "do not match"):
+            signing.create_bundle(
+                "release", raw, mismatched, kms.expected_fingerprint, kms
             )
         self.assertEqual(kms.sign_count, 0)
 
@@ -192,9 +215,83 @@ class NonprodSigningTests(unittest.TestCase):
         with self.assertRaisesRegex(signing.SigningError, "payload digest"):
             signing.verify_bundle(bundle, kms.expected_fingerprint)
 
+    def test_modified_payload_with_recomputed_digest_fails_signature(self):
+        kms = FakeKms()
+        raw = b'{"schema_version":"1.0","value":1}'
+        bundle = signing.create_bundle(
+            "release", raw, signing._parse_object(raw, "manifest"),
+            kms.expected_fingerprint, kms,
+        )
+        modified = b'{"schema_version":"1.0","value":2}'
+        bundle["payload_base64"] = base64.b64encode(modified).decode("ascii")
+        bundle["payload_digest"] = "sha256:" + hashlib.sha256(modified).hexdigest()
+        with self.assertRaisesRegex(signing.SigningError, "signature is invalid"):
+            signing.verify_bundle(bundle, kms.expected_fingerprint)
+
+    def test_kms_arn_key_id_mismatch_is_rejected_before_signing(self):
+        kms = FakeKms()
+        kms.key_arn = "arn:aws:kms:ap-south-1:123456789012:key/other-key-id"
+        raw = b'{"schema_version":"1.0"}'
+        with self.assertRaisesRegex(signing.SigningError, "same-account"):
+            signing.create_bundle(
+                "release", raw, signing._parse_object(raw, "manifest"),
+                kms.expected_fingerprint, kms,
+            )
+        self.assertEqual(kms.sign_count, 0)
+
+    def test_unsupported_kms_signing_algorithm_is_rejected(self):
+        kms = FakeKms()
+        kms.public_key_algorithms = ["RSASSA_PSS_SHA_256"]
+        raw = b'{"schema_version":"1.0"}'
+        with self.assertRaisesRegex(signing.SigningError, "public key metadata"):
+            signing.create_bundle(
+                "release", raw, signing._parse_object(raw, "manifest"),
+                kms.expected_fingerprint, kms,
+            )
+        self.assertEqual(kms.sign_count, 0)
+
+    def test_unknown_key_pin_and_rotated_key_pin_reject_bundle(self):
+        first_key = FakeKms()
+        raw = b'{"schema_version":"1.0","value":1}'
+        bundle = signing.create_bundle(
+            "release", raw, signing._parse_object(raw, "manifest"),
+            first_key.expected_fingerprint, first_key,
+        )
+        with self.assertRaisesRegex(signing.SigningError, "independent fingerprint"):
+            signing.verify_bundle(bundle, "sha256:" + "f" * 64)
+
+        rotated_key = FakeKms()
+        self.assertNotEqual(first_key.expected_fingerprint, rotated_key.expected_fingerprint)
+        with self.assertRaisesRegex(signing.SigningError, "independent fingerprint"):
+            signing.verify_bundle(bundle, rotated_key.expected_fingerprint)
+
+    def test_production_environment_bundle_is_rejected(self):
+        kms = FakeKms()
+        raw = b'{"schema_version":"1.0"}'
+        bundle = signing.create_bundle(
+            "release", raw, signing._parse_object(raw, "manifest"),
+            kms.expected_fingerprint, kms,
+        )
+        bundle["environment"] = "production"
+        with self.assertRaisesRegex(signing.SigningError, "production or unspecified"):
+            signing.verify_bundle(bundle, kms.expected_fingerprint)
+
+    def test_wrong_signature_is_rejected(self):
+        kms = FakeKms()
+        raw = b'{"schema_version":"1.0"}'
+        bundle = signing.create_bundle(
+            "release", raw, signing._parse_object(raw, "manifest"),
+            kms.expected_fingerprint, kms,
+        )
+        bundle["signature_base64"] = base64.b64encode(b"invalid-signature").decode("ascii")
+        with self.assertRaisesRegex(signing.SigningError, "signature"):
+            signing.verify_bundle(bundle, kms.expected_fingerprint)
+
     def test_duplicate_json_keys_and_invalid_feed_schema_are_rejected(self):
         with self.assertRaisesRegex(signing.SigningError, "duplicate JSON key"):
             signing._parse_object(b'{"schema_version":"1.0","schema_version":"1.0"}', "manifest")
+        with self.assertRaisesRegex(signing.SigningError, "not valid UTF-8 JSON"):
+            signing._parse_object(b'{"schema_version":', "manifest")
 
         feed = make_feed()
         feed["unexpected"] = True
