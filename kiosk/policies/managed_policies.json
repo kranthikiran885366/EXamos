@@ -1,16 +1,32 @@
 {
   "URLAllowlist": [
+    "http://127.0.0.1:8000",
     "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "http://localhost:8000",
+    "http://localhost:8000/*",
+    "sppio-os.vercel.app",
+    "https://sppio-os.vercel.app",
+    "https://sppio-os.vercel.app/*",
+    "sppio-core.onrender.com",
+    "https://sppio-core.onrender.com",
+    "https://sppio-core.onrender.com/*",
+    "*.onrender.com",
+    "https://*.onrender.com/*",
+    "staging.examos.example.edu",
+    "https://staging.examos.example.edu/*"
   ],
   "URLBlocklist": ["*"],
   "VideoCaptureAllowedUrls": [
     "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "http://localhost:8000/*",
+    "https://sppio-os.vercel.app/*",
+    "https://staging.examos.example.edu/*"
   ],
   "AudioCaptureAllowedUrls": [
     "http://127.0.0.1:8000/*",
-    "http://localhost:8000/*"
+    "http://localhost:8000/*",
+    "https://sppio-os.vercel.app/*",
+    "https://staging.examos.example.edu/*"
   ],
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,

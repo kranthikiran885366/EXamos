@@ -364,7 +364,7 @@ void device_trust_handle(int client_fd, const char *method, const char *path,
         char ek_cert_pem[4096] = {0};
         char ek_cert_chain[8192] = {0};
         char ak_public_area_hex[2048] = {0};
-        char ak_name_hex[68] = {0};
+        char ak_name_hex[69] = {0};
         int tpm_present = 0;
 
         ctrl_json_string(body, "device_id", dev_id, sizeof(dev_id));

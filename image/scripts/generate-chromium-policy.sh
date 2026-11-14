@@ -237,7 +237,39 @@ for raw in sys.argv[2:]:
     origin = canonical_origin(raw)
     if origin not in approved:
         approved.append(origin)
-print(json.dumps([origin + "/*" for origin in approved], separators=(",", ":")))
+
+allowlist = []
+for origin in approved:
+    if origin not in allowlist:
+        allowlist.append(origin)
+    with_slash = origin + "/*"
+    if with_slash not in allowlist:
+        allowlist.append(with_slash)
+    host = urlsplit(origin).hostname
+    if host:
+        if host not in allowlist:
+            allowlist.append(host)
+        proto_host = f"https://{host}"
+        if proto_host not in allowlist:
+            allowlist.append(proto_host)
+        proto_star = f"https://{host}/*"
+        if proto_star not in allowlist:
+            allowlist.append(proto_star)
+
+# Add approved API backend origins for SPPIO Cloud
+for extra in [
+    "sppio-core.onrender.com",
+    "https://sppio-core.onrender.com",
+    "https://sppio-core.onrender.com/*",
+    "*.onrender.com",
+    "https://*.onrender.com/*",
+    "*.render.com",
+    "https://*.render.com/*"
+]:
+    if extra not in allowlist:
+        allowlist.append(extra)
+
+print(json.dumps(allowlist, separators=(",", ":")))
 PYEOF
 ) || fail "ALLOWED_ORIGINS contains an invalid origin; policy was not written."
 

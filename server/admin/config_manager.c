@@ -107,7 +107,7 @@ static int validate_exam_url_against_hosts(const char *url, const char *allowed_
 int config_validate_exam_url(const char *url) {
     const char *hosts = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
     if (!hosts || !hosts[0]) {
-        hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,localhost,127.0.0.1";
+        hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,sppio-core.onrender.com,localhost,127.0.0.1";
     }
     return validate_exam_url_against_hosts(url, hosts);
 }
@@ -147,7 +147,7 @@ int config_validate_allowed_origins(const char *origins) {
     if (total_length == 0) return 1;
     const char *allowed_hosts = getenv("EXAMOS_ALLOWED_EXAM_HOSTS");
     if (!allowed_hosts || !allowed_hosts[0]) {
-        allowed_hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,localhost,127.0.0.1";
+        allowed_hosts = "staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,sppio-core.onrender.com,localhost,127.0.0.1";
     }
 
     size_t count = 0;

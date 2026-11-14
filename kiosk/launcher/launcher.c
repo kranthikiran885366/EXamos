@@ -16,6 +16,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <time.h>
 #include <errno.h>
@@ -200,6 +203,47 @@ static int validate_sandbox_environment(void) {
     return 0;
 }
 
+static void wait_for_network(const char *url) {
+    if (!url) return;
+    char host[256] = {0};
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    size_t i = 0;
+    while (p[i] && p[i] != '/' && p[i] != ':' && i < sizeof(host) - 1) {
+        host[i] = p[i];
+        i++;
+    }
+    host[i] = '\0';
+
+    if (strcmp(host, "127.0.0.1") == 0 || strcmp(host, "localhost") == 0) {
+        return;
+    }
+
+    log_msg("INFO", "Pre-flight: Checking network connectivity and DNS resolution...");
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    for (int attempt = 1; attempt <= 45; attempt++) {
+        if (!g_running) return;
+        if (getaddrinfo(host, NULL, &hints, &res) == 0) {
+            freeaddrinfo(res);
+            char ok_msg[300];
+            snprintf(ok_msg, sizeof(ok_msg), "Network ready: '%s' resolved successfully (attempt %d)", host, attempt);
+            log_msg("INFO", ok_msg);
+            return;
+        }
+        if (attempt % 5 == 0) {
+            char wait_msg[300];
+            snprintf(wait_msg, sizeof(wait_msg), "Waiting for '%s' to resolve (attempt %d/45)...", host, attempt);
+            log_msg("INFO", wait_msg);
+        }
+        sleep(1);
+    }
+    log_msg("WARN", "Network wait timed out after 45s; proceeding with launch attempt");
+}
+
 int main(int argc, char *argv[]) {
     /* Audit arguments for any disallowed security flags */
     for (int i = 1; i < argc; i++) {
@@ -243,6 +287,9 @@ int main(int argc, char *argv[]) {
     snprintf(launch_msg, sizeof(launch_msg), "Target exam URL: %s", exam_url);
     log_msg("INFO", launch_msg);
 
+    /* Wait for network and DNS before starting browser loop */
+    wait_for_network(exam_url);
+
     int consecutive_crashes = 0;
 
     while (g_running) {
@@ -285,7 +332,7 @@ int main(int argc, char *argv[]) {
 
         if (pid == 0) {
             // Child Process - Execute Chromium with locked-down flags and accommodations
-            char *args[48];
+            char *args[64];
             int arg_idx = 0;
 
             args[arg_idx++] = (char *)CHROMIUM_BIN;
@@ -301,12 +348,15 @@ int main(int argc, char *argv[]) {
             args[arg_idx++] = (char *)"--disable-infobars";
             args[arg_idx++] = (char *)"--disable-session-crashed-bubble";
             args[arg_idx++] = (char *)"--disable-component-update";
-            args[arg_idx++] = (char *)"--disable-background-networking";
             args[arg_idx++] = (char *)"--disable-dev-tools";
             args[arg_idx++] = (char *)"--disable-print-preview";
             args[arg_idx++] = (char *)"--password-store=basic";
             args[arg_idx++] = (char *)"--ozone-platform=wayland";
             args[arg_idx++] = (char *)"--enable-features=UseOzonePlatform";
+            args[arg_idx++] = (char *)"--disable-features=NetworkServiceSandbox";
+            args[arg_idx++] = (char *)"--disable-ipv6";
+            args[arg_idx++] = (char *)"--enable-logging=stderr";
+            args[arg_idx++] = (char *)"--v=1";
             args[arg_idx++] = (char *)"--autoplay-policy=no-user-gesture-required";
             args[arg_idx++] = (char *)"--disable-developer-tools";
             args[arg_idx++] = (char *)"--disable-popup-blocking";

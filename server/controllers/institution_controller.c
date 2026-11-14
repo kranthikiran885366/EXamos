@@ -2966,6 +2966,24 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 }
             }
 
+            /* Explicit pre-check to reject duplicate active administrator accounts with the same email */
+            if (email[0]) {
+                const char *echk_v[1] = { email };
+                int echk_l[1] = { (int)strlen(email) };
+                PGresult *echk = db_simple(conn,
+                    "SELECT id, username FROM users "
+                    "WHERE LOWER(TRIM(COALESCE(email, ''))) = LOWER(TRIM($1)) "
+                    "  AND LOWER(COALESCE(status, '')) = 'active' LIMIT 1",
+                    1, echk_v, echk_l);
+                if (echk && PQresultStatus(echk) == PGRES_TUPLES_OK && PQntuples(echk) > 0) {
+                    PQclear(echk);
+                    db_release(conn, 0);
+                    inst_send_error(client_fd, 409, "An active account with this email already exists", origin, extra_headers, extra_len);
+                    return;
+                }
+                if (echk) PQclear(echk);
+            }
+
             if (!username[0]) {
                 const char *at = strchr(email, '@');
                 size_t prefix_len = at ? (size_t)(at - email) : strlen(email);
@@ -3038,7 +3056,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "RETURNING id, username", 9, pvals, lens);
             if (!ins || PQresultStatus(ins) != PGRES_TUPLES_OK) {
                 int duplicate_email =
-                    db_is_constraint_violation(ins, "users_active_email_normalized_key");
+                    db_is_constraint_violation(ins, "users_active_email_normalized_key") ||
+                    db_is_constraint_violation(ins, "idx_users_active_email_normalized");
                 if (ins) {
                     PQclear(ins);
                 }

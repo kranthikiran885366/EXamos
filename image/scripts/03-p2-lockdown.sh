@@ -209,7 +209,7 @@ if [ ! -s "$CHROMIUM_PROFILE" ] ||
     echo "[P2] FAIL: canonical Chromium AppArmor profile is missing or not enforcing" >&2
     exit 1
 fi
-rm -f -- "$LEGACY_CHROMIUM_PROFILE"
+rm -f -- "$LEGACY_CHROMIUM_PROFILE" "${BR}/etc/apparmor.d/chromium"
 echo "[P2] H: canonical AppArmor profile enforced; conflicting legacy attachment removed"
 enable_required_unit apparmor.service
 echo "[P2] H: AppArmor enabled"

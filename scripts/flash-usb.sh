@@ -47,14 +47,20 @@ fail() { echo "[flash] FATAL: $*" >&2; exit 1; }
 [ -f "$ISO_PATH" ] || fail "ISO file not found: $ISO_PATH"
 
 # -----------------------------------------------------------------------
-# Safety: never allow /dev/sda (primary disk)
+# Safety: never allow /dev/sda or internal disks
 # -----------------------------------------------------------------------
 case "$DEVICE" in
-    /dev/sda|/dev/nvme0n1|/dev/mmcblk0)
-        fail "Refusing to write to $DEVICE — this is likely your primary disk."
+    /dev/sda|/dev/sda[0-9]*|/dev/nvme0n1|/dev/nvme0n1*|/dev/mmcblk0|/dev/mmcblk0*)
+        fail "Refusing to write to $DEVICE — this is likely your primary disk or host OS partition."
         ;;
-    /dev/sd[a-z])
-        fail "Refusing to write to $DEVICE — use a specific partition device like /dev/sdb"
+    /dev/sd[b-z][0-9]*)
+        fail "Refusing to write to partition $DEVICE — use the whole disk device (e.g. ${DEVICE%%[0-9]*})"
+        ;;
+    /dev/sd[b-z])
+        # Valid whole-disk external drive target
+        ;;
+    *)
+        log "Target block device specified: $DEVICE"
         ;;
 esac
 

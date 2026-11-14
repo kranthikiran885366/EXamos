@@ -63,7 +63,12 @@ create_epoch() {
     [[ ! -e "$epoch_dir" && ! -L "$epoch_dir" ]] ||
         fail "Refusing to overwrite existing VM state: $epoch_dir"
 
-    raw="${EXAMOS_VH_IMAGE:-$WORKSPACE/image/examos.raw}"
+    if [[ -n "${EXAMOS_VH_IMAGE:-}" ]]; then
+        raw="$EXAMOS_VH_IMAGE"
+    else
+        source "$WORKSPACE/scripts/p0-image-path.sh"
+        raw="$(examos_image_output_dir "$WORKSPACE" "$WORKSPACE/image")/examos.raw"
+    fi
     [[ "$raw" = /* ]] || raw="$WORKSPACE/$raw"
     [[ -f "$raw" && ! -L "$raw" ]] ||
         blocked "Selected raw SPPIO image is unavailable or is not a regular file."
@@ -179,7 +184,7 @@ process_running() {
 
 start_one() {
     local kind="$1" accel="$2" epoch_dir="$3" json_file="$4"
-    local qemu memory cpus code vars disk control_dir server_socket control_socket
+    local qemu memory cpus code vars disk control_dir server_socket control_socket qemu_pid
     local display_args=()
     mapfile -t fields < <(python3 - "$json_file" "$kind" <<'PY'
 import json
@@ -207,11 +212,10 @@ PY
         control_dir="$(mktemp -d /tmp/sppio-vh-XXXXXX)" ||
             fail "Could not create a private short TPM socket directory."
         server_socket="$control_dir/swtpm.sock"
-        control_socket="$server_socket.ctrl"
+        control_socket="$server_socket"
         printf '%s\n' "$control_dir" > "$epoch_dir/tpm-socket-directory"
         nohup swtpm socket --tpm2 --tpmstate "dir=$state_dir" \
-            --server "type=unixio,path=$server_socket" \
-            --ctrl "type=unixio,path=$control_socket" \
+            --ctrl "type=unixio,path=$server_socket" \
             --flags not-need-init,startup-clear \
             > "$epoch_dir/swtpm.log" 2>&1 </dev/null &
         printf '%s\n' "$!" > "$epoch_dir/swtpm.pid"
@@ -220,20 +224,11 @@ PY
         for _ in $(seq 1 50); do
             process_running "$swtpm_pid" ||
                 fail "swtpm exited; inspect $epoch_dir/swtpm.log."
-            [[ -S "$server_socket" && -S "$control_socket" ]] && break
+            [[ -S "$server_socket" ]] && break
             sleep 0.1
         done
-        [[ -S "$server_socket" && -S "$control_socket" ]] ||
-            fail "swtpm did not create both Unix sockets; inspect $epoch_dir/swtpm.log."
-        if ! TPM2TOOLS_TCTI="swtpm:path=$server_socket" \
-            tpm2_startup -c > "$epoch_dir/tpm-startup.log" 2>&1; then
-            if ! grep -qiE 'already|initialized|initialize' "$epoch_dir/tpm-startup.log"; then
-                fail "The virtual TPM did not complete startup."
-            fi
-        fi
-        TPM2TOOLS_TCTI="swtpm:path=$server_socket" \
-            tpm2_getcap properties-fixed > "$epoch_dir/tpm-capabilities.txt" 2>&1 ||
-            fail "The virtual TPM did not answer a TPM 2.0 capability query."
+        [[ -S "$server_socket" ]] ||
+            fail "swtpm did not create its Unix socket; inspect $epoch_dir/swtpm.log."
         return
     fi
 
@@ -245,8 +240,8 @@ PY
     control_dir="$(tpm_socket_directory "$epoch_dir")" ||
         fail "The TPM Unix socket directory record is missing or invalid; reset this VM epoch."
     server_socket="$control_dir/swtpm.sock"
-    control_socket="$server_socket.ctrl"
-    [[ -S "$server_socket" && -S "$control_socket" ]] ||
+    control_socket="$server_socket"
+    [[ -S "$server_socket" ]] ||
         fail "The TPM Unix sockets are unavailable; stop and restart the VM."
     qemu="$(command -v qemu-system-x86_64)"
     local cpu_model
@@ -258,36 +253,51 @@ PY
 
     local display_backend="${EXAMOS_VH_DISPLAY:-none}"
     case "$display_backend" in
-        none) display_args=(-display none) ;;
+        none) display_args=(-vga std -display none) ;;
         gtk) display_args=(-vga std -display gtk) ;;
         vnc) display_args=(-vga std -display vnc=127.0.0.1:0) ;;
         *) fail "EXAMOS_VH_DISPLAY must be none, gtk, or vnc." ;;
     esac
 
-    # QEMU uses the UnixIO control channel; TPM tools use the server socket.
-    nohup "$qemu" -name "sppio-vh-$(basename "$RUN_DIR")" -machine q35 -boot order=c \
+    [[ ! -L "$epoch_dir/serial.log" ]] ||
+        fail "Refusing to follow a serial log symlink."
+    [[ ! -e "$epoch_dir/serial.log" || -f "$epoch_dir/serial.log" ]] ||
+        fail "Serial log path is not a regular file."
+    : >> "$epoch_dir/serial.log"
+
+    # QEMU uses swtpm's single UnixIO socket; host TPM tools use paired sockets after QEMU stops.
+    nohup "$qemu" -name "sppio-vh-$(basename "$RUN_DIR")" -machine q35 \
         -accel "$accel" -cpu "$cpu_model" -m "$memory" -smp "$cpus" \
         -drive "if=pflash,unit=0,format=raw,readonly=on,file=$code" \
         -drive "if=pflash,unit=1,format=raw,file=$vars" \
         -chardev "socket,id=chrtpm,path=$server_socket" \
         -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
         -device tpm-tis,tpmdev=tpm0 \
-        -device qemu-xhci \
         -drive "file=$disk,format=qcow2,if=virtio" \
+        -device qemu-xhci \
         -nic none "${display_args[@]}" -monitor none \
-        -serial "file:$epoch_dir/serial.log" -no-reboot \
+        -chardev "file,id=serial0,path=$epoch_dir/serial.log,append=on" \
+        -serial chardev:serial0 -no-reboot \
         > "$epoch_dir/qemu-$accel.log" 2>&1 </dev/null &
     printf '%s\n' "$!" > "$epoch_dir/qemu.pid"
     sleep 2
-    kill -0 "$(cat "$epoch_dir/qemu.pid")" 2>/dev/null
+    qemu_pid="$(cat "$epoch_dir/qemu.pid")"
+    if ! process_running "$qemu_pid" || ! pid_is_ours "$qemu_pid" "$RUN_DIR"; then
+        printf '[VH-VM] QEMU exited during startup; inspect %s/qemu-%s.log.\n' \
+            "$epoch_dir" "$accel" >&2
+        cat "$epoch_dir/qemu-$accel.log" >&2
+        return 1
+    fi
 }
 
 start_vm() {
-    local epoch_dir json_file accel_request accel_help display_backend manifest_schema
+    local epoch_dir json_file accel_request accel_help display_backend display_help manifest_schema
     local control_dir server_socket control_socket
     epoch_dir="$(active_epoch)" || blocked "Create a VM state first."
     json_file="$epoch_dir/vm.json"
     [[ -f "$json_file" ]] || fail "VM manifest is missing."
+    [[ ! -L "$epoch_dir/serial.log" && ! -e "$epoch_dir/serial.log" ]] ||
+        fail "Serial evidence already exists; create a fresh VM epoch before restarting."
     manifest_schema="$(python3 - "$json_file" <<'PY'
 import json
 import sys
@@ -304,8 +314,19 @@ PY
 
     accel_request="${EXAMOS_VH_ACCEL:-auto}"
     case "$accel_request" in auto|kvm|tcg) ;; *) fail "EXAMOS_VH_ACCEL must be auto, kvm, or tcg." ;; esac
+    if [[ "$accel_request" == "auto" && -r /proc/sys/kernel/osrelease ]] &&
+       grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+        printf '[VH-VM] WSL detected; selecting TCG because KVM guest boot produced no serial output here.\n'
+        accel_request="tcg"
+    fi
     display_backend="${EXAMOS_VH_DISPLAY:-none}"
     case "$display_backend" in none|gtk|vnc) ;; *) fail "EXAMOS_VH_DISPLAY must be none, gtk, or vnc." ;; esac
+    if [[ "$display_backend" == "vnc" ]]; then
+        display_help="$(qemu-system-x86_64 -display help 2>&1 || true)"
+        if ! grep -qx 'vnc' <<< "$display_help"; then
+            blocked "The selected QEMU build does not provide the VNC display backend."
+        fi
+    fi
     accel_help="$(qemu-system-x86_64 -accel help 2>&1 || true)"
     START_IN_PROGRESS=1
     if [[ "$accel_request" == "kvm" || ( "$accel_request" == "auto" &&
@@ -339,7 +360,7 @@ PY
     control_dir="$(tpm_socket_directory "$epoch_dir")" ||
         fail "The TPM Unix socket directory record is missing or invalid after startup."
     server_socket="$control_dir/swtpm.sock"
-    control_socket="$server_socket.ctrl"
+    control_socket="$server_socket"
     python3 - "$epoch_dir/vm-runtime.json" "$(cat "$epoch_dir/acceleration")" \
         "$(cat "$epoch_dir/qemu.pid")" "$(cat "$epoch_dir/swtpm.pid")" \
         "${EXAMOS_VH_DISPLAY:-none}" "$server_socket" "$control_socket" <<'PY'
@@ -464,8 +485,7 @@ stop_qemu() {
     epoch_dir="$(active_epoch)" || blocked "Create a VM state first."
 
     # ── 1. Stop QEMU ─────────────────────────────────────────────────────
-    # Kill QEMU first to release its exclusive connection to the swtpm
-    # control socket ($server_socket.ctrl).
+    # Kill QEMU first to release its exclusive connection to the single swtpm socket.
     [[ -f "$epoch_dir/qemu.pid" ]] || fail "QEMU PID record is missing."
     qemu_pid="$(cat "$epoch_dir/qemu.pid")"
     [[ "$qemu_pid" =~ ^[0-9]+$ ]] || fail "Invalid QEMU PID record."
@@ -484,20 +504,19 @@ stop_qemu() {
     fi
 
     # ── 2. Persist volatile state (PCR values) ───────────────────────────
-    # With QEMU disconnected, the control socket is now free.
+    # With QEMU disconnected, persist PCRs through the control socket.
     # Force swtpm to persist its volatile state (containing measured boot PCRs)
     # to disk via swtpm_ioctl -v.
     control_dir="$(tpm_socket_directory "$epoch_dir")" ||
         fail "The TPM Unix socket directory record is missing or invalid."
     server_socket="$control_dir/swtpm.sock"
-    control_socket="$server_socket.ctrl"
+    control_socket="$server_socket"
     [[ -d "$control_dir" && ! -L "$control_dir" ]] ||
         fail "The recorded TPM socket directory is unavailable or unsafe."
     [[ "$(stat -c '%u' "$control_dir")" == "$(id -u)" ]] ||
         fail "The recorded TPM socket directory is owned by another user."
-    [[ -S "$server_socket" && ! -L "$server_socket" &&
-       -S "$control_socket" && ! -L "$control_socket" ]] ||
-        fail "The TPM server/control sockets are unavailable; volatile state cannot be saved."
+    [[ -S "$server_socket" && ! -L "$server_socket" ]] ||
+        fail "The TPM UnixIO socket is unavailable; volatile state cannot be saved."
     [[ -f "$epoch_dir/swtpm.pid" ]] || fail "swtpm PID record is missing."
     swtpm_pid="$(cat "$epoch_dir/swtpm.pid")"
     [[ "$swtpm_pid" =~ ^[0-9]+$ ]] || fail "Invalid swtpm PID record."
@@ -507,7 +526,7 @@ stop_qemu() {
         fail "Refusing to control swtpm PID $swtpm_pid; it is not owned by this test run."
 
     printf '[VH-VM] Persisting swtpm volatile state to disk …\n'
-    if ! swtpm_ioctl --unix "$control_socket" -v \
+    if ! swtpm_ioctl --unix "$server_socket" -v \
         >"$epoch_dir/swtpm-ioctl-save.log" 2>&1; then
         cat "$epoch_dir/swtpm-ioctl-save.log" >&2
         fail "swtpm_ioctl could not persist volatile TPM state; refusing to continue."
@@ -528,6 +547,7 @@ stop_qemu() {
     process_running "$swtpm_pid" &&
         fail "Original swtpm PID $swtpm_pid did not stop; refusing to start a second TPM."
 
+    control_socket="$server_socket.ctrl"
     json_file="$epoch_dir/vm.json"
     [[ -f "$json_file" && ! -L "$json_file" ]] || fail "VM metadata is missing or unsafe."
     state_dir="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tpm"]["state_directory"])' "$json_file")" ||
@@ -535,9 +555,9 @@ stop_qemu() {
     [[ -d "$state_dir" && ! -L "$state_dir" ]] ||
         fail "The recorded TPM state directory is unavailable or unsafe."
     [[ ! -L "$server_socket" && ( ! -e "$server_socket" || -S "$server_socket" ) &&
-       ! -L "$control_socket" && ( ! -e "$control_socket" || -S "$control_socket" ) ]] ||
+       ! -e "$control_socket" && ! -L "$control_socket" ]] ||
         fail "Unexpected data remains at a TPM socket path after the original swtpm stopped."
-    rm -f -- "$server_socket" "$control_socket"
+    rm -f -- "$server_socket"
     server_socket="$control_dir/swtpm.sock"
     control_socket="$server_socket.ctrl"
     nohup swtpm socket --tpm2 --tpmstate "dir=$state_dir" \

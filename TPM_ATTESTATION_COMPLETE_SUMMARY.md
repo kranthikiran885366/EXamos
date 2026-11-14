@@ -100,6 +100,10 @@ The TPM 2.0 EK-to-AK provenance implementation is now **fully integrated end-to-
 
 ## Complete File Changes
 
+Historical note: the unregistered `043_ek_ak_provenance.sql` file was later
+removed because its version collided with the registered RSA-only migration.
+The canonical EK/AK schema is in `server/migrations/044_tpm_credential_activation.sql`.
+
 ### New Files (10)
 1. `server/migrations/042_challenge_lifecycle_enhancements.sql` - Challenge lifecycle
 2. `server/migrations/043_ek_ak_provenance.sql` - EK/AK provenance schema

@@ -56,7 +56,7 @@ READY_PATTERN='EXAMOS_KIOSK_READY cage=1 chromium=1 wayland_socket=1 stable_seco
 
 kiosk_ready=0
 for _ in $(seq 1 "$TIMEOUT_SECONDS"); do
-    sync "$SERIAL_LOG" 2>/dev/null || true
+    sleep 1
     if ! bash "$SCRIPT_DIR/check-vm.sh" >/dev/null 2>&1; then
         bash "$SCRIPT_DIR/check-vm.sh" > "$EPOCH_DIR/health-check.log" 2>&1 || true
         echo "[VH-QEMU] FAIL: VM lifecycle check failed; inspect $EPOCH_DIR/health-check.log." >&2

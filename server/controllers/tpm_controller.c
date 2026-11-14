@@ -147,7 +147,7 @@ authorized:
 
     /* Phase 2: Credential Activation Endpoint */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/activate") == 0) {
-        char device_id[64] = {0}, ak_name_hex[68] = {0};
+        char device_id[64] = {0}, ak_name_hex[69] = {0};
         ctrl_json_string(body, "device_id", device_id, sizeof(device_id));
         ctrl_json_string(body, "ak_name_hex", ak_name_hex, sizeof(ak_name_hex));
 

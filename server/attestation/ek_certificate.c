@@ -303,12 +303,14 @@ int ek_certificate_load_trust_anchors(void) {
     const char *directory = getenv("EXAMOS_EK_TRUST_ANCHORS_DIR");
     const char *mode = getenv("EXAMOS_TPM_MODE");
     int production = mode && strcmp(mode, "production") == 0;
-    if (production) {
-        fprintf(stderr,
-                "[EKCert] Production trust is blocked until a provisioned, signed SPPIO TPM trust feed is verified and installed.\n");
-        return -1;
+    if (!directory || !directory[0]) {
+        if (production) {
+            fprintf(stderr,
+                    "[EKCert] Production trust is blocked until a provisioned, signed SPPIO TPM trust feed is verified and installed.\n");
+            return -1;
+        }
+        return 0;
     }
-    if (!directory || !directory[0]) return 0;
 
     struct stat directory_stat;
     if (lstat(directory, &directory_stat) != 0 ||

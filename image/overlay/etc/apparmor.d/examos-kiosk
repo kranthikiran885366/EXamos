@@ -116,6 +116,7 @@ profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {
     # Wayland socket (path varies; allow under /run)
     /run/user/[0-9]*/wayland-[0-9]* rw,
     /run/examos-kiosk/wayland-[0-9]* rw,
+    /run/examos-kiosk/examos_kiosk_*/** rwkl,
 
     # Ephemeral profile directory and temporary runtime files (under /run and /tmp)
     /run/user/[0-9]*/          r,

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_DIR="$ROOT/image"
-ARTIFACT_DIR="$ROOT/artifacts/p0"
+ARTIFACT_DIR="${EXAMOS_BUILD_ARTIFACT_DIR:-$ROOT/artifacts/p0}"
 source "$ROOT/scripts/p0-image-path.sh"
 OUTPUT_DIR="$(examos_image_output_dir "$ROOT" "$IMAGE_DIR")"
 IMAGE_FILE="$OUTPUT_DIR/examos.raw"
@@ -51,12 +51,18 @@ find "$OVERLAY_DIR/usr/local/sbin" -type f -exec chmod 0755 {} +
 
 # 3. Execute mkosi build
 echo "[3/4] Running mkosi image synthesis..."
-mkosi \
+mkosi_args=(
   --directory "$IMAGE_DIR" \
   --output-directory "$OUTPUT_DIR" \
   --extra-tree "$OVERLAY_DIR:/" \
-  --force \
-  build 2>&1 | tee "$ARTIFACT_DIR/build.log"
+)
+if [[ -n "${EXAMOS_MKOSI_BUILD_DIR:-}" ]]; then
+  mkosi_args+=(--build-directory "$EXAMOS_MKOSI_BUILD_DIR")
+fi
+if [[ -n "${EXAMOS_MKOSI_CACHE_DIR:-}" ]]; then
+  mkosi_args+=(--cache-directory "$EXAMOS_MKOSI_CACHE_DIR")
+fi
+mkosi "${mkosi_args[@]}" --force build 2>&1 | tee "$ARTIFACT_DIR/build.log"
 
 # 4. Validate the exact output and compute its checksum
 echo "[4/4] Validating generated image artifact..."

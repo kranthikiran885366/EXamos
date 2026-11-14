@@ -21,13 +21,14 @@ RuntimeDirectory=examos-kiosk
 RuntimeDirectoryMode=0700
 Environment=LIBSEAT_BACKEND=logind
 Environment=WLR_LIBINPUT_NO_DEVICES=1
-Environment=WLR_RENDERER=auto
+Environment=WLR_RENDERER=pixman
+Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
 Environment=GDK_BACKEND=wayland
 Environment=QT_QPA_PLATFORM=wayland
 Environment=XDG_CONFIG_HOME=/run/examos-kiosk
 Environment=XDG_CACHE_HOME=/run/examos-kiosk
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app
+Environment=XDG_RUNTIME_DIR=/run/examos-kiosk
+Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,sppio-core.onrender.com
 
 # PAM resets XDG_RUNTIME_DIR, so set the private compositor directory after PAM.
 ExecStart=/usr/bin/env XDG_RUNTIME_DIR=/run/examos-kiosk /usr/bin/cage -s -- /usr/local/bin/examos-kiosk-launcher
