@@ -65,6 +65,7 @@ static const migration_t migrations[] = {
     {"043_rsa_only_ak_algorithm.sql",                          "device_fleet",              43},
     {"044_tpm_credential_activation.sql",                       "device_fleet",              44},
     {"045_enforce_unique_active_admin_email.sql",               "admin_auth",                11},
+    {"046_seed_institution_device_trust_policies.sql",          "device_fleet",              46},
 };
 
 /*
