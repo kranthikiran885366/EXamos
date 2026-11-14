@@ -109,6 +109,11 @@ mkdir -p "$EXAMOS_DATA_DIR" \
 export EXAMOS_BROWSER_POLICY_CATALOG="${EXAMOS_BROWSER_POLICY_CATALOG:-/opt/sppio/config/browser_policies.json}"
 export EXAMOS_DEVICES_CONFIG="${EXAMOS_DEVICES_CONFIG:-/opt/sppio/config/devices.json}"
 export EXAMOS_RELEASES_CONFIG="${EXAMOS_RELEASES_CONFIG:-/opt/sppio/config/releases.json}"
+if [ -d "/opt/sppio/config/ek_anchors" ]; then
+    export EXAMOS_EK_TRUST_ANCHORS_DIR="/opt/sppio/config/ek_anchors"
+    chmod 0755 "$EXAMOS_EK_TRUST_ANCHORS_DIR" 2>/dev/null || true
+    chmod 0644 "$EXAMOS_EK_TRUST_ANCHORS_DIR"/*.pem 2>/dev/null || true
+fi
 
 # ── 7. Database URL ───────────────────────────────────────────────────────────
 if [ -n "${DATABASE_URL:-}" ] && [ -z "${EXAMOS_DATABASE_URL:-}" ]; then

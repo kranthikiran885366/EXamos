@@ -87,6 +87,7 @@ artifacts/tmp/
 .env
 .env.*
 *.pem
+!server/config/ek_anchors/*.pem
 *.key
 *.pfx
 *.p12
@@ -101,6 +102,7 @@ keys/
 image/trust/*.key
 image/trust/*.crt
 image/trust/*.pem
+!server/config/ek_anchors/*.pem
 image/trust/PK.*
 image/trust/KEK.*
 image/trust/db.*
