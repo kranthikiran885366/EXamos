@@ -66,6 +66,7 @@ static const migration_t migrations[] = {
     {"044_tpm_credential_activation.sql",                       "device_fleet",              44},
     {"045_enforce_unique_active_admin_email.sql",               "admin_auth",                11},
     {"046_seed_institution_device_trust_policies.sql",          "device_fleet",              46},
+    {"047_candidate_credentials_and_exam_readiness.sql",       "candidate_credentials",     47},
 };
 
 /*
