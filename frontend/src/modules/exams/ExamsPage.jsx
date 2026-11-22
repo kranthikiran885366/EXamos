@@ -172,7 +172,14 @@ export default function ExamsPage() {
 
   const advance = async (exam, to, reason) => {
     const ok = await run(() => transition(user, exam, to, reason), 'Lifecycle updated.');
-    if (ok) setPending(null);
+    if (ok) {
+      // Optimistically update local exam status so stale action buttons are
+      // removed immediately, before the backend list re-fetch completes.
+      setBackendExams((prev) => (prev || []).map((ex) =>
+        ex.id === exam.id ? { ...ex, status: to, updatedAt: Date.now() } : ex
+      ));
+      setPending(null);
+    }
   };
 
   return (
@@ -242,7 +249,7 @@ export default function ExamsPage() {
                 disabled: busy,
                 onClick: () => {
                   if (REASON.has(to)) setPending({ exam: e, to });
-                  else run(() => transition(user, e, to), 'Lifecycle updated.');
+                  else advance(e, to);
                 },
               })),
             { label: 'Duplicate', disabled: !may('exam.manage'), onClick: () => run(async () => {

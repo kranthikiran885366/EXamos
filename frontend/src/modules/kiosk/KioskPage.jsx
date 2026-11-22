@@ -226,14 +226,20 @@ export default function KioskPage() {
             {
               num: '01',
               title: 'Hardware Boot',
-              desc: 'Hardened UEFI ISO boots Wayland Cage compositor directly on /dev/tty1',
+              desc: devices.length === 0
+                ? 'No kiosk devices enrolled. Enrol hardware to activate UEFI boot verification.'
+                : 'Hardened UEFI ISO boots Wayland Cage compositor directly on /dev/tty1',
               status: bootState,
               icon: 'boot',
             },
             {
               num: '02',
               title: 'TPM Attestation',
-              desc: 'Hardware quote verified (PCR 0, 4, 7, 11). Integrity chain anchored.',
+              desc: devices.length === 0
+                ? 'No kiosk devices enrolled. TPM quote verification requires enrolled hardware.'
+                : attestedCount === devices.length
+                  ? 'Hardware quote verified (PCR 0, 4, 7, 11). Integrity chain anchored.'
+                  : `${attestedCount} of ${devices.length} device(s) have verified TPM quotes.`,
               status: tpmState,
               icon: 'cpu',
             },
@@ -247,15 +253,21 @@ export default function KioskPage() {
             {
               num: '04',
               title: 'Exam Lockdown',
-              desc: 'Chromium locked in sandbox: USB blocked, TTY masked, focus monitored',
+              desc: devices.length === 0
+                ? 'No kiosk devices enrolled. Lockdown enforcement requires enrolled hardware.'
+                : 'Chromium locked in sandbox: USB blocked, TTY masked, focus monitored',
               status: lockdownState,
               icon: 'lock',
             },
             {
               num: '05',
               title: 'Sealed Submission',
-              desc: 'Encrypted response committed to HMAC audit ledger. Exam key destroyed.',
-              status: srvHealth?.ledger_integrity === 'INTACT' ? 'Ready' : 'Unverified',
+              desc: devices.length === 0
+                ? 'No kiosk devices enrolled. Submission sealing requires active exam sessions.'
+                : 'Encrypted response committed to HMAC audit ledger. Exam key destroyed.',
+              status: devices.length === 0
+                ? 'Unavailable'
+                : srvHealth?.ledger_integrity === 'INTACT' ? 'Ready' : 'Unverified',
               icon: 'package',
             },
           ].map((stage, i) => (
@@ -461,7 +473,7 @@ export default function KioskPage() {
           {/* Real-time Hardware Hardening Matrix */}
           <Card
             title="Zero-Trust Kiosk Security Matrix"
-            desc="Physical and OS-level enforcement active inside the appliance image"
+            desc={devices.length === 0 ? 'No kiosk devices enrolled — enforcement states are unavailable' : 'Physical and OS-level enforcement active inside the appliance image'}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {[

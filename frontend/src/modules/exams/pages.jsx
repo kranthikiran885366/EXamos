@@ -170,14 +170,14 @@ export function ExamNewPage() {
             <Field label="Course"><Input value={v.course} onChange={(e) => set('course', e.target.value)} maxLength={80} placeholder="B.Tech CSE" /></Field>
             <Field label="Department"><Input value={v.departmentId} onChange={(e) => set('departmentId', e.target.value)} maxLength={64} /></Field>
             <Field label="Academic year"><Input value={v.academicYear} onChange={(e) => set('academicYear', e.target.value)} maxLength={20} placeholder="2026–27" /></Field>
-            <Field label="Time zone"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} /></Field>
+            <Field label="Time zone" help="IANA time zone (e.g. Asia/Kolkata, UTC, Asia/Dubai)"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} placeholder="Asia/Kolkata" /></Field>
             <Field label="Description" className="span2"><Textarea rows={2} value={v.description} onChange={(e) => set('description', e.target.value)} maxLength={1000} /></Field>
           </div>
         </Card>
 
         <Card title="Schedule & centres" desc="Conflicts at a shared centre block publication.">
           <div className="formgrid">
-            <Field label="Start" required><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} required /></Field>
+            <Field label="Start" required help={`Local schedule in ${v.timeZone || 'Asia/Kolkata'}. Stored canonically as epoch UTC.`}><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} required /></Field>
             <Field label="Duration (minutes)" help="15–300"><Input type="number" min={15} max={300} value={v.durationMin} onChange={(e) => set('durationMin', e.target.value)} /></Field>
             <Field label="Late entry (minutes)" help="0–60"><Input type="number" min={0} max={60} value={v.lateEntryMin} onChange={(e) => set('lateEntryMin', e.target.value)} /></Field>
             <Field label="Planned capacity" help="0 means no separate cap"><Input type="number" min={0} value={v.capacity} onChange={(e) => set('capacity', e.target.value)} /></Field>
@@ -304,11 +304,11 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
           <Field label="Title"><Input value={v.title} onChange={(e) => set('title', e.target.value)} maxLength={100} /></Field>
           <Field label="Type"><Select value={v.type} onChange={(e) => set('type', e.target.value)} options={TYPES} placeholder={false} /></Field>
           <Field label="Policy"><Select value={v.policyId} onChange={(e) => set('policyId', e.target.value)} options={policies.filter((p) => p.status === 'published').map((p) => ({ v: p.id, l: `${p.name} v${p.version}` }))} placeholder="No policy" /></Field>
-          <Field label="Start" help="Required for a valid exam configuration."><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} required /></Field>
+          <Field label="Start" help={`Local schedule in ${v.timeZone || 'Asia/Kolkata'}. Stored canonically as epoch UTC.`}><Input type="datetime-local" value={v.startAt} onChange={(e) => set('startAt', e.target.value)} required /></Field>
           <Field label="Duration (minutes)"><Input type="number" min={15} max={300} value={v.durationMin} onChange={(e) => set('durationMin', e.target.value)} /></Field>
           <Field label="Late entry (minutes)"><Input type="number" min={0} max={60} value={v.lateEntryMin} onChange={(e) => set('lateEntryMin', e.target.value)} /></Field>
           <Field label="Capacity"><Input type="number" min={0} value={v.capacity} onChange={(e) => set('capacity', e.target.value)} /></Field>
-          <Field label="Time zone"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} /></Field>
+          <Field label="Time zone" help="IANA time zone (e.g. Asia/Kolkata, UTC, Asia/Dubai)"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} placeholder="Asia/Kolkata" /></Field>
           <Field label="Department"><Input value={v.departmentId} onChange={(e) => set('departmentId', e.target.value)} maxLength={64} /></Field>
           <Field label="Exam URL" required className="span2" help="Secure assessment portal URL. Its HTTPS origin is automatically included in the exam allowlist."><Input type="url" value={v.examUrl} onChange={(e) => set('examUrl', e.target.value)} placeholder="https://..." required /></Field>
           {v.examUrl && v.examUrl.trim().toLowerCase().startsWith('http://') && (
@@ -502,7 +502,34 @@ export function ExamDetailPage() {
 
   const advance = async (to, reason) => {
     const ok = await run(() => transition(user, e, to, reason), 'Lifecycle updated.');
-    if (ok) { setPending(null); reloadReadiness(); reloadAssignments(); }
+    if (ok) {
+      // Optimistically update local exam status so stale action buttons are
+      // removed immediately, before the backend detail re-fetch completes.
+      setBackendExam((prev) => prev ? {
+        ...prev,
+        status: to,
+        updatedAt: Date.now(),
+        history: [...(prev.history || []), { at: Date.now(), by: user?.id, to, reason: reason || '' }],
+      } : prev);
+      setPending(null);
+      reloadReadiness();
+      reloadAssignments();
+      try {
+        const res = await Api.getExamination(id);
+        const exam = res?.examination || res;
+        if (exam) {
+          const config = examConfigFromApi(exam.exam_config);
+          setBackendExam((prev) => prev ? {
+            ...prev,
+            ...config,
+            status: exam.status || to,
+            version: exam.version || prev.version,
+            updatedAt: exam.updated_at || Date.now(),
+            history: exam.history?.length ? exam.history : prev.history,
+          } : prev);
+        }
+      } catch { /* best-effort authoritative sync */ }
+    }
   };
 
   return (
@@ -522,7 +549,7 @@ export function ExamDetailPage() {
         ).values()].map((to) => (
           <button key={to} className={'btn ' + (to === 'cancelled' ? 'danger' : to === 'published' || to === 'live' ? 'primary' : '')} disabled={busy} onClick={() => {
             if (REASON.has(to)) setPending({ to });
-            else run(() => transition(user, e, to), 'Lifecycle updated.');
+            else advance(to);
           }}>{STEP_LABEL[to]}</button>
         ))}
       </>}

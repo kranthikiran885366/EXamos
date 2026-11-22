@@ -169,7 +169,7 @@ export async function systemHealth(ctx = {}) {
     { key: 'audit', label: 'Audit chain integrity', status: chain.ok ? 'PASS' : 'FAIL', detail: `${chain.count} entries` },
     { key: 'database', label: 'Local database latency (p95)', status: p95() > 250 ? 'WARN' : 'PASS', detail: `${Math.round(p95())} ms` },
     { key: 'services', label: 'Platform services', status: services.length === 0 ? 'NOT MONITORED' : down.length ? 'FAIL' : degraded.length ? 'WARN' : 'PASS', detail: services.length === 0 ? '0/0 (Not monitored)' : `${services.length - down.length}/${services.length} healthy` },
-    { key: 'backup', label: 'Latest backup', status: !lastBackup ? 'FAIL' : Date.now() - lastBackup.at > 2 * 864e5 ? 'WARN' : 'PASS', detail: lastBackup ? new Date(lastBackup.at).toLocaleString('en-IN') : 'Never' },
+    { key: 'backup', label: 'Latest backup', status: !lastBackup ? 'FAIL' : Date.now() - lastBackup.at > 2 * 864e5 ? 'WARN' : 'PASS', detail: lastBackup ? new Date(lastBackup.at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : 'Never' },
     { key: 'incidents', label: 'Critical incidents', status: critical.length ? 'FAIL' : 'PASS', detail: `${critical.length} open` },
     { key: 'alerts', label: 'Open alerts', status: alerts.filter((x) => x.status === 'open' && x.severity === 'critical').length ? 'FAIL' : alerts.filter((x) => x.status === 'open').length ? 'WARN' : 'PASS', detail: `${alerts.filter((x) => x.status === 'open').length} open` },
     { key: 'jobs', label: 'Scheduled jobs', status: jobs.some((j) => j.status === 'failed') ? 'WARN' : 'PASS', detail: `${jobs.filter((j) => j.status === 'failed').length} failed` },
