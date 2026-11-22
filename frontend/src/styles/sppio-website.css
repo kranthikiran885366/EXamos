@@ -44,9 +44,9 @@
 
 .sppio-container {
   width: 100%;
-  max-width: 1240px;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 0 32px;
+  padding: 0 24px;
   box-sizing: border-box;
 }
 
@@ -68,7 +68,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 32px;
+  gap: clamp(12px, 2vw, 24px);
+  min-width: 0;
   height: 72px;
 }
 
@@ -1388,8 +1389,8 @@
   color: #FFFFFF;
 }
 
-/* Keep the full navigation and actions from crowding or clipping at intermediate desktop widths. */
-@media (max-width: 1280px) {
+/* Keep the full navigation and actions from crowding or clipping across desktop viewports. */
+@media (max-width: 1366px) {
   .sppio-header-inner {
     gap: 16px;
     min-width: 0;
