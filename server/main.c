@@ -1559,8 +1559,7 @@ static void* handle_client(void *arg) {
                 extra);
             goto client_done;
         }
-        send_http_response(client_fd, 503, "application/json",
-            "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the candidate login flow.\"}");
+        auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
         goto client_done;
     }
     /* Route: POST /api/v1/candidate/logout */
@@ -1576,9 +1575,8 @@ static void* handle_client(void *arg) {
                 extra);
             goto client_done;
         }
-        send_http_response_ex(client_fd, 503, "application/json",
-            "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the check-in flow.\"}",
-            extra);
+        auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
+                                       auth_header, origin, extra, sizeof(extra));
         goto client_done;
     }
     /* Canonical dashboard route plus the established API login alias. */
@@ -4725,9 +4723,7 @@ p5_score_done:
                         extra);
                     goto client_done;
                 }
-                send_http_response_ex(client_fd, 503, "application/json",
-                    "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the candidate login flow.\"}",
-                    extra);
+                auth_candidate_login(client_fd, req_body, origin, extra, sizeof(extra));
                 goto client_done;
             }
             if (strcmp(route_path, "/api/v1/candidate/logout") == 0 && strcmp(method, "POST") == 0) {
@@ -4742,9 +4738,8 @@ p5_score_done:
                         extra);
                     goto client_done;
                 }
-                send_http_response_ex(client_fd, 503, "application/json",
-                    "{\"status\":\"UNAVAILABLE\",\"error\":\"Candidate exam launch is disabled until device trust verification and durable exam-session persistence are connected to the check-in flow.\"}",
-                    extra);
+                auth_candidate_workflow_handle(client_fd, method, route_path, req_body,
+                                               auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 
