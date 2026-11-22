@@ -114,4 +114,9 @@ SET
     seat_no = 'A02'
 WHERE roll_no = 'QA1110002';
 
+-- 7. Register migration version marker
+INSERT INTO examos_schema_migrations(component, version)
+VALUES ('candidate_credentials', 47)
+ON CONFLICT (component, version) DO NOTHING;
+
 COMMIT;

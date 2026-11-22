@@ -216,3 +216,16 @@ image/overlay/etc/systemd/system/autovt@.service
 image/overlay/etc/systemd/system/console-getty.service
 image/overlay/etc/systemd/system/debug-shell.service
 image/overlay/etc/systemd/system/getty@tty*.service
+
+
+# Utility/debug scripts (not part of the codebase)
+check_qa_tenant.sh
+insert_qa_policy.sh
+launch_device.py
+query_telemetry.py
+query_users.sh
+resign_devices.py
+screendump.py
+test_db.sh
+test_prod_register.py
+SPPIO-ADVANCED-VALIDATION/

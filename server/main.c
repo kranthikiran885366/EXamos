@@ -1894,7 +1894,11 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam read permission required\"}");
         } else {
             char exam_id[128] = {0}; parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
-            if (!exam_id[0]) send_http_response(client_fd, 400, "application/json", "{\"error\":\"exam_id query parameter required\"}");
+            if (!exam_id[0]) {
+                /* No exam_id: fall through to candidate_controller which returns all candidates */
+                OPENSSL_cleanse(&session, sizeof(session)); OPENSSL_cleanse(&exam, sizeof(exam));
+                goto roster_fallthrough;
+            }
             else if (platform_get_exam_by_id(exam_id, &exam) != 0 ||
                      (session.role != ROLE_PLATFORM_OWNER && strcmp(session.institution_id, exam.institution_id) != 0))
                 send_http_response(client_fd, 403, "application/json", "{\"error\":\"Exam scope denied\"}");
@@ -4823,6 +4827,7 @@ p5_score_done:
             }
 
             /* Candidate routes */
+            roster_fallthrough:
             if (strncmp(route_path, "/api/v1/admin/roster", 20) == 0 ||
                 strncmp(route_path, "/api/v1/platform/exams/", 23) == 0) {
                 candidate_handle(client_fd, method, route_path, req_body,
