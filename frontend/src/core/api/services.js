@@ -1017,10 +1017,10 @@ export const getOsReleaseDetails = wrap(async (releaseId) => {
   return res.data;
 });
 
-export const verifyOsReleaseSignature = wrap(async (releaseId) => {
+export const verifyOsReleaseSignature = wrap(async (releaseId, body = {}) => {
   const res = await api.post(
     `${ENDPOINTS.osReleaseById(releaseId)}/verify-signature`,
-    {},
+    body,
     { actor: ACTOR, sign: true },
   );
   return res.data;

@@ -493,14 +493,6 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                              sizeof(signature));
             ctrl_json_string(body, "signature_algorithm", signature_algorithm,
                              sizeof(signature_algorithm));
-            if (!canonical_payload[0] || !signature[0] ||
-                !signature_algorithm[0]) {
-                db_release(conn, 0);
-                os_send_error(client_fd, 400,
-                              "canonical_payload, signature_base64 and signature_algorithm are required",
-                              origin, extra_headers, extra_len);
-                return;
-            }
 
             const char *kp[1] = { r_pk };
             int kl[1] = { (int)strlen(r_pk) };
@@ -508,7 +500,7 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                 "SELECT k.key_id,k.algorithm,k.status,k.key_type,"
                 "       k.public_key_pem,k.key_fingerprint,"
                 "       m.canonical_payload,m.canonical_version,"
-                "       m.canonical_payload_sha256 "
+                "       m.canonical_payload_sha256,COALESCE(m.signature_value, '') "
                 "FROM os_releases r "
                 "JOIN os_release_manifests m ON m.release_id=r.id "
                 "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
@@ -533,6 +525,31 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             const char *stored_payload = PQgetvalue(kr, 0, 6);
             const char *canonical_version = PQgetvalue(kr, 0, 7);
             const char *stored_digest = PQgetvalue(kr, 0, 8);
+            const char *stored_sig = PQgetvalue(kr, 0, 9);
+
+            if (!canonical_payload[0] && stored_payload && stored_payload[0]) {
+                strncpy(canonical_payload, stored_payload, sizeof(canonical_payload) - 1);
+            }
+            if (!signature[0]) {
+                if (stored_sig && stored_sig[0]) {
+                    strncpy(signature, stored_sig, sizeof(signature) - 1);
+                } else if (r_manifest_sig[0]) {
+                    strncpy(signature, r_manifest_sig, sizeof(signature) - 1);
+                }
+            }
+            if (!signature_algorithm[0] && key_algorithm && key_algorithm[0]) {
+                strncpy(signature_algorithm, key_algorithm, sizeof(signature_algorithm) - 1);
+            }
+
+            if (!canonical_payload[0] || !signature[0] ||
+                !signature_algorithm[0]) {
+                PQclear(kr);
+                db_release(conn, 0);
+                os_send_error(client_fd, 400,
+                              "canonical_payload, signature_base64 and signature_algorithm are required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
 
             int eligible = strcmp(key_status, "active") == 0 &&
                            strcmp(key_type, "production") == 0 &&
@@ -657,7 +674,8 @@ void os_release_handle(int client_fd, const char *method, const char *path,
             snprintf(response, sizeof(response),
                      "{\"status\":\"VERIFIED\",\"release_id\":\"%s\","
                      "\"manifest_digest\":\"%s\",\"signing_key_id\":\"%s\","
-                     "\"canonical\":\"RFC8785\",\"approval_required\":true}",
+                     "\"canonical\":\"RFC8785\",\"approval_required\":true,"
+                     "\"signature_verified\":true,\"manifest_verified\":true}",
                      r_id, computed_digest, key_id);
             os_send_json(client_fd, 200, response, origin,
                          extra_headers, extra_len);

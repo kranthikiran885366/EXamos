@@ -106,10 +106,18 @@ export async function createRelease(a, { version, components }) {
   }
   return `Draft ${version} persisted. It is not signed, vulnerability-scanned, or eligible for rollout.`;
 }
-export async function verifyRelease(r) {
-  const response = await Api.verifyOsReleaseSignature(r.id);
-  return response?.signature_verified === true &&
-    response?.manifest_verified === true;
+export async function verifyRelease(r, payload = {}) {
+  const body = {
+    canonical_payload: payload.canonical_payload || r.canonical_payload || r.manifest_canonical || '',
+    signature_base64: payload.signature_base64 || r.signature_base64 || r.manifest_signature || '',
+    signature_algorithm: payload.signature_algorithm || r.signature_algorithm || '',
+    ...payload,
+  };
+  const response = await Api.verifyOsReleaseSignature(r.id, body);
+  return response?.status === 'VERIFIED' || (
+    response?.signature_verified === true &&
+    response?.manifest_verified === true
+  );
 }
 export async function approveRelease(a, r, reason) {
   need(a, 'release.approve');
