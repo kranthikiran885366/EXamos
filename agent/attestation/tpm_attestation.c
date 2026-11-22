@@ -260,6 +260,78 @@ int tpm_attestation_activate_credential(const char *credential_blob_hex,
     return result ? 0 : -1;
 }
 
+int tpm_attestation_unwrap_exam_key(const char *wrapped_key_base64,
+                                    char *out_exam_key_hex,
+                                    size_t out_size) {
+    if (!wrapped_key_base64 || !out_exam_key_hex || out_size < 65 ||
+        !g_tpm_detected) return -1;
+    out_exam_key_hex[0] = '\0';
+    const char *ek_handle = getenv("EXAMOS_TPM_EK_HANDLE");
+    if (!valid_tpm_handle(ek_handle)) return -1;
+
+    size_t encoded_len = strlen(wrapped_key_base64);
+    if (!encoded_len || encoded_len > 4096 || encoded_len % 4 != 0)
+        return -1;
+    size_t wrapped_capacity = (encoded_len / 4) * 3;
+    unsigned char *wrapped = malloc(wrapped_capacity ? wrapped_capacity : 1);
+    if (!wrapped) return -1;
+    int wrapped_len = EVP_DecodeBlock(wrapped,
+                                      (const unsigned char *)wrapped_key_base64,
+                                      (int)encoded_len);
+    if (wrapped_len <= 0) {
+        free(wrapped);
+        return -1;
+    }
+    if (encoded_len > 0 && wrapped_key_base64[encoded_len - 1] == '=')
+        wrapped_len--;
+    if (encoded_len > 1 && wrapped_key_base64[encoded_len - 2] == '=')
+        wrapped_len--;
+    if (wrapped_len != 256) {
+        OPENSSL_cleanse(wrapped, (size_t)wrapped_capacity);
+        free(wrapped);
+        return -1;
+    }
+
+    char work_dir[] = "/tmp/examos-tpm-keyunwrap.XXXXXX";
+    char cipher_path[PATH_MAX], plain_path[PATH_MAX];
+    if (!mkdtemp(work_dir) || chmod(work_dir, 0700) != 0) {
+        if (work_dir[0]) rmdir(work_dir);
+        OPENSSL_cleanse(wrapped, (size_t)wrapped_capacity);
+        free(wrapped);
+        return -1;
+    }
+    int a = snprintf(cipher_path, sizeof(cipher_path), "%s/wrapped.bin", work_dir);
+    int b = snprintf(plain_path, sizeof(plain_path), "%s/exam-key.bin", work_dir);
+    if (a < 0 || (size_t)a >= sizeof(cipher_path) ||
+        b < 0 || (size_t)b >= sizeof(plain_path) ||
+        write_tpm_private_file(cipher_path, wrapped, (size_t)wrapped_len) != 0) {
+        unlink(cipher_path);
+        rmdir(work_dir);
+        OPENSSL_cleanse(wrapped, (size_t)wrapped_capacity);
+        free(wrapped);
+        return -1;
+    }
+    char *const unwrap_arguments[] = {
+        "tpm2_rsa_decrypt", "-c", (char *)ek_handle,
+        "-s", "oaep", "-i", cipher_path, "-o", plain_path, NULL
+    };
+    int result = run_tpm_tool(unwrap_arguments) == 0;
+    unsigned char plain[32] = {0};
+    size_t plain_len = 0;
+    if (result)
+        result = read_quote_output(plain_path, plain, sizeof(plain),
+                                   &plain_len) == 0 && plain_len == 32;
+    unlink(cipher_path);
+    unlink(plain_path);
+    rmdir(work_dir);
+    if (result) bytes_to_hex(plain, plain_len, out_exam_key_hex);
+    OPENSSL_cleanse(wrapped, (size_t)wrapped_capacity);
+    free(wrapped);
+    OPENSSL_cleanse(plain, sizeof(plain));
+    if (!result) OPENSSL_cleanse(out_exam_key_hex, out_size);
+    return result ? 0 : -1;
+}
+
 static void bytes_to_hex(const unsigned char *bytes, size_t length, char *out) {
     static const char digits[] = "0123456789abcdef";
     for (size_t i = 0; i < length; ++i) {

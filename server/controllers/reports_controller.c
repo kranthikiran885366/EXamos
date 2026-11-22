@@ -294,6 +294,7 @@ static const report_col_t COLS_EXAM_SUMMARY[] = {
     {"code", "Code", "text"},
     {"title", "Exam", "text"},
     {"status", "Status", "text"},
+    {"cancellationReason", "Cancellation reason", "text"},
     {"startAt", "Starts at", "epoch"},
     {"durationMin", "Duration (min)", "number"},
     {"centerCount", "Centers", "number"},
@@ -472,10 +473,10 @@ static const report_col_t COLS_BILLING[] = {
 static const report_def_t REPORTS[] = {
     {
         "exam-summary", "exams", "Exam register",
-        "One row per examination with lifecycle status, schedule, assignment and policy state.",
+        "One row per examination with lifecycle status, cancellation reason, schedule, assignment and policy state.",
         REPORT_SQL_EXAM_SUMMARY, COLS_EXAM_SUMMARY, NCOLS(COLS_EXAM_SUMMARY),
         "console_records(collection='exams') merged with examinations; assignments from console_records(collection='candidates') and exam_student_assignments.",
-        "One row per distinct exam id. The console record wins for the same id. startAt falls back to the earliest exam_schedules.start_time. assigned uses the console candidate count when present, otherwise the normalized assignment count.",
+        "One row per distinct exam id. The console record wins for the same id. startAt falls back to the earliest exam_schedules.start_time. assigned uses the console candidate count when present, otherwise the normalized assignment count. Published and finalized milestones use lifecycle history when available; attempted exams are deduplicated by exam id across attempts and console sessions.",
         "Every exam visible in the caller's tenant scope, including draft and cancelled exams.",
         "Exams without a tenant identifier are excluded unless the caller has global scope. Duplicate rows with the same id collapse to the console copy.",
         "Exam lifecycle status"

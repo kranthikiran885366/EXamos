@@ -113,6 +113,20 @@ test-attestation-db:
 test-challenge-lifecycle:
 	bash ../tests/server/challenge-lifecycle-isolated-test.sh
 
+test-unprovisioned-fail-closed: $(filter-out $(BUILD_DIR)/main.o,$(OBJS))
+	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-unprovisioned-policy.XXXXXX"); \
+	trap 'rm -f -- "$$test_binary"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) ../tests/server/unprovisioned-fail-closed-test.c \
+		$(filter-out $(BUILD_DIR)/main.o,$(OBJS)) $(LDFLAGS) -o "$$test_binary"; \
+	"$$test_binary"
+
+test-key-release-transport: $(filter-out $(BUILD_DIR)/main.o,$(OBJS))
+	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-key-release-transport.XXXXXX"); \
+	trap 'rm -f -- "$$test_binary"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) ../tests/server/key-release-transport-test.c \
+		$(filter-out $(BUILD_DIR)/main.o,$(OBJS)) $(LDFLAGS) -o "$$test_binary"; \
+	"$$test_binary"
+
 test-ledger:
 	@set -eu; test_binary=$$(mktemp "$${TMPDIR:-/tmp}/examos-ledger-test.XXXXXX"); \
 	trap 'rm -f -- "$$test_binary"' EXIT; \
@@ -163,4 +177,4 @@ test-tpm-trust-feed:
 clean:
 	rm -f $(OBJECT_ARGS) "$(TARGET)" "$(MIGRATOR)" "$(ADMIN_PROVISIONER)"
 
-.PHONY: all install clean test-attestation-db test-challenge-lifecycle test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store test-release-signature test-tpm-trust-feed
+.PHONY: all install clean test-attestation-db test-challenge-lifecycle test-unprovisioned-fail-closed test-key-release-transport test-ledger test-admin-rate-limit test-approval-governance test-device-trust-policy-governance test-institution-application-assessment-url test-session-store test-release-signature test-tpm-trust-feed

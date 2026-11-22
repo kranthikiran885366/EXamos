@@ -61,26 +61,29 @@ static int insert_challenge(const char *attestation_id, const char *session_id,
                             const char *device_id, const char *release_id,
                             const char *institution_id, const char *purpose,
                             const char *nonce, int expired) {
-    const char *session_params[] = {session_id, institution_id, device_id};
-    PGresult *session_result = PQexecParams(g_conn,
-        "INSERT INTO exam_sessions (id,institution_id,device_id,status) "
-        "VALUES ($1,$2,$3,'active')",
-        3, NULL, session_params, NULL, NULL, 0);
-    int session_ok = session_result &&
-        PQresultStatus(session_result) == PGRES_COMMAND_OK;
-    if (session_result) PQclear(session_result);
-    if (!session_ok) return -1;
+    if (strcmp(purpose, "exam_launch") == 0) {
+        const char *session_params[] = {session_id, institution_id, device_id};
+        PGresult *session_result = PQexecParams(g_conn,
+            "INSERT INTO exam_sessions (id,institution_id,device_id,status) "
+            "VALUES ($1,$2,$3,'pending')",
+            3, NULL, session_params, NULL, NULL, 0);
+        int session_ok = session_result &&
+            PQresultStatus(session_result) == PGRES_COMMAND_OK;
+        if (session_result) PQclear(session_result);
+        if (!session_ok) return -1;
 
-    const char *checkin_params[] = {session_id, institution_id};
-    PGresult *checkin_result = PQexecParams(g_conn,
-        "INSERT INTO candidate_exam_checkins "
-        "(exam_session_id,institution_id,status,expires_at) "
-        "VALUES ($1,$2,'consumed',EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)",
-        2, NULL, checkin_params, NULL, NULL, 0);
-    int checkin_ok = checkin_result &&
-        PQresultStatus(checkin_result) == PGRES_COMMAND_OK;
-    if (checkin_result) PQclear(checkin_result);
-    if (!checkin_ok) return -1;
+        const char *checkin_params[] = {session_id, institution_id};
+        PGresult *checkin_result = PQexecParams(g_conn,
+            "INSERT INTO candidate_exam_checkins "
+            "(exam_session_id,institution_id,status,expires_at) "
+            "VALUES ($1,$2,'attesting',"
+            "EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000+60000)",
+            2, NULL, checkin_params, NULL, NULL, 0);
+        int checkin_ok = checkin_result &&
+            PQresultStatus(checkin_result) == PGRES_COMMAND_OK;
+        if (checkin_result) PQclear(checkin_result);
+        if (!checkin_ok) return -1;
+    }
 
     const char *params[] = {
         attestation_id, session_id, device_id, release_id, institution_id,
@@ -119,6 +122,30 @@ static int insert_exam_binding(const char *session_id, const char *device_id,
         "INSERT INTO candidate_exam_checkins "
         "(exam_session_id,institution_id,status,expires_at) "
         "VALUES ($1,$2,'consumed',EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)",
+        2, NULL, checkin_params, NULL, NULL, 0);
+    ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    return ok ? 0 : -1;
+}
+
+static int insert_pending_exam_binding(const char *session_id,
+                                      const char *device_id,
+                                      const char *institution_id) {
+    const char *session_params[] = {session_id, institution_id, device_id};
+    PGresult *result = PQexecParams(g_conn,
+        "INSERT INTO exam_sessions (id,institution_id,device_id,status) "
+        "VALUES ($1,$2,$3,'pending')",
+        3, NULL, session_params, NULL, NULL, 0);
+    int ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
+    if (result) PQclear(result);
+    if (!ok) return -1;
+
+    const char *checkin_params[] = {session_id, institution_id};
+    result = PQexecParams(g_conn,
+        "INSERT INTO candidate_exam_checkins "
+        "(exam_session_id,institution_id,status,expires_at) "
+        "VALUES ($1,$2,'attesting',"
+        "EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000+60000)",
         2, NULL, checkin_params, NULL, NULL, 0);
     ok = result && PQresultStatus(result) == PGRES_COMMAND_OK;
     if (result) PQclear(result);
@@ -187,16 +214,23 @@ static int persist_challenge_sql(const char *attestation_id,
         "AND p.status='active' "
         "WHERE d.id=$3 AND d.institution_id=$5 "
         "AND d.institution_id<>'' AND d.status IN ('registered','enrolled') "
-        "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=$2) "
-        "OR EXISTS (SELECT 1 FROM exam_sessions s "
+        "AND (($6='exam_launch' AND EXISTS (SELECT 1 FROM exam_sessions s "
+        "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+        "AND ci.institution_id=s.institution_id "
+        "WHERE s.id=$2 AND s.device_id=d.id "
+        "AND s.institution_id=d.institution_id AND s.status='pending' "
+        "AND ci.status='attesting' "
+        "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)) "
+        "OR ($6='re_attestation' AND (NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=$2) OR EXISTS "
+        "(SELECT 1 FROM exam_sessions s JOIN candidate_exam_checkins ci "
+        "ON ci.exam_session_id=s.id AND ci.institution_id=s.institution_id "
         "WHERE s.id=$2 AND s.device_id=d.id "
         "AND s.institution_id=d.institution_id "
-        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-        "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
-        "WHERE ci.exam_session_id=$2 AND ci.institution_id=d.institution_id "
-        "AND ci.status IN ('attesting','consumed') "
-        "AND (ci.status='consumed' OR "
-        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
+        "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+        "AND ci.status='consumed'))) "
+        "OR ($6='enrollment' AND NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=$2))) "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations "
         "WHERE (target_type='DEVICE' AND target_id=$3) "
         "OR (target_type='RELEASE' AND target_id=$4))",
@@ -223,16 +257,23 @@ static int claim_challenge(PGconn *conn, const char *nonce, const char *device_i
         "WHERE c.nonce_sha256=encode(digest($1::bytea,'sha256'),'hex') "
         "AND c.device_id=$2 AND c.release_id=$3 AND c.institution_id=$4 AND c.purpose=$5 "
         "AND c.state='PENDING' AND c.expires_at>clock_timestamp() "
-        "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id) "
-        "OR EXISTS (SELECT 1 FROM exam_sessions s "
+        "AND (($5='exam_launch' AND EXISTS (SELECT 1 FROM exam_sessions s "
+        "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+        "AND ci.institution_id=s.institution_id "
+        "WHERE s.id=c.session_id AND s.device_id=c.device_id "
+        "AND s.institution_id=c.institution_id AND s.status='pending' "
+        "AND ci.status='attesting' "
+        "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)) "
+        "OR ($5='re_attestation' AND (NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id) OR EXISTS "
+        "(SELECT 1 FROM exam_sessions s JOIN candidate_exam_checkins ci "
+        "ON ci.exam_session_id=s.id AND ci.institution_id=s.institution_id "
         "WHERE s.id=c.session_id AND s.device_id=c.device_id "
         "AND s.institution_id=c.institution_id "
-        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-        "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
-        "WHERE ci.exam_session_id=c.session_id AND ci.institution_id=c.institution_id "
-        "AND ci.status IN ('attesting','consumed') "
-        "AND (ci.status='consumed' OR "
-        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
+        "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+        "AND ci.status='consumed'))) "
+        "OR ($5='enrollment' AND NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id))) "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
         "WHERE (r.target_type='DEVICE' AND r.target_id=c.device_id) "
         "OR (r.target_type='RELEASE' AND r.target_id=c.release_id)) "
@@ -242,10 +283,12 @@ static int claim_challenge(PGconn *conn, const char *nonce, const char *device_i
         "AND ci.institution_id=s.institution_id "
         "WHERE s.id=c.session_id AND s.device_id=c.device_id "
         "AND s.institution_id=c.institution_id "
-        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-        "AND ci.status IN ('attesting','consumed') "
-        "AND (ci.status='consumed' OR "
-        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000))",
+        "AND ((c.purpose='exam_launch' AND s.status='pending' "
+        "AND ci.status='attesting' "
+        "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000) "
+        "OR (c.purpose='re_attestation' "
+        "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+        "AND ci.status='consumed')))",
         5, NULL, params, NULL, NULL, 0);
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
         if (result) PQclear(result);
@@ -333,12 +376,12 @@ static void test_invalid_purpose(void) {
 }
 
 static void test_exam_session_binding(void) {
-    test_start("Challenge requires the same active exam session binding");
+    test_start("Exam-launch challenge requires the pending assigned exam session");
     char nonce[65];
     create_nonce(nonce);
     if (insert_challenge("attest-00000000000000000000000000000007",
                          "sess_session_binding", "dev_test1", "rel_test1",
-                         "test_inst", "re_attestation", nonce, 0) != 0) {
+                         "test_inst", "exam_launch", nonce, 0) != 0) {
         test_fail("Failed to create session-bound challenge");
         return;
     }
@@ -349,7 +392,7 @@ static void test_exam_session_binding(void) {
         strcmp(PQcmdTuples(result), "1") == 0;
     if (result) PQclear(result);
     if (!changed || claim_challenge(g_conn, nonce, "dev_test1", "rel_test1",
-                                    "test_inst", "re_attestation") != 0) {
+                                    "test_inst", "exam_launch") != 0) {
         test_fail("Challenge was accepted after its exam session binding changed");
         return;
     }
@@ -387,15 +430,23 @@ static void test_persist_write_gates(void) {
     test_start("Challenge persistence enforces tenant, approval, policy, and session");
     const char *device_id = "dev_persist";
     if (insert_trusted_device_fixtures(device_id, "test_inst", "approved", "active") != 0 ||
-        insert_exam_binding("sess_persist", device_id, "test_inst") != 0) {
+        insert_exam_binding("sess_persist", device_id, "test_inst") != 0 ||
+        insert_pending_exam_binding("sess_exam_launch", device_id,
+                                    "test_inst") != 0) {
         test_fail("Failed to prepare approved challenge fixtures");
         return;
     }
 
     char valid_nonce[65], wrong_tenant_nonce[65], pending_nonce[65];
+    char launch_nonce[65], wrong_purpose_nonce[65], unbound_launch_nonce[65];
+    char active_launch_nonce[65];
     create_nonce(valid_nonce);
     create_nonce(wrong_tenant_nonce);
     create_nonce(pending_nonce);
+    create_nonce(launch_nonce);
+    create_nonce(wrong_purpose_nonce);
+    create_nonce(unbound_launch_nonce);
+    create_nonce(active_launch_nonce);
     int persisted = persist_challenge_sql(
         "attest-00000000000000000000000000000010", "sess_persist",
         device_id, "rel_persist", "test_inst", "re_attestation", valid_nonce);
@@ -409,15 +460,38 @@ static void test_persist_write_gates(void) {
             "attest-00000000000000000000000000000012", "sess_unbound",
             "dev_pending", "rel_persist", "test_inst", "re_attestation", pending_nonce)
         : -1;
+    int valid_launch = persist_challenge_sql(
+        "attest-00000000000000000000000000000013", "sess_exam_launch",
+        device_id, "rel_persist", "test_inst", "exam_launch", launch_nonce);
+    int wrong_launch_purpose = persist_challenge_sql(
+        "attest-00000000000000000000000000000014", "sess_exam_launch",
+        device_id, "rel_persist", "test_inst", "re_attestation", wrong_purpose_nonce);
+    int unbound_launch = persist_challenge_sql(
+        "attest-00000000000000000000000000000015", "sess_unbound",
+        device_id, "rel_persist", "test_inst", "exam_launch", unbound_launch_nonce);
+    int active_launch = persist_challenge_sql(
+        "attest-00000000000000000000000000000016", "sess_persist",
+        device_id, "rel_persist", "test_inst", "exam_launch", active_launch_nonce);
     int claim_result = persisted == 1
         ? claim_challenge(g_conn, valid_nonce, device_id, "rel_persist",
                           "test_inst", "re_attestation")
         : -1;
+    int launch_claim = valid_launch == 1
+        ? claim_challenge(g_conn, launch_nonce, device_id, "rel_persist",
+                          "test_inst", "exam_launch")
+        : -1;
 
     if (persisted != 1 || claim_result != 1 ||
-        wrong_tenant != 0 || pending_registration != 0) {
-        fprintf(stderr, "  persistence results: approved=%d claim=%d wrong_tenant=%d pending=%d\n",
-                persisted, claim_result, wrong_tenant, pending_registration);
+        wrong_tenant != 0 || pending_registration != 0 ||
+        valid_launch != 1 || launch_claim != 1 ||
+        wrong_launch_purpose != 0 || unbound_launch != 0 ||
+        active_launch != 0) {
+        fprintf(stderr, "  persistence results: approved=%d claim=%d wrong_tenant=%d "
+                "pending=%d launch=%d launch_claim=%d wrong_purpose=%d "
+                "unbound_launch=%d active_launch=%d\n",
+                persisted, claim_result, wrong_tenant, pending_registration,
+                valid_launch, launch_claim, wrong_launch_purpose, unbound_launch,
+                active_launch);
         test_fail("Challenge persistence did not enforce database trust bindings");
         return;
     }

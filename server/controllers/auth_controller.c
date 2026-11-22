@@ -529,19 +529,32 @@ void auth_admin_session(int client_fd, const char *auth_header,
         return;
     }
 
-    /* Retrieve user display name if available */
+    /* Retrieve profile facts used by the account page if available. */
     char full_name[128] = {0};
+    long long last_login = 0;
     PGconn *conn = db_acquire();
     if (conn) {
         const char *pvals[1] = { sess.user_id };
         int lens[1] = { (int)strlen(sess.user_id) };
         PGresult *res = db_simple(conn,
-            "SELECT COALESCE(name, '') FROM users WHERE id = $1",
+            "SELECT COALESCE(name, ''), COALESCE(last_login, 0) FROM users WHERE id = $1 OR LOWER(username) = LOWER($1)",
             1, pvals, lens);
         if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
             strncpy(full_name, PQgetvalue(res, 0, 0), sizeof(full_name) - 1);
+            last_login = atoll(PQgetvalue(res, 0, 1));
         }
         if (res) PQclear(res);
+        if (!full_name[0]) {
+            res = db_simple(conn,
+                "SELECT COALESCE(full_name, ''), COALESCE(EXTRACT(EPOCH FROM last_login_at)::bigint, 0) "
+                "FROM examos_admin_users WHERE user_id = $1 OR LOWER(username) = LOWER($1)",
+                1, pvals, lens);
+            if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+                strncpy(full_name, PQgetvalue(res, 0, 0), sizeof(full_name) - 1);
+                last_login = atoll(PQgetvalue(res, 0, 1));
+            }
+            if (res) PQclear(res);
+        }
         db_release(conn, 0);
     }
 
@@ -559,7 +572,7 @@ void auth_admin_session(int client_fd, const char *auth_header,
     char resp_body[1024];
     snprintf(resp_body, sizeof(resp_body),
         "{\"user_id\":\"%s\",\"username\":\"%s\",\"name\":\"%s\",\"institution_id\":\"%s\","
-        "\"role\":\"%s\",\"session_expires_at\":%ld,"
+        "\"role\":\"%s\",\"session_expires_at\":%ld,\"last_login\":%lld,"
         "\"hardware_security\":{"
             "\"hardware_bound\":false,"
             "\"tpm_attestation\":\"NOT_ATTESTED\","
@@ -572,6 +585,7 @@ void auth_admin_session(int client_fd, const char *auth_header,
         "}}",
         sess.user_id, sess.username, full_name[0] ? full_name : sess.username,
         sess.institution_id, security_role_to_string(sess.role), (long)sess.expires_at,
+        last_login ? last_login * 1000LL : 0LL,
         tier, tlabel);
 
     ctrl_set_cors(extra_headers, extra_len, origin,
@@ -783,9 +797,8 @@ static int candidate_status_permits_login(const char *status) {
 
 /*
  * Returns 0 when the candidate is eligible and within the sign-in lead window,
- * or 1 with a human-readable reason when they are not.  Missing schedule or
- * assignment rows are treated as "no constraint recorded" so an institution
- * that does not use scheduling/eligibility is not locked out.
+ * or 1 with a human-readable reason when they are not. Exam access remains
+ * blocked until the signed-policy acknowledgement lifecycle is available.
  */
 static int candidate_exam_window_reason(PGconn *conn, const char *exam_id,
                                         const char *candidate_id,
@@ -862,7 +875,10 @@ static int candidate_exam_window_reason(PGconn *conn, const char *exam_id,
         }
         if (er) PQclear(er);
     }
-    return 0;
+    if (reason && reason_len)
+        snprintf(reason, reason_len,
+                 "Exam access is blocked until signed policy publication and authenticated device acknowledgements are available.");
+    return 1;
 }
 
 static int candidate_auth_role_allowed(user_role_t role) {
@@ -1397,8 +1413,26 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
         int activate_lengths[3] = { (int)strlen(exam_session_id),
                                     (int)strlen(device_id), (int)strlen(now_text) };
         PGresult *activated = db_simple(conn,
-            "UPDATE exam_sessions SET status='authorized',authorized_at=$3::bigint,"
-            "updated_at=$3::bigint WHERE id=$1 AND device_id=$2 AND status='pending'",
+            "UPDATE exam_sessions s SET status='authorized',authorized_at=$3::bigint,"
+            "updated_at=$3::bigint WHERE s.id=$1 AND s.device_id=$2 "
+            "AND s.status='pending' AND EXISTS ("
+            "SELECT 1 FROM examos_attestation_challenges c "
+            "JOIN examos_exam_key_releases k ON k.attestation_id=c.attestation_id "
+            "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+            "AND ci.institution_id=s.institution_id "
+            "WHERE c.session_id=s.id AND c.device_id=s.device_id "
+            "AND c.institution_id=s.institution_id AND c.purpose='exam_launch' "
+            "AND c.state='TRUSTED' "
+            "AND c.verified_at>clock_timestamp()-interval '10 minutes' "
+            "AND k.session_id=s.id AND k.device_id=s.device_id "
+            "AND k.release_id=c.release_id AND k.revoked_at IS NULL "
+            "AND ci.status='attesting' "
+            "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000 "
+            "AND NOT EXISTS (SELECT 1 FROM examos_attestation_challenges newer "
+            "WHERE newer.session_id=c.session_id AND newer.created_at>c.created_at) "
+            "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
+            "WHERE (r.target_type='DEVICE' AND r.target_id=c.device_id) "
+            "OR (r.target_type='RELEASE' AND r.target_id=c.release_id)))",
             3, activate_params, activate_lengths);
         int exam_activated = activated &&
             PQresultStatus(activated) == PGRES_COMMAND_OK &&
@@ -1412,7 +1446,9 @@ void auth_candidate_workflow_handle(int client_fd, const char *method, const cha
         PGresult *consumed = exam_activated ? db_simple(conn,
             "UPDATE candidate_exam_checkins SET status='consumed',consumed_at=$4::bigint "
             "WHERE id=$1 AND poll_token_hash=$2 AND exam_session_id=$3 "
-            "AND status='attesting' AND expires_at>$4::bigint RETURNING id",
+            "AND status='attesting' "
+            "AND expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000 "
+            "RETURNING id",
             4, consume_params, consume_lengths) : NULL;
         int checkin_consumed = consumed && PQresultStatus(consumed) == PGRES_TUPLES_OK &&
             PQntuples(consumed) == 1;
@@ -3681,12 +3717,12 @@ void auth_admin_user_dispatch(int client_fd, const char *method, const char *sub
         snprintf(resp, sizeof(resp),
             "{\"user\":{\"id\":\"%s\",\"username\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
             "\"email\":\"%s\",\"tenantId\":\"%s\",\"status\":\"%s\",\"mfaEnabled\":%s,"
-            "\"createdAt\":%lld,\"lastLogin\":%s,\"passwordChangedAt\":%s}}",
+            "\"createdAt\":%lld,\"lastLogin\":%lld,\"passwordChangedAt\":%lld}}",
             u_id, u_user, u_name, normalize_role_str(u_role),
             u_email, u_inst, u_status, mfa_en ? "true" : "false",
             u_created * 1000LL,
-            u_last_login ? "true" : "null",
-            u_pw_changed ? "true" : "null");
+            u_last_login ? u_last_login * 1000LL : 0LL,
+            u_pw_changed ? u_pw_changed * 1000LL : 0LL);
 
         PQclear(r);
         db_release(conn, 0);

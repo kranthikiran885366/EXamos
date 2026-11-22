@@ -329,6 +329,77 @@ void institution_handle(int client_fd, const char *method, const char *path,
         return;
     }
 
+    /* Institution audit reads use the authenticated institution context.
+     * The platform audit table has no institution key and is not safe to
+     * expose through this tenant-scoped route. */
+    const char *institution_audit_path = "/api/v1/admin/institutions/current/audit";
+    size_t institution_audit_path_len = strlen(institution_audit_path);
+    if (strcmp(method, "GET") == 0 &&
+        strlen(path) >= institution_audit_path_len &&
+        strncmp(path, institution_audit_path, institution_audit_path_len) == 0 &&
+        (path[institution_audit_path_len] == '\0' || path[institution_audit_path_len] == '?')) {
+        if (sess.role != ROLE_INSTITUTION_ADMIN || !sess.institution_id[0]) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 403, "Institution-scoped audit access is required", origin, extra_headers, extra_len);
+            return;
+        }
+
+        const char *params[1] = { sess.institution_id };
+        int param_lengths[1] = { (int)strlen(sess.institution_id) };
+        PGresult *res = db_simple(conn,
+            "SELECT id, exam_id, actor_id, action, COALESCE(change_summary,''), "
+            "       to_char(to_timestamp(created_at::double precision / 1000) AT TIME ZONE 'UTC', "
+            "               'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') "
+            "FROM exam_audit_logs WHERE institution_id = $1 "
+            "ORDER BY created_at DESC, id DESC LIMIT 100",
+            1, params, param_lengths);
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 503, "Institution audit records are unavailable", origin, extra_headers, extra_len);
+            return;
+        }
+
+        char json[131072] = "[";
+        size_t used = 1;
+        int overflow = 0;
+        for (int i = 0; i < PQntuples(res); i++) {
+            char id_esc[256] = {0}, exam_esc[256] = {0}, actor_esc[256] = {0};
+            char action_esc[256] = {0}, detail_esc[8192] = {0};
+            if (PQgetlength(res, i, 4) >= (int)(sizeof(detail_esc) / 2)) {
+                overflow = 1;
+                break;
+            }
+            ctrl_json_escape(PQgetvalue(res, i, 0), id_esc, sizeof(id_esc));
+            ctrl_json_escape(PQgetvalue(res, i, 1), exam_esc, sizeof(exam_esc));
+            ctrl_json_escape(PQgetvalue(res, i, 2), actor_esc, sizeof(actor_esc));
+            ctrl_json_escape(PQgetvalue(res, i, 3), action_esc, sizeof(action_esc));
+            ctrl_json_escape(PQgetvalue(res, i, 4), detail_esc, sizeof(detail_esc));
+
+            int written = snprintf(json + used, sizeof(json) - used,
+                "%s{\"id\":\"%s\",\"event_type\":\"%s\",\"actor\":\"%s\","
+                "\"recorded_at\":\"%s\",\"subject_type\":\"exam\","
+                "\"subject_id\":\"%s\",\"detail\":\"%s\"}",
+                i ? "," : "", id_esc, action_esc, actor_esc,
+                PQgetvalue(res, i, 5), exam_esc, detail_esc);
+            if (written < 0 || (size_t)written >= sizeof(json) - used) {
+                overflow = 1;
+                break;
+            }
+            used += (size_t)written;
+        }
+        PQclear(res);
+        db_release(conn, 0);
+        if (overflow || used + 2 > sizeof(json)) {
+            inst_send_error(client_fd, 500, "Institution audit response exceeds the supported size", origin, extra_headers, extra_len);
+            return;
+        }
+        json[used++] = ']';
+        json[used] = '\0';
+        inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+        return;
+    }
+
     /* -------------------------------------------------------------------------
      * 0. Institution Applications Workflow
      * ------------------------------------------------------------------------- */

@@ -10,6 +10,7 @@
 #include "controller.h"
 #include "../db/db.h"
 #include "../audit/audit.h"
+#include "../security/release_signature.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,11 +126,79 @@ static int semver_cmp(const char *v1, const char *v2) {
 }
 
 static int os_release_trust_valid(PGconn *conn, const char *release_pk) {
-    (void)conn;
-    (void)release_pk;
-    fprintf(stderr,
-            "[OSRelease] Release trust is blocked: the server does not yet verify RFC 8785 canonical bytes and authenticated revocation evidence.\n");
-    return -1;
+    if (!conn || !release_pk || !release_pk[0]) return -1;
+    const char *params[1] = { release_pk };
+    int lengths[1] = { (int)strlen(release_pk) };
+    PGresult *res = db_simple(conn,
+        "SELECT r.status,COALESCE(r.revoked_at,0),r.manifest_digest,"
+        "       r.verification_digest,r.trust_status,r.verification_state,"
+        "       COALESCE(r.verification_at,0),COALESCE(r.verification_expires_at,0),"
+        "       m.canonical_payload,m.canonical_payload_sha256,"
+        "       m.canonical_version,m.signature_value,m.signature_algorithm,"
+        "       m.signing_key_id,r.signing_key_id,"
+        "       k.status,k.key_type,k.algorithm,k.public_key_pem,k.key_fingerprint,"
+        "       COALESCE(k.revoked_at,0),"
+        "       EXISTS(SELECT 1 FROM os_release_revocations q "
+        "              WHERE q.release_id=r.id)"
+        "FROM os_releases r "
+        "JOIN os_release_manifests m ON m.release_id=r.id "
+        "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
+        "WHERE r.id=$1 OR r.release_id=$1",
+        1, params, lengths);
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1) {
+        if (res) PQclear(res);
+        return -1;
+    }
+    const char *status = PQgetvalue(res, 0, 0);
+    const char *release_digest = PQgetvalue(res, 0, 2);
+    const char *verification_digest = PQgetvalue(res, 0, 3);
+    const char *trust_status = PQgetvalue(res, 0, 4);
+    const char *verification_state = PQgetvalue(res, 0, 5);
+    long long verification_at = atoll(PQgetvalue(res, 0, 6));
+    long long verification_expires_at = atoll(PQgetvalue(res, 0, 7));
+    const char *canonical_payload = PQgetvalue(res, 0, 8);
+    const char *canonical_digest = PQgetvalue(res, 0, 9);
+    const char *canonical_version = PQgetvalue(res, 0, 10);
+    const char *signature = PQgetvalue(res, 0, 11);
+    const char *signature_algorithm = PQgetvalue(res, 0, 12);
+    const char *manifest_key_id = PQgetvalue(res, 0, 13);
+    const char *release_key_id = PQgetvalue(res, 0, 14);
+    const char *key_status = PQgetvalue(res, 0, 15);
+    const char *key_type = PQgetvalue(res, 0, 16);
+    const char *key_algorithm = PQgetvalue(res, 0, 17);
+    const char *public_key = PQgetvalue(res, 0, 18);
+    const char *key_fingerprint = PQgetvalue(res, 0, 19);
+    long long key_revoked_at = atoll(PQgetvalue(res, 0, 20));
+    long long release_revoked_at = atoll(PQgetvalue(res, 0, 1));
+    int explicitly_revoked = strcmp(PQgetvalue(res, 0, 21), "t") == 0;
+    long long now_ms = (long long)time(NULL) * 1000;
+    int valid = strcmp(status, "active") == 0 &&
+                release_revoked_at == 0 && !explicitly_revoked &&
+                strcmp(trust_status, "verified") == 0 &&
+                strcmp(verification_state, "verified") == 0 &&
+                verification_at > 0 && verification_at <= now_ms &&
+                verification_expires_at > now_ms &&
+                release_digest[0] && strcmp(release_digest, verification_digest) == 0 &&
+                canonical_payload[0] &&
+                strcmp(canonical_version, "RFC8785") == 0 &&
+                signature[0] &&
+                strcmp(release_digest, canonical_digest) == 0 &&
+                strcmp(manifest_key_id, release_key_id) == 0 &&
+                strcmp(key_status, "active") == 0 &&
+                strcmp(key_type, "production") == 0 &&
+                key_revoked_at == 0 &&
+                signature_algorithm[0] && strcmp(signature_algorithm, key_algorithm) == 0 &&
+                public_key[0] && key_fingerprint[0];
+    if (valid) {
+        int signature_result = release_signature_verify(
+            canonical_payload, strlen(canonical_payload),
+            release_digest, canonical_digest, release_digest,
+            signature_algorithm, key_algorithm, signature,
+            public_key, key_fingerprint);
+        valid = signature_result == 1;
+    }
+    PQclear(res);
+    return valid ? 1 : 0;
 }
 
 void os_release_handle(int client_fd, const char *method, const char *path,
@@ -415,10 +484,183 @@ void os_release_handle(int client_fd, const char *method, const char *path,
         /* ---------------- POST /api/v1/os/releases/:id/verify-signature ---------------- */
         if (strcmp(method, "POST") == 0 &&
             strcmp(action, "/verify-signature") == 0) {
+            char canonical_payload[16384] = {0};
+            char signature[8192] = {0};
+            char signature_algorithm[32] = {0};
+            ctrl_json_string(body, "canonical_payload", canonical_payload,
+                             sizeof(canonical_payload));
+            ctrl_json_string(body, "signature_base64", signature,
+                             sizeof(signature));
+            ctrl_json_string(body, "signature_algorithm", signature_algorithm,
+                             sizeof(signature_algorithm));
+            if (!canonical_payload[0] || !signature[0] ||
+                !signature_algorithm[0]) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 400,
+                              "canonical_payload, signature_base64 and signature_algorithm are required",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *kp[1] = { r_pk };
+            int kl[1] = { (int)strlen(r_pk) };
+            PGresult *kr = db_simple(conn,
+                "SELECT k.key_id,k.algorithm,k.status,k.key_type,"
+                "       k.public_key_pem,k.key_fingerprint,"
+                "       m.canonical_payload,m.canonical_version,"
+                "       m.canonical_payload_sha256 "
+                "FROM os_releases r "
+                "JOIN os_release_manifests m ON m.release_id=r.id "
+                "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
+                "WHERE r.id=$1",
+                1, kp, kl);
+            if (!kr || PQresultStatus(kr) != PGRES_TUPLES_OK ||
+                PQntuples(kr) != 1) {
+                if (kr) PQclear(kr);
+                db_release(conn, 0);
+                os_send_error(client_fd, 503,
+                              "A production signing key or canonical release record is unavailable",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            const char *key_id = PQgetvalue(kr, 0, 0);
+            const char *key_algorithm = PQgetvalue(kr, 0, 1);
+            const char *key_status = PQgetvalue(kr, 0, 2);
+            const char *key_type = PQgetvalue(kr, 0, 3);
+            const char *public_key = PQgetvalue(kr, 0, 4);
+            const char *key_fingerprint = PQgetvalue(kr, 0, 5);
+            const char *stored_payload = PQgetvalue(kr, 0, 6);
+            const char *canonical_version = PQgetvalue(kr, 0, 7);
+            const char *stored_digest = PQgetvalue(kr, 0, 8);
+
+            int eligible = strcmp(key_status, "active") == 0 &&
+                           strcmp(key_type, "production") == 0 &&
+                           strcmp(canonical_version, "RFC8785") == 0 &&
+                           strcmp(signature_algorithm, key_algorithm) == 0 &&
+                           public_key[0] && key_fingerprint[0] &&
+                           strcmp(canonical_payload, stored_payload) == 0 &&
+                           stored_digest[0];
+            if (!eligible) {
+                PQclear(kr);
+                db_release(conn, 0);
+                os_send_error(client_fd, 409,
+                              "Release is not bound to an active production RFC 8785 signing record",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            unsigned char digest[SHA256_DIGEST_LENGTH];
+            unsigned int digest_len = 0;
+            char computed_digest[72] = "sha256:";
+            if (EVP_Digest((const unsigned char *)canonical_payload,
+                           strlen(canonical_payload), digest, &digest_len,
+                           EVP_sha256(), NULL) != 1 ||
+                digest_len != SHA256_DIGEST_LENGTH) {
+                PQclear(kr);
+                db_release(conn, 1);
+                os_send_error(client_fd, 500,
+                              "Canonical release digest could not be computed",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            static const char hex[] = "0123456789abcdef";
+            for (size_t i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+                computed_digest[7 + i * 2] = hex[digest[i] >> 4];
+                computed_digest[8 + i * 2] = hex[digest[i] & 15];
+            }
+            computed_digest[71] = '\0';
+
+            int signature_valid =
+                strcmp(computed_digest, stored_digest) == 0 &&
+                strcmp(computed_digest, r_digest) == 0 &&
+                release_signature_verify(
+                    canonical_payload, strlen(canonical_payload),
+                    computed_digest, stored_digest, computed_digest,
+                    signature_algorithm, key_algorithm, signature,
+                    public_key, key_fingerprint) == 1;
+            PQclear(kr);
+            if (!signature_valid) {
+                db_release(conn, 0);
+                os_send_error(client_fd, 403,
+                              "Release signature or canonical manifest digest rejected",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+
+            PGresult *begin = PQexec(conn, "BEGIN");
+            if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+                if (begin) PQclear(begin);
+                db_release(conn, 1);
+                os_send_error(client_fd, 503,
+                              "Release verification transaction could not start",
+                              origin, extra_headers, extra_len);
+                return;
+            }
+            PQclear(begin);
+
+            long long now_ms = (long long)time(NULL) * 1000;
+            long long expires_ms = now_ms + 24LL * 60LL * 60LL * 1000LL;
+            char now_text[32], expires_text[32];
+            snprintf(now_text, sizeof(now_text), "%lld", now_ms);
+            snprintf(expires_text, sizeof(expires_text), "%lld", expires_ms);
+            const char *mp[8] = {
+                signature, signature_algorithm, key_id, computed_digest,
+                now_text, r_pk, now_text, expires_text
+            };
+            int ml[8];
+            for (int i = 0; i < 8; i++) ml[i] = (int)strlen(mp[i]);
+            PGresult *mr = db_simple(conn,
+                "UPDATE os_release_manifests "
+                "SET signature_value=$1,signature_algorithm=$2,"
+                "signing_key_id=$3,signed_digest=$4,verified=TRUE,"
+                "signature_verified=TRUE,signature_verified_at=$5::bigint "
+                "WHERE release_id=$6",
+                6, (const char *[]){ mp[0], mp[1], mp[2], mp[3], mp[4], mp[5] },
+                (const int []){ ml[0], ml[1], ml[2], ml[3], ml[4], ml[5] });
+            int manifest_ok = mr && PQresultStatus(mr) == PGRES_COMMAND_OK &&
+                              strcmp(PQcmdTuples(mr), "1") == 0;
+            if (mr) PQclear(mr);
+            PGresult *rr = manifest_ok ? db_simple(conn,
+                "UPDATE os_releases "
+                "SET status='signed',manifest_digest=$1,"
+                "trust_status='verified',verification_state='verified',"
+                "verification_digest=$1,verification_at=$2::bigint,"
+                "verification_expires_at=$3::bigint,"
+                "signing_key_id=$4,signing_algorithm=$5,"
+                "updated_at=$2::bigint "
+                "WHERE id=$6",
+                6, (const char *[]){ computed_digest, now_text, expires_text,
+                                     key_id, signature_algorithm, r_pk },
+                (const int []){ (int)strlen(computed_digest),
+                                (int)strlen(now_text), (int)strlen(expires_text),
+                                (int)strlen(key_id), (int)strlen(signature_algorithm),
+                                (int)strlen(r_pk) }) : NULL;
+            int release_ok = rr && PQresultStatus(rr) == PGRES_COMMAND_OK &&
+                             strcmp(PQcmdTuples(rr), "1") == 0;
+            if (rr) PQclear(rr);
+            PGresult *commit = manifest_ok && release_ok ? PQexec(conn, "COMMIT") : NULL;
+            int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+            if (commit) PQclear(commit);
+            if (!committed) {
+                PQexec(conn, "ROLLBACK");
+                db_release(conn, 0);
+                os_send_error(client_fd, 503,
+                              "Verified release state could not be persisted",
+                              origin, extra_headers, extra_len);
+                return;
+            }
             db_release(conn, 0);
-            os_send_error(client_fd, 503,
-                          "Release verification is blocked until the server can verify RFC 8785 canonical bytes and authenticated revocation evidence",
-                          origin, extra_headers, extra_len);
+            os_audit_log(sess.username, "OS_RELEASE_SIGNATURE_VERIFIED",
+                         r_id);
+            char response[512];
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"VERIFIED\",\"release_id\":\"%s\","
+                     "\"manifest_digest\":\"%s\",\"signing_key_id\":\"%s\","
+                     "\"canonical\":\"RFC8785\",\"approval_required\":true}",
+                     r_id, computed_digest, key_id);
+            os_send_json(client_fd, 200, response, origin,
+                         extra_headers, extra_len);
             return;
         }
 

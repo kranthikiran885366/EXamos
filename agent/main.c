@@ -30,6 +30,29 @@ static void sig_handler(int sig) {
     g_running = 0;
 }
 
+static int perform_re_attestation(const char *server_url, const char *device_id,
+                                  const char *release_id,
+                                  const char *session_id) {
+    char nonce[65] = {0};
+    char report_json[16384] = {0};
+    attestation_report_t report;
+    memset(&report, 0, sizeof(report));
+    int result = -1;
+
+    if (attestation_client_rechallenge(server_url, device_id, session_id,
+                                       nonce, sizeof(nonce)) == 0 &&
+        tpm_attestation_generate_report(device_id, release_id, nonce, &report) == 0 &&
+        tpm_attestation_format_json(&report, report_json,
+                                    sizeof(report_json)) == 0 &&
+        attestation_client_verify(server_url, report_json) == 0)
+        result = 0;
+
+    OPENSSL_cleanse(nonce, sizeof(nonce));
+    OPENSSL_cleanse(report_json, sizeof(report_json));
+    OPENSSL_cleanse(&report, sizeof(report));
+    return result;
+}
+
 int main(int argc, char *argv[]) {
     /*
      * The agent attests this appliance and reports its hardware state. It
@@ -108,7 +131,8 @@ int main(int argc, char *argv[]) {
 
     char challenge_nonce[65] = {0};
     if (attestation_client_issue_challenge(server_url, device_id, release_id,
-                                          session_id, challenge_nonce,
+                                          session_id, "re_attestation",
+                                          challenge_nonce,
                                           sizeof(challenge_nonce)) != 0) {
         log_info("Server did not issue a fresh attestation challenge; refusing to run.");
         return 2;
@@ -146,18 +170,22 @@ int main(int argc, char *argv[]) {
             reattest_every = (int)parsed;
     }
 
+    char active_exam_session_id[64] = {0};
+    char active_exam_release_id[64] = {0};
     int iteration = 0;
     while (g_running) {
         char exam_session_id[64] = {0}, exam_release_id[64] = {0};
+        char exam_purpose[32] = {0};
         int exam_pending = attestation_client_poll_exam_session(
             server_url, device_id, exam_session_id, sizeof(exam_session_id),
-            exam_release_id, sizeof(exam_release_id));
+            exam_release_id, sizeof(exam_release_id),
+            exam_purpose, sizeof(exam_purpose));
         if (exam_pending == 1) {
             char exam_nonce[65] = {0};
             attestation_report_t exam_report;
             char exam_json[16384];
             if (attestation_client_issue_challenge(server_url, device_id,
-                    exam_release_id, exam_session_id, exam_nonce,
+                    exam_release_id, exam_session_id, exam_purpose, exam_nonce,
                     sizeof(exam_nonce)) != 0 ||
                 tpm_attestation_generate_report(device_id, exam_release_id,
                     exam_nonce, &exam_report) != 0 ||
@@ -166,7 +194,13 @@ int main(int argc, char *argv[]) {
                 attestation_client_verify(server_url, exam_json) != 0) {
                 log_info("Candidate exam-session TPM attestation failed; no candidate session will be authorized.");
             } else {
-                log_info("Candidate exam-session TPM quote verified by the server.");
+                log_info(strcmp(exam_purpose, "exam_launch") == 0
+                    ? "Candidate exam-session TPM quote verified by the server."
+                    : "Active exam-session TPM re-attestation verified by the server.");
+                snprintf(active_exam_session_id, sizeof(active_exam_session_id),
+                         "%s", exam_session_id);
+                snprintf(active_exam_release_id, sizeof(active_exam_release_id),
+                         "%s", exam_release_id);
             }
             OPENSSL_cleanse(exam_nonce, sizeof(exam_nonce));
             OPENSSL_cleanse(&exam_report, sizeof(exam_report));
@@ -176,19 +210,31 @@ int main(int argc, char *argv[]) {
         }
 
         if (iteration > 0 && iteration % reattest_every == 0) {
-            char re_nonce[65] = {0};
-            attestation_report_t re_report;
-            char re_json[16384];
-            if (attestation_client_rechallenge(server_url, device_id, session_id,
-                                               re_nonce, sizeof(re_nonce)) != 0 ||
-                tpm_attestation_generate_report(device_id, release_id, re_nonce,
-                                                &re_report) != 0 ||
-                tpm_attestation_format_json(&re_report, re_json, sizeof(re_json)) != 0 ||
-                attestation_client_verify(server_url, re_json) != 0) {
-                log_info("Periodic TPM re-attestation failed; stopping the agent.");
-                break;
+            const char *target_session = active_exam_session_id[0]
+                ? active_exam_session_id : session_id;
+            const char *target_release = active_exam_session_id[0]
+                ? active_exam_release_id : release_id;
+            if (perform_re_attestation(server_url, device_id, target_release,
+                                       target_session) != 0) {
+                if (active_exam_session_id[0]) {
+                    log_info("Candidate-session re-attestation failed; retrying the device boot session.");
+                    OPENSSL_cleanse(active_exam_session_id,
+                                    sizeof(active_exam_session_id));
+                    OPENSSL_cleanse(active_exam_release_id,
+                                    sizeof(active_exam_release_id));
+                }
+                if (perform_re_attestation(server_url, device_id, release_id,
+                                           session_id) == 0) {
+                    log_info("Device boot-session TPM re-attestation verified by the server.");
+                } else {
+                    log_info("Periodic TPM re-attestation failed; stopping the agent.");
+                    break;
+                }
+            } else {
+                log_info(active_exam_session_id[0]
+                    ? "Candidate exam-session TPM re-attestation verified by the server."
+                    : "Device boot-session TPM re-attestation verified by the server.");
             }
-            log_info("Periodic TPM re-attestation verified by the server.");
         }
         hardware_state_t hw_state;
         hardware_guard_scan(&hw_state);

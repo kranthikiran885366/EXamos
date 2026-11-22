@@ -18,6 +18,8 @@
 #include "include/e1_consent.h"
 #include "include/environment_engine.h"
 #include "include/exam_engine.h"
+#include "include/key_release.h"
+#include "security/release_signature.h"
 #include "include/behaviour_engine.h"
 #include "include/variant_engine.h"
 #include "include/viva_engine.h"
@@ -94,8 +96,6 @@ static unsigned int g_max_clients = 256;
 /* --- Console integration globals --- */
 static int g_db_initialized = 0;
 static int g_audit_initialized = 0;
-static char g_console_public_key_pem[2048] = {0};
-static int g_console_key_loaded = 0;
 
 
 /* CORS origin for the current request (set in handle_client). */
@@ -1286,6 +1286,271 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 200, "text/html; charset=utf-8", candidate_login_html());
         }
     }
+    /* Authenticated policy enforcement acknowledgement. */
+    else if (strcmp(route_path, "/api/v1/policies/acknowledge") == 0 &&
+             strcmp(method, "POST") == 0) {
+        char challenge_id[64], exam_id[64], institution_id[64], device_id[64];
+        char policy_release_id[64], policy_digest[72], nonce_sha256[65];
+        char attestation_id[64], signature_base64[8192], canonical_ack[16384];
+        char enforcement_status[32];
+        memset(challenge_id, 0, sizeof(challenge_id));
+        memset(exam_id, 0, sizeof(exam_id));
+        memset(institution_id, 0, sizeof(institution_id));
+        memset(device_id, 0, sizeof(device_id));
+        memset(policy_release_id, 0, sizeof(policy_release_id));
+        memset(policy_digest, 0, sizeof(policy_digest));
+        memset(nonce_sha256, 0, sizeof(nonce_sha256));
+        memset(attestation_id, 0, sizeof(attestation_id));
+        memset(signature_base64, 0, sizeof(signature_base64));
+        memset(canonical_ack, 0, sizeof(canonical_ack));
+        memset(enforcement_status, 0, sizeof(enforcement_status));
+        parse_json_string(req_body, "challenge_id", challenge_id, sizeof(challenge_id));
+        parse_json_string(req_body, "exam_id", exam_id, sizeof(exam_id));
+        parse_json_string(req_body, "institution_id", institution_id, sizeof(institution_id));
+        parse_json_string(req_body, "device_id", device_id, sizeof(device_id));
+        parse_json_string(req_body, "policy_release_id", policy_release_id, sizeof(policy_release_id));
+        parse_json_string(req_body, "policy_digest", policy_digest, sizeof(policy_digest));
+        parse_json_string(req_body, "nonce_sha256", nonce_sha256, sizeof(nonce_sha256));
+        parse_json_string(req_body, "attestation_id", attestation_id, sizeof(attestation_id));
+        parse_json_string(req_body, "signature_base64", signature_base64, sizeof(signature_base64));
+        parse_json_string(req_body, "canonical_acknowledgement", canonical_ack, sizeof(canonical_ack));
+        parse_json_string(req_body, "enforcement_status", enforcement_status, sizeof(enforcement_status));
+        int policy_version = parse_json_int(req_body, "policy_version", 0);
+
+        if (!challenge_id[0] || !exam_id[0] || !institution_id[0] ||
+            !device_id[0] || !policy_release_id[0] || !policy_digest[0] ||
+            !nonce_sha256[0] || !attestation_id[0] || !signature_base64[0] ||
+            !canonical_ack[0] || policy_version <= 0 ||
+            (strcmp(enforcement_status, "ENFORCED") != 0 &&
+             strcmp(enforcement_status, "FAILED") != 0)) {
+            send_http_response(client_fd, 400, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Complete challenge-bound acknowledgement fields are required\"}");
+            goto client_done;
+        }
+        if (strlen(nonce_sha256) != 64 || strlen(policy_digest) != 71 ||
+            strncmp(policy_digest, "sha256:", 7) != 0 ||
+            !is_examos_kiosk_request(client_fd, buffer, origin)) {
+            send_http_response(client_fd, 403, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement must come from the ExamOS kiosk with valid digest fields\"}");
+            goto client_done;
+        }
+
+        PGconn *conn = db_acquire();
+        if (!conn) {
+            send_http_response(client_fd, 503, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement database unavailable\"}");
+            goto client_done;
+        }
+        PGresult *begin = PQexec(conn, "BEGIN");
+        if (!begin || PQresultStatus(begin) != PGRES_COMMAND_OK) {
+            if (begin) PQclear(begin);
+            db_release(conn, 1);
+            send_http_response(client_fd, 503, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement transaction could not start\"}");
+            goto client_done;
+        }
+        PQclear(begin);
+
+        char version_text[16];
+        snprintf(version_text, sizeof(version_text), "%d", policy_version);
+        const char *params[7] = { challenge_id, exam_id, institution_id, device_id,
+                                  policy_release_id, policy_digest, version_text };
+        int lengths[7];
+        for (int i = 0; i < 7; i++) lengths[i] = (int)strlen(params[i]);
+        PGresult *challenge = db_simple(conn,
+            "SELECT c.nonce_sha256,c.expires_at,c.state,p.canonical_payload_sha256,"
+            "a.attestation_id,a.state,a.verified_at,a.device_id,a.institution_id "
+            "FROM examos_policy_enforcement_challenges c "
+            "JOIN examos_published_policies p ON p.policy_release_id=c.policy_release_id "
+            "JOIN examos_attestation_challenges a ON a.attestation_id=$8 "
+            "WHERE c.challenge_id=$1 AND c.exam_id=$2 AND c.institution_id=$3 "
+            "AND c.device_id=$4 AND c.policy_release_id=$5 "
+            "AND c.policy_digest=$6 AND c.policy_version=$7::integer "
+            "AND a.institution_id=c.institution_id AND a.device_id=c.device_id "
+            "AND a.purpose='exam_launch' AND a.state='TRUSTED' "
+            "AND a.verified_at > clock_timestamp()-interval '10 minutes' "
+            "AND c.expires_at > clock_timestamp() "
+            "FOR UPDATE OF c",
+            8, (const char *[]){ challenge_id, exam_id, institution_id, device_id,
+                                  policy_release_id, policy_digest, version_text,
+                                  attestation_id },
+            (const int []){ lengths[0], lengths[1], lengths[2], lengths[3],
+                            lengths[4], lengths[5], lengths[6], (int)strlen(attestation_id) });
+        if (!challenge || PQresultStatus(challenge) != PGRES_TUPLES_OK ||
+            PQntuples(challenge) != 1) {
+            if (challenge) PQclear(challenge);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 409, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement challenge or policy binding mismatch\"}");
+            goto client_done;
+        }
+        if (strcmp(PQgetvalue(challenge, 0, 0), nonce_sha256) != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 2), "pending") != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 3), policy_digest) != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 4), attestation_id) != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 5), "TRUSTED") != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 7), device_id) != 0 ||
+            strcmp(PQgetvalue(challenge, 0, 8), institution_id) != 0) {
+            PQclear(challenge);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 409, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Stale, mismatched, or untrusted acknowledgement challenge\"}");
+            goto client_done;
+        }
+        PQclear(challenge);
+
+        char ack_challenge[64] = {0}, ack_exam[64] = {0},
+             ack_institution[64] = {0}, ack_device[64] = {0},
+             ack_policy_release[64] = {0}, ack_policy_digest[72] = {0},
+             ack_nonce[65] = {0}, ack_attestation[64] = {0},
+             ack_enforcement_status[32] = {0};
+        int ack_policy_version = 0;
+        parse_json_string(canonical_ack, "challenge_id", ack_challenge,
+                          sizeof(ack_challenge));
+        parse_json_string(canonical_ack, "exam_id", ack_exam,
+                          sizeof(ack_exam));
+        parse_json_string(canonical_ack, "institution_id", ack_institution,
+                          sizeof(ack_institution));
+        parse_json_string(canonical_ack, "device_id", ack_device,
+                          sizeof(ack_device));
+        parse_json_string(canonical_ack, "policy_release_id",
+                          ack_policy_release, sizeof(ack_policy_release));
+        parse_json_string(canonical_ack, "policy_digest", ack_policy_digest,
+                          sizeof(ack_policy_digest));
+        parse_json_string(canonical_ack, "nonce_sha256", ack_nonce,
+                          sizeof(ack_nonce));
+        parse_json_string(canonical_ack, "attestation_id", ack_attestation,
+                          sizeof(ack_attestation));
+        parse_json_string(canonical_ack, "enforcement_status",
+                          ack_enforcement_status,
+                          sizeof(ack_enforcement_status));
+        ack_policy_version = parse_json_int(canonical_ack, "policy_version", 0);
+        if (strcmp(ack_challenge, challenge_id) != 0 ||
+            strcmp(ack_exam, exam_id) != 0 ||
+            strcmp(ack_institution, institution_id) != 0 ||
+            strcmp(ack_device, device_id) != 0 ||
+            strcmp(ack_policy_release, policy_release_id) != 0 ||
+            strcmp(ack_policy_digest, policy_digest) != 0 ||
+            strcmp(ack_nonce, nonce_sha256) != 0 ||
+            strcmp(ack_attestation, attestation_id) != 0 ||
+            strcmp(ack_enforcement_status, enforcement_status) != 0 ||
+            ack_policy_version != policy_version) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 409, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Canonical acknowledgement fields do not match the challenge\"}");
+            goto client_done;
+        }
+
+        PGresult *ak = db_simple(conn,
+            "SELECT k.public_key_pem,k.public_key_fingerprint,k.key_algorithm,"
+            "k.status FROM device_attestation_keys k "
+            "WHERE k.device_id=$1 AND k.status='active'",
+            1, (const char *[]){ device_id }, (const int []){ (int)strlen(device_id) });
+        if (!ak || PQresultStatus(ak) != PGRES_TUPLES_OK || PQntuples(ak) != 1) {
+            if (ak) PQclear(ak);
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 403, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"No active device attestation key is bound to the device\"}");
+            goto client_done;
+        }
+        const char *ak_pem = PQgetvalue(ak, 0, 0);
+        const char *ak_fingerprint = PQgetvalue(ak, 0, 1);
+        const char *ak_algorithm = PQgetvalue(ak, 0, 2);
+        char signature_algorithm[32];
+        if (strcmp(ak_algorithm, "RSA-2048") == 0 || strcmp(ak_algorithm, "RSA-3072") == 0)
+            snprintf(signature_algorithm, sizeof(signature_algorithm), "rsa-sha256");
+        else if (strcmp(ak_algorithm, "ECC-P256") == 0)
+            snprintf(signature_algorithm, sizeof(signature_algorithm), "ecdsa-p256-sha256");
+        else if (strcmp(ak_algorithm, "ECC-P384") == 0)
+            snprintf(signature_algorithm, sizeof(signature_algorithm), "ecdsa-p384-sha384");
+        else
+            signature_algorithm[0] = '\0';
+        int signature_valid = signature_algorithm[0] &&
+            release_signature_verify(canonical_ack, strlen(canonical_ack),
+                                    policy_digest, policy_digest, policy_digest,
+                                    signature_algorithm, signature_algorithm,
+                                    signature_base64, ak_pem, ak_fingerprint) == 1;
+        PQclear(ak);
+        if (!signature_valid) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 403, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Forged or unauthenticated policy acknowledgement\"}");
+            goto client_done;
+        }
+        unsigned char random[16];
+        char ack_id[64];
+        if (RAND_bytes(random, sizeof(random)) != 1) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 1);
+            send_http_response(client_fd, 500, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement randomness unavailable\"}");
+            goto client_done;
+        }
+        static const char ack_hex[] = "0123456789abcdef";
+        memcpy(ack_id, "pka_", 4);
+        for (size_t i = 0; i < sizeof(random); i++) {
+            ack_id[4 + i * 2] = ack_hex[random[i] >> 4];
+            ack_id[5 + i * 2] = ack_hex[random[i] & 15];
+        }
+        ack_id[36] = '\0';
+        OPENSSL_cleanse(random, sizeof(random));
+
+        const char *ack_params[10] = {
+            ack_id, challenge_id, exam_id, institution_id, device_id,
+            policy_release_id, version_text, policy_digest,
+            enforcement_status, attestation_id
+        };
+        int ack_lengths[10];
+        for (int i = 0; i < 10; i++) ack_lengths[i] = (int)strlen(ack_params[i]);
+        PGresult *insert_ack = db_simple(conn,
+            "INSERT INTO examos_policy_device_acknowledgements "
+            "(acknowledgement_id,challenge_id,exam_id,institution_id,device_id,"
+            "policy_release_id,policy_version,policy_digest,enforcement_status,"
+            "attestation_id,signature_base64) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7::integer,$8,$9,$10,$11)",
+            11,
+            (const char *[]){ ack_params[0], ack_params[1], ack_params[2],
+                              ack_params[3], ack_params[4], ack_params[5],
+                              ack_params[6], ack_params[7], ack_params[8],
+                              ack_params[9], signature_base64 },
+            (const int []){ ack_lengths[0], ack_lengths[1], ack_lengths[2],
+                            ack_lengths[3], ack_lengths[4], ack_lengths[5],
+                            ack_lengths[6], ack_lengths[7], ack_lengths[8],
+                            ack_lengths[9], (int)strlen(signature_base64) });
+        int ack_inserted = insert_ack && PQresultStatus(insert_ack) == PGRES_COMMAND_OK;
+        if (insert_ack) PQclear(insert_ack);
+        PGresult *consume = ack_inserted ? db_simple(conn,
+            "UPDATE examos_policy_enforcement_challenges "
+            "SET state='used',used_at=clock_timestamp() "
+            "WHERE challenge_id=$1 AND state='pending'",
+            1, (const char *[]){ challenge_id },
+            (const int []){ (int)strlen(challenge_id) }) : NULL;
+        int consumed = consume && PQresultStatus(consume) == PGRES_COMMAND_OK &&
+                       strcmp(PQcmdTuples(consume), "1") == 0;
+        if (consume) PQclear(consume);
+        PGresult *commit = ack_inserted && consumed ? PQexec(conn, "COMMIT") : NULL;
+        int committed = commit && PQresultStatus(commit) == PGRES_COMMAND_OK;
+        if (commit) PQclear(commit);
+        if (!committed) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            send_http_response(client_fd, 409, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"Acknowledgement changed or was already consumed\"}");
+            goto client_done;
+        }
+        db_release(conn, 0);
+        char response[192];
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ACKNOWLEDGED\",\"acknowledgement_id\":\"%s\","
+                 "\"challenge_id\":\"%s\",\"policy_version\":%d}",
+                 ack_id, challenge_id, policy_version);
+        send_http_response(client_fd, 200, "application/json", response);
+    }
     /* Route: POST /api/v1/candidate/login */
     else if (strcmp(route_path, "/api/v1/candidate/login") == 0 && strcmp(method, "POST") == 0) {
         if (!is_examos_kiosk_request(client_fd, buffer, origin)) {
@@ -1721,9 +1986,12 @@ static void* handle_client(void *arg) {
             goto client_done;
         }
         char dev_id[64] = {0}, sess_id[64] = {0}, rel_id[64] = {0};
+        char purpose[32] = {0};
         parse_json_string(req_body, "device_id", dev_id, sizeof(dev_id));
         parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
         parse_json_string(req_body, "release_id", rel_id, sizeof(rel_id));
+        parse_json_string(req_body, "purpose", purpose, sizeof(purpose));
+        if (!purpose[0]) snprintf(purpose, sizeof(purpose), "%s", "re_attestation");
 
         if (!dev_id[0] || !sess_id[0] || !rel_id[0]) {
             send_http_response(client_fd, 400, "application/json",
@@ -1732,7 +2000,7 @@ static void* handle_client(void *arg) {
             char nonce[128] = {0}, attest_id[64] = {0}, error_code[64] = {0};
             int rc = attestation_create_challenge(
                 dev_id, sess_id, rel_id,
-                "", "re_attestation", "system",
+                "", purpose, "system",
                 nonce, attest_id, error_code);
             if (rc == 0) {
                 char resp[512];
@@ -1764,7 +2032,7 @@ static void* handle_client(void *arg) {
             goto client_done;
         }
         char reason[64] = {0}, exam_key[65] = {0};
-        if (attestation_verify_evidence(req_body, "re_attestation", reason, exam_key) == 0) {
+        if (attestation_verify_evidence(req_body, NULL, reason, exam_key) == 0) {
             int key_release_required = exam_key[0] != '\0';
             /* The exam key is deliberately not echoed here. It is bound to
                the trusted session and delivered only through the audited
@@ -2216,8 +2484,26 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
             goto client_done;
         }
-        send_http_response(client_fd, 503, "application/json",
-            "{\"status\":\"UNAVAILABLE\",\"error\":\"Key release is disabled until the authenticated candidate is durably bound to the attested exam session.\"}");
+        char session_id[64] = {0}, device_id[64] = {0};
+        parse_json_string(req_body, "session_id", session_id, sizeof(session_id));
+        parse_json_string(req_body, "device_id", device_id, sizeof(device_id));
+        if (!session_id[0] || !device_id[0]) {
+            send_http_response(client_fd, 400, "application/json",
+                "{\"status\":\"REJECTED\",\"error\":\"session_id and device_id are required\"}");
+            goto client_done;
+        }
+        char envelope[8192] = {0}, error_code[64] = {0};
+        if (key_release_wrap_session_key(authenticated_candidate, session_id,
+                                         device_id, envelope, sizeof(envelope),
+                                         error_code) != 0) {
+            char response[512];
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"REJECTED\",\"error_code\":\"%s\"}",
+                     error_code[0] ? error_code : "P3_DEVICE_BOUND_TRANSPORT_UNAVAILABLE");
+            send_http_response(client_fd, 409, "application/json", response);
+            goto client_done;
+        }
+        send_http_response(client_fd, 200, "application/json", envelope);
     }
     /* Route: GET /api/v1/exam/key-release/eligibility -> Non-destructive eligibility check */
     else if (strcmp(route_path, "/api/v1/exam/key-release/eligibility") == 0 && strcmp(method, "GET") == 0) {
@@ -3063,8 +3349,18 @@ static void* handle_client(void *arg) {
                                    "{\"status\":\"url_updated\"}");
                 OPENSSL_cleanse(&exam, sizeof(exam));
             } else {
-                send_http_response(client_fd, 400, "application/json",
-                                   "{\"error\":\"URL update failed: the exam URL must be an approved HTTPS endpoint\"}");
+                char escaped_error[1024], response[1100];
+                const char *error = platform_last_error();
+                if (json_escape(error, escaped_error, sizeof(escaped_error)) == 0) {
+                    snprintf(response, sizeof(response), "{\"error\":\"%s\"}", escaped_error);
+                    send_http_response(client_fd,
+                        errno == EINVAL ? 400 : errno == ENOTSUP ? 503 :
+                        errno == ENOENT ? 404 : errno == EPERM ? 409 : 500,
+                        "application/json", response);
+                } else {
+                    send_http_response(client_fd, 500, "application/json",
+                        "{\"error\":\"Exam URL update failed\"}");
+                }
                 OPENSSL_cleanse(&exam, sizeof(exam));
             }
         }
@@ -3166,6 +3462,9 @@ static void* handle_client(void *arg) {
                     }
                 }
                 send_http_response(client_fd, 200, "application/json", resp);
+            } else if (next_state == EXAM_STATE_ACTIVE && errno == ENOTSUP) {
+                send_http_response(client_fd, 503, "application/json",
+                    "{\"error\":\"Exam activation is blocked until signed policy publication and authenticated device acknowledgements are available\"}");
             } else {
                 send_http_response(client_fd, 409, "application/json",
                     "{\"error\":\"Exam state transition is not permitted from the current state\"}");
@@ -3606,9 +3905,12 @@ static void* handle_client(void *arg) {
     else if (strcmp(route_path, "/api/v1/admin/audit") == 0 && strcmp(method, "GET") == 0) {
         const char *tok = bearer_token(auth_header);
         auth_session_t sess; memset(&sess, 0, sizeof(sess));
-        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0) {
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0 ||
+            (sess.role != ROLE_PLATFORM_OWNER &&
+             sess.role != ROLE_INCIDENT_INVESTIGATOR &&
+             sess.role != ROLE_READONLY_AUDITOR)) {
             send_http_response(client_fd, 403, "application/json",
-                               "{\"error\":\"Read permission required\"}");
+                               "{\"error\":\"Platform audit permission required\"}");
         } else {
             char exam_id[64] = {0};
             parse_query_id(path, "exam_id", exam_id, sizeof(exam_id));
@@ -4817,25 +5119,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     g_audit_initialized = 1;
-
-    /* --- ExamOS Console integration: load console public key for request signing verification --- */
-    {
-        const char *key_path = getenv("EXAMOS_CONSOLE_PUBLIC_KEY");
-        if (key_path && key_path[0]) {
-            FILE *kf = fopen(key_path, "r");
-            if (kf) {
-                size_t n = fread(g_console_public_key_pem, 1, sizeof(g_console_public_key_pem) - 1, kf);
-                g_console_public_key_pem[n] = '\0';
-                fclose(kf);
-                g_console_key_loaded = 1;
-                fprintf(stderr, "[ExamOS-Server] Console public key loaded from %s\n", key_path);
-            } else {
-                fprintf(stderr, "[ExamOS-Server] WARNING: cannot read console public key %s\n", key_path);
-            }
-        } else {
-            fprintf(stderr, "[ExamOS-Server] NOTE: EXAMOS_CONSOLE_PUBLIC_KEY not set; console request signing verification will be permissive in development.\n");
-        }
-    }
 
     if (attestation_service_init() != 0) {
         fprintf(stderr, "[ExamOS-Server] FATAL: attestation service is not production-ready.\n");

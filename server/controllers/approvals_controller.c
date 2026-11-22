@@ -172,142 +172,7 @@ static int approval_role_change_target(PGconn *conn, const char *target_id,
     return valid;
 }
 
-static int approval_policy_rollback_tenant(PGconn *conn, const char *exam_id,
-                                           char *tenant_id, size_t tenant_len) {
-    PGresult *res = db_simple(conn,
-        "SELECT institution_id FROM examos_exams WHERE exam_id=$1",
-        1, (const char *[]){ exam_id }, (const int []){ (int)strlen(exam_id) });
-    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
-        if (res) PQclear(res);
-        return -1;
-    }
-    if (PQntuples(res) != 1 || strlen(PQgetvalue(res, 0, 0)) >= tenant_len) {
-        PQclear(res);
-        return 0;
-    }
-    snprintf(tenant_id, tenant_len, "%s", PQgetvalue(res, 0, 0));
-    PQclear(res);
-    return tenant_id[0] ? 1 : 0;
-}
 
-static int approval_policy_rollback_target_valid(PGconn *conn, const char *exam_id,
-                                                 const char *tenant_id,
-                                                 const char *proposed_data) {
-    int target_version = 0;
-    if (!ctrl_json_int(proposed_data, "targetVersion", &target_version) ||
-        target_version <= 0) return 0;
-    char version_text[16];
-    snprintf(version_text, sizeof(version_text), "%d", target_version);
-    PGresult *res = db_simple(conn,
-        "SELECT EXISTS ("
-        "SELECT 1 FROM examos_exams e "
-        "JOIN examos_exam_policies active "
-        "ON active.exam_id=e.exam_id AND active.status='ACTIVE' "
-        "JOIN examos_exam_policies target "
-        "ON target.exam_id=e.exam_id AND target.policy_version=$3::integer "
-        "AND target.status<>'ACTIVE' AND target.signature<>'' "
-        "WHERE e.exam_id=$1 AND e.institution_id=$2 "
-        "AND target.policy_version < active.policy_version "
-        "AND e.policy_version=active.policy_version)::text",
-        3, (const char *[]){ exam_id, tenant_id, version_text },
-        (const int []){ (int)strlen(exam_id), (int)strlen(tenant_id),
-                        (int)strlen(version_text) });
-    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1) {
-        if (res) PQclear(res);
-        return -1;
-    }
-    int valid = strcmp(PQgetvalue(res, 0, 0), "true") == 0;
-    PQclear(res);
-    return valid;
-}
-
-static int approval_execute_policy_rollback(PGconn *conn, const char *exam_id,
-                                            const char *tenant_id,
-                                            const char *proposed_data) {
-    int target_version = 0;
-    if (!ctrl_json_int(proposed_data, "targetVersion", &target_version) ||
-        target_version <= 0) return -1;
-    char target_version_text[16];
-    snprintf(target_version_text, sizeof(target_version_text), "%d", target_version);
-
-    PGresult *current = db_simple(conn,
-        "SELECT e.policy_version,p.policy_version "
-        "FROM examos_exams e JOIN examos_exam_policies p "
-        "ON p.exam_id=e.exam_id AND p.status='ACTIVE' "
-        "WHERE e.exam_id=$1 AND e.institution_id=$2 FOR UPDATE OF e,p",
-        2, (const char *[]){ exam_id, tenant_id },
-        (const int []){ (int)strlen(exam_id), (int)strlen(tenant_id) });
-    if (!current || PQresultStatus(current) != PGRES_TUPLES_OK ||
-        PQntuples(current) != 1) {
-        if (current) PQclear(current);
-        return -1;
-    }
-    int exam_version = atoi(PQgetvalue(current, 0, 0));
-    int active_version = atoi(PQgetvalue(current, 0, 1));
-    PQclear(current);
-    if (exam_version != active_version || target_version >= active_version) return -1;
-
-    PGresult *target = db_simple(conn,
-        "SELECT exam_url,allowed_origins,signature FROM examos_exam_policies "
-        "WHERE exam_id=$1 AND policy_version=$2::integer "
-        "AND status IN ('SUPERSEDED','ROLLBACK') AND signature<>'' FOR UPDATE",
-        2, (const char *[]){ exam_id, target_version_text },
-        (const int []){ (int)strlen(exam_id), (int)strlen(target_version_text) });
-    if (!target || PQresultStatus(target) != PGRES_TUPLES_OK ||
-        PQntuples(target) != 1) {
-        if (target) PQclear(target);
-        return -1;
-    }
-    char exam_url[4096], allowed_origins[4096], signature[129];
-    snprintf(exam_url, sizeof(exam_url), "%s", PQgetvalue(target, 0, 0));
-    snprintf(allowed_origins, sizeof(allowed_origins), "%s", PQgetvalue(target, 0, 1));
-    snprintf(signature, sizeof(signature), "%s", PQgetvalue(target, 0, 2));
-    PQclear(target);
-
-    PGresult *supersede = db_simple(conn,
-        "UPDATE examos_exam_policies SET status='SUPERSEDED' "
-        "WHERE exam_id=$1 AND status='ACTIVE'",
-        1, (const char *[]){ exam_id }, (const int []){ (int)strlen(exam_id) });
-    if (!supersede || PQresultStatus(supersede) != PGRES_COMMAND_OK ||
-        strcmp(PQcmdTuples(supersede), "1") != 0) {
-        if (supersede) PQclear(supersede);
-        return -1;
-    }
-    PQclear(supersede);
-
-    PGresult *activate = db_simple(conn,
-        "UPDATE examos_exam_policies SET status='ACTIVE' "
-        "WHERE exam_id=$1 AND policy_version=$2::integer "
-        "AND status IN ('SUPERSEDED','ROLLBACK')",
-        2, (const char *[]){ exam_id, target_version_text },
-        (const int []){ (int)strlen(exam_id), (int)strlen(target_version_text) });
-    if (!activate || PQresultStatus(activate) != PGRES_COMMAND_OK ||
-        strcmp(PQcmdTuples(activate), "1") != 0) {
-        if (activate) PQclear(activate);
-        return -1;
-    }
-    PQclear(activate);
-
-    char old_version_text[16];
-    snprintf(old_version_text, sizeof(old_version_text), "%d", active_version);
-    PGresult *update_exam = db_simple(conn,
-        "UPDATE examos_exams SET exam_url=$1,allowed_origins=$2,"
-        "policy_version=$3::integer,policy_signature=$4,updated_at=clock_timestamp() "
-        "WHERE exam_id=$5 AND institution_id=$6 AND policy_version=$7::integer",
-        7, (const char *[]){ exam_url, allowed_origins, target_version_text,
-                             signature, exam_id, tenant_id, old_version_text },
-        (const int []){ (int)strlen(exam_url), (int)strlen(allowed_origins),
-                        (int)strlen(target_version_text), (int)strlen(signature),
-                        (int)strlen(exam_id), (int)strlen(tenant_id),
-                        (int)strlen(old_version_text) });
-    if (!update_exam || PQresultStatus(update_exam) != PGRES_COMMAND_OK ||
-        strcmp(PQcmdTuples(update_exam), "1") != 0) {
-        if (update_exam) PQclear(update_exam);
-        return -1;
-    }
-    PQclear(update_exam);
-    return 0;
-}
 
 static int approval_execute_role_change(PGconn *conn, const char *target_id,
                                         const char *tenant_id, const char *proposed_data,
@@ -400,7 +265,8 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
         "r.verification_state,r.verification_at,r.verification_expires_at,"
         "k.status,k.key_type,k.public_key_pem,k.key_fingerprint,"
         "m.signature_algorithm,k.algorithm,m.signing_key_id,r.signing_key_id,"
-        "m.manifest_json::text,r.version "
+        "m.manifest_json::text,r.version,m.canonical_payload,"
+        "m.canonical_version,m.canonical_payload_sha256 "
         "FROM os_releases r "
         "JOIN os_release_manifests m ON m.release_id=r.id "
         "JOIN os_release_signing_keys k ON k.key_id=r.signing_key_id "
@@ -440,6 +306,9 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
     const char *release_key_id = PQgetvalue(res, 0, 21);
     const char *manifest_json = PQgetvalue(res, 0, 22);
     const char *release_version = PQgetvalue(res, 0, 23);
+    const char *canonical_payload = PQgetvalue(res, 0, 24);
+    const char *canonical_version = PQgetvalue(res, 0, 25);
+    const char *canonical_payload_digest = PQgetvalue(res, 0, 26);
     long long now_ms = (long long)time(NULL) * 1000;
     int valid = strcmp(release_status, "signed") == 0 &&
                 creator[0] && strcmp(creator, requester_id) != 0 &&
@@ -457,6 +326,9 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
                 strtoll(signature_verified_at, NULL, 10) <= now_ms &&
                 strcmp(trust_status, "verified") == 0 &&
                 strcmp(verification_state, "verified") == 0 &&
+                strcmp(canonical_version, "RFC8785") == 0 &&
+                strcmp(canonical_payload_digest, proposed_digest) == 0 &&
+                canonical_payload[0] &&
                 strtoll(verification_at, NULL, 10) > 0 &&
                 strtoll(verification_at, NULL, 10) <= now_ms &&
                 strtoll(verification_expires_at, NULL, 10) > now_ms &&
@@ -475,8 +347,8 @@ static int approval_release_target_valid(PGconn *conn, const char *release_id,
                 strcmp(manifest_version, release_version) == 0;
         if (valid) {
             int signature_result = release_signature_verify(
-                manifest_json, strlen(manifest_json), release_digest,
-                manifest_digest, signed_digest, signature_algorithm,
+                canonical_payload, strlen(canonical_payload), release_digest,
+                canonical_payload_digest, signed_digest, signature_algorithm,
                 key_algorithm, signature, public_key, key_fingerprint);
             if (signature_result < 0) {
                 PQclear(res);
@@ -1205,6 +1077,18 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
                        origin, extra, extra_len);
         return;
     }
+    if (strcmp(kind, "policy-rollback") == 0) {
+        approval_error(fd, 503,
+                       "Policy rollback is blocked until signed publication and authenticated device enforcement acknowledgements are available",
+                       origin, extra, extra_len);
+        return;
+    }
+    if (strcmp(kind, "policy-publish") == 0) {
+        approval_error(fd, 503,
+                       "Policy publication is blocked until complete Ed25519 signing and authenticated device enforcement acknowledgements are available",
+                       origin, extra, extra_len);
+        return;
+    }
 
     char tenant[65] = {0};
     if (actor->role == ROLE_PLATFORM_OWNER) {
@@ -1308,50 +1192,6 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
             return;
         }
     }
-    if (strcmp(kind, "policy-rollback") == 0 &&
-        strstr(data_json, "\"targetVersion\"") != NULL) {
-        int target_version = 0;
-        if (!ctrl_json_int(data_json, "targetVersion", &target_version) ||
-            target_version <= 0) {
-            db_release(conn, 0);
-            approval_error(fd, 400, "A positive rollback targetVersion is required",
-                           origin, extra, extra_len);
-            return;
-        }
-        char exam_tenant[65] = {0};
-        int tenant_result = approval_policy_rollback_tenant(
-            conn, target_id, exam_tenant, sizeof(exam_tenant));
-        if (tenant_result != 1) {
-            db_release(conn, 0);
-            approval_error(fd, tenant_result < 0 ? 503 : 404,
-                           tenant_result < 0
-                               ? "Exam rollback tenant could not be verified"
-                               : "Exam rollback target was not found",
-                           origin, extra, extra_len);
-            return;
-        }
-        if ((requested_tenant[0] &&
-             strcmp(requested_tenant, exam_tenant) != 0) ||
-            (actor->role != ROLE_PLATFORM_OWNER &&
-             strcmp(actor->institution_id, exam_tenant) != 0)) {
-            db_release(conn, 0);
-            approval_error(fd, 403, "Rollback request is outside the authenticated institution",
-                           origin, extra, extra_len);
-            return;
-        }
-        snprintf(tenant, sizeof(tenant), "%s", exam_tenant);
-        int target_valid = approval_policy_rollback_target_valid(
-            conn, target_id, tenant, data_json);
-        if (target_valid != 1) {
-            db_release(conn, 0);
-            approval_error(fd, target_valid < 0 ? 503 : 409,
-                           target_valid < 0
-                               ? "Exam policy rollback target could not be verified"
-                               : "Rollback target must be an older signed policy for this exam",
-                           origin, extra, extra_len);
-            return;
-        }
-    }
     if ((int)strlen(reason) < reason_minimum) {
         db_release(conn, 0);
         approval_error(fd, 400, "The request reason does not meet the active policy minimum",
@@ -1361,9 +1201,7 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
     if (tenant[0]) {
         int tenant_lengths[1] = { (int)strlen(tenant) };
         PGresult *tenant_res = db_simple(conn,
-                                         "SELECT (EXISTS(SELECT 1 FROM tenants WHERE id=$1) "
-                                         "OR ($2='policy-rollback' AND EXISTS("
-                                         "SELECT 1 FROM examos_institutions WHERE institution_id=$1)))::text",
+                                         "SELECT EXISTS(SELECT 1 FROM tenants WHERE id=$1)::text",
                                          2, (const char *[]){ tenant, kind },
                                          (const int []){ tenant_lengths[0], (int)strlen(kind) });
         int tenant_exists = tenant_res && PQresultStatus(tenant_res) == PGRES_TUPLES_OK &&
@@ -1567,6 +1405,24 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                        origin, extra, extra_len);
         return;
     }
+    if (strcmp(policy_key, "policy-rollback") == 0 &&
+        strcmp(decision, "approved") == 0) {
+        PQexec(conn, "ROLLBACK");
+        db_release(conn, 0);
+        approval_error(fd, 503,
+                       "Policy rollback is blocked until signed publication and authenticated device enforcement acknowledgements are available",
+                       origin, extra, extra_len);
+        return;
+    }
+    if (strcmp(policy_key, "policy-publish") == 0 &&
+        strcmp(decision, "approved") == 0) {
+        PQexec(conn, "ROLLBACK");
+        db_release(conn, 0);
+        approval_error(fd, 503,
+                       "Policy publication is blocked until complete Ed25519 signing and authenticated device enforcement acknowledgements are available",
+                       origin, extra, extra_len);
+        return;
+    }
     if (strcmp(policy_key, "policy-publish") == 0 &&
         strcmp(decision, "approved") == 0) {
         int target_valid = approval_policy_publish_target_valid(
@@ -1728,53 +1584,6 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
             return;
         }
     }
-    if (strcmp(policy_key, "policy-rollback") == 0 &&
-        strstr(proposed_data, "\"targetVersion\"") != NULL &&
-        strcmp(decision, "approved") == 0) {
-        int target_valid = approval_policy_rollback_target_valid(
-            conn, target_id, request_tenant, proposed_data);
-        if (target_valid != 1) {
-            if (target_valid < 0) {
-                PQexec(conn, "ROLLBACK");
-                db_release(conn, 0);
-                approval_error(fd, 503, "Rollback target could not be revalidated",
-                               origin, extra, extra_len);
-                return;
-            }
-            PGresult *blocked = db_simple(conn,
-                "UPDATE approval_requests SET status='blocked',conflict_status='BLOCKED',"
-                "updated_at=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE id=$1",
-                1, (const char *[]){ request_id },
-                (const int []){ (int)strlen(request_id) });
-            if (!blocked || PQresultStatus(blocked) != PGRES_COMMAND_OK ||
-                approval_event(conn, request_id, actor, "CONFLICT_DETECTED",
-                    "Exam policy state changed after rollback submission",
-                    "{\"result\":\"BLOCKED\",\"resourceStateRevalidated\":true}") != 0) {
-                if (blocked) PQclear(blocked);
-                PQexec(conn, "ROLLBACK");
-                db_release(conn, 0);
-                approval_error(fd, 503, "Rollback conflict could not be persisted",
-                               origin, extra, extra_len);
-                return;
-            }
-            PQclear(blocked);
-            PGresult *commit = PQexec(conn, "COMMIT");
-            if (!commit || PQresultStatus(commit) != PGRES_COMMAND_OK) {
-                if (commit) PQclear(commit);
-                PQexec(conn, "ROLLBACK");
-                db_release(conn, 0);
-                approval_error(fd, 503, "Rollback conflict could not be committed",
-                               origin, extra, extra_len);
-                return;
-            }
-            PQclear(commit);
-            audit_append(actor->user_id, "APPROVAL_REQUEST_BLOCKED", request_id);
-            db_release(conn, 0);
-            approval_error(fd, 409, "Exam policy changed; the rollback request was blocked",
-                           origin, extra, extra_len);
-            return;
-        }
-    }
     long long now_ms = (long long)time(NULL) * 1000;
     if (expires_at < now_ms || !policy_active) {
         const char *blocked_params[2] = { request_id, policy_active ? "expired" : "blocked" };
@@ -1864,7 +1673,6 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                               approval_count >= required_approvals ? "execution_pending" : "pending_review";
     int role_change_executed = 0;
     int release_executed = 0;
-    int policy_rollback_executed = 0;
     if (strcmp(policy_key, "role-change") == 0 &&
         strcmp(next_status, "execution_pending") == 0) {
         if (approval_execute_role_change(conn, target_id, request_tenant,
@@ -1894,22 +1702,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
         release_executed = 1;
         next_status = "completed";
     }
-    if (strcmp(policy_key, "policy-rollback") == 0 &&
-        strstr(proposed_data, "\"targetVersion\"") != NULL &&
-        strcmp(next_status, "execution_pending") == 0) {
-        if (approval_execute_policy_rollback(
-                conn, target_id, request_tenant, proposed_data) != 0) {
-            PQexec(conn, "ROLLBACK");
-            db_release(conn, 0);
-            approval_error(fd, 409, "Rollback execution failed revalidation; no changes were applied",
-                           origin, extra, extra_len);
-            return;
-        }
-        policy_rollback_executed = 1;
-        next_status = "completed";
-    }
-    const int operation_executed = role_change_executed || release_executed ||
-                                   policy_rollback_executed;
+    const int operation_executed = role_change_executed || release_executed;
     const char *next_execution = operation_executed ? "completed" :
         strcmp(next_status, "execution_pending") == 0
         ? "pending_integration" : "not_started";
@@ -1939,9 +1732,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
          approval_event(conn, request_id, actor, "OPERATION_EXECUTED", "",
                         role_change_executed
                             ? "{\"operation\":\"role-change\",\"result\":\"completed\"}"
-                            : release_executed
-                                ? "{\"operation\":\"release-approve\",\"result\":\"completed\"}"
-                                : "{\"operation\":\"policy-rollback\",\"result\":\"completed\"}") != 0) ||
+                             : "{\"operation\":\"release-approve\",\"result\":\"completed\"}") != 0) ||
         approval_insert_notification(conn, request_tenant, requester_id, NULL,
             strcmp(decision, "approved") == 0 ? "Approval update: approved" :
             strcmp(decision, "rejected") == 0 ? "Approval update: rejected" :
@@ -1985,9 +1776,7 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                  ? "Approval recorded and the role change was executed."
                  : release_executed
                      ? "Approval recorded and the verified release was approved."
-                     : policy_rollback_executed
-                         ? "Approval recorded and the exam policy rollback was executed."
-                         : "Approval decision recorded; the requested operation was not executed.");
+                     : "Approval decision recorded; the requested operation was not executed.");
     approval_send(fd, 200, response, origin, extra, extra_len);
 }
 

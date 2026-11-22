@@ -6,14 +6,11 @@
 /*
  * key_release_get_session_key
  *
- * Releases the session-bound exam decryption key after verifying:
- *   - session is TRUSTED
- *   - device_id matches the session binding
- *   - exam key has been generated and is ready
- *   - release has not been revoked since attestation
+ * Plaintext key delivery is disabled. This function must not be used until a
+ * TPM-resident recipient transport and authenticated agent-to-kiosk unwrap
+ * flow are implemented.
  *
- * Returns 0 and writes 64-char hex key to out_exam_key on success.
- * Returns -1 and writes P3_xxx error code to out_error_code on failure.
+ * It always returns -1 with P3_DEVICE_BOUND_TRANSPORT_UNAVAILABLE.
  */
 int key_release_get_session_key(const char *session_id,
                                  char *out_exam_key,
@@ -31,5 +28,16 @@ int key_release_get_session_key(const char *session_id,
 int key_release_check_eligibility(const char *session_id,
                                    const char *device_id,
                                    char *out_reason);
+
+/*
+ * Creates an RSA-OAEP/SHA-256 envelope for the EK public key registered for
+ * the device. The exam key never appears in the returned envelope or route.
+ */
+int key_release_wrap_session_key(const char *candidate_id,
+                                 const char *session_id,
+                                 const char *device_id,
+                                 char *out_envelope,
+                                 size_t envelope_len,
+                                 char *out_error_code);
 
 #endif /* EXAMOS_KEY_RELEASE_H */

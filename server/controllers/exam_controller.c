@@ -606,7 +606,8 @@ void exam_handle(int client_fd, const char *method, const char *path,
         PGresult *exam_res = db_simple(conn,
             "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
             "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-            "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
+            "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text, "
+            "COALESCE(cancel_reason, ''), COALESCE(cancelled_at, 0) "
             "FROM examinations WHERE id = $1",
             1, chk_p, chk_l);
 
@@ -654,22 +655,37 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 "kiosk_lockdown, block_usb, block_clipboard, block_screen_capture "
                 "FROM exam_os_policies WHERE exam_id = $1 LIMIT 1",
                 1, chk_p, chk_l);
+            PGresult *history_res = db_simple(conn,
+                "SELECT from_status, to_status, actor_id, COALESCE(reason, ''), created_at "
+                "FROM exam_status_history WHERE exam_id = $1 ORDER BY created_at ASC, id ASC",
+                1, chk_p, chk_l);
+            if (!history_res || PQresultStatus(history_res) != PGRES_TUPLES_OK) {
+                if (history_res) PQclear(history_res);
+                PQclear(exam_res);
+                if (sched_res) PQclear(sched_res);
+                if (pol_res) PQclear(pol_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 500, "Failed to load examination lifecycle history", origin, extra_headers, extra_len);
+                return;
+            }
 
             char *json = malloc(65536);
             if (!json) {
                 PQclear(exam_res);
                 if (sched_res) PQclear(sched_res);
                 if (pol_res) PQclear(pol_res);
+                PQclear(history_res);
                 db_release(conn, 0);
                 ex_send_error(client_fd, 500, "Out of memory", origin, extra_headers, extra_len);
                 return;
             }
 
-            char esc_name[256], esc_subj[256], esc_inst[1024], esc_url[512];
+            char esc_name[256], esc_subj[256], esc_inst[1024], esc_url[512], esc_cancel_reason[1024];
             json_escape(PQgetvalue(exam_res, 0, 3), esc_name, sizeof(esc_name));
             json_escape(PQgetvalue(exam_res, 0, 4), esc_subj, sizeof(esc_subj));
             json_escape(PQgetvalue(exam_res, 0, 11), esc_inst, sizeof(esc_inst));
             json_escape(PQgetvalue(exam_res, 0, 12), esc_url, sizeof(esc_url));
+            json_escape(PQgetvalue(exam_res, 0, 19), esc_cancel_reason, sizeof(esc_cancel_reason));
 
             size_t pos = 0;
             pos += snprintf(json + pos, 65536 - pos,
@@ -679,13 +695,44 @@ void exam_handle(int client_fd, const char *method, const char *path,
                 "\"passing_marks\":%s,\"status\":\"%s\",\"instructions\":\"%s\","
                 "\"exam_url\":\"%s\",\"allowed_origins\":\"%s\",\"policy_id\":\"%s\","
                 "\"created_by\":\"%s\",\"created_at\":%s,\"updated_at\":%s,"
-                "\"exam_config\":%s},\"schedules\":[",
+                "\"cancel_reason\":\"%s\",\"cancelled_at\":%s,\"history\":[",
                 PQgetvalue(exam_res, 0, 0), ex_inst_id, PQgetvalue(exam_res, 0, 2),
                 esc_name, esc_subj, PQgetvalue(exam_res, 0, 5),
                 PQgetvalue(exam_res, 0, 6), PQgetvalue(exam_res, 0, 7), PQgetvalue(exam_res, 0, 8),
                 PQgetvalue(exam_res, 0, 9), ex_status, esc_inst,
                 esc_url, PQgetvalue(exam_res, 0, 13), PQgetvalue(exam_res, 0, 14),
                 ex_creator, PQgetvalue(exam_res, 0, 16), PQgetvalue(exam_res, 0, 17),
+                esc_cancel_reason, PQgetvalue(exam_res, 0, 20));
+
+            int history_overflow = 0;
+            int history_count = PQntuples(history_res);
+            for (int h = 0; h < history_count; h++) {
+                char esc_from[128], esc_to[128], esc_actor[256], esc_reason[2048];
+                json_escape(PQgetvalue(history_res, h, 0), esc_from, sizeof(esc_from));
+                json_escape(PQgetvalue(history_res, h, 1), esc_to, sizeof(esc_to));
+                json_escape(PQgetvalue(history_res, h, 2), esc_actor, sizeof(esc_actor));
+                json_escape(PQgetvalue(history_res, h, 3), esc_reason, sizeof(esc_reason));
+                int written = snprintf(json + pos, 65536 - pos,
+                    "%s{\"from\":\"%s\",\"to\":\"%s\",\"by\":\"%s\",\"reason\":\"%s\",\"at\":%s}",
+                    h > 0 ? "," : "", esc_from, esc_to, esc_actor, esc_reason,
+                    PQgetvalue(history_res, h, 4));
+                if (written < 0 || (size_t)written >= 65536 - pos) {
+                    history_overflow = 1;
+                    break;
+                }
+                pos += (size_t)written;
+            }
+            if (history_overflow) {
+                free(json);
+                PQclear(exam_res);
+                if (sched_res) PQclear(sched_res);
+                if (pol_res) PQclear(pol_res);
+                PQclear(history_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 500, "Examination lifecycle history exceeds response capacity", origin, extra_headers, extra_len);
+                return;
+            }
+            pos += snprintf(json + pos, 65536 - pos, "],\"exam_config\":%s},\"schedules\":[",
                 PQgetvalue(exam_res, 0, 18));
 
             if (sched_res && PQresultStatus(sched_res) == PGRES_TUPLES_OK) {
@@ -724,6 +771,7 @@ void exam_handle(int client_fd, const char *method, const char *path,
             PQclear(exam_res);
             if (sched_res) PQclear(sched_res);
             if (pol_res) PQclear(pol_res);
+            PQclear(history_res);
             db_release(conn, 0);
 
             ex_send_json(client_fd, 200, json, origin, extra_headers, extra_len);

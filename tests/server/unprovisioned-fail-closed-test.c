@@ -5,6 +5,17 @@
 #include <stdio.h>
 #include <string.h>
 
+void kiosk_broadcast_os_update(const char *release_id, const char *channel,
+                               const char *security_profile) {
+    (void)release_id;
+    (void)channel;
+    (void)security_profile;
+}
+
+int kiosk_get_active_count(void) {
+    return 0;
+}
+
 static int expect_unsupported(int result, const char *operation) {
     if (result == -1 && errno == ENOTSUP) return 0;
     fprintf(stderr, "FAIL: %s did not fail with ENOTSUP (result=%d errno=%d)\n",
@@ -14,6 +25,12 @@ static int expect_unsupported(int result, const char *operation) {
 
 int main(void) {
     int failures = 0;
+
+    if (platform_exam_state_transition_allowed(EXAM_STATE_OPEN, EXAM_STATE_ACTIVE) ||
+        platform_exam_state_transition_allowed(EXAM_STATE_PAUSED, EXAM_STATE_ACTIVE)) {
+        fprintf(stderr, "FAIL: exam activation bypassed the unavailable policy trust lifecycle\n");
+        failures++;
+    }
 
     /*
      * The exam engine is intentionally always ready: it ships a built-in
@@ -35,13 +52,51 @@ int main(void) {
     errno = 0;
     failures += expect_unsupported(
         platform_update_exam_state("no-such-exam", EXAM_STATE_ACTIVE, NULL),
-        "exam lifecycle mutation");
+        "exam activation without policy trust");
 
     /* platform_update_exam_url: non-empty exam_id + non-empty url. */
     errno = 0;
     failures += expect_unsupported(
-        platform_update_exam_url("no-such-exam", "https://exam.example.edu/", "", NULL),
+        platform_update_exam_url("no-such-exam", "https://exam.university.edu/", "", NULL),
         "signed exam policy update");
+    if (!strstr(platform_last_error(), "durable platform store")) {
+        fprintf(stderr, "FAIL: URL update did not expose its persistence blocker\n");
+        failures++;
+    }
+
+    errno = 0;
+    failures += expect_unsupported(
+        platform_approve_exam("no-such-exam", "reviewer"),
+        "legacy exam policy approval");
+
+    char policy_bundle[256] = "must not be populated";
+    errno = 0;
+    failures += expect_unsupported(
+        platform_distribute_policy_bundle_json("no-such-exam", "device-1",
+                                               policy_bundle, sizeof(policy_bundle)),
+        "legacy exam policy distribution");
+    if (policy_bundle[0] != '\0') {
+        fprintf(stderr, "FAIL: blocked policy distribution returned a bundle\n");
+        failures++;
+    }
+
+    char policy_error[256] = {0};
+    errno = 0;
+    failures += expect_unsupported(
+        platform_verify_client_policy("{}", "no-such-exam", "device-1",
+                                      policy_error, sizeof(policy_error)),
+        "legacy HMAC policy verification");
+    if (!strstr(policy_error, "Ed25519") ||
+        !strstr(policy_error, "acknowledgements")) {
+        fprintf(stderr, "FAIL: policy verification did not explain its trust blocker\n");
+        failures++;
+    }
+
+    signed_policy_t active_policy;
+    errno = 0;
+    failures += expect_unsupported(
+        platform_get_active_signed_policy("no-such-exam", &active_policy),
+        "legacy active policy retrieval");
 
     /* platform_rollback_policy: non-empty exam_id + target_version > 0. */
     errno = 0;

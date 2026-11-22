@@ -87,9 +87,12 @@ void tpm_handle(int client_fd, const char *method, const char *path,
 authorized:
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/nonce") == 0) {
         char dev_id[64] = {0}, sess_id[64] = {0}, rel_id[64] = {0};
+        char purpose[32] = {0};
         ctrl_json_string(body, "device_id", dev_id, sizeof(dev_id));
         ctrl_json_string(body, "session_id", sess_id, sizeof(sess_id));
         ctrl_json_string(body, "release_id", rel_id, sizeof(rel_id));
+        if (!ctrl_json_string(body, "purpose", purpose, sizeof(purpose)))
+            snprintf(purpose, sizeof(purpose), "%s", "re_attestation");
 
         if (!dev_id[0] || !sess_id[0] || !rel_id[0]) {
             tpm_send_json(client_fd, 400,
@@ -100,7 +103,7 @@ authorized:
 
         char nonce[128] = {0}, att_id[64] = {0}, error_code[64] = {0};
         if (attestation_create_challenge(dev_id, sess_id, rel_id,
-                "", "re_attestation", "system",
+                "", purpose, "system",
                 nonce, att_id, error_code) != 0) {
             OPENSSL_cleanse(nonce, sizeof(nonce));
             int status = strcmp(error_code, "P3_CHALLENGE_STORE_UNAVAILABLE") == 0 ||
@@ -126,7 +129,7 @@ authorized:
 
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/attestation/verify") == 0) {
         char reason[64] = {0}, exam_key[EXAM_KEY_LEN + 1] = {0};
-        if (attestation_verify_evidence(body, "re_attestation", reason, exam_key) == 0) {
+        if (attestation_verify_evidence(body, NULL, reason, exam_key) == 0) {
             int key_release_required = exam_key[0] != '\0';
             OPENSSL_cleanse(exam_key, sizeof(exam_key));
             tpm_send_json(client_fd, 200,
@@ -575,13 +578,13 @@ authorized:
         const char *params[1] = { device_id };
         int lengths[1] = { (int)strlen(device_id) };
         PGresult *result = db_simple(conn,
-            "SELECT s.id FROM exam_sessions s "
+            "SELECT s.id,s.status FROM exam_sessions s "
             "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
-            "WHERE s.device_id=$1 AND s.status IN ('pending','authorized','active',"
-            "'interrupted','resuming') "
-            "AND ci.status IN ('attesting','consumed') "
-            "AND (ci.status='consumed' OR "
-            "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000) "
+            "WHERE s.device_id=$1 AND ("
+            "(s.status='pending' AND ci.status='attesting' "
+            "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000) "
+            "OR (s.status IN ('authorized','launching','active','interrupted','resuming') "
+            "AND ci.status='consumed')) "
             "AND NOT EXISTS (SELECT 1 FROM examos_attestation_challenges c "
             "JOIN examos_exam_key_releases k ON k.attestation_id=c.attestation_id "
             "WHERE c.session_id=s.id AND c.device_id=s.device_id "
@@ -610,8 +613,10 @@ authorized:
                           origin, extra_headers, extra_len);
             return;
         }
-        char session_id[64], release_id[64];
+        char session_id[64], session_status[32], release_id[64];
         snprintf(session_id, sizeof(session_id), "%s", PQgetvalue(result, 0, 0));
+        snprintf(session_status, sizeof(session_status), "%s",
+                 PQgetvalue(result, 0, 1));
         PQclear(result);
         db_release(conn, 0);
         if (attestation_get_device_release(device_id, release_id,
@@ -621,11 +626,13 @@ authorized:
                 origin, extra_headers, extra_len);
             return;
         }
+        const char *purpose = strcmp(session_status, "pending") == 0
+            ? "exam_launch" : "re_attestation";
         char response[320];
         snprintf(response, sizeof(response),
             "{\"status\":\"CHALLENGE\",\"session_id\":\"%s\","
-            "\"release_id\":\"%s\"}",
-            session_id, release_id);
+            "\"release_id\":\"%s\",\"purpose\":\"%s\"}",
+            session_id, release_id, purpose);
         tpm_send_json(client_fd, 200, response, origin, extra_headers, extra_len);
         return;
     }

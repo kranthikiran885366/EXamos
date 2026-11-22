@@ -354,16 +354,23 @@ static int persist_challenge(const attestation_session_t *session) {
             "AND p.status='active' "
             "WHERE d.id=$3 AND d.institution_id=$5 "
             "AND d.institution_id<>'' AND d.status IN ('registered','enrolled') "
-            "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=$2) "
-            "OR EXISTS (SELECT 1 FROM exam_sessions s "
+            "AND (($6='exam_launch' AND EXISTS (SELECT 1 FROM exam_sessions s "
+            "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+            "AND ci.institution_id=s.institution_id "
+            "WHERE s.id=$2 AND s.device_id=d.id "
+            "AND s.institution_id=d.institution_id AND s.status='pending' "
+            "AND ci.status='attesting' "
+            "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)) "
+            "OR ($6='re_attestation' AND (NOT EXISTS "
+            "(SELECT 1 FROM exam_sessions s WHERE s.id=$2) OR EXISTS "
+            "(SELECT 1 FROM exam_sessions s JOIN candidate_exam_checkins ci "
+            "ON ci.exam_session_id=s.id AND ci.institution_id=s.institution_id "
             "WHERE s.id=$2 AND s.device_id=d.id "
             "AND s.institution_id=d.institution_id "
-            "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-            "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
-            "WHERE ci.exam_session_id=$2 AND ci.institution_id=d.institution_id "
-            "AND ci.status IN ('attesting','consumed') "
-            "AND (ci.status='consumed' OR "
-            "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
+            "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+            "AND ci.status='consumed'))) "
+            "OR ($6='enrollment' AND NOT EXISTS "
+            "(SELECT 1 FROM exam_sessions s WHERE s.id=$2))) "
             "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations "
             "WHERE (target_type='DEVICE' AND target_id=$3) OR "
             "(target_type='RELEASE' AND target_id=$4))",
@@ -386,53 +393,67 @@ static int claim_persisted_challenge(const char *nonce, const char *device_id,
                                      const char *purpose,
                                      char out_attestation_id[64],
                                      char out_session_id[64],
+                                     char out_purpose[32],
                                      int *out_exam_session_bound) {
     char nonce_hash[65];
-    if (!institution_id || !institution_id[0] || !purpose || !purpose[0] ||
+    if (!institution_id || !institution_id[0] ||
         hash_nonce_hex(nonce, nonce_hash) != 0) return -1;
     if (out_exam_session_bound) *out_exam_session_bound = 0;
+    if (out_purpose) out_purpose[0] = '\0';
     PGconn *conn = acquire_db_connection();
     if (!conn) return -1;
+    const char *expected_purpose = purpose && purpose[0] ? purpose : "";
     const char *params[] = {
-        nonce_hash, device_id, release_id, institution_id, purpose
+        nonce_hash, device_id, release_id, institution_id, expected_purpose
     };
     PGresult *result = PQexecParams(conn,
         "UPDATE examos_attestation_challenges AS c "
         "SET state='VERIFYING',claimed_at=clock_timestamp() "
         "WHERE c.nonce_sha256=$1 AND c.device_id=$2 AND c.release_id=$3 "
-        "AND c.institution_id=$4 AND c.purpose=$5 "
+        "AND c.institution_id=$4 AND ($5='' OR c.purpose=$5) "
         "AND c.state='PENDING' AND c.expires_at>clock_timestamp() "
-        "AND (NOT EXISTS (SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id) "
-        "OR EXISTS (SELECT 1 FROM exam_sessions s "
+        "AND ((c.purpose='exam_launch' AND EXISTS (SELECT 1 FROM exam_sessions s "
+        "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
+        "AND ci.institution_id=s.institution_id "
+        "WHERE s.id=c.session_id AND s.device_id=c.device_id "
+        "AND s.institution_id=c.institution_id AND s.status='pending' "
+        "AND ci.status='attesting' "
+        "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)) "
+        "OR (c.purpose='re_attestation' AND (NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id) OR EXISTS "
+        "(SELECT 1 FROM exam_sessions s JOIN candidate_exam_checkins ci "
+        "ON ci.exam_session_id=s.id AND ci.institution_id=s.institution_id "
         "WHERE s.id=c.session_id AND s.device_id=c.device_id "
         "AND s.institution_id=c.institution_id "
-        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-        "AND EXISTS (SELECT 1 FROM candidate_exam_checkins ci "
-        "WHERE ci.exam_session_id=c.session_id AND ci.institution_id=c.institution_id "
-        "AND ci.status IN ('attesting','consumed') "
-        "AND (ci.status='consumed' OR "
-        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000)))) "
+        "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+        "AND ci.status='consumed'))) "
+        "OR (c.purpose='enrollment' AND NOT EXISTS "
+        "(SELECT 1 FROM exam_sessions s WHERE s.id=c.session_id))) "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_revocations r "
         "WHERE (r.target_type='DEVICE' AND r.target_id=c.device_id) OR "
         "(r.target_type='RELEASE' AND r.target_id=c.release_id)) "
-        "RETURNING c.attestation_id, c.session_id, "
+        "RETURNING c.attestation_id, c.session_id, c.purpose, "
         "EXISTS (SELECT 1 FROM exam_sessions s "
         "JOIN candidate_exam_checkins ci ON ci.exam_session_id=s.id "
         "AND ci.institution_id=s.institution_id "
         "WHERE s.id=c.session_id AND s.device_id=c.device_id "
         "AND s.institution_id=c.institution_id "
-        "AND s.status IN ('pending','authorized','launching','active','interrupted','resuming') "
-        "AND ci.status IN ('attesting','consumed') "
-        "AND (ci.status='consumed' OR "
-        "ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000))",
+        "AND ((c.purpose='exam_launch' AND s.status='pending' "
+        "AND ci.status='attesting' "
+        "AND ci.expires_at>EXTRACT(EPOCH FROM clock_timestamp())::bigint*1000) "
+        "OR (c.purpose='re_attestation' "
+        "AND s.status IN ('authorized','launching','active','interrupted','resuming') "
+        "AND ci.status='consumed')))",
         5, NULL, params, NULL, NULL, 0);
     int claimed = result && PQresultStatus(result) == PGRES_TUPLES_OK &&
                   PQntuples(result) == 1;
     if (claimed) {
         snprintf(out_attestation_id, 64, "%s", PQgetvalue(result, 0, 0));
         snprintf(out_session_id, 64, "%s", PQgetvalue(result, 0, 1));
+        if (out_purpose)
+            snprintf(out_purpose, 32, "%s", PQgetvalue(result, 0, 2));
         if (out_exam_session_bound)
-            *out_exam_session_bound = strcmp(PQgetvalue(result, 0, 2), "t") == 0;
+            *out_exam_session_bound = strcmp(PQgetvalue(result, 0, 3), "t") == 0;
     }
     if (result) PQclear(result);
     release_db_connection(conn, 0);
@@ -540,6 +561,7 @@ static int load_exam_key_release(const char *identifier, const char *device_id,
         "WHERE (k.session_id=$1 OR k.attestation_id=$1) "
         "AND k.device_id=$2 "
         "AND k.revoked_at IS NULL "
+        "AND c.purpose IN ('exam_launch','re_attestation') "
         "AND c.state='TRUSTED' "
         "AND c.verified_at > clock_timestamp() - interval '10 minutes' "
         "AND NOT EXISTS (SELECT 1 FROM examos_attestation_challenges newer "
@@ -1118,6 +1140,12 @@ int attestation_create_challenge(const char *device_id, const char *session_id,
         if (out_error_code) safe_copy(out_error_code, 64, "P3_INVALID_PURPOSE");
         return -1;
     }
+    if (strcmp(ch_purpose, "exam_launch") == 0 &&
+        !production_attestation_mode()) {
+        if (out_error_code) safe_copy(out_error_code, 64,
+                                      "P3_EXAM_LAUNCH_REQUIRES_PRODUCTION");
+        return -1;
+    }
 
     if (production_attestation_mode()) {
         int device_revoked = persistently_revoked("DEVICE", device_id);
@@ -1274,7 +1302,7 @@ int attestation_verify_evidence(const char *evidence_json,
         safe_copy(out_reason, 64, "P3_MALFORMED_REQUEST");
         return -1;
     }
-    if (!expected_purpose ||
+    if (expected_purpose && expected_purpose[0] &&
         (strcmp(expected_purpose, "enrollment") != 0 &&
          strcmp(expected_purpose, "re_attestation") != 0 &&
          strcmp(expected_purpose, "exam_launch") != 0)) {
@@ -1330,13 +1358,29 @@ int attestation_verify_evidence(const char *evidence_json,
 
         char persisted_id[64] = {0};
         char persisted_session[64] = {0};
+        char persisted_purpose[32] = {0};
         int exam_session_bound = 0;
         if (claim_persisted_challenge(nonce, device_id, release_id,
                                       production_device.institution_id,
                                       expected_purpose,
                                       persisted_id, persisted_session,
+                                      persisted_purpose,
                                       &exam_session_bound) != 0) {
             safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
+            return -1;
+        }
+        int launch_purpose = strcmp(persisted_purpose, "exam_launch") == 0;
+        int re_attestation_purpose =
+            strcmp(persisted_purpose, "re_attestation") == 0;
+        if ((launch_purpose && !exam_session_bound) ||
+            (exam_session_bound && !launch_purpose &&
+             !re_attestation_purpose)) {
+            if (complete_persisted_challenge(
+                    nonce, 0, "P3_PURPOSE_SESSION_MISMATCH", NULL) != 0) {
+                safe_copy(out_reason, 64, "P3_ATTESTATION_STATE_STORE_FAILED");
+                return -1;
+            }
+            safe_copy(out_reason, 64, "P3_PURPOSE_SESSION_MISMATCH");
             return -1;
         }
 
@@ -1541,7 +1585,8 @@ int attestation_verify_evidence(const char *evidence_json,
                 strcmp(sess->device_id, device_id) != 0 ||
                 strcmp(sess->release_id, release_id) != 0 ||
                 strcmp(sess->institution_id, device->institution_id) != 0 ||
-                strcmp(sess->purpose, expected_purpose) != 0 ||
+                (expected_purpose && expected_purpose[0] &&
+                 strcmp(sess->purpose, expected_purpose) != 0) ||
                 time(NULL) - sess->created_at > 120) {
                 safe_copy(out_reason, 64, "P3_INVALID_OR_EXPIRED_NONCE");
                 pthread_mutex_unlock(&g_trust_lock);
@@ -1868,6 +1913,7 @@ int attestation_check_exam_key_ready(const char *attestation_id,
             "JOIN examos_exam_key_releases k ON k.attestation_id=c.attestation_id "
             "WHERE (c.attestation_id=$1 OR c.session_id=$1) "
             "AND c.device_id=$2 AND k.device_id=$2 "
+            "AND c.purpose IN ('exam_launch','re_attestation') "
             "AND c.state='TRUSTED' "
             "AND c.verified_at>clock_timestamp()-interval '10 minutes' "
             "AND k.revoked_at IS NULL "

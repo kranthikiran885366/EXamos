@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <ctype.h>
+#include <arpa/inet.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -46,6 +47,15 @@ void platform_clear_error(void) {
 
 static void platform_set_error(const char *message) {
     snprintf(g_last_error, sizeof(g_last_error), "%s", message ? message : "Operation failed");
+}
+
+static int policy_trust_unavailable(char *err_msg, size_t err_len) {
+    const char *message =
+        "Policy operation is blocked until complete Ed25519 signing and authenticated device enforcement acknowledgements are available";
+    platform_set_error(message);
+    if (err_msg && err_len) snprintf(err_msg, err_len, "%s", message);
+    errno = ENOTSUP;
+    return -1;
 }
 
 /* Records the PostgreSQL error text for a failed statement. */
@@ -279,44 +289,108 @@ int platform_validate_exam_url(const char *url, char *err_msg, size_t err_len) {
     return 0;
 }
 
-int platform_validate_allowed_origins(const char *origins, char *err_msg, size_t err_len) {
-    if (!origins || !origins[0]) return 0; /* Optional additional origins */
+static int platform_valid_origin_authority(const char *authority, size_t length) {
+    if (!authority || length == 0 || length >= 320) return 0;
+    char copy[320];
+    memcpy(copy, authority, length);
+    copy[length] = '\0';
 
-    char copy[1024];
-    snprintf(copy, sizeof(copy), "%s", origins);
-
-    char *saveptr = NULL;
-    char *token = strtok_r(copy, ",", &saveptr);
-    while (token) {
-        while (*token == ' ' || *token == '\t') token++;
-        size_t len = strlen(token);
-        while (len > 0 && (token[len - 1] == ' ' || token[len - 1] == '\t')) {
-            token[--len] = '\0';
+    char *host = copy;
+    char *port = NULL;
+    if (host[0] == '[') {
+        char *close = strchr(host, ']');
+        if (!close || (close[1] && close[1] != ':')) return 0;
+        if (close[1] == ':') port = close + 2;
+        *close = '\0';
+        unsigned char address[16];
+        if (inet_pton(AF_INET6, host + 1, address) != 1) return 0;
+    } else {
+        char *colon = strchr(host, ':');
+        if (colon) {
+            if (strchr(colon + 1, ':')) return 0;
+            *colon = '\0';
+            port = colon + 1;
         }
-
-        if (len > 0) {
-            /* Each approved origin must be a valid HTTPS origin or loopback HTTP */
-            if (strncmp(token, "https://", 8) != 0 &&
-                strncmp(token, "http://127.0.0.1", 16) != 0 &&
-                strncmp(token, "http://localhost", 16) != 0) {
-                if (err_msg && err_len) {
-                    snprintf(err_msg, err_len,
-                             "Approved origin '%s' must use HTTPS (loopback HTTP permitted for development only).",
-                             token);
-                }
-                return -1;
-            }
-            if (strchr(token, '*') || strchr(token, '@')) {
-                if (err_msg && err_len) {
-                    snprintf(err_msg, err_len,
-                             "Approved origin '%s' contains disallowed wildcard or credential syntax.",
-                             token);
-                }
-                return -1;
-            }
+        size_t host_length = strlen(host);
+        if (!host_length || host_length > 253 || host[0] == '.' || host[host_length - 1] == '.') return 0;
+        if (strspn(host, "0123456789.") == host_length) {
+            struct in_addr address;
+            if (inet_pton(AF_INET, host, &address) != 1) return 0;
         }
-        token = strtok_r(NULL, ",", &saveptr);
+        size_t label_length = 0;
+        for (size_t i = 0; i <= host_length; i++) {
+            unsigned char c = (unsigned char)host[i];
+            if (c == '.' || c == '\0') {
+                if (!label_length || label_length > 63 || host[i - 1] == '-') return 0;
+                label_length = 0;
+                continue;
+            }
+            if (!(isalnum(c) || c == '-') || (!label_length && c == '-')) return 0;
+            label_length++;
+        }
     }
+
+    if (port) {
+        if (!port[0]) return 0;
+        for (const unsigned char *p = (const unsigned char *)port; *p; p++) {
+            if (!isdigit(*p)) return 0;
+        }
+        errno = 0;
+        char *end = NULL;
+        long value = strtol(port, &end, 10);
+        if (errno || end == port || *end || value < 1 || value > 65535) return 0;
+    }
+    return 1;
+}
+
+int platform_validate_allowed_origins(const char *origins, char *err_msg, size_t err_len) {
+    if (!origins || !origins[0]) return 0;
+    if (strnlen(origins, 1024) >= 1024) {
+        if (err_msg && err_len) snprintf(err_msg, err_len, "Allowed origins exceed the maximum length.");
+        return -1;
+    }
+
+    const char *entry = origins;
+    while (*entry) {
+        const char *end = strchr(entry, ',');
+        size_t length = end ? (size_t)(end - entry) : strlen(entry);
+        while (length && isspace((unsigned char)*entry)) { entry++; length--; }
+        while (length && isspace((unsigned char)entry[length - 1])) length--;
+        if (!length || length >= 512) {
+            if (err_msg && err_len) snprintf(err_msg, err_len, "Allowed origins contain an empty or oversized entry.");
+            return -1;
+        }
+
+        char token[512];
+        memcpy(token, entry, length);
+        token[length] = '\0';
+        if (strncasecmp(token, "https://", 8) != 0) {
+            if (err_msg && err_len) snprintf(err_msg, err_len, "Allowed origin '%s' must use HTTPS.", token);
+            return -1;
+        }
+
+        const char *authority = token + 8;
+        const char *suffix = strpbrk(authority, "/?#");
+        size_t authority_len = suffix ? (size_t)(suffix - authority) : strlen(authority);
+        int valid_suffix = !suffix || (suffix[0] == '/' && suffix[1] == '\0');
+        if (!valid_suffix || strpbrk(authority, "@\\\r\n\t *%") ||
+            !platform_valid_origin_authority(authority, authority_len)) {
+            if (err_msg && err_len) {
+                snprintf(err_msg, err_len,
+                         "Allowed origin '%s' must be an HTTPS origin without credentials, paths, query strings, or fragments.",
+                         token);
+            }
+            return -1;
+        }
+
+        if (!end) break;
+        entry = end + 1;
+        if (!*entry) {
+            if (err_msg && err_len) snprintf(err_msg, err_len, "Allowed origins contain an empty entry.");
+            return -1;
+        }
+    }
+    if (err_msg && err_len) err_msg[0] = '\0';
     return 0;
 }
 
@@ -743,30 +817,6 @@ int platform_create_room(const room_t *room) {
  * Dynamic Exams & Policy Storage (Module C, Module D) — Real PostgreSQL
  * ------------------------------------------------------------------------- */
 
-static int compute_policy_hmac(const char *exam_id, unsigned int version, const char *url, char out_sig[65]) {
-    if (!exam_id || !exam_id[0] || !url || !out_sig) return -1;
-    const char *key = getenv("EXAMOS_EVENT_SIGNING_KEY");
-    if (!key || strlen(key) < 32) return -1;
-
-    char data[2048];
-    int data_len = snprintf(data, sizeof(data), "%s:%u:%s", exam_id, version, url);
-    if (data_len < 0 || (size_t)data_len >= sizeof(data)) return -1;
-
-    unsigned char md[32];
-    unsigned int md_len = 0;
-    if (!HMAC(EVP_sha256(), key, (int)strlen(key),
-              (const unsigned char *)data, (size_t)data_len,
-              md, &md_len) || md_len != sizeof(md)) return -1;
-
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; ++i) {
-        out_sig[i * 2]     = hex[md[i] >> 4];
-        out_sig[i * 2 + 1] = hex[md[i] & 0x0f];
-    }
-    out_sig[64] = '\0';
-    return 0;
-}
-
 int platform_create_exam(const enterprise_exam_t *exam) {
     if (!exam || !exam->exam_id[0] || !exam->institution_id[0] || !exam->title[0] ||
         !exam->code[0] || !exam->exam_url[0] || !exam->timezone[0] ||
@@ -777,6 +827,12 @@ int platform_create_exam(const enterprise_exam_t *exam) {
         platform_set_error("title, institution_id, code, exam_url, timezone, permitted_device_group, "
                            "browser policy, a positive duration, a positive retention window and a "
                            "valid schedule are required, and the exam URL must be an approved origin");
+        return -1;
+    }
+    char origin_error[192] = {0};
+    if (platform_validate_allowed_origins(exam->allowed_origins, origin_error,
+                                          sizeof(origin_error)) != 0) {
+        platform_set_error(origin_error[0] ? origin_error : "Allowed origins are invalid.");
         return -1;
     }
 
@@ -1005,6 +1061,9 @@ int platform_validate_exam_config(const char *exam_id, char *err_msg, size_t err
     if (platform_validate_exam_url(exam.exam_url, err_msg, err_len) != 0) {
         return -1;
     }
+    if (platform_validate_allowed_origins(exam.allowed_origins, err_msg, err_len) != 0) {
+        return -1;
+    }
 
     if (exam.scheduled_end <= exam.scheduled_start) {
         if (err_msg && err_len) snprintf(err_msg, err_len, "Scheduled end must be after scheduled start");
@@ -1033,95 +1092,11 @@ int platform_validate_exam_config(const char *exam_id, char *err_msg, size_t err
 }
 
 int platform_approve_exam(const char *exam_id, const char *approver_user_id) {
-    if (!exam_id || !approver_user_id) return -1;
-
-    enterprise_exam_t exam;
-    if (platform_get_exam_by_id(exam_id, &exam) != 0) return -1;
-
-    if (exam.state != EXAM_STATE_VALIDATED) return -1;
-    if (exam.owner_user_id[0] &&
-        strcmp(exam.owner_user_id, approver_user_id) == 0) return -1;
-
-    char sig[65];
-    /*
-     * Approval publishes a new policy version. A draft exam carries no
-     * policy, so the version is allocated here rather than reused from the
-     * exam row.
-     */
-    unsigned int next_policy_version = 1;
-    {
-        PGconn *version_conn = acquire_db_connection();
-        if (!version_conn) {
-            platform_set_error("The durable platform store is unreachable");
-            return -1;
-        }
-        const char *version_params[1] = { exam_id };
-        PGresult *version_res = PQexecParams(version_conn,
-            "SELECT COALESCE(MAX(policy_version), 0) + 1 FROM examos_exam_policies WHERE exam_id = $1",
-            1, NULL, version_params, NULL, NULL, 0);
-        if (version_res && PQresultStatus(version_res) == PGRES_TUPLES_OK &&
-            PQntuples(version_res) == 1) {
-            next_policy_version = (unsigned int)atoi(PQgetvalue(version_res, 0, 0));
-        }
-        if (version_res) PQclear(version_res);
-        release_db_connection(version_conn, 0);
-    }
-    if (next_policy_version == 0) next_policy_version = 1;
-
-    if (compute_policy_hmac(exam_id, next_policy_version, exam.exam_url, sig) != 0) {
-        platform_set_error("Policy signature could not be computed");
+    if (!exam_id || !approver_user_id) {
+        errno = EINVAL;
         return -1;
     }
-
-    PGconn *conn = acquire_db_connection();
-    if (!conn) {
-        platform_set_error("The durable platform store is unreachable");
-        return -1;
-    }
-
-    PGresult *res = PQexec(conn, "BEGIN");
-    if (res) PQclear(res);
-
-    const char *approver_clean = (approver_user_id && approver_user_id[0] && strncmp(approver_user_id, "USR-", 4) == 0) ? approver_user_id : NULL;
-    char version_str[16];
-    snprintf(version_str, sizeof(version_str), "%u", next_policy_version);
-    const char *upd_params[] = { approver_clean, sig, version_str, exam_id };
-    res = PQexecParams(conn,
-        "UPDATE examos_exams SET state = 'APPROVED', approved_by = $1, "
-        "  approved_at = clock_timestamp(), policy_signature = $2, policy_version = $3::integer, "
-        "  updated_at = clock_timestamp() "
-        "WHERE exam_id = $4",
-        4, NULL, upd_params, NULL, NULL, 0);
-    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-    if (!ok) platform_set_db_error(res);
-    if (res) PQclear(res);
-
-    if (ok) {
-        const char *pol_params[] = {
-            exam_id, version_str, exam.exam_url, exam.allowed_origins,
-            sig, approver_clean
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_exam_policies ("
-            "  exam_id, policy_version, exam_url, allowed_origins, signature, approved_by, status"
-            ") VALUES ($1, $2::integer, $3, $4, $5, $6, 'ACTIVE') "
-            "ON CONFLICT (exam_id, policy_version) DO UPDATE SET "
-            "  signature = EXCLUDED.signature, status = 'ACTIVE'",
-            6, NULL, pol_params, NULL, NULL, 0);
-        if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) ok = 0;
-        if (res) PQclear(res);
-    }
-
-    if (ok) {
-        platform_audit(conn, approver_clean, "EXAM_APPROVED", "EXAM", exam_id);
-        ledger_append("EXAM_APPROVED", exam_id, sig);
-    }
-
-    res = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
-    if (res) PQclear(res);
-
-    release_db_connection(conn, 0);
-    return ok ? 0 : -1;
+    return policy_trust_unavailable(NULL, 0);
 }
 
 int platform_schedule_exam(const char *exam_id, time_t start_time, time_t end_time, const char *timezone, const char *actor) {
@@ -1287,43 +1262,11 @@ static platform_control_t readiness_tpm_control(PGconn *conn, const char *device
 
 static platform_control_t readiness_kiosk_control(PGconn *conn, const char *exam_id,
                                                    const char *device_id) {
-    const char *params[2] = { device_id, exam_id };
-    PGresult *res = PQexecParams(conn,
-        "SELECT d.enrollment_status, d.attestation_status, d.compliance_status, "
-        "       COALESCE(d.assigned_exam_id,''), "
-        "       (SELECT count(*) FROM examos_exam_policies p "
-        "         WHERE p.exam_id=$2 AND p.status='ACTIVE') "
-        "FROM examos_devices d WHERE d.device_id=$1",
-        2, NULL, params, NULL, NULL, 0);
-
-    platform_control_t verdict = PLATFORM_CONTROL_UNKNOWN;
-    if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
-        const char *enrollment = PQgetvalue(res, 0, 0);
-        const char *attestation = PQgetvalue(res, 0, 1);
-        const char *compliance = PQgetvalue(res, 0, 2);
-        const char *assigned = PQgetvalue(res, 0, 3);
-        int active_policies = atoi(PQgetvalue(res, 0, 4));
-
-        if (active_policies <= 0) {
-            /* An exam without a published policy cannot be enforced. */
-            verdict = PLATFORM_CONTROL_FAILED;
-        } else if (strcmp(assigned, exam_id) != 0) {
-            /* The device is not assigned to this exam. */
-            verdict = PLATFORM_CONTROL_FAILED;
-        } else if (strcmp(enrollment, "ENROLLED") != 0) {
-            verdict = PLATFORM_CONTROL_FAILED;
-        } else if (strcmp(attestation, "TRUSTED") != 0) {
-            verdict = PLATFORM_CONTROL_FAILED;
-        } else if (strcmp(compliance, "COMPLIANT") != 0) {
-            verdict = PLATFORM_CONTROL_FAILED;
-        } else {
-            verdict = PLATFORM_CONTROL_OK;
-        }
-    } else if (res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 0) {
-        verdict = PLATFORM_CONTROL_FAILED;   /* device is not registered */
-    }
-    if (res) PQclear(res);
-    return verdict;
+    (void)conn;
+    (void)exam_id;
+    (void)device_id;
+    /* No authenticated policy-enforcement acknowledgement is available yet. */
+    return PLATFORM_CONTROL_FAILED;
 }
 
 int platform_check_readiness(const char *exam_id, const char *device_id, char *out_json, size_t max_len) {
@@ -1405,6 +1348,7 @@ int platform_check_readiness(const char *exam_id, const char *device_id, char *o
  * move an exam into a state it never legitimately reached.
  * ------------------------------------------------------------------------- */
 int platform_exam_state_transition_allowed(exam_state_t from, exam_state_t to) {
+    if (to == EXAM_STATE_ACTIVE) return 0;
     switch (from) {
         case EXAM_STATE_DRAFT:
             return to == EXAM_STATE_VALIDATED;
@@ -1415,11 +1359,11 @@ int platform_exam_state_transition_allowed(exam_state_t from, exam_state_t to) {
         case EXAM_STATE_SCHEDULED:
             return to == EXAM_STATE_OPEN;
         case EXAM_STATE_OPEN:
-            return to == EXAM_STATE_ACTIVE || to == EXAM_STATE_PAUSED;
+            return to == EXAM_STATE_PAUSED;
         case EXAM_STATE_ACTIVE:
             return to == EXAM_STATE_PAUSED || to == EXAM_STATE_SUBMISSION;
         case EXAM_STATE_PAUSED:
-            return to == EXAM_STATE_ACTIVE || to == EXAM_STATE_SUBMISSION;
+            return to == EXAM_STATE_SUBMISSION;
         case EXAM_STATE_SUBMISSION:
             return to == EXAM_STATE_CLOSED;
         case EXAM_STATE_CLOSED:
@@ -1436,6 +1380,12 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
 
     const char *state_str = exam_state_to_string(new_state);
     if (strcmp(state_str, "UNKNOWN") == 0) return -1;
+    if (new_state == EXAM_STATE_ACTIVE) {
+        platform_set_error(
+            "Exam activation is blocked until signed policy publication and authenticated device acknowledgements are available");
+        errno = ENOTSUP;
+        return -1;
+    }
 
     PGconn *conn = acquire_db_connection();
     if (!conn) { errno = ENOTSUP; return -1; }
@@ -1498,10 +1448,14 @@ int platform_update_exam_state(const char *exam_id, exam_state_t new_state, cons
 }
 
 int platform_update_exam_url(const char *exam_id, const char *new_url, const char *allowed_origins, const char *actor) {
-    if (!exam_id || !new_url) { errno = EINVAL; return -1; }
+    platform_clear_error();
+    errno = 0;
+    if (!exam_id || !new_url) {
+        platform_set_error("exam_id and exam_url are required");
+        errno = EINVAL;
+        return -1;
+    }
 
-    /* The new URL and origins are persisted and later handed to kiosk clients,
-     * so validate them at the write boundary as well as at delivery time. */
     char validation_error[192] = {0};
     if (platform_validate_exam_url(new_url, validation_error, sizeof(validation_error)) != 0) {
         platform_set_error(validation_error[0] ? validation_error
@@ -1518,69 +1472,100 @@ int platform_update_exam_url(const char *exam_id, const char *new_url, const cha
         return -1;
     }
 
-    enterprise_exam_t exam;
-    if (platform_get_exam_by_id(exam_id, &exam) != 0) { errno = ENOTSUP; return -1; }
-
-    unsigned int new_version = exam.policy_version + 1;
-    char sig[65];
-    if (compute_policy_hmac(exam_id, new_version, new_url, sig) != 0) return -1;
-
     PGconn *conn = acquire_db_connection();
-    if (!conn) { errno = ENOTSUP; return -1; }
+    if (!conn) {
+        platform_set_error("The durable platform store is unreachable");
+        errno = ENOTSUP;
+        return -1;
+    }
     PGresult *res = PQexec(conn, "BEGIN");
-    if (res) PQclear(res);
+    if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) {
+        platform_set_db_error(res);
+        if (res) PQclear(res);
+        release_db_connection(conn, 1);
+        errno = EIO;
+        return -1;
+    }
+    PQclear(res);
 
-    char ver_str[16];
-    snprintf(ver_str, sizeof(ver_str), "%u", new_version);
+    const char *exam_params[1] = { exam_id };
+    PGresult *exam = PQexecParams(conn,
+        "SELECT e.state, EXISTS (SELECT 1 FROM examos_exam_policies p "
+        "WHERE p.exam_id=e.exam_id AND p.status IN ('ACTIVE','ROLLBACK')) "
+        "FROM examos_exams e WHERE e.exam_id=$1 FOR UPDATE OF e",
+        1, NULL, exam_params, NULL, NULL, 0);
+    int exam_query_ok = exam && PQresultStatus(exam) == PGRES_TUPLES_OK;
+    if (!exam_query_ok || PQntuples(exam) != 1) {
+        if (exam_query_ok)
+            platform_set_error("Exam does not exist");
+        else
+            platform_set_db_error(exam);
+        if (exam) PQclear(exam);
+        PQexec(conn, "ROLLBACK");
+        release_db_connection(conn, 1);
+        errno = exam_query_ok ? ENOENT : EIO;
+        return -1;
+    }
+    int has_legacy_active_policy = strcmp(PQgetvalue(exam, 0, 1), "t") == 0;
+    int editable = (strcmp(PQgetvalue(exam, 0, 0), "DRAFT") == 0 ||
+                    strcmp(PQgetvalue(exam, 0, 0), "VALIDATED") == 0) &&
+                   !has_legacy_active_policy;
+    PQclear(exam);
+    if (!editable) {
+        PQexec(conn, "ROLLBACK");
+        release_db_connection(conn, 0);
+        if (has_legacy_active_policy)
+            return policy_trust_unavailable(NULL, 0);
+        platform_set_error("Exam URL can only be edited while the exam is a draft or validated");
+        errno = EPERM;
+        return -1;
+    }
 
-    /* Update exam table with new URL, version and signature */
-    const char *upd_params[] = {
-        new_url,
-        allowed_origins ? allowed_origins : "",
-        ver_str,
-        sig,
-        exam_id
+    const char *params[3] = {
+        new_url, allowed_origins ? allowed_origins : "", exam_id
     };
-    res = PQexecParams(conn,
-        "UPDATE examos_exams SET exam_url = $1, allowed_origins = $2, "
-        "  policy_version = $3::integer, policy_signature = $4, updated_at = clock_timestamp() "
-        "WHERE exam_id = $5",
-        5, NULL, upd_params, NULL, NULL, 0);
-    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-    if (res) PQclear(res);
+    PGresult *updated = PQexecParams(conn,
+        "UPDATE examos_exams SET exam_url=$1,allowed_origins=$2,state='DRAFT',"
+        "approved_by=NULL,approved_at=NULL,policy_signature='',updated_at=clock_timestamp() "
+        "WHERE exam_id=$3 AND state IN ('DRAFT','VALIDATED')",
+        3, NULL, params, NULL, NULL, 0);
+    int update_command_ok = updated && PQresultStatus(updated) == PGRES_COMMAND_OK;
+    int ok = update_command_ok && strcmp(PQcmdTuples(updated), "1") == 0;
+    if (!update_command_ok)
+        platform_set_db_error(updated);
+    else if (!ok)
+        platform_set_error("Exam state changed before the draft URL update could be applied");
+    if (updated) PQclear(updated);
 
-    if (ok) {
-        /* Mark previous policies SUPERSEDED */
-        const char *sup_params[] = { exam_id };
-        res = PQexecParams(conn,
-            "UPDATE examos_exam_policies SET status = 'SUPERSEDED' WHERE exam_id = $1",
-            1, NULL, sup_params, NULL, NULL, 0);
-        if (res) PQclear(res);
-
-        /* Insert new active policy */
-        const char *pol_params[] = {
-            exam_id, ver_str, new_url, allowed_origins ? allowed_origins : "",
-            sig, (actor && actor[0] && strncmp(actor, "USR-", 4) == 0) ? actor : NULL
-        };
-        res = PQexecParams(conn,
-            "INSERT INTO examos_exam_policies ("
-            "  exam_id, policy_version, exam_url, allowed_origins, signature, approved_by, status"
-            ") VALUES ($1, $2::integer, $3, $4, $5, $6, 'ACTIVE')",
-            6, NULL, pol_params, NULL, NULL, 0);
-        if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) ok = 0;
-        if (res) PQclear(res);
+    if (ok && platform_audit(conn, actor, "EXAM_DRAFT", "EXAM", exam_id) != 0) {
+        platform_set_error("The exam URL update could not be audited");
+        ok = 0;
     }
 
+    int connection_broken = 0;
     if (ok) {
-        platform_audit(conn, actor, "EXAM_POLICY_PUBLISHED", "EXAM", exam_id);
-        ledger_append("POLICY_UPDATE", exam_id, sig);
+        res = PQexec(conn, "COMMIT");
+        if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) {
+            platform_set_db_error(res);
+            if (res) PQclear(res);
+            res = PQexec(conn, "ROLLBACK");
+            connection_broken = !res || PQresultStatus(res) != PGRES_COMMAND_OK;
+            ok = 0;
+        }
+    } else {
+        res = PQexec(conn, "ROLLBACK");
+        connection_broken = !res || PQresultStatus(res) != PGRES_COMMAND_OK;
     }
-
-    res = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
     if (res) PQclear(res);
 
-    release_db_connection(conn, 0);
-    return ok ? 0 : -1;
+    release_db_connection(conn, connection_broken || PQstatus(conn) != CONNECTION_OK);
+    if (!ok) {
+        errno = EIO;
+        return -1;
+    }
+    ledger_append("EXAM_URL_DRAFT_EDITED", exam_id,
+                  "Draft URL and origins updated; no policy was activated");
+    return 0;
 }
 
 int platform_get_policies_json(const char *exam_id, char *out_buf, size_t max_len) {
@@ -1616,7 +1601,8 @@ int platform_get_policies_json(const char *exam_id, char *out_buf, size_t max_le
     for (int i = 0; i < rows; ++i) {
         offset += snprintf(out_buf + offset, max_len > offset ? max_len - offset : 0,
             "%s{\"version\":%u,\"exam_id\":\"%s\",\"exam_url\":\"%s\",\"origins\":\"%s\","
-            "\"signature\":\"%s\",\"approved_by\":\"%s\",\"created_at\":%ld,\"status\":\"%s\"}",
+            "\"signature\":\"%s\",\"approved_by\":\"%s\",\"created_at\":%ld,\"status\":\"%s\","
+            "\"authorization_status\":\"LEGACY_UNTRUSTED\"}",
             (i > 0 ? "," : ""),
             (unsigned int)atoi(PQgetvalue(res, i, 0)),
             PQgetvalue(res, i, 1),
@@ -1636,274 +1622,37 @@ int platform_get_policies_json(const char *exam_id, char *out_buf, size_t max_le
 }
 
 int platform_get_active_signed_policy(const char *exam_id, signed_policy_t *out_policy) {
-    if (!exam_id || !out_policy) return -1;
-    memset(out_policy, 0, sizeof(signed_policy_t));
-
-    PGconn *conn = acquire_db_connection();
-    if (!conn) return -1;
-
-    const char *params[] = { exam_id };
-    PGresult *res = PQexecParams(conn,
-        "SELECT p.policy_version, p.exam_id, e.institution_id, p.exam_url, "
-        "       p.allowed_origins, e.additional_apis, e.permitted_device_group, "
-        "       e.network_offline_allowed, e.browser_policy_json, "
-        "       extract(epoch from e.scheduled_end)::bigint, p.signature, "
-        "       coalesce(p.approved_by, 'system'), extract(epoch from p.created_at)::bigint, p.status "
-        "FROM examos_exam_policies p "
-        "JOIN examos_exams e ON p.exam_id = e.exam_id "
-        "WHERE p.exam_id = $1 AND p.status IN ('ACTIVE', 'ROLLBACK') "
-        "ORDER BY p.policy_version DESC LIMIT 1",
-        1, NULL, params, NULL, NULL, 0);
-
-    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
-        if (res) PQclear(res);
-        release_db_connection(conn, 0);
+    if (!exam_id || !out_policy) {
+        errno = EINVAL;
         return -1;
     }
-
-    out_policy->policy_version = (unsigned int)atoi(PQgetvalue(res, 0, 0));
-    snprintf(out_policy->exam_id, sizeof(out_policy->exam_id), "%s", PQgetvalue(res, 0, 1));
-    snprintf(out_policy->institution_id, sizeof(out_policy->institution_id), "%s", PQgetvalue(res, 0, 2));
-    snprintf(out_policy->exam_url, sizeof(out_policy->exam_url), "%s", PQgetvalue(res, 0, 3));
-    snprintf(out_policy->allowed_origins, sizeof(out_policy->allowed_origins), "%s", PQgetvalue(res, 0, 4));
-    snprintf(out_policy->additional_apis, sizeof(out_policy->additional_apis), "%s", PQgetvalue(res, 0, 5));
-    snprintf(out_policy->permitted_device_group, sizeof(out_policy->permitted_device_group), "%s", PQgetvalue(res, 0, 6));
-    out_policy->network_offline_allowed = strcmp(PQgetvalue(res, 0, 7), "t") == 0;
-    snprintf(out_policy->browser_policy_json, sizeof(out_policy->browser_policy_json), "%s", PQgetvalue(res, 0, 8));
-    out_policy->expires_at = (time_t)atoll(PQgetvalue(res, 0, 9));
-    snprintf(out_policy->signature, sizeof(out_policy->signature), "%s", PQgetvalue(res, 0, 10));
-    snprintf(out_policy->approved_by, sizeof(out_policy->approved_by), "%s", PQgetvalue(res, 0, 11));
-    out_policy->created_at = (time_t)atoll(PQgetvalue(res, 0, 12));
-    snprintf(out_policy->status, sizeof(out_policy->status), "%s", PQgetvalue(res, 0, 13));
-
-    PQclear(res);
-    release_db_connection(conn, 0);
-    return 0;
-}
-
-static int policy_device_is_eligible(const char *exam_id, const char *device_id,
-                                    unsigned int policy_version,
-                                    const char *permitted_device_group) {
-    if (!exam_id || !exam_id[0] || !device_id || !device_id[0] ||
-        !policy_version || !permitted_device_group || !permitted_device_group[0]) return 0;
-    PGconn *conn = acquire_db_connection();
-    if (!conn) return 0;
-    char version[16];
-    snprintf(version, sizeof(version), "%u", policy_version);
-    const char *params[] = {exam_id, device_id, version, permitted_device_group};
-    PGresult *res = PQexecParams(conn,
-        "SELECT 1 FROM examos_exams e "
-        "JOIN examos_exam_policies p ON p.exam_id=e.exam_id AND p.policy_version=$3::integer "
-        "JOIN examos_devices d ON d.device_id=$2 "
-        "WHERE e.exam_id=$1 AND p.status IN ('ACTIVE','ROLLBACK') "
-        "AND e.permitted_device_group=$4 "
-        "AND d.institution_id=e.institution_id AND d.assigned_exam_id=e.exam_id "
-        "AND d.enrolled=true AND d.enrollment_status='ENROLLED' "
-        "AND d.attestation_status='TRUSTED' AND d.compliance_status='COMPLIANT' "
-        "AND d.maintenance_mode=false AND d.group_name<>'' "
-        "AND (e.permitted_device_group='ALL' OR d.group_name=e.permitted_device_group) "
-        "LIMIT 1",
-        4, NULL, params, NULL, NULL, 0);
-    int eligible = res && PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1;
-    if (res) PQclear(res);
-    release_db_connection(conn, PQstatus(conn) != CONNECTION_OK);
-    return eligible;
+    memset(out_policy, 0, sizeof(*out_policy));
+    return policy_trust_unavailable(NULL, 0);
 }
 
 int platform_distribute_policy_bundle_json(const char *exam_id, const char *device_id, char *out_json, size_t max_len) {
-    if (!exam_id || !device_id || !device_id[0] || !out_json || max_len < 256) return -1;
-
-    signed_policy_t p;
-    if (platform_get_active_signed_policy(exam_id, &p) != 0) {
+    if (out_json && max_len) out_json[0] = '\0';
+    if (!exam_id || !device_id || !device_id[0] || !out_json || max_len == 0) {
+        errno = EINVAL;
         return -1;
     }
-    if (!policy_device_is_eligible(exam_id, device_id, p.policy_version,
-                                   p.permitted_device_group)) return -2;
-
-    /* Format cryptographic distribution bundle */
-    snprintf(out_json, max_len,
-        "{\"status\":\"SUCCESS\","
-        "\"exam_id\":\"%s\","
-        "\"institution_id\":\"%s\","
-        "\"policy_version\":%u,"
-        "\"exam_url\":\"%s\","
-        "\"allowed_origins\":\"%s\","
-        "\"additional_apis\":\"%s\","
-        "\"permitted_device_group\":\"%s\","
-        "\"network_offline_allowed\":%s,"
-        "\"browser_policy\":%s,"
-        "\"expires_at\":%ld,"
-        "\"signature\":\"%s\","
-        "\"approved_by\":\"%s\","
-        "\"issued_at\":%ld}",
-        p.exam_id,
-        p.institution_id,
-        p.policy_version,
-        p.exam_url,
-        p.allowed_origins,
-        p.additional_apis,
-        p.permitted_device_group,
-        p.network_offline_allowed ? "true" : "false",
-        (p.browser_policy_json[0] == '{') ? p.browser_policy_json : "{}",
-        (long)p.expires_at,
-        p.signature,
-        p.approved_by,
-        (long)time(NULL));
-
-    /* Log policy delivery event to immutable ledger */
-    char details[256];
-    snprintf(details, sizeof(details), "device_id=%s version=%u",
-             device_id ? device_id : "unassigned", p.policy_version);
-    ledger_append("POLICY_DISTRIBUTED", exam_id, details);
-
-    return 0;
+    return policy_trust_unavailable(NULL, 0);
 }
 
 int platform_verify_client_policy(const char *policy_json, const char *expected_exam_id, const char *device_id, char *err_msg, size_t err_len) {
     if (!policy_json || !expected_exam_id) {
         if (err_msg && err_len) snprintf(err_msg, err_len, "Missing policy payload or expected exam ID");
+        errno = EINVAL;
         return -1;
     }
-
-    /* Parse required verification fields from json string */
-    char exam_id[64] = {0};
-    char exam_url[512] = {0};
-    char signature[65] = {0};
-    char device_group[64] = {0};
-    unsigned int version = 0;
-    time_t expires_at = 0;
-
-    const char *p = strstr(policy_json, "\"exam_id\":\"");
-    if (p) sscanf(p + 11, "%63[^\"]", exam_id);
-
-    p = strstr(policy_json, "\"exam_url\":\"");
-    if (p) sscanf(p + 12, "%511[^\"]", exam_url);
-
-    p = strstr(policy_json, "\"signature\":\"");
-    if (p) sscanf(p + 13, "%64[^\"]", signature);
-
-    p = strstr(policy_json, "\"permitted_device_group\":\"");
-    if (p) sscanf(p + 26, "%63[^\"]", device_group);
-
-    p = strstr(policy_json, "\"policy_version\":");
-    if (p) version = (unsigned int)atoi(p + 17);
-
-    p = strstr(policy_json, "\"expires_at\":");
-    if (p) expires_at = (time_t)atoll(p + 13);
-
-    /* 1. Exam ID match */
-    if (strcmp(exam_id, expected_exam_id) != 0) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Exam ID mismatch: expected %s, found %s", expected_exam_id, exam_id);
-        return -1;
-    }
-
-    /* 2. Version sanity */
-    if (version == 0) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Invalid policy version: %u", version);
-        return -1;
-    }
-
-    /* 3. Expiry check */
-    time_t now = time(NULL);
-    if (expires_at > 0 && now > expires_at) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Policy configuration expired at %ld (current time %ld)", (long)expires_at, (long)now);
-        return -1;
-    }
-
-    /* 4. Signature verification */
-    char expected_sig[65] = {0};
-    if (compute_policy_hmac(exam_id, version, exam_url, expected_sig) != 0) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Policy signing key is not configured");
-        return -1;
-    }
-    if (CRYPTO_memcmp(signature, expected_sig, 64) != 0) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Cryptographic signature verification failed: tampered policy");
-        return -1;
-    }
-
-    /* 5. URL HTTPS validation */
-    if (platform_validate_exam_url(exam_url, err_msg, err_len) != 0) {
-        return -1;
-    }
-
-    /* 6. Device assignment and trust verification */
-    if (!device_id || !device_id[0] || !device_group[0] ||
-        !policy_device_is_eligible(expected_exam_id, device_id, version, device_group)) {
-        if (err_msg && err_len) snprintf(err_msg, err_len, "Device is not enrolled, assigned, trusted, compliant, or permitted by the active exam policy");
-        return -1;
-    }
-
-    if (err_msg && err_len) err_msg[0] = '\0';
-    return 0;
+    (void)device_id;
+    return policy_trust_unavailable(err_msg, err_len);
 }
 
 int platform_rollback_policy(const char *exam_id, unsigned int target_version, const char *actor) {
     if (!exam_id || target_version == 0) return -1;
-
-    char ver_str[16];
-    snprintf(ver_str, sizeof(ver_str), "%u", target_version);
-
-    PGconn *conn = acquire_db_connection();
-    if (!conn) { errno = ENOTSUP; return -1; }
-
-    const char *sel_params[] = { exam_id, ver_str };
-    PGresult *res = PQexecParams(conn,
-        "SELECT exam_url, allowed_origins, signature FROM examos_exam_policies "
-        "WHERE exam_id = $1 AND policy_version = $2::integer",
-        2, NULL, sel_params, NULL, NULL, 0);
-
-    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
-        if (res) PQclear(res);
-        release_db_connection(conn, 0);
-        return -1;
-    }
-
-    char url[512], origins[512], sig[65];
-    snprintf(url, sizeof(url), "%s", PQgetvalue(res, 0, 0));
-    snprintf(origins, sizeof(origins), "%s", PQgetvalue(res, 0, 1));
-    snprintf(sig, sizeof(sig), "%s", PQgetvalue(res, 0, 2));
-    PQclear(res);
-
-    res = PQexec(conn, "BEGIN");
-    if (res) PQclear(res);
-
-    /* Mark current active as SUPERSEDED */
-    const char *sup_params[] = { exam_id };
-    res = PQexecParams(conn,
-        "UPDATE examos_exam_policies SET status = 'SUPERSEDED' WHERE exam_id = $1 AND status = 'ACTIVE'",
-        1, NULL, sup_params, NULL, NULL, 0);
-    if (res) PQclear(res);
-
-    /* Restore target policy to ROLLBACK status */
-    const char *roll_params[] = { exam_id, ver_str };
-    res = PQexecParams(conn,
-        "UPDATE examos_exam_policies SET status = 'ROLLBACK' WHERE exam_id = $1 AND policy_version = $2::integer",
-        2, NULL, roll_params, NULL, NULL, 0);
-    int ok = res && PQresultStatus(res) == PGRES_COMMAND_OK;
-    if (res) PQclear(res);
-
-    if (ok) {
-        /* Update exam state */
-        const char *upd_params[] = { url, origins, ver_str, sig, exam_id };
-        res = PQexecParams(conn,
-            "UPDATE examos_exams SET exam_url = $1, allowed_origins = $2, "
-            "  policy_version = $3::integer, policy_signature = $4, updated_at = clock_timestamp() "
-            "WHERE exam_id = $5",
-            5, NULL, upd_params, NULL, NULL, 0);
-        if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) ok = 0;
-        if (res) PQclear(res);
-    }
-
-    if (ok) {
-        platform_audit(conn, actor, "EXAM_POLICY_ROLLBACK", "EXAM", exam_id);
-        ledger_append("POLICY_ROLLBACK", exam_id, ver_str);
-    }
-
-    res = PQexec(conn, ok ? "COMMIT" : "ROLLBACK");
-    if (res) PQclear(res);
-
-    release_db_connection(conn, 0);
-    return ok ? 0 : -1;
+    (void)actor;
+    return policy_trust_unavailable(NULL, 0);
 }
 
 int platform_reconcile_exam(const char *exam_id, char *out_report_json, size_t max_len) {

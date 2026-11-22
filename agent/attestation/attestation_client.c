@@ -116,15 +116,21 @@ int attestation_client_issue_challenge(const char *heartbeat_url,
                                        const char *device_id,
                                        const char *release_id,
                                        const char *session_id,
+                                       const char *purpose,
                                        char *out_nonce, size_t nonce_size)
 {
     if (!safe_identifier(device_id, 64) || !safe_identifier(release_id, 64) ||
-        !safe_identifier(session_id, 64) || !out_nonce || nonce_size < 65) return -1;
+        !safe_identifier(session_id, 64) || !purpose ||
+        (strcmp(purpose, "re_attestation") != 0 &&
+         strcmp(purpose, "exam_launch") != 0) ||
+        !out_nonce || nonce_size < 65) return -1;
     char endpoint[1024], body[512], response[2048];
     if (make_endpoint(heartbeat_url, "nonce", endpoint, sizeof(endpoint)) != 0 ||
         snprintf(body, sizeof(body),
-            "{\"device_id\":\"%s\",\"release_id\":\"%s\",\"session_id\":\"%s\"}",
-            device_id, release_id, session_id) >= (int)sizeof(body)) return -1;
+            "{\"device_id\":\"%s\",\"release_id\":\"%s\","
+            "\"session_id\":\"%s\",\"purpose\":\"%s\"}",
+            device_id, release_id, session_id, purpose) >= (int)sizeof(body))
+        return -1;
     long status = 0;
     if (post_json(endpoint, body, response, sizeof(response), &status) != 0 || status != 200 ||
         json_string(response, "nonce", out_nonce, nonce_size) != 0 ||
@@ -222,12 +228,14 @@ int attestation_client_rechallenge(const char *heartbeat_url,
 int attestation_client_poll_exam_session(const char *heartbeat_url,
                                          const char *device_id,
                                          char *out_session_id, size_t session_size,
-                                         char *out_release_id, size_t release_size)
+                                         char *out_release_id, size_t release_size,
+                                         char *out_purpose, size_t purpose_size)
 {
     static const char heartbeat_path[] = "/api/v1/heartbeat";
     static const char pending_path[] = "/api/v1/agent/exam-attestation/pending";
     if (!safe_identifier(device_id, 64) || !out_session_id || session_size < 2 ||
-        !out_release_id || release_size < 2 || !heartbeat_url ||
+        !out_release_id || release_size < 2 || !out_purpose || purpose_size < 2 ||
+        !heartbeat_url ||
         strncmp(heartbeat_url, "https://", 8) != 0) return -1;
     size_t url_len = strlen(heartbeat_url);
     size_t heartbeat_path_len = sizeof(heartbeat_path) - 1;
@@ -236,6 +244,7 @@ int attestation_client_poll_exam_session(const char *heartbeat_url,
         return -1;
 
     char endpoint[1024], body[256], response[2048], status_text[32];
+    char purpose_text[32] = {0};
     int endpoint_len = snprintf(endpoint, sizeof(endpoint), "%.*s%s",
         (int)(url_len - heartbeat_path_len), heartbeat_url, pending_path);
     if (endpoint_len < 0 || (size_t)endpoint_len >= sizeof(endpoint) ||
@@ -243,6 +252,7 @@ int attestation_client_poll_exam_session(const char *heartbeat_url,
             (int)sizeof(body)) return -1;
     out_session_id[0] = '\0';
     out_release_id[0] = '\0';
+    out_purpose[0] = '\0';
 
     long http_status = 0;
     if (post_json(endpoint, body, response, sizeof(response), &http_status) != 0 ||
@@ -253,11 +263,55 @@ int attestation_client_poll_exam_session(const char *heartbeat_url,
     if (strcmp(status_text, "CHALLENGE") != 0 ||
         json_string(response, "session_id", out_session_id, session_size) != 0 ||
         json_string(response, "release_id", out_release_id, release_size) != 0 ||
+        json_string(response, "purpose", purpose_text, sizeof(purpose_text)) != 0 ||
+        strlen(purpose_text) >= purpose_size ||
+        (strcmp(purpose_text, "exam_launch") != 0 &&
+         strcmp(purpose_text, "re_attestation") != 0) ||
         !safe_identifier(out_session_id, session_size) ||
         !safe_identifier(out_release_id, release_size)) {
         out_session_id[0] = '\0';
         out_release_id[0] = '\0';
+        out_purpose[0] = '\0';
         return -1;
     }
+    snprintf(out_purpose, purpose_size, "%s", purpose_text);
     return 1;
+}
+
+int attestation_client_request_exam_key(const char *heartbeat_url,
+                                        const char *session_id,
+                                        const char *device_id,
+                                        char *out_wrapped_key,
+                                        size_t wrapped_key_size) {
+    static const char heartbeat_path[] = "/api/v1/heartbeat";
+    if (!heartbeat_url || strncmp(heartbeat_url, "https://", 8) != 0 ||
+        !safe_identifier(session_id, 64) || !safe_identifier(device_id, 64) ||
+        !out_wrapped_key || wrapped_key_size < 512)
+        return -1;
+    size_t url_len = strlen(heartbeat_url);
+    size_t heartbeat_path_len = sizeof(heartbeat_path) - 1;
+    if (url_len < heartbeat_path_len ||
+        strcmp(heartbeat_url + url_len - heartbeat_path_len, heartbeat_path) != 0)
+        return -1;
+    char endpoint[1024], body[512], response[8192];
+    int endpoint_len = snprintf(endpoint, sizeof(endpoint), "%.*s/api/v1/exam/key-release",
+                                (int)(url_len - heartbeat_path_len), heartbeat_url);
+    int body_len = snprintf(body, sizeof(body),
+                            "{\"session_id\":\"%s\",\"device_id\":\"%s\"}",
+                            session_id, device_id);
+    if (endpoint_len < 0 || (size_t)endpoint_len >= sizeof(endpoint) ||
+        body_len < 0 || (size_t)body_len >= sizeof(body))
+        return -1;
+    long http_status = 0;
+    if (post_json(endpoint, body, response, sizeof(response),
+                  &http_status) != 0 || http_status != 200)
+        return -1;
+    char status[32] = {0};
+    if (json_string(response, "status", status, sizeof(status)) != 0 ||
+        strcmp(status, "WRAPPED") != 0 ||
+        json_string(response, "wrapped_key", out_wrapped_key,
+                    wrapped_key_size) != 0 ||
+        strlen(out_wrapped_key) < 340)
+        return -1;
+    return 0;
 }

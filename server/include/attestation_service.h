@@ -134,6 +134,7 @@ int  attestation_create_challenge(const char *device_id, const char *session_id,
  *   Verifies TPM quote evidence against the enrolled AK and approved release
  *   PCR measurements. Production challenge and revocation state are durably
  *   recorded in PostgreSQL. Exam-key release is a separate lifecycle.
+ *   A NULL expected_purpose uses the purpose bound to the persisted nonce.
  *   On failure: records the error in out_reason (64 bytes).
  */
 int  attestation_verify_evidence(const char *evidence_json,

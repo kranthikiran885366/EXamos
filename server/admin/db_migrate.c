@@ -67,6 +67,10 @@ static const migration_t migrations[] = {
     {"045_enforce_unique_active_admin_email.sql",               "admin_auth",                11},
     {"046_seed_institution_device_trust_policies.sql",          "device_fleet",              46},
     {"047_candidate_credentials_and_exam_readiness.sql",       "candidate_credentials",     47},
+    {"048_block_legacy_exam_policy_activation.sql",          "exam_policy_trust",         48},
+    {"049_policy_publication_acknowledgement.sql",           "policy_trust",              49},
+    {"050_release_canonical_revocation_trust.sql",           "os_release_trust",          50},
+    {"051_tpm_recipient_key_transport.sql",                  "exam_key_transport",        51},
 };
 
 /*

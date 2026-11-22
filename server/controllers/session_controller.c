@@ -146,11 +146,14 @@ static int candidate_exam_context_load(const char *auth_header,
 }
 
 static int candidate_exam_trusted(const candidate_exam_context_t *context) {
-    return context && context->exam_session_id[0] && context->device_id[0] &&
+    if (!context || !context->exam_session_id[0] || !context->device_id[0] ||
         attestation_check_device_binding(context->exam_session_id,
-                                         context->device_id) == 0 &&
+                                         context->device_id) != 0 ||
         attestation_check_exam_key_ready(context->exam_session_id,
-                                         context->device_id) == 0;
+                                         context->device_id) != 0)
+        return 0;
+    /* TPM trust and key readiness do not replace the missing policy acknowledgement. */
+    return 0;
 }
 
 static int parse_i64_field(const char *body, const char *key, int allow_zero,
@@ -281,7 +284,7 @@ void session_handle(int client_fd, const char *method, const char *path,
              strcmp(context.status, "active") != 0) ||
             !candidate_exam_trusted(&context)) {
             ses_send_json(client_fd, 403,
-                "{\"status\":\"FAIL\",\"error\":\"Consent requires a fresh TPM-verified authorized exam session\"}",
+               "{\"status\":\"FAIL\",\"error\":\"Consent requires TPM verification and an authenticated policy-enforcement acknowledgement\"}",
                 origin, extra_headers, extra_len);
             return;
         }
@@ -342,7 +345,7 @@ void session_handle(int client_fd, const char *method, const char *path,
              strcmp(context.status, "active") != 0) ||
             !candidate_exam_trusted(&context)) {
             ses_send_json(client_fd, 403,
-                "{\"status\":\"FAIL\",\"error\":\"A fresh TPM-verified authorized exam session is required\"}",
+               "{\"status\":\"FAIL\",\"error\":\"A TPM-verified session and authenticated policy-enforcement acknowledgement are required\"}",
                 origin, extra_headers, extra_len);
             return;
         }
@@ -543,7 +546,7 @@ void session_handle(int client_fd, const char *method, const char *path,
         if (strcmp(context.status, "active") != 0 ||
             !candidate_exam_trusted(&context)) {
             ses_send_json(client_fd, 403,
-                "{\"status\":\"FAIL\",\"error\":\"Answers require an active session with fresh TPM verification\"}",
+               "{\"status\":\"FAIL\",\"error\":\"Answers require an active TPM-verified session and authenticated policy-enforcement acknowledgement\"}",
                 origin, extra_headers, extra_len);
             OPENSSL_cleanse(answer, sizeof(answer));
             return;
@@ -618,7 +621,7 @@ void session_handle(int client_fd, const char *method, const char *path,
         if (strcmp(context.status, "closed") != 0 &&
             !candidate_exam_trusted(&context)) {
             ses_send_json(client_fd, 403,
-                "{\"status\":\"FAIL\",\"error\":\"Submission requires fresh TPM verification\"}",
+                   "{\"status\":\"FAIL\",\"error\":\"Submission requires TPM verification and an authenticated policy-enforcement acknowledgement\"}",
                 origin, extra_headers, extra_len);
             return;
         }

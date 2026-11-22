@@ -167,8 +167,11 @@ VERIFY_RESP=$(curl -s -X POST http://127.0.0.1:8896/api/v1/attestation/verify \
   -d "$EVIDENCE_JSON")
 echo "Verify response: $VERIFY_RESP"
 echo "$VERIFY_RESP" | grep -q '"status":"TRUSTED"' || { echo "FAIL: Evidence verification rejected"; exit 1; }
-echo "$VERIFY_RESP" | grep -q '"evidence_type":"SWTPM_DEV_EVIDENCE"' || { echo "FAIL: Dev swtpm evidence type not labeled"; exit 1; }
-echo "$VERIFY_RESP" | grep -q '"exam_key":' || { echo "FAIL: Key release secret not produced"; exit 1; }
+echo "$VERIFY_RESP" | grep -q '"key_release_required":true' || { echo "FAIL: Trusted candidate session must require separate key release"; exit 1; }
+if echo "$VERIFY_RESP" | grep -q '"exam_key":'; then
+  echo "FAIL: Verification response must never contain plaintext exam key"
+  exit 1
+fi
 
 echo ""
 echo "--- 4. Verify Fleet Registry Status Updated to TRUSTED ---"
