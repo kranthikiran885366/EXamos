@@ -190,19 +190,28 @@ static void inst_list_json(PGresult *res, char *out, size_t out_len) {
         const char *notif = PQgetvalue(res, i, 16);
         if (!notif || !notif[0]) notif = "null";
 
-        /* H1 fix: return actual DB values, null for missing fields — no fabrication. */
+        /* H1 fix: return actual DB values, JSON null for missing fields — no fabrication. */
+        char region_json[160] = "null";
+        if (region_esc[0] && strcmp(region_esc, "null") != 0) {
+            snprintf(region_json, sizeof(region_json), "\"%s\"", region_esc);
+        }
+        char tz_json[160] = "null";
+        if (tz_esc[0] && strcmp(tz_esc, "null") != 0) {
+            snprintf(tz_json, sizeof(tz_json), "\"%s\"", tz_esc);
+        }
+
         pos += snprintf(out + pos, out_len - pos,
             "{\"id\":\"%s\",\"name\":\"%s\",\"code\":\"%s\","
-            "\"status\":\"%s\",\"plan\":\"%s\",\"region\":\"%s\","
-            "\"timezone\":\"%s\",\"maxCenters\":%s,\"maxCandidates\":%s,"
+            "\"status\":\"%s\",\"plan\":\"%s\",\"region\":%s,"
+            "\"timezone\":%s,\"maxCenters\":%s,\"maxCandidates\":%s,"
             "\"deploymentModel\":\"%s\",\"createdAt\":%s,\"contactEmail\":\"%s\","
             "\"contactPhone\":\"%s\",\"domains\":%s,\"examDefaults\":%s,"
             "\"security\":%s,\"notificationPrefs\":%s}",
             id_esc, name_esc, code_esc,
             status_esc[0] ? status_esc : "unknown",
             plan_esc,
-            region_esc[0] ? region_esc : "null",
-            tz_esc[0] ? tz_esc : "null",
+            region_json,
+            tz_json,
             PQgetvalue(res, i, 7)[0] ? PQgetvalue(res, i, 7) : "0",
             PQgetvalue(res, i, 8)[0] ? PQgetvalue(res, i, 8) : "0",
             model_esc,
@@ -3414,11 +3423,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
             const char *pvals[1] = { inst_id };
             int lens[1] = { (int)strlen(inst_id) };
             PGresult *res = db_simple(conn,
-                "SELECT id, name, code, status, plan, region, timezone, "
-                "       max_centers, max_candidates, deployment_model, created_at, "
-                "       contact_email, contact_phone, domains, exam_defaults, "
-                "       security, notification_prefs "
-                "FROM tenants WHERE id = $1", 1, pvals, lens);
+                "SELECT t.id, t.name, t.code, t.status, "
+                "       COALESCE(NULLIF(l.plan, ''), NULLIF(t.plan, ''), 'pilot') AS plan, "
+                "       t.region, t.timezone, "
+                "       t.max_centers, t.max_candidates, t.deployment_model, t.created_at, "
+                "       t.contact_email, t.contact_phone, t.domains, t.exam_defaults, "
+                "       t.security, t.notification_prefs "
+                "FROM tenants t LEFT JOIN institution_licenses l ON l.institution_id = t.id "
+                "WHERE t.id = $1", 1, pvals, lens);
 
             char json[8192] = {0};
             if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {

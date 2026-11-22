@@ -408,7 +408,31 @@ export function ExamDetailPage() {
             reconnectPolicy: config.reconnectPolicy || exam.reconnect_policy || 'allow-reconnect',
             identityRequired: config.identityRequired ?? exam.identity_required ?? true,
           };
-          setBackendExam(mapped);
+          // Merge with existing local state so partial server responses
+          // do not silently discard locally-known fields (FIX-11).
+          setBackendExam((prev) => {
+            if (!prev) return mapped;
+            // For each field in the mapping, prefer server-provided data
+            // but fall back to the existing local value when the server
+            // returned null/undefined/''.
+            const merged = { ...prev };
+            for (const [key, value] of Object.entries(mapped)) {
+              if (value !== undefined && value !== null && value !== '') {
+                merged[key] = value;
+              } else if (key === 'cancelReason' || key === 'cancelledAt') {
+                // Null is a valid response for cancellation fields
+                merged[key] = value;
+              }
+              // Otherwise keep prev[key]
+            }
+            // Always overwrite these authoritative fields from server
+            merged.id = mapped.id;
+            merged.status = mapped.status;
+            merged.version = mapped.version;
+            merged.updatedAt = mapped.updatedAt;
+            merged.history = mapped.history.length ? mapped.history : prev.history;
+            return merged;
+          });
         }
       } catch (error) {
         if (!cancelled) setDetailError(error.message || 'Could not load examination details from the backend.');

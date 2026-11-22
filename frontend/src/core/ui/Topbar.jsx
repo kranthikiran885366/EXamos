@@ -59,6 +59,11 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
     const routeExam = (examId) => {
       if (user.role === 'student') return `/student/exams/${examId}`;
       if (['invigilator', 'ops_admin'].includes(user.role)) return `/operator/exams/${examId}/live`;
+      // Admin, exam_controller, inst_admin → college detail; auditor/security/IT → read-only admin detail
+      if (['auditor', 'readonly_auditor', 'incident_investigator'].includes(user.role)) return `/admin/exams/${examId}`;
+      if (['security_engineer', 'it_admin'].includes(user.role)) return `/admin/exams/${examId}`;
+      if (['finance'].includes(user.role)) return `/admin/exams/${examId}`;
+      // superadmin, inst_admin, exam_controller → operational detail
       return `/college/exams/${examId}`;
     };
     if (can(user.role, 'exam.view') || can(user.role, 'student.view')) {

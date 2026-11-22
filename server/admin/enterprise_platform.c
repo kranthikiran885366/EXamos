@@ -3462,7 +3462,7 @@ int platform_get_audit_json(const char *exam_id, int limit, char *out_buf, size_
 
     PGresult *res = PQexecParams(conn,
         "SELECT a.event_type, a.occurred_at, COALESCE(u.username,''), "
-        "       a.subject_type, a.subject_id "
+        "       a.subject_type, a.subject_id, COALESCE(a.detail,'') "
         "FROM examos_admin_audit a "
         "LEFT JOIN examos_admin_users u ON u.user_id = a.actor_user_id "
         "WHERE ($1::text IS NULL OR a.subject_id = $1) "
@@ -3481,22 +3481,25 @@ int platform_get_audit_json(const char *exam_id, int limit, char *out_buf, size_
     used = (size_t)written;
 
     for (int i = 0; i < PQntuples(res) && used + 1 < max_len; i++) {
-        char item[1024];
+        char item[2048];
         char event_type[128], actor[128], subject_type[64], subject_id[128];
+        char detail[512];
         snprintf(event_type, sizeof(event_type), "%s", PQgetvalue(res, i, 0));
         snprintf(actor, sizeof(actor), "%s", PQgetvalue(res, i, 2));
         snprintf(subject_type, sizeof(subject_type), "%s", PQgetvalue(res, i, 3));
         snprintf(subject_id, sizeof(subject_id), "%s", PQgetvalue(res, i, 4));
+        snprintf(detail, sizeof(detail), "%s", PQgetvalue(res, i, 5));
         platform_json_escape(event_type, event_type, sizeof(event_type));
         platform_json_escape(actor, actor, sizeof(actor));
         platform_json_escape(subject_type, subject_type, sizeof(subject_type));
         platform_json_escape(subject_id, subject_id, sizeof(subject_id));
+        platform_json_escape(detail, detail, sizeof(detail));
 
         written = snprintf(item, sizeof(item),
             "%s{\"event_type\":\"%s\",\"actor\":\"%s\",\"recorded_at\":\"%s\","
-            "\"subject_type\":\"%s\",\"subject_id\":\"%s\"}",
+            "\"subject_type\":\"%s\",\"subject_id\":\"%s\",\"detail\":\"%s\"}",
             i > 0 ? "," : "", event_type, actor, PQgetvalue(res, i, 1),
-            subject_type, subject_id);
+            subject_type, subject_id, detail);
         if (written <= 0 || used + (size_t)written >= max_len) break;
         memcpy(out_buf + used, item, (size_t)written);
         used += (size_t)written;

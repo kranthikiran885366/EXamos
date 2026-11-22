@@ -215,6 +215,7 @@ export const TITLES = {
   '/devices': 'Devices',
   '/devices/enrollment': 'Enrollment',
   '/devices/compatibility': 'Compatibility',
+  '/kiosk': 'Kiosk Operations',
   '/usb-inventory': 'USB inventory',
   '/security/overview': 'Security overview',
   '/security/boot-integrity': 'Boot integrity',

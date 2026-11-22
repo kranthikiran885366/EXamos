@@ -142,10 +142,13 @@ export default function DashboardPage() {
     : totalDevicesCount === 0 ? 'not enrolled'
       : onlineCount === null ? 'unknown'
         : onlineCount === 0 ? 'offline' : 'observed';
+  // Trust state must never claim "verified" with zero attested or zero total devices.
+  // "verified" means every enrolled device has a current server-verified trust decision.
   const trustState = totalDevicesCount === null ? 'unknown'
     : totalDevicesCount === 0 ? 'not enrolled'
-      : attested === 0 ? 'unverified'
-        : attested === totalDevicesCount ? 'verified' : 'partial';
+      : attested === null ? 'unknown'
+        : attested === 0 ? 'unverified'
+          : attested === totalDevicesCount ? 'verified' : 'partial';
 
   return (
     <Page
@@ -379,9 +382,15 @@ export default function DashboardPage() {
           value={onlineCount ?? '—'}
           unit={onlineCount === null ? '' : `/ ${totalDevicesCount}`}
           icon="device"
-          tone={fleetState === 'observed' ? 'green' : 'amber'}
+          tone={fleetState === 'observed' ? 'green' : fleetState === 'not enrolled' ? 'red' : 'amber'}
           to="/devices"
-          sub={attested === null ? 'Fleet data unavailable' : `${attested} server-verified`}
+          sub={totalDevicesCount === null
+            ? 'Fleet data unavailable — backend unreachable'
+            : totalDevicesCount === 0
+              ? 'No devices enrolled — fleet posture unknown'
+              : attested === null
+                ? 'Attestation data unavailable'
+                : `${attested} server-verified / ${totalDevicesCount} enrolled (as of ${ago(lastUpdated)})`}
         />
         <Stat
           label="Global Ledger Blocks"

@@ -1,11 +1,20 @@
 import { audit } from './auditClient';
 import * as Api from '../api/services';
+import { normalizeAuditEvents } from '../ui/normalizers';
 
 let chain = [];
 const subs = new Set();
 export async function initChain() {
   const response = await Api.listAuditTrail({ limit: 10000 });
-  chain = response?.events || [];
+  // The backend returns a flat JSON array, not { events: [...] }.
+  // Use the shared normalizer so the chain module and the AuditPage
+  // always agree on the same parsed event population.
+  try {
+    chain = normalizeAuditEvents(response);
+  } catch {
+    // If the normalizer throws (e.g. malformed response), fall back to empty.
+    chain = [];
+  }
   subs.forEach((callback) => callback());
   return chain;
 }

@@ -196,9 +196,14 @@ function PolicyModal({ tenantId, onClose, onDone }) {
         <Field label="Violation action" required className="span2">
           <Select value={v.onViolation} onChange={(e) => setV({ ...v, onViolation: e.target.value })} options={ACTIONS} placeholder={false} />
         </Field>
-        <Field label="Allowed origins" required className="span2" help="Space or comma separated https URLs.">
+        <Field label="Allowed origins" required className="span2" help="Space or comma separated HTTPS URLs. Insecure HTTP is strictly rejected.">
           <Textarea rows={2} value={v.origins} onChange={(e) => setV({ ...v, origins: e.target.value })} maxLength={500} />
         </Field>
+        {v.origins && v.origins.split(/[\s,]+/).some((o) => o.trim().toLowerCase().startsWith('http://')) && (
+          <div className="span2"><Alert tone="danger" title="Insecure HTTP origin rejected">
+            All policy origins must use HTTPS. Insecure HTTP origins are blocked for zero-trust security.
+          </Alert></div>
+        )}
         <label className="check"><input type="checkbox" checked={v.requireTpm} onChange={(e) => setV({ ...v, requireTpm: e.target.checked })} /><span>Require TPM 2.0 attestation</span></label>
         <label className="check"><input type="checkbox" checked={v.kioskLockdown} onChange={(e) => setV({ ...v, kioskLockdown: e.target.checked })} /><span>Kiosk lockdown</span></label>
         <label className="check"><input type="checkbox" checked={v.allowUsb} onChange={(e) => setV({ ...v, allowUsb: e.target.checked })} /><span>Allow USB storage</span></label>
