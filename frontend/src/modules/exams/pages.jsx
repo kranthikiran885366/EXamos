@@ -8,10 +8,12 @@ import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash, Empty,
   Icon, KeyValue, Timeline, Tabs, Loading, Modal, Field, Input, Select, Textarea, Checkbox,
-  Progress, Steps,
+  Progress, Steps, CopyField,
 } from '../../core/ui/kit';
 import { fmt } from '../../core/ui/format';
+import { formatExamSchedule } from '../../core/ui/normalizers';
 import { listCenters as listBackendCenters } from '../centers/service';
+import { deriveLifecycleMilestone } from './lifecycle';
 import {
   createExam, updateExam, transition, nextSteps, duplicateExam, readiness, conflicts,
   configureExamPolicy, policyPreview, postponeExam, TYPES, LIFECYCLE, LIFECYCLE_LABEL,
@@ -335,6 +337,9 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
 }
 
 /* ------------------------------------------------------------------ detail */
+const cancellationReasonFor = (exam) => exam?.cancelReason || exam?.cancellationReason || exam?.cancel_reason || exam?.cancellation_reason
+  || (exam?.history || []).slice().reverse().find((entry) => entry.to === 'cancelled')?.reason || null;
+
 export function ExamDetailPage() {
   const { id } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -358,7 +363,6 @@ export function ExamDetailPage() {
         if (!exam) throw new Error('The examination endpoint returned no record.');
         if (exam && !cancelled) {
           const config = examConfigFromApi(exam.exam_config);
-          const schedule = res?.schedules?.[0];
           const mapped = {
             ...config,
             id: exam.id,
@@ -369,9 +373,10 @@ export function ExamDetailPage() {
             course: config.course || exam.subject || exam.course || '',
             academicYear: config.academicYear || exam.academic_year || exam.academicYear || '',
             status: exam.status || 'draft',
-            startAt: config.startAt || schedule?.start_time || exam.scheduled_start || exam.startAt || 0,
+            startAt: exam.startAt,
+            startTimeState: exam.startTimeState,
             durationMin: config.durationMin || exam.duration_minutes || exam.durationMin || 60,
-            timeZone: config.timezone || schedule?.timezone || config.timeZone || 'Asia/Kolkata',
+            timeZone: exam.timeZone,
             examUrl: config.examUrl || exam.exam_url || exam.examUrl || '',
             instructions: config.instructions || exam.instructions || '',
             origins: config.origins || (exam.allowed_origins || '').split(',').filter(Boolean),
@@ -382,6 +387,8 @@ export function ExamDetailPage() {
             updatedAt: exam.updated_at || exam.updatedAt || 0,
             version: exam.version || 1,
             history: exam.history || [],
+            cancelReason: exam.cancel_reason || exam.cancellation_reason || exam.cancelReason || exam.cancellationReason || null,
+            cancelledAt: exam.cancelled_at || exam.cancellation_at || exam.cancelledAt || null,
             attestationLevel: config.attestationLevel || exam.attestation_level || exam.attestationLevel || 'tpm',
             authMode: config.authMode || exam.auth_mode || exam.authMode || 'candidate-login',
             submissionMode: config.submissionMode || exam.submission_mode || 'either',
@@ -453,7 +460,8 @@ export function ExamDetailPage() {
   if (!e) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/college/exams">Back to exams</Link>} /></Page>;
   const assigned = assignedRoster;
   const centersList = (e.centerIds || []).map((cid) => centers.find((c) => c.id === cid)).filter(Boolean);
-  const currentStep = LIFECYCLE.indexOf(e.status);
+  const currentStep = deriveLifecycleMilestone(e);
+  const cancellationReason = cancellationReasonFor(e);
   const readyCount = (checks || []).filter((c) => c.status === 'PASS').length;
   const conflict = conflicts(exams, e);
 
@@ -488,7 +496,7 @@ export function ExamDetailPage() {
       {(centersError || policiesError) && <Alert tone="danger" title="Backend data unavailable">{centersError ? 'Centres could not be loaded from the institution centre service.' : 'Policies could not be loaded from the backend.'} Editing is disabled until those records can be verified. {(centersError || policiesError).message || ''}</Alert>}
       {e.status === 'live' && <Alert tone="success" title="Exam is live">Critical configuration is locked. Sessions started before the deadline can be monitored from Operations.</Alert>}
       {conflict && <Alert tone="warn" title={`Schedule conflict with ${conflict.code}`}>Both exams overlap at a shared centre. Adjust the window before publishing.</Alert>}
-      {e.status === 'cancelled' && <Alert tone="danger" title="Exam cancelled">Reason: {e.cancelReason || 'not recorded'}</Alert>}
+      {e.status === 'cancelled' && <Alert tone="danger" title="Exam cancelled">Reason: {cancellationReason || 'Unknown (the backend did not return cancellation metadata)'}</Alert>}
 
       <StatGrid cols={4}>
         <Stat label="Status" value={LIFECYCLE_LABEL[e.status]} icon="badge" />
@@ -498,7 +506,7 @@ export function ExamDetailPage() {
       </StatGrid>
 
       <Card pad>
-        <Steps steps={['Draft', 'Review', 'Approved', 'Published', 'Live', 'Closed']} current={Math.max(0, Math.min(5, currentStep - 1))} />
+        <Steps steps={['Draft', 'Review', 'Approved', 'Published', 'Live', 'Closed']} current={Math.max(0, Math.min(5, currentStep))} />
       </Card>
 
       <Tabs value={tab} onChange={setTab} tabs={[
@@ -515,7 +523,7 @@ export function ExamDetailPage() {
           <KeyValue cols={3} items={[
             ['Code', e.code], ['Title', e.title], ['Type', e.type],
             ['Exam URL', e.examUrl || '—'], ['Course', e.course || '—'], ['Academic year', e.academicYear || '—'], ['Version', `v${e.version || 1}`],
-            ['Window', `${fmt(e.startAt)} · ${e.durationMin} min`], ['Late entry', `${e.lateEntryMin || 0} min`], ['Time zone', e.timeZone || '—'],
+            ['Window', `${formatExamSchedule(e)} · ${e.durationMin} min`], ['Late entry', `${e.lateEntryMin || 0} min`], ['Time zone', e.timeZone || '—'],
             ['Policy', pol ? `${pol.name} v${pol.version}` : '—'], ['Policy status', pol?.status || '—'], ['Attestation', e.attestationLevel],
             ['Authentication', e.authMode], ['Submission', e.submissionMode], ['Navigation', e.navigation],
             ['Session timeout', `${e.sessionTimeoutMin} min`], ['Reconnect', e.reconnectPolicy], ['Identity check', e.identityRequired ? 'Required' : 'Optional'],
@@ -757,7 +765,9 @@ export function ExamCandidatesPage() {
         const mapped = {
           id: exam.id || exam.exam_id, tenantId: exam.institution_id, code: exam.code,
           title: exam.name || exam.title, status: exam.status,
-          startAt: config.startAt || exam.scheduled_start || 0,
+          startAt: exam.startAt,
+          startTimeState: exam.startTimeState,
+          timeZone: exam.timeZone,
           durationMin: config.durationMin || exam.duration_minutes || 60,
           examUrl: config.examUrl || exam.exam_url || '',
           authMode: config.authMode || exam.auth_mode || 'candidate-login',
@@ -806,9 +816,10 @@ export function ExamCandidatesPage() {
     reload: reloadRoster,
   } = useLoad(async () => {
     if (!id || !backendExam?.tenantId) return [];
-    const [studentResponse, assignments] = await Promise.all([
+    const [studentResponse, assignments, rosterResponse] = await Promise.all([
       Api.listStudents(),
       Api.listExaminationStudents(id),
+      Api.getRoster().catch(() => ({ candidates: [] })),
     ]);
     if (!Array.isArray(studentResponse?.students)) throw new Error('The student-directory endpoint returned an invalid response.');
     const assignmentsByStudent = new Map(assignments.map((assignment) => [assignment.student_id, assignment]));
@@ -817,8 +828,14 @@ export function ExamCandidatesPage() {
     for (const assignment of assignments) {
       if (!studentIds.has(assignment.student_id)) throw new Error(`Assigned student ${assignment.student_id} is missing from the institutional roster.`);
     }
+    const otherExamAssignments = new Map(
+      (rosterResponse?.candidates || [])
+        .filter((c) => c.exam_id && c.exam_id !== id && c.tenant_id === backendExam.tenantId)
+        .map((c) => [c.roll_no || c.id, c.exam_id])
+    );
     return institutionStudents.map((student) => {
       const assignment = assignmentsByStudent.get(student.id);
+      const otherExam = otherExamAssignments.get(student.roll_no) || otherExamAssignments.get(student.id);
       return {
         id: student.id,
         tenantId: student.institution_id,
@@ -827,7 +844,7 @@ export function ExamCandidatesPage() {
         email: student.email,
         identity: (student.verification_status || '').toLowerCase(),
         verification_status: student.verification_status,
-        examId: assignment?.exam_id || null,
+        examId: assignment?.exam_id || otherExam || null,
         centerId: assignment?.center_id || null,
         seat: assignment?.seat_no || null,
       };

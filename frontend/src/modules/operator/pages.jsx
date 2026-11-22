@@ -7,7 +7,9 @@ import {
   Modal, KeyValue, Timeline, Field, Input, Select, Textarea, useFlash, Flash, Tabs, Progress,
 } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
+import { formatExamSchedule } from '../../core/ui/normalizers';
 import { useLoad, usePerm } from '../../core/ui/hooks';
+import * as Api from '../../core/api/services';
 import {
   assignedExams, liveBoard, boardStats, checkIn, startCandidate, terminateSession, extendTime,
   submissionFeed, submissionStats, deskLookup,
@@ -130,7 +132,7 @@ export function OperatorExamsPage() {
             { key: 'code', label: 'Code', sortable: true, mono: true },
             { key: 'title', label: 'Title', sortable: true },
             { key: 'status', label: 'Status', render: (e) => <Badge value={e.status} /> },
-            { key: 'startAt', label: 'Starts', sortable: true, render: (e) => fmt(e.startAt) },
+            { key: 'startAt', label: 'Starts', sortable: true, render: (e) => formatExamSchedule(e) },
             { key: 'durationMin', label: 'Duration', render: (e) => {
               const dur = e.durationMin || e.duration_minutes || e.durationMin;
               return dur ? `${dur} min` : <span className="muted">Duration unavailable</span>;
@@ -156,6 +158,11 @@ export function LiveExamPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const exams = useCol('exams', false);
+  const cachedExam = exams.find((x) => x.id === id);
+  const detail = useLoad(async () => {
+    if (!id || cachedExam) return null;
+    return (await Api.getExamination(id)).examination;
+  }, [id, Boolean(cachedExam)]);
   const sessions = useCol('sessions', false);
   const candidates = useCol('candidates', false);
   const devices = useCol('devices', false);
@@ -167,13 +174,24 @@ export function LiveExamPage() {
   const flash = useFlash();
   const perms = usePerm();
 
-  const exam = exams.find((x) => x.id === id);
+  const exam = cachedExam || detail.data;
   const board = useLoad(
-    () => (exam ? liveBoard(exam, { candidates, sessions, devices, centers, incidents, attestations }) : Promise.resolve({ rows: [], byCenter: [], incidents: [] })),
-    [id, sessions, candidates, devices, incidents, attestations, centers, exams],
+    () => (exam && exam.status !== 'cancelled' ? liveBoard(exam, { candidates, sessions, devices, centers, incidents, attestations }) : Promise.resolve({ rows: [], byCenter: [], incidents: [] })),
+    [id, exam, sessions, candidates, devices, incidents, attestations, centers, exams],
   );
 
+  if (!exam && detail.loading) return <Page title="Loading exam"><Loading /></Page>;
+  if (!exam && detail.error) return <Page title="Exam unavailable"><Alert tone="danger" title="Could not load examination">{detail.error.message}</Alert><Link className="btn" to="/operator/exams">Back to exams</Link></Page>;
   if (!exam) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/operator/exams">Back to exams</Link>} /></Page>;
+  if (exam.status === 'cancelled') {
+    const reason = exam.cancelReason || exam.cancel_reason;
+    return <Page title={`Cancelled: ${exam.code}`} desc={exam.title}>
+      <Alert tone="warn" title="This examination was cancelled">
+        {reason ? `Reason: ${reason}` : 'Cancellation reason is not available in this record.'} The live operations board is unavailable.
+      </Alert>
+      <Link className="btn" to="/operator/exams">Back to exams</Link>
+    </Page>;
+  }
   if (board.loading) return <Page title={`Live: ${exam.code}`}><Loading /></Page>;
   const b = board.data || { rows: [], byCenter: [] };
   const stats = boardStats(b);

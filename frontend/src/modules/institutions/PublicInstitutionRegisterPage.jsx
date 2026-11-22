@@ -5,6 +5,7 @@ import { submitInstitutionApplication, ENTITY_TYPES, getOrgTerms, isCorporateEnt
 import { getInstitutionApplyStatus } from '../../core/api/services';
 import { Icon } from '../../core/ui/kit';
 import { getApplicationLifecycle } from './applicationLifecycle';
+import usePageMeta from '../../core/ui/usePageMeta';
 
 function formatApplicationTimestamp(value) {
   if (value === null || value === undefined || value === '') return '';
@@ -16,6 +17,13 @@ function formatApplicationTimestamp(value) {
 }
 
 export default function PublicInstitutionRegisterPage() {
+  usePageMeta({
+    title: 'Institution onboarding | SPPIO',
+    description:
+      'Apply for SPPIO institution onboarding or track an existing institutional assessment application.',
+    path: '/register-institution',
+  });
+
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState(searchParams.get('tab') === 'track' ? 'track' : 'register');
   const [copiedRef, setCopiedRef] = useState(false);

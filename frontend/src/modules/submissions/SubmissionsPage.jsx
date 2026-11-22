@@ -64,10 +64,10 @@ export default function SubmissionsPage() {
     <>
       <div className="pad pb0"><Tabs tabs={['Sessions', 'Candidate kiosk']} value={tab} onChange={setTab} /><Flash msg={msg} onClose={() => setMsg(null)} /></div>
       {tab === 'Candidate kiosk' ? <Kiosk /> : (
-        <Crud title="Submissions" desc="Exam sessions and server-signed submission receipts." rows={[...sess].sort((a, b) => b.startedAt - a.startedAt)} search={(s) => `${s.id} ${s.receipt || ''} ${cands.find((c) => c.id === s.candidateId)?.rollNo || ''}`}
+        <Crud title="Submissions" desc="Exam sessions and server-returned receipts. Independent receipt verification is not available in this console." rows={[...sess].sort((a, b) => b.startedAt - a.startedAt)} search={(s) => `${s.id} ${s.receipt || ''} ${cands.find((c) => c.id === s.candidateId)?.rollNo || ''}`}
           columns={[{ label: 'Candidate', render: (s) => cands.find((c) => c.id === s.candidateId)?.rollNo }, { label: 'Exam', render: (s) => exams.find((e) => e.id === s.examId)?.code }, { label: 'Device', render: (s) => <span className="mono">{devs.find((d) => d.id === s.deviceId)?.hostname}</span> }, { label: 'Started', render: (s) => fmt(s.startedAt) },
             { label: 'Answered', render: (s) => Object.keys(s.answers).length }, { label: 'Score', render: (s) => (s.score ?? '—') }, { label: 'Receipt', render: (s) => <span className="mono">{s.receipt || '—'}</span> }, { label: 'Status', render: (s) => <Badge>{s.status === 'in_progress' ? 'Active' : s.status === 'submitted' ? 'Complete' : 'Failed'}</Badge> }]}
-          actions={[{ label: 'Verify receipt', show: (s) => s.status === 'submitted', run: async (s) => ((await verifyReceipt(s)) ? `Receipt ${s.receipt} is authentic and the answers match.` : (() => { throw new Error('Receipt verification FAILED.'); })()) },
+          actions={[{ label: 'Verify receipt', show: (s) => s.status === 'submitted', run: (s) => verifyReceipt(s) },
             { label: 'Terminate', perm: 'session.terminate', danger: true, reason: true, show: (s) => s.status === 'in_progress', run: (s, r) => terminate(user, s, r) }]} />)}
     </>
   );

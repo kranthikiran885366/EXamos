@@ -5,6 +5,7 @@ import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant } from '../../core/db/tenant';
 import { can, roleLabel } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
+import { domainHostname, normalizeAuditEvents } from '../../core/ui/normalizers';
 import {
   Page, Card, StatGrid, Stat, Alert, Empty, Loading,
   DataTable, Badge, Modal, ActionDialog, useFlash, Flash,
@@ -127,6 +128,7 @@ export function InstitutionDashboardPage() {
 ===================================================================== */
 export function InstitutionProfilePage() {
   const { tenant } = useTenant();
+  const domains = Array.isArray(tenant?.domains) ? tenant.domains : [];
 
   return (
     <Page
@@ -148,17 +150,20 @@ export function InstitutionProfilePage() {
           </div>
         </Card>
 
-        <Card title="Verified Organizational Domains" desc="Domains permitted for SSO and email attribution">
+        <Card title="Institution email domains" desc="Configured values for email attribution; domain ownership verification is not included in this record.">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {/* H7 fix: show real domains from backend data, no fabricated entries or fake "Verified" badges. */}
-            {(tenant?.domains?.length ? tenant.domains : []).map((domain) => (
-              <div key={domain} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
-                <div>
-                  <b>@{domain}</b>
+            {domains.map((domain, index) => {
+              const storedValue = String(domain ?? '').trim();
+              const hostname = domainHostname(storedValue);
+              const needsReview = !hostname || storedValue.toLowerCase() !== hostname;
+              return (
+                <div key={`${storedValue}-${index}`} style={{ padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
+                  <b>{hostname ? `@${hostname}` : 'Invalid domain value'}</b>
+                  {needsReview && <Alert tone="warn" title="Stored value needs review">The original value <code>{storedValue || 'empty'}</code> is not a canonical hostname. It has not been changed.</Alert>}
                 </div>
-              </div>
-            ))}
-            {!tenant?.domains?.length && (
+              );
+            })}
+            {!domains.length && (
               <div style={{ padding: '12px', color: 'var(--muted, #94a3b8)' }}>No domains registered.</div>
             )}
           </div>
@@ -553,7 +558,7 @@ export function InstitutionAccessPage() {
                 type="email"
                 value={inviteData.email}
                 onChange={(e) => setInviteData({ ...inviteData, email: e.target.value })}
-                placeholder={`e.g. admin@${tenant?.domains?.[0] || 'institution.edu'}`}
+                placeholder={`e.g. admin@${domainHostname(tenant?.domains?.[0]) || 'institution.edu'}`}
                 required
               />
             </Field>
@@ -842,23 +847,17 @@ export function InstitutionDeploymentReadinessPage() {
 ===================================================================== */
 export function InstitutionAuditPage() {
   const [auditRows, setAuditRows] = useState([]);
-  const [ledger, setLedger] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [trail, led] = await Promise.all([
-        Api.listAuditTrail({ limit: 500 }),
-        Api.getLedger(),
-      ]);
-      const rows = Array.isArray(trail) ? trail : (trail?.events || trail?.audit || []);
-      setAuditRows([...rows].sort((a, b) => String(b.recorded_at || b.ts || '').localeCompare(String(a.recorded_at || a.ts || ''))));
-      setLedger(led || null);
+      const trail = await Api.listInstitutionAuditTrail();
+      setAuditRows(normalizeAuditEvents(trail));
       setLoadError('');
     } catch (e) {
-      setLoadError(e.message || 'Unable to load the audit trail from the backend.');
+      setLoadError(e.message || 'Unable to load institution audit records from the backend.');
     } finally {
       setLoading(false);
     }
@@ -866,57 +865,34 @@ export function InstitutionAuditPage() {
 
   useEffect(() => { load(); }, []);
 
-  const chainOk = ledger?.ledger_integrity === 'INTACT';
-  const chainKnown = ledger?.ledger_integrity === 'INTACT' || ledger?.ledger_integrity === 'TAMPERED';
-
   return (
     <Page
       title="Institutional Audit & Activity"
-      desc="Backend audit trail of administrative actions, policy adjustments, and deployment events, backed by the tamper-evident ledger."
+      desc="Institution-scoped examination audit records from the authenticated institution context."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Audit</span></div>}
+      actions={<button className="btn" onClick={load} disabled={loading}><Icon name="refresh" size={14} /> {loading ? 'Loading…' : 'Refresh'}</button>}
     >
       {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
-      <StatGrid cols={4}>
-        <Stat
-          label="Ledger Chain State"
-          value={ledger?.ledger_integrity || '—'}
-          tone={chainOk ? 'green' : (chainKnown ? 'red' : 'amber')}
-          icon="shield"
-          sub="SHA-256 Chained"
-        />
-        <Stat
-          label="Verified Blocks"
-          value={ledger?.total_blocks ?? '—'}
-          tone="green"
-          icon="checklist"
-          sub="Cryptographically Proven"
-        />
-        <Stat
-          label="Audit Events"
-          value={auditRows.length}
-          icon="audit"
-          sub="Returned by backend"
-        />
-        <Stat
-          label="Tamper Detection"
-          value={chainKnown ? (chainOk ? 'NONE' : 'BROKEN') : '—'}
-          tone={chainOk ? 'green' : (chainKnown ? 'red' : 'amber')}
-          icon="check"
-          sub="Continuous Validation"
-        />
+      <StatGrid cols={2}>
+        <Stat label="Exam audit records returned" value={auditRows.length} icon="audit" sub="Latest 100 records for this institution" />
+        <Stat label="Cryptographic verification" value="Not provided" tone="amber" icon="shield" sub="This event store has no chain fields" />
       </StatGrid>
+      <Alert tone="info" title="Evidence scope">
+        These rows are filtered by the authenticated institution ID and come from the examination audit table. They are not represented as platform events or as blocks in the global ledger.
+      </Alert>
 
-      <Card title="Immutable Audit Chain" desc="Read directly from the backend audit store; the local browser cache is not used as evidence.">
+      <Card title="Examination audit records" desc="Latest 100 records returned by the institution-scoped backend endpoint.">
         <DataTable
           rows={auditRows}
-          search={['event_type', 'event', 'actor', 'subject_id', 'subject_type']}
+          search={['event', 'actor', 'subjectId', 'subjectType', 'detail']}
           columns={[
-            { key: 'event_type', label: 'Event Type', render: (l) => <code>{l.event_type || l.event}</code> },
-            { key: 'actor', label: 'Actor', render: (l) => <b>{l.actor || 'system'}</b> },
-            { key: 'subject', label: 'Subject', render: (l) => `${l.subject_type || '—'} · ${l.subject_id || '—'}` },
-            { key: 'recorded_at', label: 'Timestamp', render: (l) => (l.recorded_at || l.ts) ? fmt(l.recorded_at || l.ts) : '—' },
+            { key: 'event', label: 'Event Type', render: (row) => <code>{row.event}</code> },
+            { key: 'actor', label: 'Actor', render: (row) => <b>{row.actor}</b> },
+            { key: 'subject', label: 'Subject', render: (row) => `${row.subjectType || '—'} · ${row.subjectId || '—'}` },
+            { key: 'recordedAt', label: 'Timestamp', render: (row) => <span title={row.recordedAt}>{fmt(row.recordedAt)}</span> },
+            { key: 'detail', label: 'Detail', render: (row) => row.detail || '—' },
           ]}
-          empty={<Empty icon="checklist" title={loading ? 'Loading audit trail…' : 'No audit events logged yet'} desc="Mutating backend operations will appear here." />}
+          empty={<Empty icon="checklist" title={loading ? 'Loading audit records…' : 'No examination audit records returned'} desc="An empty result does not imply other event stores or the global ledger are empty." />}
         />
       </Card>
     </Page>

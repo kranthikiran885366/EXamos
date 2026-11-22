@@ -178,7 +178,7 @@ export default function KioskPage() {
           value={srvHealth?.liveness || 'OFFLINE'}
           icon="server"
           tone={srvHealth?.liveness === 'LIVE' ? 'green' : 'amber'}
-          sub={`Port 8895 Â· ${srvHealth?.tpm_mode || 'unknown'} mode`}
+          sub={`Port 8895 · ${srvHealth?.tpm_mode || 'unknown'} mode`}
         />
         <Stat
           label="Enrolled Kiosks"

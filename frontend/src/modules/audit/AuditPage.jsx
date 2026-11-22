@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useCol } from '../../core/db/tenant';
 import { useAuth } from '../../core/auth/AuthContext';
 import { can } from '../../core/security/rbac';
 import { csvCell } from '../../core/security/sanitize';
 import { record, verifyChain } from '../../core/security/auditChain';
 import { fmt, ago } from '../../core/ui/format';
+import { normalizeAuditEvents } from '../../core/ui/normalizers';
 import * as Api from '../../core/api/services';
 import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, Flash, useFlash,
-  KeyValue, Modal, CopyField, Icon,
+  KeyValue, Modal, Icon,
 } from '../../core/ui/kit';
 
 const eventLabel = (e) => String(e || '').replace(/_/g, ' ');
@@ -22,45 +22,34 @@ const EVENT_TONE = (e) => {
 
 export default function AuditPage() {
   const { user } = useAuth();
-  const localRows = useCol('audit', false);
+  const canReadPlatformAudit = ['superadmin', 'auditor'].includes(user.role);
   const flash = useFlash();
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(true);
   const [view, setView] = useState(null);
   const [serverEvents, setServerEvents] = useState([]);
+  const [serverError, setServerError] = useState('');
 
   useEffect(() => {
     let live = true;
+    if (!canReadPlatformAudit) {
+      setChecking(false);
+      setServerError('Platform-wide audit events are not available to this role.');
+      return () => { live = false; };
+    }
     verifyChain().then((r) => { if (live) { setCheck(r); setChecking(false); } }).catch((e) => { if (live) { setCheck({ ok: false, error: e.message }); setChecking(false); } });
     Api.listAuditTrail({ limit: 500 }).then((res) => {
       if (!live) return;
-      const evts = res?.events || res?.audit || [];
-      if (Array.isArray(evts) && evts.length) {
-        setServerEvents(evts.map((e, i) => ({
-          id: e.id || `srv-${i}`,
-          seq: e.seq ?? e.id ?? i,
-          ts: e.ts || e.created_at || new Date(e.timestamp || Date.now()).toISOString(),
-          actor: e.actor || 'server',
-          event: e.event || e.event_type,
-          detail: e.detail || e.description || '',
-          hash: e.hash || e.chain_hash || '',
-          prev: e.prev_hash || '',
-          source: 'server',
-        })));
-      }
-    }).catch(() => {});
+      setServerEvents(normalizeAuditEvents(res));
+    }).catch((error) => { if (live) setServerError(error?.message || 'Could not load server audit events.'); });
     return () => { live = false; };
-  }, []);
+  }, [canReadPlatformAudit, user.role]);
 
-  // Merge server events with local, deduplicate by id, server takes precedence
-  const rows = useMemo(() => {
-    const map = new Map();
-    for (const r of localRows) map.set(r.id, r);
-    for (const r of serverEvents) map.set(r.id, r);
-    return [...map.values()];
-  }, [localRows, serverEvents]);
+  // A browser-side audit queue is not evidence. This page reports only the
+  // server event API; ledger verification remains a separately labelled scope.
+  const rows = serverEvents;
 
-  const sorted = useMemo(() => [...rows].sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0)), [rows]);
+  const sorted = useMemo(() => [...rows].sort((a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt)), [rows]);
   const actors = useMemo(() => [...new Set(rows.map((e) => e.actor).filter(Boolean))].sort(), [rows]);
   const events = useMemo(() => [...new Set(rows.map((e) => e.event).filter(Boolean))].sort(), [rows]);
   const last = sorted[0];
@@ -68,12 +57,14 @@ export default function AuditPage() {
   const verify = () => flash.run(async () => {
     const r = await verifyChain();
     setCheck(r);
-    if (!r.ok) throw new Error(`Tampering detected at entry #${r.at}. The stored chain no longer matches its hashes.`);
-    return `Chain intact — ${r.count} entries verified against SHA-256 hashes.`;
+    if (!r.ok) throw new Error(r.status === 'TAMPERED'
+      ? 'The global server ledger reports an integrity failure.'
+      : 'The global server ledger could not be verified.');
+    return `Global server ledger intact — ${r.count} blocks verified.`;
   }, 'Chain verified.');
 
   const exportCsv = () => {
-    const cols = ['seq', 'ts', 'actor', 'event', 'detail', 'prev', 'hash'];
+    const cols = ['recordedAt', 'actor', 'event', 'subjectType', 'subjectId', 'detail'];
     const csv = [cols, ...sorted.map((e) => cols.map((c) => e[c]))]
       .map((r) => r.map(csvCell).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -82,88 +73,85 @@ export default function AuditPage() {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     record(user.id, 'EXPORT_AUDIT', `rows=${sorted.length}`);
-    flash.setMsg({ ok: true, text: `Exported ${sorted.length} audit events to CSV. The export was itself audited.` });
+    flash.setMsg({ ok: true, text: `Exported ${sorted.length} returned audit records to CSV.` });
   };
 
   return <Page
     title="Audit trail"
-    desc="Every write is persisted in a SHA-256 hash chain. Verification re-reads the stored rows and recomputes each hash."
+    desc="Platform-wide administrative events and the global server ledger are separate evidence scopes; ledger verification does not certify the event list."
     wide
     actions={<>
-      <button className="btn" onClick={exportCsv} disabled={!can(user.role, 'export') || !sorted.length} title={can(user.role, 'export') ? '' : 'Your role cannot export audit data'}><Icon name="download" size={14} /> Export CSV</button>
-      <button className="btn primary" onClick={verify} disabled={flash.busy || checking}><Icon name="shield" size={14} /> {flash.busy ? 'Verifying…' : 'Verify chain'}</button>
+      <button className="btn" onClick={exportCsv} disabled={!canReadPlatformAudit || !can(user.role, 'export') || !sorted.length} title={can(user.role, 'export') ? '' : 'Your role cannot export audit data'}><Icon name="download" size={14} /> Export CSV</button>
+      <button className="btn primary" onClick={verify} disabled={!canReadPlatformAudit || flash.busy || checking}><Icon name="shield" size={14} /> {flash.busy ? 'Verifying…' : 'Verify chain'}</button>
     </>}
   >
     <StatGrid cols={4}>
-      <Stat label="Audit events" value={rows.length} icon="history" tone="blue" sub={serverEvents.length ? `${serverEvents.length} from server` : 'Local chain'} />
-      <Stat label="Chain state" value={checking ? 'Checking…' : check?.ok ? 'Intact' : 'Broken'} icon={check?.ok === false ? 'warn' : 'shield'} tone={checking ? 'blue' : check?.ok ? 'green' : 'red'} sub={check?.ok ? `${check.count} entries verified` : check?.at ? `First mismatch at #${check.at}` : 'Not yet verified'} />
+      <Stat label="Audit records returned" value={rows.length} icon="history" tone="blue" sub="Platform-wide event source; maximum 500" />
+      <Stat label="Global ledger state" value={checking ? 'Checking…' : check?.ok ? 'Intact' : check?.status === 'TAMPERED' ? 'Tampered' : 'Unavailable'} icon={check?.status === 'TAMPERED' ? 'warn' : 'shield'} tone={checking ? 'blue' : check?.ok ? 'green' : 'red'} sub={check?.ok ? `${check.count} ledger blocks verified` : check?.error || 'Verification unavailable'} />
       <Stat label="Actors" value={actors.length} icon="users" tone="violet" sub="Distinct identities" />
-      <Stat label="Last event" value={last ? ago(Date.parse(last.ts)) : '—'} icon="clock" tone="amber" sub={last ? eventLabel(last.event) : 'No events recorded'} />
+      <Stat label="Last returned event" value={last ? ago(Date.parse(last.recordedAt)) : '—'} icon="clock" tone="amber" sub={last ? eventLabel(last.event) : 'No events returned'} />
     </StatGrid>
 
     <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
 
-    {check && !check.ok && !check.error && <Alert tone="danger" title="Audit chain integrity failure">
-      Entry #{check.at} does not match its recorded hash. Treat the workspace as compromised and preserve a copy before making further changes.
+    <Alert tone="info" title="Evidence scope">Event count, export, and rows are from the platform administrative-event endpoint. The independently verified ledger is a separate platform-wide store; no event-list row is represented as a ledger block.</Alert>
+    {serverError && <Alert tone="danger" title="Server audit events unavailable">{serverError}</Alert>}
+
+    {check?.status === 'TAMPERED' && <Alert tone="danger" title="Global ledger integrity failure">
+      The server verifier reports that the global ledger is tampered. Preserve the evidence and investigate before relying on its contents.
     </Alert>}
     {check?.error && <Alert tone="warn" title="Verification could not complete">{check.error}</Alert>}
 
-    <Card title="Chain details" desc="The head hash commits to every preceding entry.">
+    <Card title="Global ledger verification" desc="This result comes from the ledger verifier and is not derived from the event-list rows.">
       <div className="two">
         <KeyValue cols={2} items={[
-          ['Algorithm', 'SHA-256'],
-          ['Genesis', 'GENESIS'],
-          ['Entries', rows.length],
-          ['Head sequence', last ? `#${last.seq}` : '—'],
-          ['Head hash', last ? <code key="h" className="mono">{last.hash?.slice(0, 24)}…</code> : '—'],
-          ['Last write', last ? fmt(Date.parse(last.ts)) : '—'],
+          ['Verification status', checking ? 'Checking' : check?.ok ? 'INTACT' : check?.status === 'TAMPERED' ? 'TAMPERED' : 'Unavailable'],
+          ['Verified ledger blocks', check?.ok ? check.count : '—'],
+          ['Event rows returned', rows.length],
+          ['Event-list scope', 'Platform-wide administrative events; maximum 500 rows'],
         ]} />
         <div className="stack">
-          <Alert tone={check?.ok ? 'success' : check?.ok === false ? 'danger' : 'info'} title={checking ? 'Verifying stored chain' : check?.ok ? 'Chain intact' : 'Verification failed'}>
-            {checking ? 'Recomputing hashes from the persisted audit rows…' : check?.ok ? `All ${check.count} entries are linked correctly.` : check?.at ? `The chain diverges at entry #${check.at}.` : 'Run a verification to confirm integrity.'}
+          <Alert tone={checking ? 'info' : check?.ok ? 'success' : check?.status === 'TAMPERED' ? 'danger' : 'warn'} title={checking ? 'Verifying global ledger' : check?.ok ? 'Ledger intact' : check?.status === 'TAMPERED' ? 'Ledger tampered' : 'Verification unavailable'}>
+            {checking ? 'The server is checking the global ledger.' : check?.ok ? `${check.count} ledger blocks passed server verification.` : check?.error || 'The server did not confirm ledger integrity.'}
           </Alert>
-          {last && <CopyField label="Latest hash" value={last.hash} />}
-          <p className="muted sm">Exports include the previous hash for every row so an independent reviewer can recompute the chain.</p>
+          <p className="muted sm">The event endpoint does not return cryptographic chain fields. The CSV therefore contains only fields supplied by that event source.</p>
         </div>
       </div>
     </Card>
 
     <DataTable
       title="Event log"
-      desc="Newest first. Select an entry to inspect its full hash and link."
+      desc="Newest first from the authorized server audit endpoint. Select an entry to inspect the fields returned by that source."
       rows={sorted}
-      search={(r) => `${r.seq} ${r.actor} ${r.event} ${r.detail} ${r.hash}`}
+      search={(r) => `${r.actor} ${r.event} ${r.subjectType} ${r.subjectId} ${r.detail}`}
       onRow={setView}
-      defaultSort={{ key: 'seq', dir: 'desc' }}
+      defaultSort={{ key: 'recordedAt', dir: 'desc' }}
       filters={[
         { key: 'actor', label: 'Actor', options: actors.map((a) => ({ v: a, l: a })) },
         { key: 'event', label: 'Event', options: events.slice(0, 80).map((e) => ({ v: e, l: e })) },
       ]}
       columns={[
-        { key: 'seq', label: '#', width: 72, sortable: true, mono: true },
-        { key: 'ts', label: 'Time', sortable: true, render: (e) => <span title={e.ts}>{fmt(Date.parse(e.ts))}</span> },
+        { key: 'recordedAt', label: 'Time', sortable: true, render: (e) => <span title={e.recordedAt}>{fmt(Date.parse(e.recordedAt))}</span> },
         { key: 'actor', label: 'Actor', mono: true, render: (e) => <span className="mono">{e.actor}</span> },
         { key: 'event', label: 'Event', render: (e) => <Badge value={eventLabel(e.event)} className={EVENT_TONE(e.event)} /> },
+        { key: 'subjectType', label: 'Subject', render: (e) => <span>{e.subjectType || '—'}{e.subjectId ? ` · ${e.subjectId}` : ''}</span> },
         { key: 'detail', label: 'Detail', render: (e) => <span className="muted">{e.detail || '—'}</span> },
-        { key: 'hash', label: 'Hash', render: (e) => <span className="mono muted" title={e.hash}>{e.hash ? `${e.hash.slice(0, 14)}…` : '—'}</span> },
       ]}
-      empty={<div className="empty"><b>No audit events yet</b><p className="muted">Sign-in, configuration and lifecycle actions will appear here.</p></div>}
+      empty={<div className="empty"><b>No administrative events returned</b><p className="muted">This is an empty result from the authorized platform audit endpoint, not proof that other audit stores are empty.</p></div>}
     />
 
-    {view && <Modal title={`Audit entry #${view.seq}`} desc="Immutable record from the local hash chain." onClose={() => setView(null)} wide
+    {view && <Modal title={eventLabel(view.event)} desc="Platform administrative event. Its fields are not treated as a ledger block." onClose={() => setView(null)} wide
       footer={<button className="btn" onClick={() => setView(null)}>Close</button>}>
       <div className="stack">
-        <div className="row"><Badge value={eventLabel(view.event)} className={EVENT_TONE(view.event)} /><span className="muted sm">{fmt(Date.parse(view.ts))}</span></div>
+        <div className="row"><Badge value={eventLabel(view.event)} className={EVENT_TONE(view.event)} /><span className="muted sm">{fmt(Date.parse(view.recordedAt))}</span></div>
         <KeyValue cols={2} items={[
-          ['Sequence', `#${view.seq}`],
-          ['Timestamp (UTC)', view.ts],
+          ['Timestamp', view.recordedAt],
           ['Actor', <code key="a" className="mono">{view.actor}</code>],
           ['Event', eventLabel(view.event)],
+          ['Subject type', view.subjectType || '—'],
+          ['Subject ID', view.subjectId || '—'],
           ['Detail', view.detail || '—'],
         ]} />
-        <CopyField label="Previous hash" value={view.prev} />
-        <CopyField label="Entry hash" value={view.hash} />
-        <Alert tone="info">Altering any field changes the entry hash and breaks every later link, which is why the verifier reports the first divergence.</Alert>
       </div>
     </Modal>}
   </Page>;

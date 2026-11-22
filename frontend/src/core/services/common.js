@@ -1,8 +1,6 @@
 import { can, isGlobal } from '../security/rbac';
 import { record } from '../security/auditChain';
 import { randomId, sha256 } from '../security/crypto';
-import { get, put } from '../db/db';
-import { genKeyPair } from '../security/crypto';
 import { clean } from '../security/sanitize';
 
 export const id = (p) => `${p}_${randomId(5)}`;
@@ -31,11 +29,6 @@ export const cmpVer = (a, b) => {
   const pa = String(a).includes('-'), pb = String(b).includes('-'); return pa === pb ? 0 : pa ? -1 : 1;
 };
 export const seatLabel = (i) => String.fromCharCode(65 + Math.floor(i / 16)) + String((i % 16) + 1).padStart(2, '0');
-export async function ensureKey(kid) {
-  let k = await get('keys', kid);
-  if (!k) { const p = await genKeyPair(); k = { id: kid, priv: p.privateKey, pub: await crypto.subtle.exportKey('jwk', p.publicKey) }; await put('keys', k); }
-  return k;
-}
 export const PCRS = [0, 2, 4, 7, 11];
 export function genQuestions(n, rnd = Math.random) {
   const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1)); const out = [];

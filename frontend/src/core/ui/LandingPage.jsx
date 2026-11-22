@@ -1,19 +1,31 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../auth/AuthContext';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import SppioLogo, { SppioSymbol } from './SppioLogo';
+import PublicHeader from './PublicHeader';
+import PublicFooter from './PublicFooter';
+import SppioShowcase from './SppioShowcase';
+import usePageMeta from './usePageMeta';
 
 export default function LandingPage() {
-  const { user } = useAuth();
-  const navigate = useNavigate();
+  usePageMeta({
+    title: 'SPPIO | High-Assurance Assessment & Enterprise Recruitment Platform',
+    description:
+      'SPPIO Open Aperture platform: hardware-rooted assessment stations, reviewable audit evidence, and institutional onboarding for high-stakes exams and technical hiring.',
+    path: '/',
+  });
 
-  // Navigation state
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
-  const [activeTechLayer, setActiveTechLayer] = useState(0);
   const [showSpecModal, setShowSpecModal] = useState(false);
-  const [cockpitTab, setCockpitTab] = useState('command'); // 'command' | 'kiosk' | 'forensics' | 'physical'
   const [suiteCategory, setSuiteCategory] = useState('all'); // 'all' | 'endpoint' | 'intelligence' | 'cloud'
+
+  useEffect(() => {
+    if (!showSpecModal) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setShowSpecModal(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [showSpecModal]);
 
   // Contact form state
   const [formData, setFormData] = useState({
@@ -245,70 +257,9 @@ export default function LandingPage() {
 
   return (
     <div id="top" tabIndex="-1" className="sppio-website">
-      {/* ----------------- Header & Navigation ----------------- */}
-      <header className="sppio-header" role="banner">
-        <div className="sppio-container">
-          <div className="sppio-header-inner">
-            <Link to="/" className="sppio-brand-link" aria-label="SPPIO Home">
-              <SppioLogo width={164} accent="#B54F34" ink="#302337" />
-            </Link>
+      <PublicHeader />
 
-            <nav className="sppio-nav" aria-label="Primary navigation">
-              <a href="#suite" className="sppio-nav-item">Products</a>
-              <Link to="/solutions" className="sppio-nav-item">Solutions</Link>
-              <a href="#capabilities" className="sppio-nav-item">Capabilities</a>
-              <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
-              <a href="#deployments" className="sppio-nav-item">Deployments</a>
-              <a href="#company" className="sppio-nav-item">Company</a>
-            </nav>
-
-            <div className="sppio-header-actions">
-              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>
-                Institution Onboarding
-              </Link>
-              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
-              <Link to="/login" className="sppio-btn-ghost">
-                Sign In
-              </Link>
-              <a href="#contact" className="sppio-btn-primary">
-                Request Briefing
-              </a>
-              <button
-                type="button"
-                className="sppio-mobile-toggle"
-                aria-label="Toggle navigation"
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  {mobileMenuOpen ? (
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  ) : (
-                    <path d="M3 12h18M3 6h18M3 18h18" />
-                  )}
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile Navigation Drawer */}
-        {mobileMenuOpen && (
-          <div className="sppio-mobile-drawer" style={{ background: '#F6F2ED', borderBottom: '1px solid #DCD5D2', padding: '20px 32px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <a href="#suite" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Products</a>
-              <Link to="/solutions" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Solutions</Link>
-              <a href="#capabilities" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Capabilities</a>
-              <Link to="/architecture" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Architecture</Link>
-              <a href="#deployments" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Deployments</a>
-              <a href="#company" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Company</a>
-              <a href="#contact" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Request Briefing</a>
-              <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Institution Onboarding</Link>
-              <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)} style={{ color: '#302337', fontWeight: 700, textDecoration: 'none' }}>Track Application</Link>
-              <Link to="/login" onClick={() => setMobileMenuOpen(false)} style={{ color: '#B54F34', fontWeight: 700, textDecoration: 'none' }}>Sign In →</Link>
-            </div>
-          </div>
-        )}
-      </header>
+      <main id="main-content">
 
       {/* ----------------- Hero Section ----------------- */}
       <section className="sppio-hero-section">
@@ -338,234 +289,38 @@ export default function LandingPage() {
               </div>
             </div>
 
-            {/* Illustrative product preview; not connected to live system state. */}
             <div className="sppio-hero-visual">
-              <p role="note" style={{ fontSize: '12px', color: '#756F79', margin: '0 0 8px' }}>Illustrative product preview — not live system data.</p>
-              <div className="sppio-aperture-frame">
-                {/* Cockpit Window Titlebar */}
-                <div className="sppio-cockpit-bar">
-                  <div className="sppio-cockpit-dots">
-                    <span className="sppio-cockpit-dot red" />
-                    <span className="sppio-cockpit-dot yellow" />
-                    <span className="sppio-cockpit-dot green" />
-                    <span style={{ fontSize: '11.5px', color: '#A69BA9', marginLeft: '8px', fontWeight: 650, fontFamily: 'var(--sppio-font-mono)' }}>
-                      SPPIO Cockpit v2.18
-                    </span>
-                  </div>
-                  <div className="sppio-status-chip">
-                    <span className="sppio-status-pulse" />
-                    <span>Preview</span>
-                  </div>
-                </div>
-
-                {/* Interactive Product Tabs */}
-                <div className="sppio-cockpit-tabs" role="tablist">
-                  <button
-                    type="button"
-                    className={`sppio-cockpit-tab ${cockpitTab === 'command' ? 'active' : ''}`}
-                    onClick={() => setCockpitTab('command')}
-                  >
-                    <span>📊</span> Command Portal
-                  </button>
-                  <button
-                    type="button"
-                    className={`sppio-cockpit-tab ${cockpitTab === 'kiosk' ? 'active' : ''}`}
-                    onClick={() => setCockpitTab('kiosk')}
-                  >
-                    <span>💻</span> Kiosk Sandbox
-                  </button>
-                  <button
-                    type="button"
-                    className={`sppio-cockpit-tab ${cockpitTab === 'forensics' ? 'active' : ''}`}
-                    onClick={() => setCockpitTab('forensics')}
-                  >
-                    <span>🔬</span> Viva Forensics
-                  </button>
-                  <button
-                    type="button"
-                    className={`sppio-cockpit-tab ${cockpitTab === 'physical' ? 'active' : ''}`}
-                    onClick={() => setCockpitTab('physical')}
-                  >
-                    <span>🛡️</span> Port Guard
-                  </button>
-                </div>
-
-                {/* Cockpit Body Content */}
-                <div className="sppio-cockpit-body">
-                  {cockpitTab === 'command' && (
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
-                          SPPIO-Command™ Live Candidate Fleet
-                        </span>
-                        <span style={{ fontSize: '11px', color: '#4ADE80', fontWeight: 650 }}>● Sample station telemetry</span>
-                      </div>
-
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {[
-                          { station: 'Station #042', cand: 'Sarah Lin', role: 'Staff Frontend Architect', risk: '0.01 LOW', wpm: '74 WPM', face: 'Aligned' },
-                          { station: 'Station #043', cand: 'Devon Miller', role: 'Staff Distributed Systems', risk: '0.02 LOW', wpm: '68 WPM', face: 'Aligned' },
-                          { station: 'Station #044', cand: 'Aisha Patel', role: 'ML Platform Lead', risk: '0.01 LOW', wpm: '82 WPM', face: 'Aligned' },
-                        ].map((row, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              background: 'rgba(255, 255, 255, 0.04)',
-                              border: '1px solid rgba(255, 255, 255, 0.08)',
-                              borderRadius: '8px',
-                              padding: '10px 14px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              fontSize: '12px',
-                            }}
-                          >
-                            <div>
-                              <div style={{ fontWeight: 700, color: '#FFFFFF' }}>{row.cand} <span style={{ color: '#A69BA9', fontWeight: 400 }}>({row.station})</span></div>
-                              <div style={{ color: '#FFAE99', fontSize: '11px' }}>{row.role}</div>
-                            </div>
-                            <div style={{ textAlign: 'right', display: 'flex', gap: '12px', alignItems: 'center' }}>
-                              <span style={{ fontFamily: 'var(--sppio-font-mono)', color: '#C3B7C6', fontSize: '11px' }}>{row.wpm}</span>
-                              <span style={{ background: 'rgba(74, 222, 128, 0.15)', color: '#4ADE80', padding: '2px 8px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                                {row.risk}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {cockpitTab === 'kiosk' && (
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
-                          SPPIO-Kiosk™ Single-Application IDE
-                        </span>
-                        <span style={{ background: 'rgba(181, 79, 52, 0.25)', color: '#FFAE99', padding: '2px 8px', borderRadius: '4px', fontSize: '10.5px', fontWeight: 700 }}>
-                          🔒 Clipboard Host-Locked
-                        </span>
-                      </div>
-
-                      <div style={{ background: 'rgba(0, 0, 0, 0.35)', borderRadius: '8px', padding: '12px 14px', fontFamily: 'var(--sppio-font-mono)', fontSize: '12px', lineHeight: 1.5, color: '#F6F2ED', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                        <div style={{ color: '#756F79' }}>// Contained in RAM • Zero host OS access • Anti-AI injection</div>
-                        <div><span style={{ color: '#FFAE99' }}>def</span> <span style={{ color: '#4ADE80' }}>verify_transaction_ledger</span>(blocks):</div>
-                        <div style={{ paddingLeft: '16px' }}><span style={{ color: '#FFAE99' }}>for</span> i <span style={{ color: '#FFAE99' }}>in</span> range(1, len(blocks)):</div>
-                        <div style={{ paddingLeft: '32px' }}><span style={{ color: '#FFAE99' }}>if</span> blocks[i].prev != blocks[i-1].hash:</div>
-                        <div style={{ paddingLeft: '48px' }}><span style={{ color: '#FFAE99' }}>return</span> <span style={{ color: '#F87171' }}>False</span></div>
-                        <div style={{ paddingLeft: '16px', color: '#4ADE80' }}><span style={{ color: '#FFAE99' }}>return</span> True</div>
-                      </div>
-
-                      <div style={{ marginTop: '12px', display: 'flex', gap: '8px', fontSize: '11px', color: '#4ADE80', alignItems: 'center' }}>
-                        <span>✓ Test 1: Memory Safety [OK]</span>
-                        <span>•</span>
-                        <span>✓ Test 2: Concurrency [OK]</span>
-                        <span>•</span>
-                        <span style={{ color: '#A69BA9' }}>0 Remote Tasks</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {cockpitTab === 'forensics' && (
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
-                          SPPIO-Forensics™ Code Viva Defense
-                        </span>
-                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Keystrokes Chained</span>
-                      </div>
-
-                      <div style={{ background: 'rgba(255, 255, 255, 0.04)', borderRadius: '8px', padding: '12px', border: '1px solid rgba(255, 255, 255, 0.08)', marginBottom: '10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', color: '#C3B7C6', marginBottom: '6px' }}>
-                          <span>Time-Lapse Code Construction Replay</span>
-                          <span style={{ fontFamily: 'var(--sppio-font-mono)' }}>00:00 ━━━━●━━━━ 38:40</span>
-                        </div>
-                        <div style={{ height: '4px', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-                          <div style={{ width: '68%', height: '100%', background: '#B54F34' }} />
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(181, 79, 52, 0.12)', border: '1px solid rgba(181, 79, 52, 0.3)', borderRadius: '8px', padding: '12px', fontSize: '12px' }}>
-                        <div style={{ color: '#FFAE99', fontWeight: 700, marginBottom: '4px', fontSize: '11px', textTransform: 'uppercase' }}>
-                          Targeted Viva Defense Prompt
-                        </div>
-                        <div style={{ color: '#FFFFFF', lineHeight: 1.45 }}>
-                          &ldquo;Candidate typed lines 12-28 with natural cadence (72 WPM). Inquire about state cache eviction logic at timestamp 24:15.&rdquo;
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {cockpitTab === 'physical' && (
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
-                          SPPIO-PhysicalGuard™ Topology Shield
-                        </span>
-                        <span style={{ color: '#4ADE80', fontSize: '11px', fontWeight: 650 }}>● Illustrative control state</span>
-                      </div>
-
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {[
-                          { dev: 'Standard Input Keyboard', status: 'Whitelisted · VID:PID Bound', ok: true },
-                          { dev: 'Optical Mouse', status: 'Whitelisted · HID Filter OK', ok: true },
-                          { dev: 'External HDMI Display Splitter', status: 'BLOCKED · Port Output Suppressed', ok: false },
-                          { dev: 'Keystroke Injector USB Dongle', status: 'BLOCKED · Kernel Endpoints Dropped', ok: false },
-                        ].map((d, idx) => (
-                          <div
-                            key={idx}
-                            style={{
-                              background: 'rgba(255, 255, 255, 0.04)',
-                              border: '1px solid rgba(255, 255, 255, 0.08)',
-                              borderRadius: '8px',
-                              padding: '8px 12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              fontSize: '11.5px',
-                            }}
-                          >
-                            <span style={{ color: '#FFFFFF', fontWeight: 600 }}>{d.dev}</span>
-                            <span style={{ color: d.ok ? '#4ADE80' : '#F87171', fontWeight: 700, fontSize: '10.5px' }}>
-                              {d.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Cockpit Window Footer */}
-                <div className="sppio-frame-footer">
-                  <span>Product preview — deployment behavior varies</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSpecModal(true)}
-                    style={{ background: 'none', border: 'none', color: '#FFAE99', cursor: 'pointer', fontWeight: 700, padding: 0 }}
-                  >
-                    View Architectural Specifications →
-                  </button>
-                </div>
-              </div>
+              <SppioShowcase onSpecs={() => setShowSpecModal(true)} />
             </div>
           </div>
         </div>
       </section>
 
-      <section aria-label="Choose your assessment use case" style={{ padding: '36px 0', background: '#FFFFFF' }}>
-        <div className="sppio-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-          {[
-            { title: 'Institutional Exams', desc: 'Explore onboarding for institutions and exam programs.', href: '/register-institution', action: 'Start institutional onboarding' },
-            { title: 'Enterprise Hiring', desc: 'Review hiring and assessment workflows for employers.', href: '/solutions#solutions-grid', action: 'Explore hiring solutions' },
-            { title: 'Technical Evaluation', desc: 'Discuss technical assessment requirements and deployment scope.', href: '#contact', action: 'Request a technical briefing' },
-          ].map((item) => (
-            <article key={item.title} style={{ border: '1px solid #DCD5D2', borderRadius: '12px', padding: '20px', background: '#FBF9F7' }}>
-              <h2 style={{ fontSize: '17px', margin: '0 0 8px', color: '#302337' }}>{item.title}</h2>
-              <p style={{ fontSize: '13px', lineHeight: 1.5, color: '#756F79', margin: '0 0 14px' }}>{item.desc}</p>
-              <Link to={item.href} style={{ color: '#A4442D', fontWeight: 700, fontSize: '13px' }}>{item.action} →</Link>
-            </article>
-          ))}
+      <section aria-labelledby="use-case-heading" style={{ padding: '40px 0', background: '#FFFFFF', borderBottom: '1px solid #DCD5D2' }}>
+        <div className="sppio-container">
+          <div className="sppio-use-case-head">
+            <div>
+              <span className="sppio-section-eyebrow">Where teams start</span>
+              <h2 id="use-case-heading" className="sppio-use-case-title">Choose the path closest to your programme</h2>
+            </div>
+            <p className="sppio-use-case-desc">
+              Each path leads to a short outline of the workflow, the controls involved, and what to confirm before a pilot.
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+            {[
+              { title: 'Institutional Exams', desc: 'Explore onboarding for institutions and exam programs.', href: '/register-institution', action: 'Start institutional onboarding' },
+              { title: 'Enterprise Hiring', desc: 'Review hiring and assessment workflows for employers.', href: '/solutions#solutions-grid', action: 'Explore hiring solutions' },
+              { title: 'Technical Evaluation', desc: 'Discuss technical assessment requirements and deployment scope.', href: '#contact', action: 'Request a technical briefing' },
+            ].map((item) => (
+              <article key={item.title} className="sppio-use-case-card" style={{ border: '1px solid #DCD5D2', borderRadius: '12px', padding: '20px', background: '#FBF9F7' }}>
+                <h3 style={{ fontSize: '17px', margin: '0 0 8px', color: '#302337' }}>{item.title}</h3>
+                <p style={{ fontSize: '13px', lineHeight: 1.5, color: '#756F79', margin: '0 0 14px' }}>{item.desc}</p>
+                <Link to={item.href} className="sppio-use-case-link">{item.action} →</Link>
+              </article>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -626,10 +381,10 @@ export default function LandingPage() {
           <div className="sppio-section-header">
             <div>
               <span className="sppio-section-eyebrow">Enterprise Capabilities</span>
-              <h2 className="sppio-section-title">Engineered for absolute integrity.</h2>
+              <h2 className="sppio-section-title">Engineered for reviewable integrity.</h2>
             </div>
             <p className="sppio-section-desc">
-              Four verified architectural pillars ensuring that high-stakes examinations execute in strict hardware isolation with non-repudiable audit trails.
+              Four architectural pillars describing how high-stakes assessments are intended to run in an isolated station with reviewable audit evidence.
             </p>
           </div>
 
@@ -685,7 +440,7 @@ export default function LandingPage() {
               <h2 className="sppio-section-title">Layered security controls.</h2>
             </div>
             <p className="sppio-section-desc">
-              Security is not a reactive detection layer; it is an architectural property enforced from physical silicon up through the display compositor and cryptographic ledger.
+              Security is treated as an architectural property rather than a single detection layer: station policies, boot measurements, display handling, and audit chaining are separate control areas, each dependent on the hardware and configuration of the deployment.
             </p>
           </div>
 
@@ -753,6 +508,7 @@ export default function LandingPage() {
               .map((prod, idx) => (
               <div
                 key={idx}
+                className="sppio-product-card"
                 style={{
                   background: '#F6F2ED',
                   border: '1px solid #DCD5D2',
@@ -868,14 +624,14 @@ export default function LandingPage() {
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong>Hardware-Rooted Attestation</strong>
-                    <p>Mathematical proof anchored in physical silicon, validating every workstation before execution begins.</p>
+                    <p>Boot measurements anchored in supported hardware, where the platform and firmware configuration allow them to be collected and verified.</p>
                   </div>
                 </div>
                 <div className="sppio-pillar-item">
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong>Auditable Accountability</strong>
-                    <p>Non-repudiable cryptographic audit logs with strict separation of duties and dual-custody governance.</p>
+                    <p>Hash-linked audit records intended to make certain changes detectable, alongside separation of duties and dual-custody options for policy changes.</p>
                   </div>
                 </div>
               </div>
@@ -909,6 +665,11 @@ export default function LandingPage() {
                   <a className="sppio-method-val" href="mailto:briefings@sppio.io">briefings@sppio.io</a>
                 </div>
               </div>
+
+              <p className="sppio-contact-note">
+                Prefer the detail first?{' '}
+                <Link to="/architecture">Review the control boundaries and deployment prerequisites</Link> before the call.
+              </p>
             </div>
 
             {/* Inquiry details are passed to the user's email app, not submitted to a backend. */}
@@ -1011,68 +772,21 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ----------------- Footer ----------------- */}
-      <footer className="sppio-footer" role="contentinfo">
-        <div className="sppio-container">
-          <div className="sppio-footer-grid">
-            <div className="sppio-footer-brand">
-              <SppioLogo width={160} accent="#B54F34" ink="#FFFFFF" />
-              <p>
-                Open Aperture architecture. High-assurance infrastructure engineered for national, institutional, and corporate assessment integrity.
-              </p>
-              <p style={{ fontSize: '12px', lineHeight: 1.5 }}>Product descriptions are informational. Confirm current capabilities, deployment prerequisites, and assurance evidence before procurement.</p>
-            </div>
+      </main>
 
-            <div className="sppio-footer-col">
-              <h5>Public Architecture</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/landing">Platform Overview</Link></li>
-                <li><Link to="/architecture">Silicon Attestation</Link></li>
-                <li><Link to="/solutions">Enterprise Solutions</Link></li>
-                <li><a href="#capabilities">Enclave Capabilities</a></li>
-              </ul>
-            </div>
-
-            <div className="sppio-footer-col">
-              <h5>Governance</h5>
-              <ul className="sppio-footer-links">
-                <li><a href="#technology">Two-Person Authorization</a></li>
-                <li><a href="#technology">Role-Based Access Control</a></li>
-                <li><a href="#technology">Audit Event Handling</a></li>
-                <li><a href="#deployments">Compliance &amp; Attestation</a></li>
-              </ul>
-            </div>
-
-            <div className="sppio-footer-col">
-              <h5>Console Access</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
-                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
-                <li><Link to="/register-institution">Institution Onboarding</Link></li>
-                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
-                <li><Link to="/recovery">Emergency TOTP Recovery</Link></li>
-                <li><a href="#contact">Architecture Inquiry</a></li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="sppio-footer-bottom">
-            <div>
-              © 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.
-            </div>
-            <div className="sppio-legal-links">
-              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                Back to Top ↑
-              </a>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
 
       {/* ----------------- Architecture Specs Modal ----------------- */}
       {showSpecModal && (
         <div className="polished-modal-backdrop" onClick={() => setShowSpecModal(false)}>
-          <div className="polished-modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px' }}>
+          <div
+            className="polished-modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Architecture specifications"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '640px' }}
+          >
             <div className="modal-header-row">
               <div>
                 <h3 className="modal-title">Hardware Attestation &amp; Compositor Specifications</h3>
@@ -1103,7 +817,7 @@ export default function LandingPage() {
                   2. Isolated Station Environment
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  The examination environment operates in strict single-application isolation without an accessible desktop interface, background process access, or host key shortcuts. Display cloning, unauthorized peripheral connections, and external media are suppressed at the operating system layer.
+                  The examination environment is intended to run as a single-application session without an accessible desktop interface, background process access, or host key shortcuts. Display cloning, unauthorized peripheral connections, and external media are restricted by the configured station profile; verify coverage for the target hardware.
                 </p>
               </div>
 
@@ -1112,7 +826,7 @@ export default function LandingPage() {
                   3. Tamper-Evident Chained Audit Logging
                 </strong>
                 <p style={{ margin: 0, color: '#756F79' }}>
-                  All supervisor interactions, candidate milestones, and workstation telemetry are cryptographically linked into an immutable event stream. Each record is verified against preceding milestones, ensuring complete historical non-repudiation and auditability for institutional compliance.
+                  Supervisor interactions, candidate milestones, and workstation telemetry can be hash-linked into a tamper-evident event stream. Detectability depends on protected signing keys, independent checkpoints, and the verification evidence available for the deployment.
                 </p>
               </div>
 

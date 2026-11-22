@@ -61,9 +61,7 @@ export async function createInstitution(a, input) {
   for (const d of domains) if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) fail(`${d} is not a valid domain.`);
   if (input.contactEmail && !isEmail(input.contactEmail)) fail('Enter a valid contact email.');
 
-  /* H5 fix: backend must succeed first — no local-only institution creation.
-   * If the backend is unreachable or rejects, we fail immediately instead of
-   * silently creating a local-only IndexedDB record. */
+  /* The backend must succeed before an institution is considered created. */
   let backendRes;
   try {
     backendRes = await Api.createInstitution({

@@ -1,13 +1,11 @@
 import { all, get, put } from '../../core/db/db';
-import { sha256, canon, verify } from '../../core/security/crypto';
-import { safeHttpsUrl, clean } from '../../core/security/sanitize';
+import { clean, normalizeHttpsOrigin } from '../../core/security/sanitize';
 import { id, need, fail, log, requireReason } from '../../core/services/common';
 import { can } from '../../core/security/rbac';
 import { evaluate } from '../firewall/service';
 import { create as requestApproval } from '../../core/services/approvals';
 
 export const ACTIONS = ['Isolate device & notify supervisor', 'Warn candidate & log', 'Terminate session'];
-const bodyOf = (p) => canon({ name: p.name, version: p.version, config: p.config, tenantId: p.tenantId });
 export const weakened = (prev, c) => (prev.requireTpm && !c.requireTpm) || (prev.kioskLockdown && !c.kioskLockdown) || (!prev.allowUsb && c.allowUsb);
 
 export function validateConfig(c, rules) {
@@ -15,9 +13,9 @@ export function validateConfig(c, rules) {
   if (!ACTIONS.includes(c.onViolation)) e.push('Pick a violation action.');
   if (!c.origins?.length) e.push('Add at least one allowed origin.');
   for (const o of c.origins || []) {
-    const u = safeHttpsUrl(o);
-    if (!u) { e.push(`${o}: must be a valid https URL.`); continue; }
-    const x = new URL(u), d = evaluate(rules, x.hostname, Number(x.port || 443));
+    const origin = normalizeHttpsOrigin(o);
+    if (!origin) { e.push(`${o}: must be an HTTPS origin without credentials, paths, query strings, or fragments.`); continue; }
+    const x = new URL(origin), d = evaluate(rules, x.hostname, Number(x.port || 443));
     if (d.action !== 'allow') e.push(`${x.hostname} is blocked by the firewall (${d.rule?.name || 'default deny'}).`);
   }
   return e;
@@ -26,7 +24,14 @@ export async function createPolicy(a, { tenantId, name, requireTpm, kioskLockdow
   need(a, 'policy.edit');
   name = clean(name, 60).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
   if (name.length < 3) fail('Policy name needs 3+ characters (letters, digits, -).');
-  const list = Array.isArray(origins) ? origins : String(origins || '').split(/[\s,]+/).filter(Boolean);
+  const rawOrigins = Array.isArray(origins) ? origins : String(origins || '').split(/[\s,]+/).filter(Boolean);
+  const list = [...new Set(rawOrigins.filter((origin) => String(origin || '').trim()).map((value) => {
+    const input = String(value).trim();
+    const normalized = normalizeHttpsOrigin(input);
+    if (!normalized) fail(`${input}: must be an HTTPS origin without credentials, paths, query strings, or fragments.`);
+    return normalized;
+  }))];
+  if (!list.length) fail('Add at least one allowed origin.');
   const same = (await all('policies')).filter((p) => p.tenantId === tenantId && p.name === name);
   const p = { id: id('pol'), tenantId, name, version: Math.max(0, ...same.map((x) => x.version)) + 1, status: 'draft', createdBy: a.id, createdAt: Date.now(),
     config: { requireTpm: !!requireTpm, kioskLockdown: !!kioskLockdown, allowUsb: !!allowUsb, onViolation, origins: list.map((o) => o.trim()) } };
@@ -68,10 +73,6 @@ export async function requestPolicyPublication(a, pid, reason) {
 export async function publishPolicy(a) {
   need(a, 'policy.publish');
   fail('Direct policy publication is disabled. Submit a policy-publish approval request instead.');
-}
-export async function verifyPolicy(p) {
-  if (!p.sig || !p.hash || (await sha256(bodyOf(p))) !== p.hash) return false;
-  const k = await get('keys', 'policy-signer'); return !!k && verify(k.pub, p.hash, p.sig);
 }
 export async function discardDraft(a, p) { need(a, 'policy.edit'); if (p.status !== 'draft') fail('Only drafts can be discarded.'); await put('policies', { ...p, status: 'discarded' }); await log(a, 'POLICY_DISCARDED', `${p.name} v${p.version}`); }
 

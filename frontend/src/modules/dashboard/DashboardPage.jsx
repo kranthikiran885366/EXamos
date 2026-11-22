@@ -124,12 +124,26 @@ export default function DashboardPage() {
   const outstanding = invoices.filter((i) => ['open', 'overdue'].includes(i.status)).reduce((s, i) => s + (i.total || 0), 0);
   const global = isGlobal(user.role);
 
-  const scopeLabel = global ? `${tenants.length || telemetry?.institutions_count || 1} institutions` : inst?.name || 'Cambridge Assessment';
+  // Keep the subtitle and KPI on the same live telemetry count source.
+  const platformInstitutionCount = Number.isFinite(telemetry?.institutions_count)
+    ? telemetry.institutions_count
+    : null;
+  const scopeLabel = global
+    ? (platformInstitutionCount === null ? 'Platform institution count unavailable' : `${platformInstitutionCount} institutions (telemetry scope)`)
+    : inst?.name || 'Institution scope unavailable';
+  const fleetState = totalDevicesCount === null ? 'unknown'
+    : totalDevicesCount === 0 ? 'not enrolled'
+      : onlineCount === null ? 'unknown'
+        : onlineCount === 0 ? 'offline' : 'observed';
+  const trustState = totalDevicesCount === null ? 'unknown'
+    : totalDevicesCount === 0 ? 'not enrolled'
+      : attested === 0 ? 'unverified'
+        : attested === totalDevicesCount ? 'verified' : 'partial';
 
   return (
     <Page
       title={`${greeting()}, ${user.name.split(' ')[0]}`}
-      desc={`${roleLabel(user.role)} Â· ${scopeLabel} Â· Production Operations Center`}
+      desc={`${roleLabel(user.role)} · ${scopeLabel} · Production Operations Center`}
       actions={
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button
@@ -142,9 +156,9 @@ export default function DashboardPage() {
           <button className="btn" onClick={fetchLiveTelemetry} disabled={isRefreshing}>
             <Icon name="refresh" size={15} /> {isRefreshing ? 'Syncing...' : 'Refresh'}
           </button>
-          <Link className="btn" to="/kiosk">
+          {can(user.role, 'kiosk.manage') && <Link className="btn" to="/kiosk">
             <Icon name="device" size={15} /> Kiosk Operations
-          </Link>
+          </Link>}
           {can(user.role, 'exam.manage') && (
             <Link className="btn primary" to="/college/exams/new">
               <Icon name="plus" size={15} /> New exam
@@ -358,17 +372,17 @@ export default function DashboardPage() {
           value={onlineCount ?? '—'}
           unit={onlineCount === null ? '' : `/ ${totalDevicesCount}`}
           icon="device"
-          tone="green"
-          to="/kiosk"
+          tone={fleetState === 'observed' ? 'green' : 'amber'}
+          to="/devices"
           sub={attested === null ? 'Fleet data unavailable' : `${attested} server-verified`}
         />
         <Stat
-          label="Audit Ledger Blocks"
+          label="Global Ledger Blocks"
           value={ledgerData?.total_blocks ?? '—'}
           icon="shield"
           tone="violet"
           to="/admin/audit"
-          sub="HMAC-SHA256 Signed"
+          sub="Separately verified server ledger"
         />
         <Stat
           label="Security Incidents"
@@ -384,11 +398,7 @@ export default function DashboardPage() {
       <Card
         title="Active Kiosk & Candidate Lifecycle Pipeline"
         desc="Real-time terminal telemetry across the zero-trust examination sequence"
-        actions={
-          <Link className="mini" to="/kiosk">
-            Manage Kiosks & Dispatch
-          </Link>
-        }
+        actions={can(user.role, 'kiosk.manage') && <Link className="mini" to="/kiosk">Manage Kiosks & Dispatch</Link>}
       >
         <div
           style={{
@@ -401,33 +411,37 @@ export default function DashboardPage() {
           {[
             {
               step: '1. Boot & Kiosk Launch',
-              desc: 'Hardened UEFI ISO boots Cage Wayland directly onto /dev/tty1',
-              count: totalDevicesCount === null ? 'Unavailable' : `${totalDevicesCount} Online`,
-              state: totalDevicesCount === null ? 'blocked' : 'healthy',
+              desc: 'Fleet and kiosk state reported by the backend; this does not prove physical boot integrity',
+              count: totalDevicesCount === null ? 'Unavailable' : `${kioskActive ?? 0} Kiosk-active / ${totalDevicesCount} Enrolled`,
+              state: totalDevicesCount === null ? 'unknown'
+                : totalDevicesCount === 0 ? 'not enrolled'
+                  : kioskActive === totalDevicesCount ? 'observed' : kioskActive > 0 ? 'partial' : 'unverified',
             },
             {
               step: '2. TPM Quote Attest',
-              desc: 'Hardware PCR measurement validation with signed nonce release',
-              count: attested === null ? 'Unavailable' : `${attested} Attested`,
-              state: attested === null ? 'blocked' : 'healthy',
+              desc: 'Backend device trust decisions; freshness is bounded by the latest fleet response',
+              count: attested === null ? 'Unavailable' : `${attested} Server-verified / ${totalDevicesCount} Enrolled`,
+              state: trustState,
             },
             {
               step: '3. Candidate Onboarding',
-              desc: 'Camera diagnostic, academic integrity pledge, formula/sandbox check',
-              count: currentExamUrl?.includes('onboarding') ? 'Active Stream' : 'Ready',
-              state: 'ready',
+              desc: 'Configured exam URL only; candidate onboarding activity is not inferred from configuration',
+              count: currentExamUrl ? 'Exam URL configured' : 'Exam URL unavailable',
+              state: currentExamUrl ? 'configured' : 'unknown',
             },
             {
               step: '4. Lockdown Examination',
-              desc: 'Single-app Chromium sandbox, USB blocked, virtual terminals masked',
+              desc: 'Device kiosk-state observations; not a verification of all OS lockdown controls',
               count: `${live.length} Active Exams`,
-              state: 'healthy',
+              state: totalDevicesCount === null ? 'unknown'
+                : totalDevicesCount === 0 ? 'not enrolled'
+                  : kioskActive === totalDevicesCount ? 'observed' : kioskActive > 0 ? 'partial' : 'unverified',
             },
             {
-              step: '5. Sealed Submission',
-              desc: 'Cryptographic commitment to ledger & immediate exam key wipe',
-              count: `${submitted} Submitted`,
-              state: 'ready',
+              step: '5. Submission Activity',
+              desc: 'Submitted candidate count from server telemetry; count alone does not prove cryptographic sealing',
+              count: submitted === undefined || submitted === null ? 'Unavailable' : `${submitted} Submitted`,
+              state: submitted === undefined || submitted === null ? 'unknown' : 'observed',
             },
           ].map((flow, idx) => (
             <div
@@ -522,7 +536,7 @@ export default function DashboardPage() {
                     <div>
                       <b>{b.event}</b>
                       <br />
-                      <small className="muted">{b.detail} Â· {b.ts}</small>
+                      <small className="muted">{b.detail} · {b.ts}</small>
                     </div>
                   </div>
                   <span className="mono mini muted" style={{ fontSize: '10px' }}>
@@ -539,22 +553,31 @@ export default function DashboardPage() {
 
         <div>
           {/* Production Readiness & Appliance Diagnostics */}
-          <Card title="Appliance Posture & Readiness" desc="Hardening signals that govern examination security">
-            <div className="readiness-list">
-              <Progress label="Hardware TPM Attestation" value={attested ?? 0} max={totalDevicesCount ?? 0} />
-              <Progress label="Identity Verification" value={candidates.filter((c) => c.identity === 'verified').length} max={candidates.length} />
-              <Progress label="USB Storage Lockdown" value={usbLocked ?? 0} max={totalDevicesCount ?? 0} />
-              <Progress label="Cage Wayland Active" value={kioskActive ?? 0} max={totalDevicesCount ?? 0} />
-            </div>
+          <Card title="Appliance Posture & Readiness" desc="Evidence-derived posture; missing or zero-denominator evidence is not treated as healthy">
+            {totalDevicesCount === null || totalDevicesCount === 0
+              ? <Alert tone="warn" title={totalDevicesCount === null ? 'Fleet evidence unavailable' : 'No devices enrolled'}>
+                  {totalDevicesCount === null
+                    ? 'TPM, USB lockdown, and kiosk enforcement cannot be evaluated without a live fleet response.'
+                    : 'Device enforcement is unverified until at least one device is enrolled and reports current evidence.'}
+                </Alert>
+              : <div className="readiness-list">
+                <Progress label="Hardware TPM Attestation" value={attested ?? 0} max={totalDevicesCount} />
+                <Progress label="USB Storage Lockdown" value={usbLocked ?? 0} max={totalDevicesCount} />
+                <Progress label="Cage Wayland Active" value={kioskActive ?? 0} max={totalDevicesCount} />
+              </div>}
+            {candidates.length
+              ? <Progress label="Identity Verification" value={candidates.filter((c) => c.identity === 'verified').length} max={candidates.length} />
+              : <p className="muted sm">Identity verification: Unknown — no candidates are in scope.</p>}
+            <p className="muted sm">Fleet evidence refreshed {ago(lastUpdated)}.</p>
 
             <div className="mini-stats" style={{ marginTop: '14px' }}>
               <span>
                 <b>{telemetry?.devices_count ?? '—'}</b>
-                <small>Kiosks Active</small>
+                <small>Devices Enrolled</small>
               </span>
               <span>
-                <b>{telemetry?.institutions_count ?? '—'}</b>
-                <small>Institutions</small>
+                <b>{global ? platformInstitutionCount ?? '—' : tenantId ? 1 : '—'}</b>
+                <small>{global ? 'Institutions in platform telemetry' : 'Institutions in user scope'}</small>
               </span>
               <span>
                 <b>{typeof telemetry?.uptime_seconds === 'number' ? `${Math.floor(telemetry.uptime_seconds / 60)}m` : '—'}</b>
@@ -567,7 +590,7 @@ export default function DashboardPage() {
           <Card title="Core Command Modules" desc="Role-governed operational actions">
             <div className="quicklinks">
               {[
-                ['kiosk.view', '/kiosk', 'device', 'Kiosk Fleet'],
+                ['kiosk.manage', '/kiosk', 'device', 'Kiosk Fleet'],
                 ['exam.manage', '/college/exams', 'exam', 'Exams'],
                 ['candidate.manage', '/college/candidates', 'candidate', 'Candidates'],
                 ['security.view', '/security/overview', 'shield', 'Security'],
@@ -577,7 +600,7 @@ export default function DashboardPage() {
                 ['settings.view', '/admin/settings', 'settings', 'Settings'],
                 ['inst.view', '/admin/institutions', 'building', 'Institutions'],
               ]
-                .filter(([p]) => can(user.role, p) || true)
+                .filter(([p]) => can(user.role, p))
                 .slice(0, 9)
                 .map(([, to, icon, label]) => (
                   <Link key={to} to={to}>
@@ -592,7 +615,7 @@ export default function DashboardPage() {
           <Card
             title="Kiosk Active Broadcast"
             desc="Currently broadcasted to Wayland terminals"
-            actions={<Link className="mini" to="/kiosk">Dispatch New</Link>}
+            actions={can(user.role, 'kiosk.manage') && <Link className="mini" to="/kiosk">Dispatch New</Link>}
           >
             <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '8px', border: '1px solid var(--line)' }}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--mut)', letterSpacing: '0.04em' }}>ACTIVE URL</div>

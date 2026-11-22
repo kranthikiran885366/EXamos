@@ -31,6 +31,10 @@ export function SettingsPage() {
     const r = await run(() => saveConfig(user, cfg, reason || 'Platform settings updated'), 'Configuration saved.');
     if (r) { setReason(''); reload(); }
   };
+  const initialize = async () => {
+    const r = await run(() => saveConfig(user, cfg, reason || 'Initialize platform configuration defaults', true), 'Platform defaults saved.');
+    if (r) { setReason(''); reload(); }
+  };
   if (loading && !cfg) return <Page title="Platform settings"><Card><Loading label="Loading platform configuration…" /></Card></Page>;
   if (error) return <Page title="Platform settings"><Alert tone="danger">{error.message}</Alert></Page>;
   if (!cfg) return <Page title="Platform settings"><Card><Loading label="Preparing configuration…" /></Card></Page>;
@@ -42,6 +46,13 @@ export function SettingsPage() {
   return (
     <Page title="Platform settings" desc="Environment, session, security and operational defaults. Sensitive changes need platform approval unless you are a super administrator.">
       <Flash msg={msg} onClose={() => setMsg(null)} />
+      {cfg.configurationState === 'not-configured' && <Alert
+        tone="warn"
+        title="Platform configuration has not been saved yet"
+        action={<button className="btn" disabled={busy || !may('settings.manage')} onClick={initialize}>Initialize defaults</button>}
+      >
+        Safe defaults are shown below. Initialize them before relying on this environment; authorization and transport failures are reported separately.
+      </Alert>}
       <StatGrid cols={4}>
         <Stat label="Environment" value={cfg.environment} icon="settings" />
         <Stat label="Idle timeout" value={cfg.sessionIdleMin} unit="min" icon="clock" />

@@ -8,7 +8,7 @@ import {
   Page, Card, Stat, StatGrid, DataTable, Badge, Alert, ActionDialog, useFlash, Flash,
   Empty, Icon, Progress, Tabs,
 } from '../../core/ui/kit';
-import { fmt } from '../../core/ui/format';
+import { formatExamSchedule } from '../../core/ui/normalizers';
 import {
   transition, nextSteps, duplicateExam, TYPES, LIFECYCLE, LIFECYCLE_LABEL, examCounts, conflicts,
 } from './service';
@@ -88,9 +88,10 @@ export default function ExamsPage() {
             course: config.course || e.subject || e.course || '',
             academicYear: config.academicYear || e.academic_year || e.academicYear || '',
             status: e.status || 'draft',
-            startAt: config.startAt || e.scheduled_start || e.start_time || e.startAt || 0,
+            startAt: e.startAt,
+            startTimeState: e.startTimeState,
             durationMin: config.durationMin || e.duration_minutes || e.durationMin || 60,
-            timeZone: config.timezone || config.timeZone || 'Asia/Kolkata',
+            timeZone: e.timeZone || config.timezone || config.timeZone || 'Asia/Kolkata',
             examUrl: config.examUrl || e.exam_url || e.examUrl || '',
             instructions: config.instructions || e.instructions || '',
             origins: config.origins || (e.allowed_origins || '').split(',').filter(Boolean),
@@ -220,7 +221,7 @@ export default function ExamsPage() {
           columns={[
             { label: 'Exam', render: (e) => <><b>{e.code}</b><br /><small className="muted">{e.title}</small></> },
             { label: 'Type', key: 'type' },
-            { label: 'Window', sortable: true, key: 'startAt', render: (e) => <>{fmt(e.startAt)}<br /><small className="muted">{e.durationMin} min</small></> },
+            { label: 'Window', sortable: true, key: 'startAt', render: (e) => <>{formatExamSchedule(e)}<br /><small className="muted">{e.durationMin} min</small></> },
             { label: 'Portal URL', render: (e) => e.examUrl ? <span className="mono sm" title={e.examUrl}>{e.examUrl.replace(/^https?:\/\//, '').slice(0, 22)}{e.examUrl.length > 22 ? '…' : ''}</span> : <span className="muted">—</span> },
             { label: 'Centres', render: (e) => <span title={e.centerIds.map(centerName).join(', ')}>{e.centerIds.length}</span> },
             { label: 'Seated', render: (e) => seatedByExam[e.id] || 0 },

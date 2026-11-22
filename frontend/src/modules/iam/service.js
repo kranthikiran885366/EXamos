@@ -1,8 +1,7 @@
 // ExamOS Console — IAM service (backend-only, zero local storage).
 //
 // Every user-management operation is executed against the real ExamOS C server.
-// No credentials, password hashes, TOTP secrets, or user records are stored
-// locally in IndexedDB, sessionStorage, or localStorage.
+// Credentials, password hashes, TOTP secrets, and user records stay on the server.
 import { BACKEND_ADMIN_ROLES, ROLES } from '../../core/security/rbac';
 import { need, fail } from '../../core/services/common';
 import { create as requestApproval } from '../../core/services/approvals';

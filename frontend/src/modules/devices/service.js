@@ -1,6 +1,6 @@
 // Device module facade. Device lifecycle lives in the fleet service; attestation lives in tpm.
 export * from '../fleet/service';
-export { attest as attestDevice, setTamper, replayTest } from '../tpm/service';
+export { attest as attestDevice } from '../tpm/service';
 import { all, get } from '../../core/db/db';
 import { attest } from '../tpm/service';
 import { fail } from '../../core/services/common';

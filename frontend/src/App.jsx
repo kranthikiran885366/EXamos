@@ -6,6 +6,7 @@ import LoginPage from './modules/auth/LoginPage';
 import LandingPage from './core/ui/LandingPage';
 import ArchitecturePage from './core/ui/ArchitecturePage';
 import SolutionsPage from './core/ui/SolutionsPage';
+import useRouteScroll from './core/ui/useRouteScroll';
 import { ROUTES, LEGACY, GROUPS } from './core/nav';
 import { useAuth } from './core/auth/AuthContext';
 import { can } from './core/security/rbac';
@@ -101,6 +102,7 @@ function PublicOnly({ children }) {
 
 export default function App() {
   const loc = useLocation();
+  useRouteScroll();
   return (
     <ErrorBoundary key={loc.pathname}>
       <Suspense fallback={<Fallback />}>

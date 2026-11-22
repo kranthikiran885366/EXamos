@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { clean } from '../security/sanitize';
+import { displayValue, formatStatus } from './normalizers';
 
 /* ------------------------------------------------------------------ icons */
 const P = {
@@ -71,7 +72,8 @@ export const tone = (v) => {
 };
 export function Badge({ children, value, className = '', dot = true }) {
   const v = value ?? children;
-  return <span className={'badge ' + tone(v) + ' ' + className}>{dot && <i />}{v}</span>;
+  const label = typeof v === 'string' ? formatStatus(displayValue(v, '—'), '—') : v;
+  return <span className={'badge ' + tone(v) + ' ' + className}>{dot && <i />}{label}</span>;
 }
 export const Pill = ({ children, className = '' }) => <span className={'pill ' + className}>{children}</span>;
 export const Dot = ({ v }) => <span className={'dot ' + tone(v)} />;
@@ -143,7 +145,7 @@ export function Progress({ value = 0, max = 100, label, tone: t }) {
   return <div className="progress-wrap">{label && <div className="progress-label"><span>{label}</span><b>{Math.round(p)}%</b></div>}<div className="progress"><i className={t || (p >= 90 ? 'g' : p >= 60 ? 'a' : 'r')} style={{ width: p + '%' }} /></div></div>;
 }
 export function KeyValue({ items, cols = 2 }) {
-  return <dl className="kv-grid" style={{ '--cols': cols }}>{items.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v ?? '—'}</dd></div>)}</dl>;
+  return <dl className="kv-grid" style={{ '--cols': cols }}>{items.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{displayValue(v)}</dd></div>)}</dl>;
 }
 export function Timeline({ items }) {
   return <ol className="timeline">{items.map((it, i) => <li key={it.id || i}><span className={'tl-dot ' + (it.tone || '')} /><div><b>{it.title}</b>{it.meta && <small className="muted">{it.meta}</small>}{it.body && <p>{it.body}</p>}</div></li>)}</ol>;
@@ -292,7 +294,7 @@ export function DataTable({
         <tbody>
           {slice.map((r, i) => <tr key={keyOf(r, i)} className={onRow ? 'clickable' : ''} onClick={onRow ? (e) => { if (e.target.closest('button,input,a,select,label')) return; onRow(r); } : undefined}>
             {selectable && <td className="selcell"><input type="checkbox" checked={sel.includes(keyOf(r, i))} onChange={() => toggle(keyOf(r, i))} aria-label="Select row" /></td>}
-            {columns.map((c) => <td key={c.key || c.label} className={(c.align ? 'ta-' + c.align : '') + (c.mono ? ' mono' : '')}>{c.render ? c.render(r) : (c.badge ? <Badge value={r[c.key]} /> : (r[c.key] ?? '—'))}</td>)}
+            {columns.map((c) => <td key={c.key || c.label} className={(c.align ? 'ta-' + c.align : '') + (c.mono ? ' mono' : '')}>{c.render ? c.render(r) : (c.badge ? <Badge value={r[c.key]} /> : displayValue(r[c.key]))}</td>)}
             {hasActs && <td className="actscell">{act(r).length > 0 && <RowActions actions={act(r)} row={r} />}</td>}
           </tr>)}
           {!slice.length && <tr><td colSpan={columns.length + (hasActs ? 1 : 0) + (selectable ? 1 : 0)}>{empty || <Empty title={rows.length ? 'No matches' : 'Nothing here yet'}>{rows.length ? 'Adjust the search or filters to see more.' : 'Records will appear here once they are created.'}</Empty>}</td></tr>}
@@ -371,22 +373,22 @@ export function Hero() {
       <div className="hero-copy">
         <span className="kicker">ExamOS Console · Secure examination platform</span>
         <h1>Secure exam delivery,<br /><span className="grad">engineered for trust.</span></h1>
-        <p>Device attestation, signed policies, two-person approvals and a hash-chained audit trail — all running in the browser through IndexedDB, with no backend required. Prevention-first secure examination delivery for high-stakes academic and corporate assessments.</p>
+        <p>Manage tenant-scoped examination operations through authenticated server APIs. Policy publication, release trust, and TPM evidence are presented as verified only when the backend confirms them.</p>
         <div className="hero-actions">
           <button className="btn primary wide-sm" onClick={() => { window.location.href = '/login'; }}>Get started</button>
           <button className="btn outl wide-sm" onClick={() => { document.getElementById('features')?.scrollIntoView(); }}>Explore features</button>
         </div>
         <div className="hero-stats">
-          <div className="hs"><span className="num">152+</span><span className="lab">Devices enrolled</span></div>
-          <div className="hs"><span className="num">120+</span><span className="lab">Candidates seeded</span></div>
-          <div className="hs"><span className="num">SHA-256</span><span className="lab">Hash-chained audit log</span></div>
+          <div className="hs"><span className="num">API</span><span className="lab">Server-authoritative data</span></div>
+          <div className="hs"><span className="num">RBAC</span><span className="lab">Tenant-scoped access</span></div>
+          <div className="hs"><span className="num">Trust</span><span className="lab">Evidence-gated workflows</span></div>
         </div>
       </div>
       <div className="hero-visual">
         <div className="hv-card">
-          <div className="hv-stat"><span className="big">152</span><span className="cap">Devices</span></div>
-          <div className="hv-stat"><span className="big">120</span><span className="cap">Candidates</span></div>
-          <div className="hv-stat"><span className="big">SHA-256</span><span className="cap">Audit chain</span></div>
+          <div className="hv-stat"><span className="big">API</span><span className="cap">Data source</span></div>
+          <div className="hv-stat"><span className="big">RBAC</span><span className="cap">Access control</span></div>
+          <div className="hv-stat"><span className="big">Audit</span><span className="cap">Server records</span></div>
         </div>
         <div className="hv-preview">
           <div className="hv-frame">
@@ -412,15 +414,15 @@ export function FeatureGrid() {
   return (
     <section id="features" className="features">
       <div className="sec-head">
-        <div><h2>Everything you need to run secure exams</h2><p className="sub">Real validation, RBAC, ECDSA signing, TOTP, nonce/replay protection, receipts and a verified audit chain.</p></div>
+        <div><h2>Tools for secure examination operations</h2><p className="sub">The server is authoritative for records and authorization. Trust claims require backend-verified evidence.</p></div>
       </div>
       <div className="featgrid">
-        <Feature icon="🔐" title="Signed policies" desc="ECDSA P-256 signed, versioned kiosk policies with anti-downgrade and two-person rollback." tag="Security" />
-        <Feature icon="🚀" title="Staged releases" desc="SBOM-scanned releases with staged rollout, revoke and device recovery." tag="Release" />
+        <Feature icon="🔐" title="Policy governance" desc="Server-persisted policy drafts and independent approval requests. Trusted publication is not enabled in this console." tag="Governance" />
+        <Feature icon="🚀" title="Release evidence" desc="Release records are not treated as trusted until server verification evidence is available." tag="Release" />
         <Feature icon="👥" title="Two-person approval" desc="Separation of duties for role changes, releases, policy rollbacks and config changes." tag="Governance" />
-        <Feature icon="📱" title="TPM attestation" desc="Simulated device agent with heartbeats, hardware quotes and isolation incidents." tag="Trust" />
-        <Feature icon="📊" title="Audit chain" desc="Every write is persisted in a SHA-256 hash chain that can be independently verified." tag="Compliance" />
-        <Feature icon="💻" title="Frontend-only" desc="No backend. All logic runs in the browser through per-module services and IndexedDB persistence." tag="Architecture" />
+        <Feature icon="📱" title="Device trust" desc="Trust remains unverified until a supported device reports evidence accepted by the backend." tag="Trust" />
+        <Feature icon="📊" title="Audit records" desc="Review server-recorded events and the separate ledger verification status without conflating their scopes." tag="Compliance" />
+        <Feature icon="💻" title="Server-authoritative" desc="Application records and protected decisions are handled by the authenticated backend; the browser is not a database." tag="Architecture" />
       </div>
     </section>
   );
@@ -498,7 +500,7 @@ export function CtaSection() {
     <section className="landcta">
       <div className="cta-card">
         <h2>Ready to run secure exams?</h2>
-        <p>Log in to the console and explore a pre-seeded workspace with devices, candidates, a live exam and sessions.</p>
+        <p>Sign in to access the records and workflows authorized for your role and institution.</p>
         <div className="cta-actions">
           <button className="btn primary" onClick={() => { window.location.href = '/login'; }}>Sign in to console</button>
           <a href="#features" className="btn ghost">Learn more</a>
@@ -513,7 +515,7 @@ export function LandFoot() {
       <div className="lf-grid">
         <div><strong>ExamOS Console</strong><br /><span className="muted sm">Prevention-first secure examination platform</span></div>
         <nav className="lf-nav"><a href="#features">Features</a><a href="#modules">Modules</a><a href="#why">Security</a><a href="/login">Sign in</a></nav>
-        <div className="lf-note">Frontend-only · IndexedDB persistence · Session in memory only · No backend required</div>
+        <div className="lf-note">Authenticated server APIs · Tenant-scoped access · Trust decisions require backend evidence</div>
       </div>
     </footer>
   );

@@ -1,10 +1,7 @@
-// ExamOS Console — Advanced API client.
-// Connects the React console to the ExamOS C server (server/main.c) with
-// real security: ECDSA request signing, Bearer admin/candidate tokens,
-// automatic retry, request/response audit, and RBAC-aware error handling.
+// ExamOS Console — authenticated API client.
+// Server sessions and authorization are authoritative for all protected calls.
 
-import { ENDPOINTS, API_BASE, REQUEST_TIMEOUT, MAX_RETRIES, CONSOLE_HEADERS, AUTH_TOKEN_KEY, CANDIDATE_TOKEN_KEY } from '../../config/api';
-import { signRequest, verificationPayload } from '../security/requestSigner';
+import { ENDPOINTS, API_BASE, REQUEST_TIMEOUT, MAX_RETRIES, CONSOLE_HEADERS } from '../../config/api';
 import { auditApiCall } from '../security/auditClient';
 
 export class ApiError extends Error {
@@ -37,20 +34,6 @@ function headersFor(token, isCandidate) {
   return h;
 }
 
-async function signHeaders(method, url, body, extraHeaders) {
-  // Only sign mutating/state-changing calls to keep the signature overhead
-  // reasonable for read-only health/status polling.
-  const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
-  if (!mutating) return extraHeaders || {};
-  try {
-    const signed = await signRequest(method, url, body, extraHeaders);
-    return signed;
-  } catch (err) {
-    console.warn('Request signing fallback:', err);
-    return extraHeaders || {};
-  }
-}
-
 function parseJsonOrText(text) {
   if (!text) return text;
   try { return JSON.parse(text); } catch { return text; }
@@ -62,7 +45,8 @@ export async function request({
   body,
   headers: requestHeaders,
   useCandidateToken = false,
-  sign = true,
+  // Legacy callers may pass this flag; signing is not a client trust boundary.
+  sign: _legacySign = false,
   audit = true,
   actor = 'console',
   retries = MAX_RETRIES,
@@ -93,11 +77,9 @@ export async function request({
     }
 
     try {
-      const extraHeaders = sign ? await signHeaders(method, url, JSON.stringify(body || ''), {}) : {};
       const headers = headersFor(useCandidateToken ? undefined : adminToken, useCandidateToken);
-      // Caller-supplied headers (e.g. X-Enrollment-Token) then signed headers.
+      // Caller-supplied headers (e.g. X-Enrollment-Token) override defaults.
       Object.assign(headers, requestHeaders || {});
-      Object.assign(headers, extraHeaders);
 
       const fetchInit = {
         method,
@@ -120,7 +102,7 @@ export async function request({
       if (!res.ok) {
         const err = new ApiError(res.status, typeof parsed === 'string' ? parsed : (parsed.error || parsed.message || `HTTP ${res.status}`), parsed);
         if (audit) {
-          try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'], error: err.message }); } catch {}
+          try { auditApiCall({ actor, method, path, status: res.status, durationMs, error: err.message }); } catch {}
         }
         // Do not retry client errors (4xx) except 429/408.
         if (res.status === 429 || res.status === 408) {
@@ -131,7 +113,7 @@ export async function request({
       }
 
       if (audit) {
-        try { auditApiCall({ actor, method, path, status: res.status, durationMs, requestId: extraHeaders['x-examos-request-id'] }); } catch {}
+        try { auditApiCall({ actor, method, path, status: res.status, durationMs }); } catch {}
       }
       return { status: res.status, data: parsed, headers: res.headers };
     } catch (err) {

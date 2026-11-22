@@ -1,5 +1,7 @@
 # ExamOS — Full-Stack Integration: React Console + C/C++ Backend
 
+> **Current architecture correction:** the server and PostgreSQL are authoritative. The console no longer uses IndexedDB for records or signing keys, does not support offline/local-demo persistence, and does not sign API requests with browser-held private keys. Historical integration notes below are updated where those assumptions changed.
+
 This document describes the completed integration between:
 
 | Project | Path | Role |
@@ -21,7 +23,7 @@ This document describes the completed integration between:
 ### Frontend API layer — `examos-frontend/src/core/api/`
 - **`config/api.js`** — API base URL (`VITE_API_BASE`, default `http://localhost:8000`), full endpoint registry mapped to every C-server route, role-name map.
 - **`client.js`** — Advanced HTTP client with:
-  - ECDSA P-256 request signing (Web Crypto `SubtleCrypto`) on all mutating requests — each request is signed with `X-ExamOS-Signature`, `X-ExamOS-Signature-Alg`, `X-ExamOS-Signature-Key-Id`, `X-ExamOS-Request-Id`, `X-ExamOS-Timestamp`.
+  - Server-issued admin/candidate session credentials; authorization is enforced by backend routes.
   - Bearer admin + candidate token management.
   - Automatic retry with backoff (configurable `MAX_RETRIES`, `REQUEST_TIMEOUT`).
   - Request/response audit trail (every call recorded).
@@ -36,19 +38,18 @@ This document describes the completed integration between:
   - Ledger/audit, admin reload/lock, heartbeat, config save
 
 ### Auth — `examos-frontend/src/core/auth/`
-- **`authService.js`** — Talks to `/api/v1/admin/login`, `/api/v1/admin/logout`, `/api/v1/admin/session`, `/api/v1/candidate/login`. Stores tokens in `sessionStorage`.
-- **`AuthContext.jsx`** — Hybrid local (IndexedDB) + backend authentication. Detects backend readiness on mount. On successful backend login, seeds IndexedDB cache via `syncAll()`.
+- **`authService.js`** — Talks to `/api/v1/admin/login`, `/api/v1/admin/logout`, `/api/v1/admin/session`, `/api/v1/candidate/login`. Admin continuity is server-managed; tokens are held in memory.
+- **`AuthContext.jsx`** — Backend-only authentication. Detects backend readiness on mount and restores the server session.
 - **`ProtectedRoute.jsx`** — Maps backend roles (`PLATFORM_OWNER` → `superadmin`, etc.) to frontend RBAC keys so existing permission checks work unchanged.
 
 ### UI
 - **`Shell.jsx`, `Sidebar.jsx`, `Topbar.jsx`** — Backend status indicator (online/offline, mode) in sidebar brand + topbar connection chip.
-- **`LoginPage.jsx`** — Toggle between Local (IndexedDB demo) and Backend (C server) auth; Admin vs Candidate realm. Successful candidate login redirects to `/exam` (the C-server workbench).
+- **`LoginPage.jsx`** — Admin and candidate login through the C server; no local/demo authentication mode.
 - **`app.css`** — `.backend-status` / `.backend-conn` online/offline indicators.
 
-### Sync layer — `examos-frontend/src/core/api/sync.js`
-- Pulls collections from the backend (institutions, users, exams, campuses, rooms, roles, policies, fleet, incidents) into IndexedDB for offline reads.
-- `syncAll()` runs after backend login (best-effort).
-- `getViaBackend` / `createViaBackend` helpers for hybrid read-through cache.
+### Record access
+- `src/core/db/db.js` is an API adapter; record reads and writes go to authenticated server endpoints.
+- `src/core/api/sync.js` retains legacy entry points that reject with an explicit migration error. There is no offline record cache or local fallback.
 
 ## 2. Backend routes exposed to the console
 
@@ -173,13 +174,13 @@ npm run build && npm run preview
 ## 4. Security properties
 
 - **CORS**: only listed origins may call the API; credentials allowed.
-- **Request signing**: ECDSA P-256 signatures on mutating requests (tamper evidence).
+- **Request authentication**: backend session credentials and route-level authorization; no client private-key signature is treated as an access-control boundary.
 - **Bearer tokens**: admin session (`admin_session` cookie + `Authorization: Bearer`) and candidate session tokens.
 - **RBAC**: every route checks granular permissions (`AUTH_PERM_READ`, `EXAM_MUTATION`, `SECURITY_ADMIN`, etc.).
 - **Session hygiene**: 8-hour expiry, idle lock (5 min), step-up re-auth, PIN cleansed from memory on the C side.
 - **Audit chain**: every console API call recorded; backend maintains a SHA-256 HMAC ledger.
 - **CSP / security headers**: `nosniff`, `frame-ancestors none`, `same-origin` COOP/CORP, `Referrer-Policy: no-referrer`, `Permissions-Policy` restricting camera/mic/usb.
-- **IndexedDB cache**: local offline cache; not encrypted at rest (matches existing design).
+- **Browser storage**: no application records or signing keys are stored in IndexedDB. UI preferences are not authoritative application data.
 
 ## 5. Files changed
 
@@ -193,8 +194,7 @@ npm run build && npm run preview
 - `src/config/api.js` — endpoint registry + config (new).
 - `src/core/api/client.js` — signed HTTP client (new).
 - `src/core/api/services.js` — all backend service wrappers (new).
-- `src/core/api/sync.js` — backend ↔ IndexedDB sync (new).
-- `src/core/security/requestSigner.js` — ECDSA P-256 signing (new).
+- `src/core/api/sync.js` — legacy entry points fail explicitly; no local record sync.
 - `src/core/security/auditClient.js` — audit-chain client (new).
 - `src/core/auth/authService.js` — backend auth (new).
 - `src/core/auth/AuthContext.jsx` — hybrid local/backend auth (edited).
@@ -209,5 +209,5 @@ npm run build && npm run preview
 1. **TLS termination**: Set `EXAMOS_TLS_TERMINATED=1` and place a TLS proxy (nginx/Envoy) in front; enable `EXAMOS_ADMIN_COOKIE_SECURE=1`.
 2. **mTLS**: Set `EXAMOS_MTLS_CA_CERT` and provision TPM-sealed agent certs (TRK-31/P3).
 3. **PostgreSQL**: Apply migrations 001–017 and run `examos-admin-provision` for the initial platform owner.
-4. **Encrypted IndexedDB**: For production, encrypt the local cache (currently matches existing design — not encrypted at rest).
-5. **Server audit store**: Forward console audit events to a server-side immutable store (currently local IndexedDB + best-effort POST).
+4. **Server-side trust execution**: Complete trusted policy/release signing and TPM verification before enabling exam launch.
+5. **Audit delivery**: Validate that required audit events are durably recorded server-side; do not rely on the client’s best-effort supplemental event queue.

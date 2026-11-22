@@ -1,9 +1,7 @@
 // ExamOS Console — User management service (backend-only, zero local storage).
 //
 // Every operation calls the real ExamOS C server through Api.*.
-// No password hashes, TOTP secrets, salts, or user records are stored
-// in IndexedDB, localStorage, or sessionStorage. The server is the only
-// source of truth for identity, credentials, and roles.
+// The server is the only source of truth for identity, credentials, and roles.
 import { clean } from '../../core/security/sanitize';
 import {
   BACKEND_ADMIN_ROLES, roleInfo, roleLabel, permissionsOf, registerRoles,

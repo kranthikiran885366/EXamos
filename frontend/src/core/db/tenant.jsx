@@ -3,6 +3,7 @@ import { all, onChange, watchCollection } from './db';
 import { useAuth } from '../auth/AuthContext';
 import { isGlobal } from '../security/rbac';
 import { getInstitution, listInstitutions } from '../api/services';
+import { canonicalPlan } from '../ui/normalizers';
 
 const TENANT_STORAGE_KEY = 'examos_selected_tenant_id';
 
@@ -76,6 +77,8 @@ export function TenantProvider({ children }) {
         contactEmail: row.contactEmail || row.contact_email || '',
         contactPhone: row.contactPhone || row.contact_phone || '',
         createdAt: row.createdAt || row.created_at || null,
+        planId: canonicalPlan(row),
+        plan: canonicalPlan(row),
       })).filter((row) => row.id);
       setTenants(records);
     } catch (loadError) {

@@ -8,6 +8,17 @@ export function safeHttpsUrl(u, allowHosts = []) {
     return x.href;
   } catch { return null; }
 }
+export function normalizeHttpsOrigin(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password ||
+        url.hostname.includes('*') || (url.pathname !== '/' && url.pathname !== '') ||
+        url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
 // Open-redirect guard: only same-app absolute paths.
 export const safeRedirect = (p) => (typeof p === 'string' && /^\/[a-z0-9\-/]*$/i.test(p) && !p.startsWith('//') ? p : '/');
 // CSV formula-injection guard.

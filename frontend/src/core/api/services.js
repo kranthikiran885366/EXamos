@@ -1,13 +1,14 @@
 // ExamOS Console — Backend API service layer.
 // Service functions call the ExamOS C server (server/main.c) over HTTP.
-// Application records are server-backed; IndexedDB is reserved for signing keys.
+// Application records and protected state are server-backed; no browser database is used.
 
 import { api, setAdminToken, getAdminToken, setCandidateToken, getCandidateToken, clearTokens, ApiError } from './client';
-import { ENDPOINTS, AUTH_TOKEN_KEY, CANDIDATE_TOKEN_KEY, CANDIDATE_ID_KEY } from '../../config/api';
+import { ENDPOINTS } from '../../config/api';
 import { all, get, put, del } from '../db/db';
 import { sha256 } from '../security/crypto';
 import { record } from '../security/auditChain';
 import { audit } from '../security/auditClient';
+import { normalizeExaminationDetail, normalizeExaminationList } from '../ui/normalizers';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,7 +74,6 @@ export const adminLogin = wrap(async ({ username, password, mfaCode }) => {
   if (data.status !== 'AUTHENTICATED') throw new ApiError(res.status, data.error || 'Login failed', data);
 
   setAdminToken(data.token);
-  try { sessionStorage.setItem(AUTH_TOKEN_KEY, data.token); } catch {}
 
   // Fetch profile.
   const profRes = await api.get(ENDPOINTS.adminSession, { actor: ACTOR });
@@ -95,7 +95,6 @@ export const adminLogin = wrap(async ({ username, password, mfaCode }) => {
 export const adminLogout = wrap(async () => {
   try { await api.post(ENDPOINTS.adminLogout, {}, { actor: ACTOR, sign: true }); } catch {}
   setAdminToken(null);
-  try { sessionStorage.removeItem(AUTH_TOKEN_KEY); } catch {}
   return { ok: true };
 });
 
@@ -128,10 +127,6 @@ export const candidateLogin = wrap(async ({ candidateId, pin, examToken }) => {
   if (data.status !== 'SUCCESS') throw new ApiError(res.status, data.error || 'Candidate login failed', data);
 
   setCandidateToken(data.token);
-  try {
-    sessionStorage.setItem(CANDIDATE_TOKEN_KEY, data.token);
-    sessionStorage.setItem(CANDIDATE_ID_KEY, candidateId);
-  } catch {}
 
   return {
     ok: true,
@@ -179,10 +174,6 @@ export const decideExamCandidateCheckin = wrap(async (examId, checkinId, decisio
 
 export const candidateLogout = wrap(async () => {
   setCandidateToken(null);
-  try {
-    sessionStorage.removeItem(CANDIDATE_TOKEN_KEY);
-    sessionStorage.removeItem(CANDIDATE_ID_KEY);
-  } catch {}
   return { ok: true };
 });
 
@@ -603,7 +594,7 @@ export const createRoom = wrap(async ({ campusId, institutionId, name, superviso
 
 export const listExaminations = wrap(async () => {
   const res = await api.get(ENDPOINTS.examinations, { actor: ACTOR });
-  return res.data;
+  return normalizeExaminationList(res.data);
 });
 
 export const createExamination = wrap(async (exam) => {
@@ -627,7 +618,7 @@ export const createExamination = wrap(async (exam) => {
 
 export const getExamination = wrap(async (id) => {
   const res = await api.get(ENDPOINTS.examinationById(id), { actor: ACTOR, useCandidateToken: !!getCandidateToken() });
-  return res.data;
+  return normalizeExaminationDetail(res.data);
 });
 
 export const updateExamination = wrap(async (id, patch) => {
@@ -1484,6 +1475,11 @@ export const listAuditTrail = wrap(async ({ examId = '', limit = 200 } = {}) => 
   if (limit) qs.set('limit', String(limit));
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   const res = await api.get(`${ENDPOINTS.auditTrail}${suffix}`, { actor: ACTOR });
+  return res.data;
+});
+
+export const listInstitutionAuditTrail = wrap(async () => {
+  const res = await api.get(ENDPOINTS.institutionAuditTrail, { actor: ACTOR });
   return res.data;
 });
 

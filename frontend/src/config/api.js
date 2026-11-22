@@ -42,6 +42,7 @@ export const ENDPOINTS = {
   // Admin platform
   institutions: '/api/v1/admin/institutions',
   institutionById: (id) => `/api/v1/admin/institutions/${id}`,
+  institutionAuditTrail: '/api/v1/admin/institutions/current/audit',
   institutionStatus: (id) => `/api/v1/admin/institutions/${id}/status`,
   institutionExamDefaults: (id) => `/api/v1/admin/institutions/${id}/exam-defaults`,
   institutionSecurity: (id) => `/api/v1/admin/institutions/${id}/security`,

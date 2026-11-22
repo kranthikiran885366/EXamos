@@ -18,7 +18,6 @@ export const FEATURES = [
   { key: 'tpm-attestation', label: 'TPM attestation', desc: 'Quote verification against golden PCR values.', group: 'Security' },
   { key: 'secure-boot', label: 'Secure Boot enforcement', desc: 'Block devices with Secure Boot disabled.', group: 'Security' },
   { key: 'auto-submit', label: 'Auto-submit at deadline', desc: 'Close sessions when the exam deadline is reached.', group: 'Examinations' },
-  { key: 'scheduled-reports', label: 'Scheduled reports', desc: 'Generate and deliver reports on a schedule.', group: 'Reports' },
   { key: 'two-person-approvals', label: 'Two-person approvals', desc: 'Sensitive actions require a second privileged user.', group: 'Governance' },
   { key: 'privacy-console', label: 'Privacy console', desc: 'Data subject requests, retention and erasure workflows.', group: 'Governance' },
   { key: 'billing-integration', label: 'Billing integration', desc: 'Plans, invoices and payment reconciliation.', group: 'Commercial' },
@@ -27,15 +26,27 @@ export const FEATURES = [
 export const INTEGRATION_KINDS = ['smtp', 'webhook', 'siem', 'sso', 'billing', 'storage', 'ticketing'];
 
 export async function getPlatform() {
-  const c = await get('configs', 'platform');
-  const m = await get('meta', 'platform');
-  return { ...CONFIG_DEFAULTS, ...(m?.value || {}), ...(c?.value || {}) };
+  const [configResult, metaResult] = await Promise.allSettled([
+    get('configs', 'platform'),
+    get('meta', 'platform'),
+  ]);
+  const unavailable = [configResult, metaResult].find((result) => result.status === 'rejected' && result.reason?.status !== 404);
+  if (unavailable) throw unavailable.reason;
+  const config = configResult.status === 'fulfilled' ? configResult.value : null;
+  const meta = metaResult.status === 'fulfilled' ? metaResult.value : null;
+  return {
+    ...CONFIG_DEFAULTS,
+    ...(meta?.value || {}),
+    ...(config?.value || {}),
+    configurationState: config || meta ? 'configured' : 'not-configured',
+  };
 }
 
-export async function saveConfig(a, patch, reason = '') {
+export async function saveConfig(a, patch, reason = '', initialize = false) {
   need(a, 'settings.manage');
   const cur = await getPlatform();
   const next = { ...cur };
+  delete next.configurationState;
   for (const k of Object.keys(CONFIG_DEFAULTS)) if (patch[k] !== undefined) next[k] = patch[k];
   if (patch.sessionIdleMin !== undefined) { const n = Number(patch.sessionIdleMin); if (!(n >= 2 && n <= 60)) fail('Idle timeout must be 2–60 minutes.'); next.sessionIdleMin = n; }
   if (patch.maxSessionHours !== undefined) { const n = Number(patch.maxSessionHours); if (!(n >= 1 && n <= 24)) fail('Maximum session must be 1–24 hours.'); next.maxSessionHours = n; }
@@ -49,6 +60,7 @@ export async function saveConfig(a, patch, reason = '') {
   }
   if (patch.supportEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(patch.supportEmail)) fail('Enter a valid support email.');
   const changed = Object.keys(CONFIG_DEFAULTS).filter((k) => JSON.stringify(next[k]) !== JSON.stringify(cur[k]));
+  if (initialize && cur.configurationState === 'not-configured') changed.push('initial configuration');
   if (!changed.length) fail('Nothing changed.');
   const sensitive = changed.filter((k) => SENSITIVE.includes(k));
   if (sensitive.length && a.role !== 'superadmin') {

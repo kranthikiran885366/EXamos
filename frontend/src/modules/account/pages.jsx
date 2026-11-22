@@ -6,17 +6,38 @@ import {
   Page, Card, DataTable, Badge, Icon, Empty, Stat, StatGrid, Loading, Alert, ActionDialog,
   Modal, KeyValue, Field, Input, useFlash, Flash, CopyField, Tabs,
 } from '../../core/ui/kit';
-import { fmt, ago } from '../../core/ui/format';
+import { fmt } from '../../core/ui/format';
+import {
+  formatRelativeTime as ago,
+  formatTimestamp,
+  normalizeAuthSessions,
+  toEpochMs,
+} from '../../core/ui/normalizers';
 import { roleLabel, permissionsOf, roleInfo } from '../../core/security/rbac';
 
 /* ------------------------------------------------------------------ profile */
 export function AccountPage() {
-  const { user } = useAuth();
+  const { user, listSessions } = useAuth();
   const { allTenants } = useTenant();
   const sessions = useCol('authSessions', false);
   const tenant = user.tenantId ? (allTenants.find((t) => t.id === user.tenantId)?.name || user.tenantId) : 'Platform (global)';
   const mine = sessions.filter((s) => s.userId === user.id && s.status === 'active');
   const perms = permissionsOf(user.role);
+  const [activeSessionCount, setActiveSessionCount] = useState(null);
+  const lastLogin = toEpochMs(user.lastLogin);
+
+  useEffect(() => {
+    let cancelled = false;
+    listSessions().then((rows) => {
+      if (!cancelled) {
+        const normalized = normalizeAuthSessions(rows, user.id);
+        setActiveSessionCount(normalized.filter((session) => session.status === 'active').length);
+      }
+    }).catch(() => {
+      if (!cancelled) setActiveSessionCount(null);
+    });
+    return () => { cancelled = true; };
+  }, [listSessions, user.id]);
 
   return (
     <Page title="Account" desc="Your profile, role and security at a glance."
@@ -24,13 +45,13 @@ export function AccountPage() {
       <StatGrid cols={4}>
         <Stat label="Role" value={roleLabel(user.role)} icon="badge" sub={roleInfo(user.role)?.scope || 'custom'} />
         <Stat label="MFA" value={user.mfaEnabled === false ? 'Off' : 'On'} icon="shield" tone={user.mfaEnabled === false ? 'amber' : 'green'} />
-        <Stat label="Active sessions" value={mine.length} icon="lock" to="/account/sessions" />
-        <Stat label="Last login" value={user.lastLogin ? ago(user.lastLogin) : '—'} icon="clock" sub={user.lastLogin ? fmt(user.lastLogin) : ''} />
+        <Stat label="Active sessions" value={activeSessionCount === null ? 'Unknown' : activeSessionCount} icon="lock" to="/account/sessions" sub={activeSessionCount === null ? 'Server session list unavailable' : 'Server-authoritative'} />
+        <Stat label="Last login" value={lastLogin ? ago(lastLogin) : 'Never'} icon="clock" sub={lastLogin ? formatTimestamp(lastLogin) : 'No successful login recorded'} />
       </StatGrid>
       <div className="two">
         <Card title="Profile">
           <KeyValue cols={2} items={[
-            ['Username', <code key="u">{user.id}</code>],
+            ['Username', <code key="u">{user.username || user.id}</code>],
             ['Name', user.name],
             ['Email', user.email || '—'],
             ['Role', roleLabel(user.role)],
@@ -161,21 +182,7 @@ export function AccountSessionsPage() {
     setSessionsError(null);
     try {
       const data = await listSessions();
-      // Normalize backend session shape to what this page expects.
-      const normalized = Array.isArray(data) ? data : (data?.sessions || []);
-      setSessions(normalized.map((s) => ({
-        id: s.id || s.session_id || s.token_hash,
-        userId: s.user_id || user.id,
-        userAgent: s.user_agent || s.userAgent || 'Unknown',
-        ip: s.ip_address || s.ip || '—',
-        createdAt: s.created_at || s.createdAt || 0,
-        lastSeen: s.last_seen_at || s.lastSeen || s.created_at || 0,
-        status: s.status || (s.revoked_at ? 'revoked' : s.expires_at && s.expires_at < Date.now() ? 'expired' : 'active'),
-        current: s.current || false,
-        reason: s.revocation_reason || s.reason || '',
-        endedAt: s.revoked_at || s.ended_at || null,
-        expiresAt: s.expires_at || null,
-      })));
+      setSessions(normalizeAuthSessions(data, user.id));
     } catch (err) {
       setSessionsError(err.message || 'Failed to load sessions from server.');
     } finally {
@@ -186,7 +193,7 @@ export function AccountSessionsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadSessions(); }, []);
 
-  const rows = sessions.filter((s) => s.userId === user.id || true /* backend already scoped */).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  const rows = sessions.filter((s) => s.userId === user.id).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   const active = rows.filter((s) => s.status === 'active');
   const ended = rows.filter((s) => s.status !== 'active');
   const shown = tab === 'active' ? active : ended;

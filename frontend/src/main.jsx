@@ -1,7 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
-import Boot from './core/Boot';
 import { AuthProvider } from './core/auth/AuthContext';
 import './styles/app.css';
 
@@ -16,10 +15,8 @@ window.addEventListener('vite:preloadError', (event) => {
 
 createRoot(document.getElementById('root')).render(
   <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-    <Boot>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </Boot>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
   </BrowserRouter>
 );

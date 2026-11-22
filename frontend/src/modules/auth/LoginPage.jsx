@@ -4,6 +4,7 @@ import { useAuth } from '../../core/auth/AuthContext';
 import { safeRedirect } from '../../core/security/sanitize';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
 import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
+import usePageMeta from '../../core/ui/usePageMeta';
 
 function LoginShowcase({ candidateOnly = false }) {
   return (
@@ -90,6 +91,14 @@ function LoginShowcase({ candidateOnly = false }) {
 }
 
 export default function LoginPage({ candidateOnly = false }) {
+  usePageMeta({
+    title: candidateOnly ? 'Candidate sign-in | SPPIO' : 'Console sign-in | SPPIO',
+    description: candidateOnly
+      ? 'Sign in to a SPPIO candidate assessment station.'
+      : 'Sign in to the SPPIO management console.',
+    path: candidateOnly ? '/candidate-login' : '/login',
+  });
+
   const {
     user,
     pending,

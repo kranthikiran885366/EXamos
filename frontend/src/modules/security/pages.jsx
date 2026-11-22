@@ -189,7 +189,7 @@ function PolicyModal({ tenantId, onClose, onDone }) {
     setBusy(false);
   };
   return (
-    <Modal wide title="New policy draft" desc="Drafts are signed and published as an immutable version." onClose={onClose}
+    <Modal wide title="New policy draft" desc="Drafts are stored by the server. Trusted signing and publication are not available in this console." onClose={onClose}
       footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" type="submit" form="policy-form" disabled={busy}>{busy ? 'Saving…' : 'Save draft'}</button></>}>
       <form id="policy-form" onSubmit={submit} className="formgrid">
         <Field label="Policy name" required className="span2"><Input value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} maxLength={60} /></Field>
@@ -220,7 +220,7 @@ export function SecurityPoliciesPage() {
   const rows = policies.filter((p) => p.tenantId === tenantId);
 
   return (
-    <Page title="Security policies" desc="Versioned ECDSA-signed kiosk policies with anti-downgrade and two-person rollback."
+    <Page title="Security policies" desc="Server-persisted policy drafts and approval requests. Trusted signing and execution remain unavailable."
       actions={perms('policy.edit') ? <button className="btn primary" onClick={() => setModal(true)}><Icon name="plus" size={15} /> New draft</button> : null}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
       <StatGrid cols={4}>
@@ -260,8 +260,8 @@ export function SecurityPoliciesPage() {
             ['Kiosk lockdown', view.config?.kioskLockdown ? 'Yes' : 'No'],
             ['Allow USB', view.config?.allowUsb ? 'Yes' : 'No'],
             ['Published', view.publishedAt ? fmt(view.publishedAt) : '—'],
-            ['SHA-256', <code key="h">{view.hash ? `${view.hash.slice(0, 24)}…` : '—'}</code>],
-            ['Signature', <code key="g">{view.sig ? `${String(view.sig).slice(0, 24)}…` : '—'}</code>],
+            ['Stored hash (unverified)', <code key="h">{view.hash ? `${view.hash.slice(0, 24)}…` : '—'}</code>],
+            ['Stored signature (unverified)', <code key="g">{view.sig ? `${String(view.sig).slice(0, 24)}…` : '—'}</code>],
           ]} />
           <Field label="Allowed origins"><div className="chips">{(view.config?.origins || []).map((o) => <span key={o} className="chip mono">{o}</span>)}</div></Field>
         </Modal>

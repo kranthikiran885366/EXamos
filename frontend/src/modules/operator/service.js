@@ -4,6 +4,7 @@ import { setIdentity } from '../candidates/service';
 import { startSession, terminate } from '../submissions/service';
 import { deviceState, reachable } from '../fleet/service';
 import * as Api from '../../core/api/services';
+import { canonicalExamSchedule } from '../../core/ui/normalizers';
 
 export async function assignedExams(user, ctx = {}) {
   // Try backend first for live exam data
@@ -13,11 +14,11 @@ export async function assignedExams(user, ctx = {}) {
     if (Array.isArray(backendExams) && backendExams.length) {
       return backendExams.map((e) => ({
         ...e,
+        ...canonicalExamSchedule(e),
         id: e.exam_id || e.id,
         code: e.code,
         title: e.name || e.title,
         status: e.status,
-        /* Fix: normalize duration from backend snake_case to frontend camelCase */
         durationMin: e.duration_minutes || e.durationMin || null,
         centerIds: e.center_ids || [],
         centers: [],
@@ -31,10 +32,11 @@ export async function assignedExams(user, ctx = {}) {
   } catch { /* fall through to local */ }
   const { exams = await all('exams'), centers = await all('centers'), candidates = await all('candidates'), sessions = await all('sessions') } = ctx;
   return exams.filter((e) => e.tenantId === user.tenantId).map((e) => {
+    const schedule = canonicalExamSchedule(e);
     const cs = candidates.filter((c) => c.examId === e.id);
     const ss = sessions.filter((s) => s.examId === e.id);
     return {
-      ...e, centers: centers.filter((c) => e.centerIds.includes(c.id)),
+      ...e, ...schedule, centers: centers.filter((c) => e.centerIds.includes(c.id)),
       assigned: cs.length, started: ss.length, submitted: ss.filter((s) => s.status === 'submitted').length,
       inProgress: ss.filter((s) => s.status === 'in_progress').length,
       incidents: 0,

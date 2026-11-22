@@ -8,6 +8,7 @@ import {
 import { useLoad } from '../../core/ui/hooks';
 import { useNow } from '../../core/db/tenant';
 import { fmt } from '../../core/ui/format';
+import { formatExamSchedule } from '../../core/ui/normalizers';
 import {
   STUDENT_STEPS, assignments, briefing, deviceCheck, startMyExam, confirmPortalSubmission,
   receipt, myHistory, requestHelp, remaining,
@@ -24,7 +25,7 @@ function AssignmentTable({ rows, onOpen }) {
     { label: 'Exam', render: (a) => <div><b>{a.exam?.code || 'Unassigned'}</b><div className="muted sm">{a.exam?.title || '—'}</div></div> },
     { label: 'Centre', render: (a) => (a.center ? `${a.center.code} · ${a.center.city}` : '—') },
     { label: 'Seat', render: (a) => a.candidate?.seat || '—' },
-    { label: 'Starts', render: (a) => (a.exam?.startAt ? fmt(a.exam.startAt) : '—') },
+    { label: 'Starts', render: (a) => (a.exam ? formatExamSchedule(a.exam) : '—') },
     { label: 'Status', render: (a) => <Badge value={a.status} /> },
     { label: 'Action', render: (a) => (a.exam ? <Link className="btn small" to={`/student/exams/${a.exam.id}`}>{a.status === 'submitted' ? 'Receipt' : a.status === 'in-progress' ? 'Resume' : 'Open'}</Link> : '—') },
   ]} onRow={(a) => a.exam && onOpen?.(a.exam)} />;
@@ -98,9 +99,9 @@ export function StudentExamPage() {
       <Stat label="Status" value={b.lifecycle} icon="exam" />
       <Stat label="Duration" value={b.exam.durationMin} unit="min" icon="clock" />
       <Stat label="Portal URL" value={b.exam.examUrl ? 'Configured' : 'Ready'} icon="browser" sub={b.exam.examUrl ? b.exam.examUrl.replace(/^https?:\/\//, '').slice(0, 24) : 'Ready'} />
-      <Stat label="Window" value={b.exam.startAt ? fmt(b.exam.startAt) : '—'} icon="clock" />
+      <Stat label="Window" value={formatExamSchedule(b.exam)} icon="clock" />
     </StatGrid>
-    {b.exam.startAt && !b.windowOpen && <Alert tone="info" title="The exam window is not open yet">It opens at {fmt(b.exam.startAt)}. You can complete the device check early.</Alert>}
+    {b.exam.startTimeState === 'available' && !b.windowOpen && <Alert tone="info" title="The exam window is not open yet">It opens at {formatExamSchedule(b.exam)}. You can complete the device check early.</Alert>}
     {b.blocking?.length > 0 && <Alert tone="warn" title="Complete the device check">{b.blocking.join(', ')}</Alert>}
     <div className="grid2">
       <Card title="Instructions" pad><div className="prose">{b.instructions || 'No additional instructions were provided.'}</div></Card>

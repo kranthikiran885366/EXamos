@@ -1,7 +1,7 @@
 import Crud from '../../core/ui/Crud';
 import { useAuth } from '../../core/auth/AuthContext';
 import { useCol } from '../../core/db/tenant';
-import { createTenant, setTenantStatus, resetWorkspace } from './service';
+import { createTenant, setTenantStatus } from './service';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -14,13 +14,6 @@ export default function AdminPage() {
         { label: 'Live exams', render: (t) => exams.filter((e) => e.tenantId === t.id && e.status === 'live').length }, { label: 'Status', key: 'status', badge: true }]}
       create={{ label: 'New tenant', perm: 'tenant.manage', fields: [{ name: 'name', label: 'Name' }, { name: 'region', label: 'Region', default: 'ap-south-1' }, { name: 'plan', label: 'Plan', type: 'select', options: ['pilot', 'standard', 'enterprise'], default: 'pilot' }, { name: 'maxCenters', label: 'Max centers', type: 'number', default: 5 }], submit: (v) => createTenant(user, v) }}
       actions={[{ label: 'Suspend', perm: 'tenant.manage', danger: true, reason: true, show: (t) => t.status === 'active', run: (t, r) => setTenantStatus(user, t, 'suspended', r) },
-        { label: 'Activate', perm: 'tenant.manage', reason: true, show: (t) => t.status !== 'active', run: (t, r) => setTenantStatus(user, t, 'active', r) }]}
-      top={user.role === 'superadmin' && <div className="card pad2"><b>Danger zone</b><p className="muted sm">Deletes the local IndexedDB (all tenants, keys, audit log) and re-seeds on reload.</p><DangerReset user={user} /></div>} />
+        { label: 'Activate', perm: 'tenant.manage', reason: true, show: (t) => t.status !== 'active', run: (t, r) => setTenantStatus(user, t, 'active', r) }]} />
   );
-}
-import ReauthModal from '../../core/ui/ReauthModal';
-import { useState } from 'react';
-function DangerReset({ user }) {
-  const [o, setO] = useState(false);
-  return <><button className="btn danger" onClick={() => setO(true)}>Reset workspace</button>{o && <ReauthModal title="Reset workspace" text="This cannot be undone." confirmLabel="Wipe and reseed" onClose={() => setO(false)} onConfirm={() => resetWorkspace(user)} />}</>;
 }

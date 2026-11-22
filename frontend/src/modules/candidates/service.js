@@ -1,6 +1,5 @@
 import { clean } from '../../core/security/sanitize';
 import { need, fail, log, seatLabel, assertScope, requireReason } from '../../core/services/common';
-import { verifyPolicy } from '../policies/service';
 import * as Api from '../../core/api/services';
 import { listCenters } from '../centers/service';
 
@@ -146,12 +145,12 @@ export async function addCandidate(a, input) {
 }
 export async function assignToExam(a, { tenantId, examId, centerId, count }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
-  const { ex, ce, students, assignedRows, freeSeats } = await assignmentContext(tenantId, examId, centerId);
+  const { ex, ce, students, assignedRows, freeSeats, assignedToOtherExam } = await assignmentContext(tenantId, examId, centerId);
   const assignmentsByStudent = new Map(assignedRows.map((assignment) => [assignment.student_id, assignment]));
   const pool = students.map((student) => ({
     ...student,
     assignment: assignmentsByStudent.get(student.id),
-  })).filter((student) => !student.assignment);
+  })).filter((student) => !student.assignment && !assignedToOtherExam.has(student.roll_no) && !assignedToOtherExam.has(student.id));
   const requested = count === '' || count == null ? pool.length : Number(count);
   if (!Number.isInteger(requested) || requested < 1) fail('Enter a positive whole number of candidates.');
   if (requested > pool.length) fail(`Only ${pool.length} unassigned candidate(s) are available.`);
@@ -172,7 +171,7 @@ export async function assignToExam(a, { tenantId, examId, centerId, count }) {
 export async function assignCandidates(a, { tenantId, examId, centerId, candidateIds }) {
   need(a, 'candidate.manage'); assertScope(a, tenantId);
   if (!Array.isArray(candidateIds) || !candidateIds.length) fail('Select at least one candidate.');
-  const { ex, ce, students, assignedRows, freeSeats } = await assignmentContext(tenantId, examId, centerId);
+  const { ex, ce, students, assignedRows, freeSeats, assignedToOtherExam } = await assignmentContext(tenantId, examId, centerId);
   const assignmentsByStudent = new Map(assignedRows.map((assignment) => [assignment.student_id, assignment]));
   const studentsById = new Map(students.map((student) => [student.id, student]));
   const uniqueIds = [...new Set(candidateIds)];
@@ -180,6 +179,7 @@ export async function assignCandidates(a, { tenantId, examId, centerId, candidat
   const pool = uniqueIds.map((id) => studentsById.get(id));
   if (pool.some((student) => !student)) fail('One or more selected candidates are not in this institution’s live roster.');
   if (pool.some((student) => assignmentsByStudent.has(student.id))) fail('One or more selected candidates are already assigned to this examination.');
+  if (pool.some((student) => assignedToOtherExam.has(student.roll_no) || assignedToOtherExam.has(student.id))) fail('One or more selected candidates are already assigned to another examination.');
   if (pool.length > freeSeats.length) fail(`Only ${freeSeats.length} free seat(s) at ${ce.code}.`);
   await persistAssignments(examId, pool, freeSeats, centerId, ex, ce);
   await log(a, 'CANDIDATES_ASSIGNED', `${pool.length} -> ${ex.code} @ ${ce.code}`);
@@ -187,11 +187,12 @@ export async function assignCandidates(a, { tenantId, examId, centerId, candidat
 }
 
 async function assignmentContext(tenantId, examId, centerId) {
-  const [examResponse, centerRows, studentResponse, assignedRows] = await Promise.all([
+  const [examResponse, centerRows, studentResponse, assignedRows, rosterResponse] = await Promise.all([
     Api.getExamination(examId),
     listCenters(tenantId),
     Api.listStudents(),
     Api.listExaminationStudents(examId),
+    Api.getRoster().catch(() => ({ candidates: [] })),
   ]);
   const rawExam = examResponse?.examination || examResponse;
   if (!rawExam || (rawExam.id || rawExam.exam_id) !== examId || rawExam.institution_id !== tenantId) {
@@ -226,7 +227,13 @@ async function assignmentContext(tenantId, examId, centerId) {
     const seat = seatLabel(i);
     if (!occupied.has(seat)) freeSeats.push(seat);
   }
-  return { ex, ce, students, assignedRows, freeSeats };
+  const rosterCandidates = Array.isArray(rosterResponse?.candidates) ? rosterResponse.candidates : [];
+  const assignedToOtherExam = new Set(
+    rosterCandidates
+      .filter((c) => c.exam_id && c.exam_id !== examId && c.tenant_id === tenantId)
+      .flatMap((c) => [c.roll_no, c.id].filter(Boolean))
+  );
+  return { ex, ce, students, assignedRows, freeSeats, assignedToOtherExam };
 }
 
 async function persistAssignments(examId, students, seats, centerId, exam, center) {

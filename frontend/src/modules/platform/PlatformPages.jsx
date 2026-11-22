@@ -5,6 +5,7 @@ import { useTenant } from '../../core/db/tenant';
 import * as Api from '../../core/api/services';
 import { can } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
+import { canonicalPlan } from '../../core/ui/normalizers';
 import {
   Page, Card, StatGrid, Stat, Alert, Empty, Loading,
   DataTable, Badge, Modal, ActionDialog, useFlash, Flash,
@@ -133,7 +134,7 @@ export function PlatformInstitutionsOverviewPage() {
   const pendingApps = apps.filter((a) => ['pending', 'submitted'].includes(a.status?.toLowerCase()));
   const awaitingVerification = apps.filter((a) => ['under_review', 'pending'].includes(a.status?.toLowerCase()));
   const activeCount = institutions.filter((i) => i.status?.toLowerCase() === 'active').length;
-  const pilotCount = institutions.filter((i) => i.status?.toLowerCase() === 'pilot' || i.plan?.toLowerCase() === 'pilot').length;
+  const pilotCount = institutions.filter((i) => i.status?.toLowerCase() === 'pilot' || canonicalPlan(i) === 'pilot').length;
   const suspendedCount = institutions.filter((i) => i.status?.toLowerCase() === 'suspended').length;
   const openAlerts = Object.values(statsByInstitution).reduce((total, stats) => total + stats.openIncidents, 0);
 
@@ -218,7 +219,7 @@ export function PlatformInstitutionsOverviewPage() {
                 </>
               )
             },
-            { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan || 'ENTERPRISE'} /> },
+            { key: 'plan', label: 'Plan', render: (t) => <Badge value={canonicalPlan(t) || 'Not assigned'} /> },
             { key: 'status', label: 'Status', badge: true },
             { key: 'createdAt', label: 'Registered', render: (t) => fmt(t.createdAt) },
           ]}
@@ -258,7 +259,10 @@ export function PlatformInstitutionsDirectoryPage() {
         desc="Filter by state, plan, and operational lifecycle status."
         filters={[
           { key: 'status', label: 'All Statuses', options: ['active', 'pilot', 'suspended', 'archived'] },
-          { key: 'plan', label: 'All Plans', options: ['enterprise', 'standard', 'pilot'] },
+          { key: 'plan', label: 'All Plans', get: (t) => canonicalPlan(t) || 'unassigned', options: [
+            { v: 'enterprise', l: 'Enterprise' }, { v: 'standard', l: 'Standard' },
+            { v: 'pilot', l: 'Pilot' }, { v: 'unassigned', l: 'Not assigned' },
+          ] },
         ]}
         columns={[
           {
@@ -273,7 +277,7 @@ export function PlatformInstitutionsDirectoryPage() {
               </>
             )
           },
-          { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan || 'enterprise'} /> },
+          { key: 'plan', label: 'Plan', render: (t) => <Badge value={canonicalPlan(t) || 'Not assigned'} /> },
           { key: 'status', label: 'Status', badge: true },
           { key: 'users', label: 'Users', render: (t) => loadingStats ? '…' : statsByInstitution[t.id]?.users ?? '—' },
           { key: 'devices', label: 'Devices', render: (t) => loadingStats ? '…' : statsByInstitution[t.id]?.devices ?? '—' },
@@ -1197,7 +1201,7 @@ export function PlatformInstitutionDetailPage() {
             <div><small className="muted">Official Domain(s)</small><br /><span>{(inst.domains || []).join(', ') || '—'}</span></div>
             <div><small className="muted">Contact Email</small><br /><span>{inst.contactEmail || '—'}</span></div>
             <div><small className="muted">Jurisdiction / Region</small><br /><span>{inst.region || 'Not provided'}</span></div>
-            <div><small className="muted">Subscription Tier</small><br /><Badge value={inst.plan || 'Not assigned'} /></div>
+            <div><small className="muted">Subscription Tier</small><br /><Badge value={canonicalPlan(inst) || 'Not assigned'} /></div>
             <div><small className="muted">Status</small><br /><Badge value={inst.status || 'Unknown'} tone={inst.status === 'active' ? 'green' : 'amber'} /></div>
             <div><small className="muted">Enrolled Timestamp</small><br /><span>{fmt(inst.createdAt)}</span></div>
           </div>
@@ -1889,6 +1893,7 @@ export function PlatformOperationsPage() {
   const [instIncidents, setInstIncidents] = useState([]);
   const [loadingOperations, setLoadingOperations] = useState(true);
   const [operationsError, setOperationsError] = useState('');
+  const [operationsReload, setOperationsReload] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -1903,9 +1908,12 @@ export function PlatformOperationsPage() {
     }
 
     Promise.all([Api.getInstitution(id), Api.listIncidents()])
-      .then(([institution, incidentResponse]) => {
+      .then(([institutionResponse, incidentResponse]) => {
+        const institution = institutionResponse?.institution || institutionResponse;
         const rows = incidentResponse?.incidents || incidentResponse;
-        if (!institution || !Array.isArray(rows)) {
+        if (!institution || typeof institution !== 'object' || Array.isArray(institution) ||
+            typeof institution.name !== 'string' || !institution.name.trim() ||
+            !Array.isArray(rows) || rows.some((incident) => !incident || typeof incident !== 'object' || Array.isArray(incident))) {
           throw new Error('The backend returned an unexpected operations response.');
         }
         if (!active) return;
@@ -1920,7 +1928,7 @@ export function PlatformOperationsPage() {
       });
 
     return () => { active = false; };
-  }, [id]);
+  }, [id, operationsReload]);
 
   const handleStatusChange = async (targetStatus, reason) => {
     await run(async () => {
@@ -1938,6 +1946,20 @@ export function PlatformOperationsPage() {
       setTenantId(newId);
     }
   };
+
+  if (!inst) {
+    return (
+      <Page
+        title="Operations & Audit"
+        desc="Administrative lifecycle controls, security incidents, operational audit trail, suspension, and offboarding."
+        actions={<button className="btn" onClick={() => setOperationsReload((value) => value + 1)} disabled={loadingOperations}><Icon name="refresh" size={14} /> {loadingOperations ? 'Loading…' : 'Retry'}</button>}
+      >
+        {loadingOperations ? <Loading label="Loading institution operations from backend..." /> : (
+          <Alert tone="danger" title="Institution operations unavailable">{operationsError || 'The institution record was not returned. No operational action is available.'}</Alert>
+        )}
+      </Page>
+    );
+  }
 
   return (
     <Page

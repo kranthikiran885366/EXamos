@@ -62,7 +62,16 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
     if (can(user.role, 'support.view')) tickets.filter((t) => `${t.no} ${t.subject}`.toLowerCase().includes(s)).slice(0, 3).forEach((t) => out.push({ to: `/support/requests/${t.id}`, label: `${t.no} · ${t.subject}`, kind: 'Request' }));
     if (can(user.role, 'inst.view')) institutions.filter((i) => i.name.toLowerCase().includes(s)).slice(0, 3).forEach((i) => out.push({ to: `/admin/institutions/${i.id}`, label: i.name, kind: 'Institution' }));
     if (can(user.role, 'usb.view')) usbs.filter((u) => `${u.assetId} ${u.serial}`.toLowerCase().includes(s)).slice(0, 2).forEach((u) => out.push({ to: `/usb-inventory/${u.id}`, label: u.assetId, kind: 'USB' }));
-    return out.slice(0, 10);
+    const routeExam = (examId) => {
+      if (user.role === 'student') return `/student/exams/${examId}`;
+      if (['invigilator', 'ops_admin'].includes(user.role)) return `/operator/exams/${examId}/live`;
+      return `/college/exams/${examId}`;
+    };
+    return out.slice(0, 10).map((result) => {
+      if (result.kind !== 'Exam') return result;
+      const examId = String(result.to).split('/').filter(Boolean).pop();
+      return { ...result, to: routeExam(examId) };
+    });
   }, [q, exams, devices, candidates, tickets, institutions, usbs, user.role]);
 
   const markAll = async () => {

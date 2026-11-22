@@ -7,6 +7,7 @@ import { can } from '../../core/security/rbac';
 import * as Api from '../../core/api/services';
 import { Page, Card, Stat, StatGrid, Badge, DataTable, Modal, Field, Input, Select, Textarea, Checkbox, ActionDialog, Flash, useFlash, KeyValue, Tabs, Empty, Icon, CopyField } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
+import { canonicalPlan, formatExamSchedule } from '../../core/ui/normalizers';
 import {
   createInstitution, updateInstitution, setInstitutionStatus,
   createCampus, updateCampus, setCampusStatus,
@@ -24,6 +25,7 @@ const PLAN_OPTIONS = [
   { v: 'standard', l: 'Standard' },
   { v: 'enterprise', l: 'Enterprise' }
 ];
+const PLAN_FILTER_OPTIONS = [...PLAN_OPTIONS, { v: 'unassigned', l: 'Not assigned' }];
 
 const CHANNEL_OPTIONS = [
   { v: 'stable', l: 'Stable release (production)' },
@@ -98,7 +100,7 @@ export function InstitutionsPage() {
           code: t.code,
           /* Normalize status — backend may return 'active', 'ACTIVE', 'provisioned', etc. */
           status: (t.status || '').toLowerCase().replace('provisioned', 'active').replace('verified', 'active') || 'active',
-          plan: (t.plan || '').toLowerCase() || 'pilot',
+          plan: canonicalPlan(t),
           region: t.region || '', timezone: t.timezone || '',
           maxCenters: t.maxCenters ?? null, maxCandidates: t.maxCandidates ?? null,
           deploymentModel: t.deploymentModel || '',
@@ -185,7 +187,7 @@ export function InstitutionsPage() {
         desc="Select an institution to inspect sites, legal agreements, enforceable licenses, and assigned OS releases."
         filters={[
           { key: 'status', label: 'Status', options: ['active', 'suspended', 'archived'] },
-          { key: 'plan', label: 'Plan', options: PLAN_OPTIONS }
+          { key: 'plan', label: 'Plan', get: (t) => t.plan || 'unassigned', options: PLAN_FILTER_OPTIONS }
         ]}
         columns={[
           {
@@ -200,7 +202,7 @@ export function InstitutionsPage() {
               </>
             )
           },
-          { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan} /> },
+          { key: 'plan', label: 'Plan', render: (t) => <Badge value={t.plan || 'Not assigned'} /> },
           { key: 'status', label: 'Status', badge: true },
           { key: 'users', label: 'Accounts', render: (t) => statsMap[t.id]?.users ?? '—' },
           { key: 'exams', label: 'Exams', render: (t) => statsMap[t.id]?.exams ?? '—' },
@@ -254,7 +256,7 @@ const mapInstitution = (t) => ({
   name: t.name,
   code: t.code,
   status: t.status || null,
-  plan: t.plan || null,
+  plan: canonicalPlan(t),
   region: t.region || '',
   timezone: t.timezone || '',
   maxCenters: t.maxCenters ?? null,
@@ -661,7 +663,7 @@ export function InstitutionDetailPage() {
             }
           >
             <KeyValue items={[
-              ['License Plan', (license?.plan || t.plan || '—').toUpperCase()],
+              ['License Plan', canonicalPlan({ planId: license?.plan }) || canonicalPlan(t) || 'Not assigned'],
               ['Plan Version', license?.planVersion || '—'],
               ['License Status', license?.status ? <Badge key="st" value={license.status} tone={license.status === 'ACTIVE' ? 'green' : 'amber'} /> : '—'],
               ['Valid From', license?.validFrom ? fmt(license.validFrom) : '—'],
@@ -764,7 +766,7 @@ export function InstitutionDetailPage() {
               ['Timezone', t.timezone],
               ['Deployment', t.deploymentModel],
               ['Created', fmt(t.createdAt)],
-              ['Plan', t.plan]
+              ['Plan', t.plan || 'Not assigned']
             ]} />
           </Card>
           <Card title="Limits & security">
@@ -1156,6 +1158,7 @@ export function CollegeOverviewPage() {
   const [liveStats, setLiveStats] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (!tenantId) {
@@ -1181,7 +1184,7 @@ export function CollegeOverviewPage() {
       else errors.push(`Institution statistics: ${statsResult.reason?.message || 'request failed'}`);
 
       if (examsResult.status === 'fulfilled') {
-        const rows = examsResult.value?.exams || examsResult.value || [];
+        const rows = examsResult.value.examinations;
         if (Array.isArray(rows)) {
           setExams(rows
             .filter(e => (e.tenantId || e.tenant_id || e.institution_id) === tenantId)
@@ -1190,7 +1193,9 @@ export function CollegeOverviewPage() {
               id: e.id || e.exam_id,
               code: e.code || e.exam_code,
               status: String(e.status || '').toLowerCase(),
-              startAt: e.startAt || e.start_at,
+              startAt: e.startAt,
+              startTimeState: e.startTimeState,
+              timeZone: e.timeZone,
             })));
         } else errors.push('Exams: backend returned an unexpected response.');
       } else errors.push(`Exams: ${examsResult.reason?.message || 'request failed'}`);
@@ -1202,7 +1207,7 @@ export function CollegeOverviewPage() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [tenantId]);
+  }, [tenantId, loadAttempt]);
 
   const examRows = exams.filter(e => ['live', 'published', 'approved'].includes(e.status));
 
@@ -1212,6 +1217,7 @@ export function CollegeOverviewPage() {
       desc="Your institution at a glance, with the controls that matter before an exam window."
       actions={
         <>
+          <button className="btn" onClick={() => setLoadAttempt((value) => value + 1)} disabled={loading}><Icon name="refresh" size={14} /> {loading ? 'Loading…' : 'Retry data'}</button>
           <Link className="btn" to="/college/settings">Settings</Link>
           {can(user.role, 'exam.manage') && <Link className="btn primary" to="/college/exams/new">New exam</Link>}
         </>
@@ -1237,7 +1243,7 @@ export function CollegeOverviewPage() {
             columns={[
               { key: 'code', label: 'Exam', render: (e) => <Link to={`/college/exams/${e.id}`}><b>{e.code || e.name || e.title || '—'}</b></Link> },
               { key: 'status', label: 'Status', badge: true },
-              { key: 'startAt', label: 'Window', render: (e) => e.startAt ? fmt(e.startAt) : '—' },
+              { key: 'startAt', label: 'Window', render: (e) => formatExamSchedule(e) },
             ]}
             empty={<Empty icon="exam" title={loading ? 'Loading exams…' : loadError ? 'Exam data unavailable' : 'No live or published exams'} />}
           />

@@ -8,11 +8,14 @@ import {
   Icon, KeyValue, Progress, Tabs, Modal, Field, Input, Select, Textarea, Loading,
 } from '../../core/ui/kit';
 import { fmt } from '../../core/ui/format';
+import { resolvePlan } from '../../core/ui/normalizers';
+import { getReport } from '../reports/service';
 import {
   ensurePlans, createPlan, subscriptionFor, startSubscription, changePlan, setAutoRenew,
   createInvoice, markInvoice, computeUsage, usageAgainstPlan, invoiceStats, billingStats,
   PLAN_TEMPLATES, INVOICE_STATUSES,
 } from './service';
+import { normalizeExamUsageSummary } from './usage';
 
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const planLabel = (p) => `${p.name} · ${p.interval === 'year' ? 'yearly' : 'monthly'}`;
@@ -31,7 +34,9 @@ function PlanCards({ plans, currentPlanId, onChoose, canChoose }) {
             <li>{p.limits.candidates.toLocaleString('en-IN')} candidates</li>
             <li>{p.limits.devices.toLocaleString('en-IN')} devices</li>
             <li>{p.limits.storageGb} GB evidence storage</li>
-            {(p.features || []).map((f) => <li key={f}>{f}</li>)}
+            {(p.features || []).map((f) => <li key={f}>
+              {String(f).trim().toLowerCase() === 'scheduled reports' ? 'Scheduled reports (not available)' : f}
+            </li>)}
           </ul>
           <button className="btn" disabled={current || !canChoose} onClick={() => onChoose(p)}>{current ? 'Current plan' : 'Choose plan'}</button>
         </div>;
@@ -55,7 +60,8 @@ export function SubscriptionPage() {
   if (loading && !data) return <Page title="Subscription"><Card><Loading label="Loading subscription…" /></Card></Page>;
   if (error) return <Page title="Subscription"><Alert tone="danger">{error.message}</Alert></Page>;
   const { sub, plans, usage } = data || {};
-  const plan = plans?.find((p) => p.id === sub?.planId);
+  const plan = resolvePlan(plans, sub?.planId);
+  const planValue = !sub?.planId ? 'Not assigned' : plan?.name || `Unrecognized plan (${sub.planId})`;
   const against = plan ? usageAgainstPlan(usage, plan) : [];
   const over = against.filter((a) => a.over);
 
@@ -76,7 +82,7 @@ export function SubscriptionPage() {
         <Card title="Available plans"><PlanCards plans={plans || []} currentPlanId={null} canChoose={may('billing.manage')} onChoose={(p) => { setChoose(p); setStart(true); }} /></Card>
       </> : <>
         <StatGrid cols={4}>
-          <Stat label="Plan" value={plan?.name || '—'} icon="card" sub={plan ? `${plan.interval}ly` : ''} />
+          <Stat label="Plan" value={planValue} icon="card" sub={plan ? `${plan.interval}ly` : ''} />
           <Stat label="Status" value={sub.status} icon={sub.status === 'active' ? 'check' : 'warn'} tone={sub.status === 'active' ? 'green' : 'amber'} />
           <Stat label="Seats" value={sub.seats || usage.candidates} icon="candidate" sub={`${usage.candidates} candidates in use`} />
           <Stat label="Renews" value={sub.renewsAt ? fmt(sub.renewsAt) : '—'} icon="clock" sub={sub.autoRenew ? 'Auto-renew on' : 'Auto-renew off'} />
@@ -84,7 +90,7 @@ export function SubscriptionPage() {
         {over.length > 0 && <Alert tone="warn" title="Plan limits exceeded">{over.map((o) => o.label).join(', ')} exceed the current plan. Upgrade to avoid disruption.</Alert>}
         <Card title="Current subscription">
           <KeyValue cols={3} items={[
-            ['Plan', plan ? planLabel(plan) : sub.planId], ['Status', <Badge value={sub.status} />],
+            ['Plan', plan ? planLabel(plan) : planValue], ['Status', <Badge value={sub.status} />],
             ['Started', fmt(sub.startedAt)], ['Renews', sub.renewsAt ? fmt(sub.renewsAt) : '—'],
             ['Auto-renew', sub.autoRenew ? 'On' : 'Off'], ['Payment method', sub.paymentMethod || 'invoice'],
             ['Candidate price', plan ? money(plan.pricePerCandidate) : '—'], ['Centre price', plan ? money(plan.pricePerCenter) : '—'],
@@ -104,7 +110,7 @@ export function SubscriptionPage() {
           </div>
         </Card>
         <Card title="Change plan" desc="Platform administrators can change immediately; institution users submit a two-person approval.">
-          <PlanCards plans={plans || []} currentPlanId={sub.planId} canChoose={may('billing.manage')} onChoose={(p) => setChoose(p)} />
+          <PlanCards plans={plans || []} currentPlanId={plan?.id || null} canChoose={may('billing.manage')} onChoose={(p) => setChoose(p)} />
         </Card>
       </>}
 
@@ -122,7 +128,7 @@ export function SubscriptionPage() {
 function InvoiceModal({ tenantId, plans, sub, onClose, onDone }) {
   const { user } = useAuth();
   const { msg, setMsg, run, busy } = useFlash();
-  const [v, setV] = useState({ planId: sub?.planId || plans[0]?.id || '', seats: sub?.seats || 0, taxPct: 18, dueDays: 15, notes: '' });
+  const [v, setV] = useState({ planId: resolvePlan(plans, sub?.planId)?.id || plans[0]?.id || '', seats: sub?.seats || 0, taxPct: 18, dueDays: 15, notes: '' });
   const set = (k, x) => setV((s) => ({ ...s, [k]: x }));
   const submit = async (e) => {
     e.preventDefault();
@@ -194,6 +200,7 @@ export function BillingPage() {
   const [pending, setPending] = useState(null);
   const plans = data?.plans || [];
   const sub = data?.sub;
+  const currentPlan = resolvePlan(plans, sub?.planId);
   const stats = invoiceStats(invoices);
 
   return (
@@ -211,7 +218,7 @@ export function BillingPage() {
         <Stat label="Invoices" value={stats.total} icon="card" />
         <Stat label="Outstanding" value={money(stats.outstanding)} icon="clock" tone={stats.overdue ? 'red' : 'amber'} sub={`${stats.overdue} overdue`} />
         <Stat label="Collected" value={money(stats.collected)} icon="check" tone="green" />
-        <Stat label="Active plan" value={plans.find((p) => p.id === sub?.planId)?.name || '—'} icon="package" sub={sub ? sub.status : 'No subscription'} />
+        <Stat label="Active plan" value={sub?.planId ? currentPlan?.name || `Unrecognized plan (${sub.planId})` : 'Not assigned'} icon="package" sub={sub ? sub.status : 'No subscription'} />
       </StatGrid>
 
       <Card pad>
@@ -225,7 +232,7 @@ export function BillingPage() {
           filters={[{ key: 'status', label: 'Any status', options: INVOICE_STATUSES.map((s) => ({ v: s, l: s })) }]}
           columns={[
             { label: 'Invoice', render: (i) => <><b>{i.number}</b><br /><small className="muted">{fmt(i.issuedAt)}</small></> },
-            { label: 'Plan', render: (i) => plans.find((p) => p.id === i.planId)?.name || '—' },
+            { label: 'Plan', render: (i) => i.planId ? resolvePlan(plans, i.planId)?.name || `Unrecognized plan (${i.planId})` : 'Not assigned' },
             { label: 'Subtotal', render: (i) => money(i.subtotal) },
             { label: 'Tax', render: (i) => money(i.tax) },
             { label: 'Total', render: (i) => <b>{money(i.total)}</b> },
@@ -240,8 +247,8 @@ export function BillingPage() {
           ]}
           empty={<Empty icon="card" title="No invoices yet">Create an invoice from the active plan and current usage.</Empty>}
         /> : <div>
-          {loading && !plans.length ? <Loading /> : <PlanCards plans={plans} currentPlanId={sub?.planId} canChoose={false} onChoose={() => {}} />}
-          {sub && <Alert tone="info" title="Institution subscription">{plans.find((p) => p.id === sub.planId)?.name || sub.planId} · {sub.status} · renews {fmt(sub.renewsAt)}</Alert>}
+          {loading && !plans.length ? <Loading /> : <PlanCards plans={plans} currentPlanId={currentPlan?.id || null} canChoose={false} onChoose={() => {}} />}
+          {sub && <Alert tone="info" title="Institution subscription">{sub.planId ? currentPlan?.name || `Unrecognized plan (${sub.planId})` : 'Not assigned'} · {sub.status} · renews {fmt(sub.renewsAt)}</Alert>}
         </div>}
       </Card>
 
@@ -265,20 +272,34 @@ export function UsagePage() {
   const { data, loading, error, reload } = useLoad(async () => {
     const plans = await ensurePlans();
     const sub = await subscriptionFor(tenantId);
-    return { usage: await computeUsage(tenantId), sub, plan: plans.find((p) => p.id === sub?.planId) || null };
+    return { usage: await computeUsage(tenantId), sub, plan: resolvePlan(plans, sub?.planId) };
+  }, [tenantId]);
+  const examUsage = useLoad(async () => {
+    if (!tenantId) throw new Error('Select an institution to load scoped exam usage.');
+    const report = await getReport('exams', 'exam-summary', {}, tenantId);
+    return normalizeExamUsageSummary(report.summary);
   }, [tenantId]);
   if (loading && !data) return <Page title="Usage"><Card><Loading label="Computing usage…" /></Card></Page>;
   if (error) return <Page title="Usage"><Alert tone="danger">{error.message}</Alert></Page>;
   const { usage, plan, sub } = data;
   const against = plan ? usageAgainstPlan(usage, plan) : [];
   return (
-    <Page title="Usage" desc="Institution usage against purchased limits. Figures are computed from live workspace data." actions={<button className="btn" onClick={reload}><Icon name="refresh" size={14} /> Refresh</button>}>
-      <StatGrid cols={4}>
+    <Page title="Usage" desc="Candidate, centre and device totals use workspace records. Exam lifecycle counts come from the tenant-scoped server report." actions={<button className="btn" onClick={() => { reload(); examUsage.reload(); }}><Icon name="refresh" size={14} /> Refresh</button>}>
+      <StatGrid cols={3}>
         <Stat label="Candidates" value={usage.candidates.toLocaleString('en-IN')} icon="candidate" />
         <Stat label="Centres" value={usage.centers} icon="building" />
         <Stat label="Devices" value={usage.devices} icon="device" />
-        <Stat label="Exams delivered" value={usage.exams} icon="exam" />
       </StatGrid>
+      <StatGrid cols={4}>
+        <Stat label="Exam records created" value={examUsage.data?.created ?? (examUsage.loading ? '…' : '—')} icon="exam" />
+        <Stat label="Exams published" value={examUsage.data?.published ?? (examUsage.loading ? '…' : '—')} icon="check" />
+        <Stat label="Exams attempted" value={examUsage.data?.attempted ?? (examUsage.loading ? '…' : '—')} icon="pulse" />
+        <Stat label="Exams finalized" value={examUsage.data?.completed ?? (examUsage.loading ? '…' : '—')} icon="check" />
+      </StatGrid>
+      {examUsage.error && <Alert tone="warn" title="Exam usage unavailable">{examUsage.error.message}</Alert>}
+      <Alert tone="info" title="Billable exams: not tracked">
+        Current plans are priced by candidates and centres. Drafts, publication, retries and finalization do not create an exam charge.
+      </Alert>
       {!plan ? <Alert tone="warn" title="No active plan">Subscribe to a plan to compare usage against purchased limits.</Alert> : <Card title={`Usage vs ${plan.name}`} desc={`${sub?.status || 'active'} · renews ${fmt(sub?.renewsAt)}`}>
         <div className="stack">
           {against.map((a) => <Progress key={a.key} label={`${a.label} · ${a.used.toLocaleString('en-IN')} / ${a.limit.toLocaleString('en-IN')}`} value={a.used} max={a.limit} tone={a.over ? 'r' : a.pct > 80 ? 'a' : 'g'} />)}
@@ -290,7 +311,7 @@ export function UsagePage() {
         ]} />
       </Card>}
       <Card title="Other consumption">
-        <KeyValue cols={3} items={[['Support requests', usage.support], ['Evidence storage', `${usage.storageMb} MB`], ['Exams delivered', usage.exams]]} />
+        <KeyValue cols={2} items={[['Support requests', usage.support], ['Evidence storage', `${usage.storageMb} MB`]]} />
       </Card>
     </Page>
   );

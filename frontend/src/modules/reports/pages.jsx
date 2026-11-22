@@ -29,7 +29,7 @@ export function SecurityReportsPage() {
     <ReportSection
       group="security"
       title="Security reports"
-      desc="Incidents, security events, vulnerabilities, release validation and tenant-scoped audit activity."
+      desc="Tenant-scoped server reports for incidents, security events, vulnerabilities, release validation and audit summaries. These report populations are distinct from the platform administrative-event list and global ledger."
       preferredKeys={['incidents', 'security-events', 'vulnerabilities', 'release-validation', 'audit-summary']}
     />
   );

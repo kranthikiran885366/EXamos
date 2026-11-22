@@ -1,9 +1,19 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import SppioLogo, { SppioSymbol } from './SppioLogo';
+import { SppioSymbol } from './SppioLogo';
+import PublicHeader from './PublicHeader';
+import PublicFooter from './PublicFooter';
+import SppioShowcase from './SppioShowcase';
+import usePageMeta from './usePageMeta';
 
 export default function SolutionsPage() {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  usePageMeta({
+    title: 'Solutions | SPPIO Assessment & Technical Hiring',
+    description:
+      'Example SPPIO workflows for institutional examinations, enterprise technical hiring, and high-volume assessment programmes. Capabilities depend on the selected deployment.',
+    path: '/solutions',
+  });
+
   const [stationCount, setStationCount] = useState(500);
   const [stationInput, setStationInput] = useState('500');
   const [centerCount, setCenterCount] = useState(5);
@@ -102,77 +112,42 @@ export default function SolutionsPage() {
 
   return (
     <div id="top" tabIndex="-1" className="sppio-website">
-      {/* ---------------- Header ---------------- */}
-      <header className="sppio-header" role="banner">
-        <div className="sppio-container">
-          <div className="sppio-header-inner">
-            <Link to="/" className="sppio-brand-link" aria-label="SPPIO Home">
-              <SppioLogo width={164} accent="#B54F34" ink="#302337" />
-            </Link>
+      <PublicHeader active="solutions" />
 
-            <nav className="sppio-nav" aria-label="Primary navigation">
-              <Link to="/landing#suite" className="sppio-nav-item">Products</Link>
-              <Link to="/solutions" className="sppio-nav-item" style={{ color: '#B54F34' }}>Solutions</Link>
-              <Link to="/landing#capabilities" className="sppio-nav-item">Capabilities</Link>
-              <Link to="/architecture" className="sppio-nav-item">Architecture</Link>
-              <Link to="/landing#deployments" className="sppio-nav-item">Deployments</Link>
-              <Link to="/landing#company" className="sppio-nav-item">Company</Link>
-            </nav>
-
-            <div className="sppio-header-actions">
-              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>Institution Onboarding</Link>
-              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
-              <Link to="/login" className="sppio-btn-ghost">
-                Sign In
-              </Link>
-              <a href="/landing#contact" className="sppio-btn-primary">
-                Request Briefing
-              </a>
-              <button type="button" className="sppio-mobile-toggle" aria-label="Toggle navigation" aria-expanded={mobileMenuOpen} aria-controls="solutions-mobile-navigation" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  {mobileMenuOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
-                </svg>
-              </button>
-            </div>
-          </div>
-          {mobileMenuOpen && <nav id="solutions-mobile-navigation" className="sppio-mobile-drawer" aria-label="Mobile navigation">
-            <Link to="/landing#suite" onClick={() => setMobileMenuOpen(false)}>Products</Link>
-            <Link to="/solutions" onClick={() => setMobileMenuOpen(false)}>Solutions</Link>
-            <Link to="/landing#capabilities" onClick={() => setMobileMenuOpen(false)}>Capabilities</Link>
-            <Link to="/architecture" onClick={() => setMobileMenuOpen(false)}>Architecture</Link>
-            <Link to="/landing#deployments" onClick={() => setMobileMenuOpen(false)}>Deployments</Link>
-            <Link to="/landing#company" onClick={() => setMobileMenuOpen(false)}>Company</Link>
-            <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)}>Institution Onboarding</Link>
-            <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)}>Track Application</Link>
-            <Link to="/login" onClick={() => setMobileMenuOpen(false)}>Sign In</Link>
-          </nav>}
-        </div>
-      </header>
+      <main id="main-content">
 
       {/* ---------------- Hero Section ---------------- */}
       <section className="sppio-hero-section" style={{ padding: '72px 0 80px' }}>
         <div className="sppio-container">
-          <div className="sppio-kicker-badge">
-            <span className="sppio-kicker-dot" />
-            <span>Open Aperture · Corporate Recruitment &amp; Institutional Solutions</span>
-          </div>
+          <div className="sppio-hero-split">
+            <div>
+              <div className="sppio-kicker-badge">
+                <span className="sppio-kicker-dot" />
+                <span>Open Aperture · Solutions by assessment programme</span>
+              </div>
 
-          <h1 className="sppio-hero-headline" style={{ maxWidth: '820px' }}>
-            Securing global recruitment.<br />
-            <span className="sppio-highlight">Engineered for authentic engineering talent.</span>
-          </h1>
+              <h1 className="sppio-hero-headline" style={{ maxWidth: '720px' }}>
+                Securing global recruitment.<br />
+                <span className="sppio-highlight">Engineered for authentic engineering talent.</span>
+              </h1>
 
-          <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            Explore example workflows for institutional examinations, enterprise hiring, and technical evaluation. Product capabilities and assurance depend on the selected deployment.
-          </p>
+              <p className="sppio-hero-lead" style={{ maxWidth: '640px' }}>
+                Explore example workflows for institutional examinations, enterprise hiring and technical evaluation.
+                Product capabilities and assurance depend on the selected deployment.
+              </p>
 
-          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
-            <a href="#solutions-grid" className="sppio-btn-primary">
-              Explore Recruitment &amp; Testing Solutions ↓
-            </a>
-            <a href="#calculator" className="sppio-btn-ghost">
-              Fleet Capacity Calculator
-            </a>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
+                <a href="#solutions-grid" className="sppio-btn-primary">
+                  Explore solutions
+                  <span aria-hidden="true">↓</span>
+                </a>
+                <a href="#calculator" className="sppio-btn-ghost">
+                  Fleet capacity estimator
+                </a>
+              </div>
+            </div>
+
+            <SppioShowcase compact caption="One station profile, configured per assessment programme." />
           </div>
         </div>
       </section>
@@ -194,6 +169,7 @@ export default function SolutionsPage() {
             {solutions.map((sol, idx) => (
               <div
                 key={idx}
+                className="sppio-solution-card"
                 style={{
                   background: '#FFFFFF',
                   border: '1px solid #DCD5D2',
@@ -299,23 +275,23 @@ export default function SolutionsPage() {
               </div>
             </div>
 
-            <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '16px', padding: '36px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="sppio-estimator-panel" style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '16px', padding: '36px' }}>
+              <div className="sppio-estimator-metrics" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
                 <div>
                   <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                     Daily Candidate Capacity
                   </span>
-                  <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
+                  <div className="sppio-estimator-value" style={{ fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {totalCandidates.toLocaleString()}
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>                  Candidates / day (assumed)</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Candidates / day (assumed)</span>
                 </div>
 
                 <div>
                   <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                     Stations per Center
                   </span>
-                  <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
+                  <div className="sppio-estimator-value" style={{ fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {Math.round(stationCount / centerCount)}
                   </div>
                   <span style={{ fontSize: '12px', color: '#A69BA9' }}>Average distribution</span>
@@ -325,17 +301,17 @@ export default function SolutionsPage() {
                   <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                     Chained Ledger Events
                   </span>
-                  <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
+                  <div className="sppio-estimator-value" style={{ fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     {auditEntries.toLocaleString()}
                   </div>
-                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>                  Events / day (assumed)</span>
+                  <span style={{ fontSize: '12px', color: '#A69BA9' }}>Events / day (assumed)</span>
                 </div>
 
                 <div>
                   <span style={{ fontSize: '11px', color: '#FFAE99', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
                     Cryptographic Ledger Storage
                   </span>
-                  <div style={{ fontSize: '32px', fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
+                  <div className="sppio-estimator-value" style={{ fontWeight: 800, color: '#FFFFFF', margin: '6px 0 2px' }}>
                     ~{estimatedLedgerMB} MB
                   </div>
                   <span style={{ fontSize: '12px', color: '#A69BA9' }}>At assumed 256 bytes per event</span>
@@ -346,53 +322,9 @@ export default function SolutionsPage() {
         </div>
       </section>
 
-      {/* ---------------- Footer ---------------- */}
-      <footer className="sppio-footer" role="contentinfo">
-        <div className="sppio-container">
-          <div className="sppio-footer-grid">
-            <div className="sppio-footer-brand">
-              <SppioLogo width={160} accent="#B54F34" ink="#FFFFFF" />
-              <p>
-                Open Aperture architecture. High-assurance infrastructure engineered for national, institutional, and corporate assessment integrity.
-              </p>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Public Pages</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/landing">Platform Overview</Link></li>
-                <li><Link to="/architecture">Silicon Attestation</Link></li>
-                <li><Link to="/solutions">Enterprise Solutions</Link></li>
-              </ul>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Institutional Use</h5>
-              <ul className="sppio-footer-links">
-                <li><a href="#solutions-grid">National Testing</a></li>
-                <li><a href="#solutions-grid">University Licensure</a></li>
-                <li><a href="#calculator">Fleet Capacity Estimator</a></li>
-              </ul>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Console Access</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
-                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
-                <li><Link to="/register-institution">Institution Onboarding</Link></li>
-                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
-                <li><a href="/landing#contact">Schedule Consultation</a></li>
-              </ul>
-            </div>
-          </div>
+      </main>
 
-          <div className="sppio-footer-bottom">
-            <div>© 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.</div>
-            <div className="sppio-legal-links">
-              <Link to="/landing">Platform Home</Link>
-              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
     </div>
   );
 }

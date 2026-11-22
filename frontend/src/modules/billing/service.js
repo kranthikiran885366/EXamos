@@ -12,7 +12,7 @@ export const PLAN_TEMPLATES = [
   {
     id: 'plan_standard', name: 'Standard', pricePerCandidate: 18, pricePerCenter: 2500, interval: 'month',
     limits: { centers: 10, candidates: 5000, devices: 2000, storageGb: 50 },
-    features: ['Everything in Pilot', 'Two-person approvals', 'Custom policies', 'Priority support', 'Scheduled reports'],
+    features: ['Everything in Pilot', 'Two-person approvals', 'Custom policies', 'Priority support'],
   },
   {
     id: 'plan_enterprise', name: 'Enterprise', pricePerCandidate: 12, pricePerCenter: 1800, interval: 'year',
@@ -23,7 +23,7 @@ export const PLAN_TEMPLATES = [
 export const INVOICE_STATUSES = ['draft', 'open', 'paid', 'overdue', 'void', 'failed'];
 export const USAGE_METRICS = [
   { key: 'candidates', label: 'Registered candidates' }, { key: 'centers', label: 'Exam centres' },
-  { key: 'devices', label: 'Enrolled devices' }, { key: 'exams', label: 'Exams delivered' },
+  { key: 'devices', label: 'Enrolled devices' },
   { key: 'storageMb', label: 'Evidence storage (MB)' }, { key: 'support', label: 'Support requests' },
 ];
 
@@ -136,12 +136,15 @@ export async function markInvoice(a, inv, status, reason = '') {
 }
 
 export async function computeUsage(tenantId, ctx = {}) {
-  const { candidates = await all('candidates'), centers = await all('centers'), devices = await all('devices'), exams = await all('exams'), evidence = await all('evidence'), support = await all('support') } = ctx;
+  const {
+    candidates = await all('candidates'), centers = await all('centers'), devices = await all('devices'),
+    evidence = await all('evidence'), support = await all('support'),
+  } = ctx;
   const f = (r) => r.tenantId === tenantId;
   const storageMb = Math.round(evidence.filter(f).reduce((s, e) => s + (e.size || 0), 0) / 1048576 * 100) / 100;
   return {
     candidates: candidates.filter(f).length, centers: centers.filter(f).length, devices: devices.filter(f).length,
-    exams: exams.filter(f).length, storageMb, support: support.filter(f).length,
+    storageMb, support: support.filter(f).length,
   };
 }
 

@@ -42,7 +42,7 @@ export const ROUTE_DEFS = [
   D('/institution/settings/access', 'Administrators & Access', 'user.manage', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAccessPage'), 'Institution Admin', { icon: 'users' }),
   D('/institution/settings/security', 'Security & Deployment', 'settings.inst', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionSecurityPage'), 'Institution Admin', { icon: 'shield' }),
   D('/institution/deployment', 'Deployment Readiness', 'deployment.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionDeploymentReadinessPage'), 'Institution Admin', { icon: 'device' }),
-  D('/institution/audit', 'Audit & Activity', 'audit.view', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAuditPage'), 'Institution Admin', { icon: 'shield' }),
+  D('/institution/audit', 'Audit & Activity', 'audit.institution', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAuditPage'), 'Institution Admin', { icon: 'shield' }),
 
   // Administration
   D('/admin/institutions', 'Institutions', 'inst.view', page(() => import('../modules/institutions/pages'), 'InstitutionsPage'), 'Administration', { icon: 'building', end: true }),
@@ -57,7 +57,7 @@ export const ROUTE_DEFS = [
   D('/admin/integrations', 'Integrations', 'settings.view', page(() => import('../modules/settings/pages'), 'IntegrationsPage'), 'Administration', { nav: false }),
   D('/admin/feature-controls', 'Feature controls', 'settings.view', page(() => import('../modules/settings/pages'), 'FeatureControlsPage'), 'Administration', { nav: false }),
   D('/admin/system-health', 'System health', 'monitor.view', page(() => import('../modules/settings/pages'), 'SystemHealthPage'), 'Administration', { icon: 'pulse' }),
-  D('/admin/audit', 'Audit trail', 'audit.view', page(() => import('../modules/audit/AuditPage'), 'default'), 'Administration', { icon: 'shield' }),
+  D('/admin/audit', 'Audit trail', 'audit.platform', page(() => import('../modules/audit/AuditPage'), 'default'), 'Administration', { icon: 'shield' }),
   D('/admin/releases', 'Releases', 'release.view', page(() => import('../modules/releases/pages'), 'ReleasesPage'), 'Releases & rollout', { icon: 'package', end: true }),
   D('/releases/:id', 'Release', 'release.view', page(() => import('../modules/releases/pages'), 'ReleaseDetailPage'), 'Releases & rollout', { nav: false }),
   D('/release-rollouts', 'Rollouts', 'release.view', page(() => import('../modules/releases/pages'), 'RolloutsPage'), 'Releases & rollout', { icon: 'upload' }),
@@ -72,7 +72,7 @@ export const ROUTE_DEFS = [
   D('/college/staff', 'Staff', 'staff.manage', page(() => import('../modules/institutions/pages'), 'StaffPage'), 'Institution', { icon: 'badge' }),
   D('/college/settings', 'Institution settings', 'settings.inst', page(() => import('../modules/institutions/pages'), 'CollegeSettingsPage'), 'Institution', { icon: 'settings' }),
   D('/college/subscription', 'Subscription', 'billing.view', page(() => import('../modules/billing/pages'), 'SubscriptionPage'), 'Institution', { icon: 'card' }),
-  D('/college/audit', 'Institution audit', 'audit.view', page(() => import('../modules/audit/AuditPage'), 'default'), 'Institution', { nav: false }),
+  D('/college/audit', 'Institution audit', 'audit.institution', page(() => import('../modules/institution-admin/InstitutionAdminPages'), 'InstitutionAuditPage'), 'Institution', { nav: false }),
 
   // Examinations
   D('/college/exams', 'Exams & schedules', 'exam.view', page(() => import('../modules/exams/pages'), 'ExamsPage'), 'Examinations', { icon: 'exam', end: true }),
@@ -103,6 +103,7 @@ export const ROUTE_DEFS = [
   D('/devices', 'Devices', 'device.view', page(() => import('../modules/devices/pages'), 'DevicesPage'), 'Devices & USB', { icon: 'device', end: true }),
   D('/devices/enrollment', 'Enrollment', 'device.view', page(() => import('../modules/devices/pages'), 'EnrollmentPage'), 'Devices & USB', { icon: 'plus' }),
   D('/devices/compatibility', 'Compatibility', 'compat.view', page(() => import('../modules/devices/pages'), 'CompatibilityPage'), 'Devices & USB', { icon: 'checklist' }),
+  D('/kiosk', 'Kiosk Operations', 'kiosk.manage', page(() => import('../modules/kiosk/pages'), 'KioskPage'), 'Devices & USB', { icon: 'device' }),
   D('/devices/:id', 'Device', 'device.view', page(() => import('../modules/devices/pages'), 'DeviceDetailPage'), 'Devices & USB', { nav: false }),
   D('/devices/:id/attestation', 'Attestation', 'device.view', page(() => import('../modules/devices/pages'), 'DeviceAttestationPage'), 'Devices & USB', { nav: false }),
   D('/usb-inventory', 'USB inventory', 'usb.view', page(() => import('../modules/usb/pages'), 'UsbInventoryPage'), 'Devices & USB', { icon: 'usb' }),
@@ -252,7 +253,6 @@ export const LEGACY = {
   '/iam': '/admin/users',
   '/exams': '/college/exams',
   '/firewall': '/security/policies',
-  '/kiosk': '/devices/compatibility',
   '/fleet': '/devices',
   '/tpm': '/security/attestation',
   '/ops': '/operator/overview',

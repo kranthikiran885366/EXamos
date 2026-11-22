@@ -1,7 +1,5 @@
 import { all, get, put } from '../../core/db/db';
-import { sha256, canon, verify } from '../../core/security/crypto';
 import { need, fail, log } from '../../core/services/common';
-import { verifyPolicy } from '../policies/service';
 import * as Api from '../../core/api/services';
 
 export async function startSession(a, candidateId) {
@@ -14,13 +12,15 @@ async function openSession(a, candidateId) {
   const ex = await get('exams', c.examId); if (!ex || ex.status !== 'live') fail('The exam is not live.');
   if (c.identity !== 'verified') fail('Identity is not verified for this candidate.');
   const sessions = (await all('sessions')).filter((s) => s.candidateId === c.id);
-  if (sessions.length) fail('A local session record already exists. The backend does not support session recovery, so it cannot be resumed.');
+  if (sessions.length) fail('A session record already exists. The backend does not support session recovery, so it cannot be resumed.');
   const dev = (await all('devices')).find((d) => d.centerId === c.centerId && d.seat === c.seat); if (!dev) fail('No device is enrolled for this seat.');
   if (dev.status !== 'enrolled') fail(`Device is ${dev.status}.`);
   if (dev.isolated) fail('Device is isolated by policy.');
   if (Date.now() - dev.lastSeen > 40000) fail('Device is unreachable (no heartbeat).');
   const rel = await get('releases', dev.releaseId); if (!rel || rel.status === 'revoked') fail('Device runs a revoked release.');
-  const pol = await get('policies', ex.policyId); if (!pol || !(await verifyPolicy(pol))) fail('Exam policy signature is invalid.');
+  const pol = await get('policies', ex.policyId);
+  if (!pol || pol.status !== 'published') fail('The exam does not have a published policy.');
+  fail('Server-side policy signature verification is unavailable. Session launch is blocked until the trust integration is complete.');
   const dp = dev.policyId ? await get('policies', dev.policyId) : null; if (!dp || dp.status !== 'published') fail('Device policy is out of date; wait for rollout.');
   if (pol.config.requireTpm && dev.backendTrustOutcome !== 'ALLOW')
     fail('The backend has not verified trusted TPM evidence for this device; the exam cannot start.');
@@ -87,10 +87,7 @@ export async function submitSession(a, sid, { auto = false, why = '' } = {}) {
 }
 
 export async function verifyReceipt(s) {
-  if (!s.receiptPayload) return false;
-  const h = await sha256(canon(s.receiptPayload));
-  if ('RC-' + h.slice(0, 12).toUpperCase() !== s.receipt || (await sha256(canon(s.answers))) !== s.receiptPayload.answersHash) return false;
-  const k = await get('keys', 'receipt-signer'); return !!k && verify(k.pub, h, s.receiptSig);
+  fail('Independent server-side receipt verification is unavailable; the receipt was not verified.');
 }
 
 export async function terminate(a, s, reason) {

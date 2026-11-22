@@ -19,6 +19,7 @@ export const ROLES = {
       'device.view', 'device.manage', 'usb.view', 'usb.assign',
       'policy.view', 'policy.edit', 'policy.publish', 'policy.rollback', 'incident.view', 'incident.manage',
       'release.view', 'report.generate', 'export', 'audit.view', 'audit.export',
+      'audit.institution',
       'support.view', 'support.manage', 'notify.manage', 'notification.view', 'billing.view', 'billing.manage',
       'privacy.view', 'privacy.manage', 'approval.view', 'approval.decide', 'settings.view', 'settings.inst',
       'user.manage', 'monitor.view', 'evidence.view', 'compat.view'],
@@ -61,7 +62,7 @@ export const ROLES = {
     desc: 'Reads authorised evidence, audit trails, policy decisions and security reports.',
     perms: ['dashboard.view', 'inst.view', 'exam.view', 'candidate.view', 'device.view', 'usb.view',
       'audit.view', 'audit.export', 'security.view', 'incident.view', 'release.view', 'policy.view',
-      'report.generate', 'export', 'monitor.view', 'billing.view', 'support.view', 'privacy.view', 'evidence.view'],
+      'audit.platform', 'report.generate', 'export', 'monitor.view', 'billing.view', 'support.view', 'privacy.view', 'evidence.view'],
   },
   release_engineer: {
     label: 'Release Engineer', short: 'Release', scope: 'global', rank: 60,
@@ -152,7 +153,7 @@ export const PERMISSION_GROUPS = [
   { group: 'Security', perms: ['security.view', 'security.manage', 'policy.view', 'policy.edit', 'policy.publish', 'policy.rollback', 'firewall.manage', 'incident.view', 'incident.manage', 'evidence.view', 'evidence.manage'] },
   { group: 'Releases', perms: ['release.view', 'release.manage', 'release.approve', 'release.rollout'] },
   { group: 'Operations', perms: ['ops.view', 'session.terminate', 'monitor.view', 'notify.manage', 'notification.view'] },
-  { group: 'Compliance', perms: ['audit.view', 'audit.export', 'report.generate', 'export', 'privacy.view', 'privacy.manage'] },
+  { group: 'Compliance', perms: ['audit.view', 'audit.institution', 'audit.platform', 'audit.export', 'report.generate', 'export', 'privacy.view', 'privacy.manage'] },
   { group: 'Commercial & Support', perms: ['billing.view', 'billing.manage', 'support.view', 'support.manage', 'support.diagnostics'] },
   { group: 'Student', perms: ['student.view', 'student.session', 'student.check', 'account.view'] },
 ];

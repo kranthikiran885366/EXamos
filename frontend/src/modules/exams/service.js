@@ -1,7 +1,6 @@
 import { all, get, put } from '../../core/db/db';
-import { clean } from '../../core/security/sanitize';
+import { clean, normalizeHttpsOrigin } from '../../core/security/sanitize';
 import { id, need, fail, log, genQuestions, score, assertScope, requireReason, validHttps, inScope } from '../../core/services/common';
-import { verifyPolicy } from '../policies/service';
 import { submitSession } from '../submissions/service';
 import * as Api from '../../core/api/services';
 import { listCenters as listBackendCenters } from '../centers/service';
@@ -66,13 +65,10 @@ const startOf = (v) => (typeof v === 'number' ? v : Date.parse(v));
 const normalizeOrigins = (values) => {
   if (!Array.isArray(values)) fail('Origins must be provided as a list.');
   return [...new Set(values.filter((value) => String(value || '').trim()).map((value) => {
-  const origin = clean(value, 200);
-  let parsed;
-  try { parsed = new URL(origin); } catch { fail(`Allowed origin is invalid: ${origin}`); }
-  if (!validHttps(origin) || (parsed.pathname !== '/' && parsed.pathname !== '') || parsed.search || parsed.hash) {
-    fail(`Allowed origin must be an HTTPS origin without a path: ${origin}`);
-  }
-  return parsed.origin;
+    const input = clean(value, 200);
+    const origin = normalizeHttpsOrigin(input);
+    if (!origin) fail(`Allowed origin must be an HTTPS origin without credentials, paths, query strings, or fragments: ${input}`);
+    return origin;
   }).filter(Boolean))];
 };
 
@@ -607,7 +603,6 @@ export async function configureExamPolicy(a, ex, config, publish = false, reason
   };
   const errs = validateConfig(normalized, rules);
   if (errs.length) fail(errs.join(' '));
-  for (const o of normalized.origins) if (!validHttps(o)) fail(`${o} is not a valid https origin.`);
   const name = `exam-${ex.code.toLowerCase()}-policy`;
   const draft = await createPolicy(a, { tenantId: ex.tenantId, name, ...normalized });
   if (!publish) {

@@ -1,10 +1,19 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import SppioLogo, { SppioSymbol } from './SppioLogo';
+import { SppioSymbol } from './SppioLogo';
+import PublicHeader from './PublicHeader';
+import PublicFooter from './PublicFooter';
+import SppioShowcase from './SppioShowcase';
+import usePageMeta from './usePageMeta';
 
 export default function ArchitecturePage() {
+  usePageMeta({
+    title: 'Architecture | SPPIO Open Aperture Control Boundaries',
+    description:
+      'How SPPIO assessment stations are intended to attest, isolate, and record activity, with the deployment boundaries, prerequisites, and limits of each control area.',
+    path: '/architecture',
+  });
+
   const [activeStep, setActiveStep] = useState(0);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const quoteSteps = [
     {
@@ -80,77 +89,43 @@ export default function ArchitecturePage() {
 
   return (
     <div id="top" tabIndex="-1" className="sppio-website">
-      {/* ---------------- Header ---------------- */}
-      <header className="sppio-header" role="banner">
-        <div className="sppio-container">
-          <div className="sppio-header-inner">
-            <Link to="/" className="sppio-brand-link" aria-label="SPPIO Home">
-              <SppioLogo width={164} accent="#B54F34" ink="#302337" />
-            </Link>
+      <PublicHeader active="architecture" />
 
-            <nav className="sppio-nav" aria-label="Primary navigation">
-              <Link to="/landing#suite" className="sppio-nav-item">Products</Link>
-              <Link to="/solutions" className="sppio-nav-item">Solutions</Link>
-              <Link to="/landing#capabilities" className="sppio-nav-item">Capabilities</Link>
-              <Link to="/architecture" className="sppio-nav-item" style={{ color: '#B54F34' }}>Architecture</Link>
-              <Link to="/landing#deployments" className="sppio-nav-item">Deployments</Link>
-              <Link to="/landing#company" className="sppio-nav-item">Company</Link>
-            </nav>
-
-            <div className="sppio-header-actions">
-              <Link to="/register-institution" className="sppio-nav-item" style={{ color: '#B54F34', fontWeight: 700 }}>Institution Onboarding</Link>
-              <Link to="/register-institution?tab=track" className="sppio-nav-item">Track Application</Link>
-              <Link to="/login" className="sppio-btn-ghost">
-                Sign In
-              </Link>
-              <a href="/landing#contact" className="sppio-btn-primary">
-                Request Briefing
-              </a>
-              <button type="button" className="sppio-mobile-toggle" aria-label="Toggle navigation" aria-expanded={mobileMenuOpen} aria-controls="architecture-mobile-navigation" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  {mobileMenuOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
-                </svg>
-              </button>
-            </div>
-          </div>
-          {mobileMenuOpen && <nav id="architecture-mobile-navigation" className="sppio-mobile-drawer" aria-label="Mobile navigation">
-            <Link to="/landing#suite" onClick={() => setMobileMenuOpen(false)}>Products</Link>
-            <Link to="/solutions" onClick={() => setMobileMenuOpen(false)}>Solutions</Link>
-            <Link to="/landing#capabilities" onClick={() => setMobileMenuOpen(false)}>Capabilities</Link>
-            <Link to="/architecture" onClick={() => setMobileMenuOpen(false)}>Architecture</Link>
-            <Link to="/landing#deployments" onClick={() => setMobileMenuOpen(false)}>Deployments</Link>
-            <Link to="/landing#company" onClick={() => setMobileMenuOpen(false)}>Company</Link>
-            <Link to="/register-institution" onClick={() => setMobileMenuOpen(false)}>Institution Onboarding</Link>
-            <Link to="/register-institution?tab=track" onClick={() => setMobileMenuOpen(false)}>Track Application</Link>
-            <Link to="/login" onClick={() => setMobileMenuOpen(false)}>Sign In</Link>
-          </nav>}
-        </div>
-      </header>
+      <main id="main-content">
 
       {/* ---------------- Hero Section ---------------- */}
       <section className="sppio-hero-section" style={{ padding: '72px 0 80px' }}>
         <div className="sppio-container">
-          <div className="sppio-kicker-badge">
-            <span className="sppio-kicker-dot" />
-            <span>Open Aperture · Corporate Recruitment &amp; Institutional Architecture</span>
-          </div>
+          <div className="sppio-hero-split">
+            <div>
+              <div className="sppio-kicker-badge">
+                <span className="sppio-kicker-dot" />
+                <span>Open Aperture &middot; Architecture &amp; control boundaries</span>
+              </div>
 
-          <h1 className="sppio-hero-headline" style={{ maxWidth: '820px' }}>
-            Zero-trust execution.<br />
-            <span className="sppio-highlight">Silicon-rooted recruitment &amp; assessment integrity.</span>
-          </h1>
+              <h1 className="sppio-hero-headline" style={{ maxWidth: '720px' }}>
+                Zero-trust execution.<br />
+                <span className="sppio-highlight">Silicon-rooted recruitment &amp; assessment integrity.</span>
+              </h1>
 
-          <p className="sppio-hero-lead" style={{ maxWidth: '720px' }}>
-            An overview of the intended system boundaries and controls for assessment workstations. Actual protections depend on supported hardware, deployment configuration, and the policies enabled for each institution.
-          </p>
+              <p className="sppio-hero-lead" style={{ maxWidth: '640px' }}>
+                An overview of the intended system boundaries and controls for assessment workstations.
+                Actual protections depend on supported hardware, deployment configuration, and the policies
+                enabled for each institution.
+              </p>
 
-          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
-            <a href="#attestation" className="sppio-btn-primary">
-              Inspect Attestation Protocol ↓
-            </a>
-            <a href="#threat-model" className="sppio-btn-ghost">
-              Review Threat Model
-            </a>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '24px' }}>
+                <a href="#attestation" className="sppio-btn-primary">
+                  Inspect attestation sequence
+                  <span aria-hidden="true">&darr;</span>
+                </a>
+                <a href="#threat-model" className="sppio-btn-ghost">
+                  Review threat model
+                </a>
+              </div>
+            </div>
+
+            <SppioShowcase compact caption="Control boundaries, expressed as one layered station architecture." />
           </div>
         </div>
       </section>
@@ -164,7 +139,7 @@ export default function ArchitecturePage() {
               <h2 className="sppio-section-title">Cryptographic Boot Verification Sequence</h2>
             </div>
             <p className="sppio-section-desc">
-              Every station undergoes rigorous physical cryptoprocessor validation before allowing any candidate interaction.
+              A supported station can measure selected boot components before an assessment session. Coverage, enforcement, and verification evidence depend on the hardware, firmware configuration, and policy of the deployment.
             </p>
           </div>
 
@@ -242,11 +217,8 @@ export default function ArchitecturePage() {
             {threatMatrix.map((tm, idx) => (
               <div
                 key={idx}
+                className="sppio-threat-row"
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1.2fr 1.4fr 1.4fr 0.8fr',
-                  gap: '24px',
-                  alignItems: 'center',
                   padding: '24px',
                   background: '#F6F2ED',
                   border: '1px solid #DCD5D2',
@@ -270,7 +242,7 @@ export default function ArchitecturePage() {
                   </span>
                   <p style={{ margin: 0, fontSize: '13px', color: '#302337', lineHeight: 1.45, fontWeight: 550 }}>{tm.sppio}</p>
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div className="sppio-threat-status" style={{ textAlign: 'right' }}>
                   <span className="sppio-tag" style={{ background: '#302337', color: '#FFAE99', borderColor: '#48394F', fontSize: '11px' }}>
                     {tm.status}
                   </span>
@@ -306,14 +278,14 @@ export default function ArchitecturePage() {
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong style={{ color: '#302337' }}>Offline CLI Verifier</strong>
-                    <p style={{ color: '#756F79' }}>Independent audit verification tool runs offline without network connectivity.</p>
+                    <p style={{ color: '#756F79' }}>An offline verification tool is intended to check chain integrity without network connectivity. Confirm availability, versioning, and operator procedure for the deployment.</p>
                   </div>
                 </div>
                 <div className="sppio-pillar-item">
                   <span className="sppio-pillar-mark" />
                   <div>
                     <strong style={{ color: '#302337' }}>Two-Person Dual-Custody</strong>
-                    <p style={{ color: '#756F79' }}>Separation of duties requires dual administrative sign-off for policy changes.</p>
+                    <p style={{ color: '#756F79' }}>Separation of duties can require dual administrative sign-off for policy changes. Confirm the configured approval model.</p>
                   </div>
                 </div>
               </div>
@@ -365,52 +337,9 @@ export default function ArchitecturePage() {
         </div>
       </section>
 
-      {/* ---------------- Footer ---------------- */}
-      <footer className="sppio-footer" role="contentinfo">
-        <div className="sppio-container">
-          <div className="sppio-footer-grid">
-            <div className="sppio-footer-brand">
-              <SppioLogo width={160} accent="#B54F34" ink="#FFFFFF" />
-              <p>
-                Open Aperture architecture. High-assurance infrastructure engineered for national, institutional, and corporate assessment integrity.
-              </p>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Public Architecture</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/landing">Platform Overview</Link></li>
-                <li><Link to="/architecture">Silicon Attestation</Link></li>
-                <li><Link to="/solutions">Enterprise Solutions</Link></li>
-              </ul>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Governance</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/architecture#threat-model">Threat Model</Link></li>
-                <li><Link to="/architecture#ledger">Audit Chaining</Link></li>
-                <li><a href="/landing#contact">Security Briefing</a></li>
-              </ul>
-            </div>
-            <div className="sppio-footer-col">
-              <h5>Console Access</h5>
-              <ul className="sppio-footer-links">
-                <li><Link to="/login" style={{ color: '#FFAE99', fontWeight: 700 }}>Console Sign In →</Link></li>
-                <li><Link to="/candidate-login">Candidate Station Login</Link></li>
-                <li><Link to="/register-institution">Institution Onboarding</Link></li>
-                <li><Link to="/register-institution?tab=track">Track Application</Link></li>
-              </ul>
-            </div>
-          </div>
+      </main>
 
-          <div className="sppio-footer-bottom">
-            <div>© 2026 SPPIO Systems Enclave. All rights reserved. Open Aperture architecture.</div>
-            <div className="sppio-legal-links">
-              <Link to="/landing">Platform Home</Link>
-              <a href="#top" onClick={(e) => { e.preventDefault(); document.getElementById('top')?.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Back to Top ↑</a>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
     </div>
   );
 }

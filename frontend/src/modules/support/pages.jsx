@@ -7,6 +7,7 @@ import {
   Modal, KeyValue, Timeline, Field, Input, Select, Textarea, useFlash, Flash, Tabs, CopyButton,
 } from '../../core/ui/kit';
 import { fmt, ago } from '../../core/ui/format';
+import { formatDuration } from '../../core/ui/normalizers';
 import { useLoad, usePerm } from '../../core/ui/hooks';
 import { downloadJson } from '../../core/services/common';
 import {
@@ -24,8 +25,7 @@ function slaText(t) {
   if (isBreached(t)) return 'Breached';
   const ms = slaLeft(t);
   if (ms <= 0) return 'Due now';
-  const h = Math.floor(ms / 3600e3), m = Math.round((ms % 3600e3) / 60000);
-  return h ? `${h}h ${m}m left` : `${m}m left`;
+  return `${formatDuration(Math.ceil(ms / 60000))} left`;
 }
 
 /* ------------------------------------------------------------------ create */

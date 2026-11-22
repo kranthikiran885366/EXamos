@@ -58,7 +58,7 @@ function publicUser(u) {
     candidateId: u.candidateId || null,
     mfaEnabled:  isCandidate ? false : (u.mfaEnabled !== false),
     email:       u.email || '',
-    lastLogin:   u.lastLogin || null,
+    lastLogin:   u.lastLogin || u.last_login || null,
   };
 }
 
@@ -122,6 +122,7 @@ export function AuthProvider({ children }) {
                 tenantId:     profile.institution_id || null,
                 email:        profile.email || '',
                 mfaEnabled:   profile.mfa_enabled !== false,
+                lastLogin:    profile.last_login || profile.lastLogin || null,
               }));
               setBackendMode('admin');
             }
@@ -403,7 +404,7 @@ export function AuthProvider({ children }) {
     try {
       const res = await authService.listSessions();
       return Array.isArray(res) ? res : (res?.sessions || []);
-    } catch { return []; }
+    } catch (error) { throw error; }
   }, [user]);
 
   const revokeSession = useCallback(async (sid) => {

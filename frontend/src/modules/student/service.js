@@ -1,14 +1,9 @@
 // Student module service — backend-first, no local IndexedDB reads.
 import { fail } from '../../core/services/common';
 import * as Api from '../../core/api/services';
+import { canonicalExamSchedule, toEpochMs } from '../../core/ui/normalizers';
 
 export const STUDENT_STEPS = ['Briefing', 'Device check', 'Exam session', 'Submission'];
-
-function epochMs(value) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
-  return timestamp < 10000000000 ? timestamp * 1000 : timestamp;
-}
 
 function examSessionsFromResponse(response) {
   const sessions = response?.exam_sessions ?? response?.sessions ?? response;
@@ -47,12 +42,13 @@ export async function assignments(user, ctx = {}) {
   }
 
   return examSessions.map((s) => {
+    const schedule = canonicalExamSchedule(s);
     const exam = {
       id: s.examination_id || s.exam_id,
       code: s.exam_code,
       title: s.exam_name || s.title,
       status: s.exam_status,
-      startAt: epochMs(s.scheduled_start || s.start_time),
+      ...schedule,
       durationMin: s.duration_minutes || s.duration_min || 60,
       examUrl: s.exam_url || '',
       instructions: s.instructions || '',
@@ -60,8 +56,8 @@ export async function assignments(user, ctx = {}) {
     const session = s.session_id ? {
       id: s.session_id || s.id,
       status: s.session_status || s.status,
-      startedAt: epochMs(s.launched_at || s.start_time || s.authorized_at),
-      deadline: epochMs(s.deadline || s.end_time),
+      startedAt: toEpochMs(s.launched_at || s.start_time || s.authorized_at) || 0,
+      deadline: toEpochMs(s.deadline || s.end_time) || 0,
       receipt: s.receipt_hash || null,
     } : null;
     const status = session?.status === 'submitted' ? 'submitted'
@@ -96,13 +92,17 @@ export async function briefing(user, examId, ctx = {}) {
     fail(err.message || 'Failed to load examination details from the server.');
   }
 
+  const detailSchedule = canonicalExamSchedule(examDetail);
+  const examSchedule = detailSchedule.startTimeState === 'missing'
+    ? canonicalExamSchedule(exam)
+    : detailSchedule;
   const fullExam = {
     ...exam,
     id: examDetail.exam_id || examDetail.id || exam.id,
     code: examDetail.code || exam.code,
     title: examDetail.name || examDetail.title || exam.title,
     status: examDetail.status || exam.status,
-    startAt: epochMs(examDetail.start_time || examDetail.scheduled_start || exam.startAt),
+    ...examSchedule,
     durationMin: examDetail.duration_minutes || exam.durationMin,
     instructions: examDetail.instructions || exam.instructions || '',
     resources: examDetail.resources || '',
