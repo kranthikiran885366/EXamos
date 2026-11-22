@@ -185,7 +185,8 @@ export function LiveExamPage() {
   if (!exam && detail.error) return <Page title="Exam unavailable"><Alert tone="danger" title="Could not load examination">{detail.error.message}</Alert><Link className="btn" to="/operator/exams">Back to exams</Link></Page>;
   if (!exam) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/operator/exams">Back to exams</Link>} /></Page>;
 
-  const reason = exam.cancelReason || exam.cancel_reason || (exam.history || []).slice().reverse().find((h) => h?.to === 'cancelled' || h?.to_status === 'cancelled' || h?.action === 'EXAM_CANCELLED')?.reason;
+  const rawReason = exam.cancelReason || exam.cancel_reason || (exam.history || []).slice().reverse().find((h) => h?.to === 'cancelled' || h?.to_status === 'cancelled' || h?.action === 'EXAM_CANCELLED')?.reason;
+  const reason = rawReason ? String(rawReason).trim().replace(/\.+$/, '') : '';
   const isCancelled = exam.status === 'cancelled';
   const isClosed = exam.status === 'closed';
   const pageTitle = isCancelled ? `Cancelled (Historical): ${exam.code}` : isClosed ? `Closed: ${exam.code}` : `Live: ${exam.code}`;
@@ -229,7 +230,7 @@ export function LiveExamPage() {
       ]} />
       {tab === 'seats' && (
         <DataTable
-          title="Seat board" desc="Check in candidates, start sessions and handle interventions."
+          title="Seat board" desc={isCancelled ? 'Historical seating record. Candidate check-in and session interventions are disabled.' : isClosed ? 'Concluded examination seating record. Live interventions are disabled.' : 'Check in candidates, start sessions and handle interventions.'}
           rows={rows} search={(r) => `${r.name} ${r.rollNo} ${r.state} ${r.deviceState}`}
           filters={[
             { key: 'state', label: 'State', options: ['waiting-identity', 'ready', 'in_progress', 'submitted', 'terminated'].map((s) => ({ v: s, l: s })) },

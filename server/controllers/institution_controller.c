@@ -1795,7 +1795,8 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 "  (SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND status = 'active') AS users, "
                 "  (SELECT COUNT(*) FROM devices WHERE tenant_id = $1) AS devices, "
                 "  (SELECT COUNT(*) FROM devices WHERE tenant_id = $1 AND status = 'enrolled') AS enrolled_devices, "
-                "  (SELECT COUNT(*) FROM candidates WHERE tenant_id = $1) AS candidates, "
+                "  (SELECT COUNT(*) FROM (SELECT id FROM students WHERE institution_id = $1 UNION SELECT id FROM candidates WHERE tenant_id = $1) _cand) AS candidates, "
+                "  (SELECT COUNT(DISTINCT student_id) FROM exam_student_assignments WHERE institution_id = $1) AS assigned_candidates, "
                 "  (SELECT COUNT(*) FROM exams WHERE tenant_id = $1) AS exams, "
                 "  (SELECT COUNT(*) FROM exams WHERE tenant_id = $1 AND status = 'live') AS live_exams, "
                 "  (SELECT COUNT(*) FROM exams WHERE tenant_id = $1 AND status = 'published') AS published_exams, "
@@ -1812,12 +1813,12 @@ void institution_handle(int client_fd, const char *method, const char *path,
             char resp[1024];
             snprintf(resp, sizeof(resp),
                 "{\"campuses\":%s,\"departments\":%s,\"centers\":%s,\"users\":%s,\"devices\":%s,"
-                "\"enrolledDevices\":%s,\"candidates\":%s,\"exams\":%s,\"liveExams\":%s,"
+                "\"enrolledDevices\":%s,\"candidates\":%s,\"assignedCandidates\":%s,\"exams\":%s,\"liveExams\":%s,"
                 "\"publishedExams\":%s,\"openIncidents\":%s}",
                 PQgetvalue(res, 0, 0), PQgetvalue(res, 0, 1), PQgetvalue(res, 0, 2),
                 PQgetvalue(res, 0, 3), PQgetvalue(res, 0, 4), PQgetvalue(res, 0, 5),
                 PQgetvalue(res, 0, 6), PQgetvalue(res, 0, 7), PQgetvalue(res, 0, 8),
-                PQgetvalue(res, 0, 9), PQgetvalue(res, 0, 10));
+                PQgetvalue(res, 0, 9), PQgetvalue(res, 0, 10), PQgetvalue(res, 0, 11));
             PQclear(res);
             db_release(conn, 0);
             inst_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);

@@ -255,19 +255,32 @@ export function formatSummaryValue(key, value) {
   return String(value);
 }
 
-export function formatEpoch(value) {
+export function formatEpoch(value, timeZone = 'Asia/Kolkata') {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return '';
   const d = new Date(n);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  try {
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: timeZone || 'Asia/Kolkata',
+      timeZoneName: 'short',
+    });
+  } catch {
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }) + ' IST';
+  }
 }
 
 /** Format a table cell using the column type supplied by the server. */

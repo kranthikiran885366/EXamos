@@ -81,7 +81,13 @@ export function InstitutionDashboardPage() {
         <Stat label="Campuses" value={stats?.campuses ?? (loading ? '…' : '—')} icon="building" />
         <Stat label="Centres" value={stats?.centers ?? (loading ? '…' : '—')} icon="building" />
         <Stat label="Enrolled devices" value={stats?.enrolledDevices ?? (loading ? '…' : '—')} icon="device" to="/institution/deployment" />
-        <Stat label="Candidates" value={stats?.candidates ?? (loading ? '…' : '—')} icon="candidate" />
+        <Stat
+          label="Candidates"
+          value={stats?.candidates ?? (loading ? '…' : '—')}
+          icon="candidate"
+          to="/college/candidates"
+          sub={stats?.candidates !== undefined ? `${stats?.assignedCandidates || 0} assigned / ${stats.candidates} total` : undefined}
+        />
         <Stat label="Live / Total exams" value={stats ? `${stats.liveExams} / ${stats.exams}` : (loading ? '…' : '—')} icon="exam" to="/college/exams" />
         <Stat label="Open incidents" value={stats?.openIncidents ?? (loading ? '…' : '—')} icon="alert" to="/operator/incidents" />
       </StatGrid>

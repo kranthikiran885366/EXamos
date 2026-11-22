@@ -128,6 +128,14 @@ export default function KioskPage() {
   const srvHealth = liveData.health;
   const srvStatus = liveData.status;
   const devices = liveData.fleet?.devices || [];
+  const attestedCount = devices.filter((d) => (d.backendTrustOutcome || d.backend_trust_outcome) === 'ALLOW').length;
+  const onlineCount = devices.filter((d) => d.status === 'online' || d.status === 'ONLINE').length;
+  const kioskActiveCount = devices.filter((d) => d.kiosk_status === 'active' || d.kiosk_status === 'ACTIVE').length;
+
+  const bootState = devices.length === 0 ? 'Not Enrolled' : onlineCount === 0 ? 'Offline' : 'Active';
+  const tpmState = devices.length === 0 ? 'Not Enrolled' : attestedCount === 0 ? 'Unverified' : attestedCount === devices.length ? 'Verified' : 'Partial';
+  const lockdownState = devices.length === 0 ? 'Not Enrolled' : kioskActiveCount === devices.length ? 'Enforced' : kioskActiveCount > 0 ? 'Partial' : 'Unverified';
+
   const terminals = liveData.terminals?.terminals || [];
   const currentExamUrl = srvStatus ? (srvStatus.exam_url || 'NOT_CONFIGURED') : 'Unavailable';
   const currentExamName = srvStatus ? (srvStatus.exam_name || 'NOT_CONFIGURED') : 'Unavailable';
@@ -184,8 +192,8 @@ export default function KioskPage() {
           label="Enrolled Kiosks"
           value={devices.length}
           icon="device"
-          tone="blue"
-          sub={`${devices.filter((d) => (d.backendTrustOutcome || d.backend_trust_outcome) === 'ALLOW').length} server-verified`}
+          tone={devices.length === 0 ? 'amber' : 'blue'}
+          sub={devices.length === 0 ? 'No devices enrolled' : `${attestedCount} / ${devices.length} server-verified`}
         />
         <Stat
           label="Active Terminals"
@@ -219,35 +227,35 @@ export default function KioskPage() {
               num: '01',
               title: 'Hardware Boot',
               desc: 'Hardened UEFI ISO boots Wayland Cage compositor directly on /dev/tty1',
-              status: 'Active',
+              status: bootState,
               icon: 'boot',
             },
             {
               num: '02',
               title: 'TPM Attestation',
               desc: 'Hardware quote verified (PCR 0, 4, 7, 11). Integrity chain anchored.',
-              status: srvHealth?.attestation_store ? 'Verified' : 'Bypassed',
+              status: tpmState,
               icon: 'cpu',
             },
             {
               num: '03',
               title: 'Onboarding & Diagnostic',
               desc: 'Candidate enters onboarding.html: Camera check, integrity pledge, UI test',
-              status: currentExamUrl.includes('onboarding') ? 'Current URL' : 'Ready',
+              status: currentExamUrl.includes('onboarding') ? 'Current URL' : currentExamUrl !== 'NOT_CONFIGURED' && currentExamUrl !== 'Unavailable' ? 'Configured' : 'Standby',
               icon: 'checklist',
             },
             {
               num: '04',
               title: 'Exam Lockdown',
               desc: 'Chromium locked in sandbox: USB blocked, TTY masked, focus monitored',
-              status: 'Enforced',
+              status: lockdownState,
               icon: 'lock',
             },
             {
               num: '05',
               title: 'Sealed Submission',
               desc: 'Encrypted response committed to HMAC audit ledger. Exam key destroyed.',
-              status: 'Ready',
+              status: srvHealth?.ledger_integrity === 'INTACT' ? 'Ready' : 'Unverified',
               icon: 'package',
             },
           ].map((stage, i) => (
@@ -457,12 +465,12 @@ export default function KioskPage() {
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {[
-                { name: 'Virtual Terminal Masking (TTY1)', state: 'ENFORCED', desc: 'getty@tty* masked to prevent console login breakout' },
-                { name: 'Cage Wayland Sandbox', state: 'ACTIVE', desc: 'Single-application Wayland kiosk without window manager' },
-                { name: 'USB Mass Storage Quarantine', state: 'ENFORCED', desc: 'UDEV kernel rules automatically reject all storage sticks' },
-                { name: 'Chromium Anti-DevTools Policy', state: 'ACTIVE', desc: 'Inspect Element, extensions, and hotkeys disabled' },
-                { name: 'Hardware TPM Quote Verification', state: srvHealth?.attestation_store ? 'VERIFIED' : 'ACTIVE', desc: 'PCR measurement hash validation enabled' },
-                { name: 'Audited Evidence Ledger', state: srvHealth?.ledger_integrity || 'INTACT', desc: 'Cryptographic HMAC-SHA256 tamper-evident log' },
+                { name: 'Virtual Terminal Masking (TTY1)', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'getty@tty* masked to prevent console login breakout' },
+                { name: 'Cage Wayland Sandbox', state: devices.length === 0 ? 'NOT ENROLLED' : 'ACTIVE', desc: 'Single-application Wayland kiosk without window manager' },
+                { name: 'USB Mass Storage Quarantine', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'UDEV kernel rules automatically reject all storage sticks' },
+                { name: 'Chromium Anti-DevTools Policy', state: devices.length === 0 ? 'NOT ENROLLED' : 'ACTIVE', desc: 'Inspect Element, extensions, and hotkeys disabled' },
+                { name: 'Hardware TPM Quote Verification', state: devices.length === 0 ? 'NOT ENROLLED' : attestedCount === devices.length ? 'VERIFIED' : 'UNVERIFIED', desc: 'PCR measurement hash validation' },
+                { name: 'Audited Evidence Ledger (Server)', state: srvHealth?.ledger_integrity || 'UNVERIFIED', desc: 'Platform server cryptographic HMAC-SHA256 tamper-evident log' },
               ].map((sec) => (
                 <div
                   key={sec.name}
