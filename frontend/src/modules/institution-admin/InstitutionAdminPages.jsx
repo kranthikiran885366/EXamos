@@ -5,7 +5,8 @@ import { useAuth } from '../../core/auth/AuthContext';
 import { useTenant } from '../../core/db/tenant';
 import { can, roleLabel } from '../../core/security/rbac';
 import { fmt, ago } from '../../core/ui/format';
-import { domainHostname, normalizeAuditEvents } from '../../core/ui/normalizers';
+import { csvCell } from '../../core/security/sanitize';
+import { domainHostname, normalizeAuditEvents, displayValue } from '../../core/ui/normalizers';
 import {
   Page, Card, StatGrid, Stat, Alert, Empty, Loading,
   DataTable, Badge, Modal, ActionDialog, useFlash, Flash,
@@ -145,7 +146,7 @@ export function InstitutionProfilePage() {
             {tenant?.website_url && (
               <div><small className="muted">Accredited Website</small><br /><a href={tenant.website_url} target="_blank" rel="noreferrer">{tenant.website_url}</a></div>
             )}
-            <div><small className="muted">Jurisdiction / State</small><br /><span>{tenant?.region || '—'}</span></div>
+            <div><small className="muted">Jurisdiction / State</small><br /><span>{displayValue(tenant?.jurisdiction || tenant?.region || tenant?.state, '—')}</span></div>
             <div><small className="muted">Operational Status</small><br /><Badge value={tenant?.status || '—'} /></div>
           </div>
         </Card>
@@ -158,7 +159,7 @@ export function InstitutionProfilePage() {
               const needsReview = !hostname || storedValue.toLowerCase() !== hostname;
               return (
                 <div key={`${storedValue}-${index}`} style={{ padding: '8px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: '6px' }}>
-                  <b>{hostname ? `@${hostname}` : 'Invalid domain value'}</b>
+                  <b>{hostname || 'Invalid domain value'}</b>
                   {needsReview && <Alert tone="warn" title="Stored value needs review">The original value <code>{storedValue || 'empty'}</code> is not a canonical hostname. It has not been changed.</Alert>}
                 </div>
               );
@@ -846,6 +847,7 @@ export function InstitutionDeploymentReadinessPage() {
    PAGE 15 — Audit and Activity (/institution/audit)
 ===================================================================== */
 export function InstitutionAuditPage() {
+  const { tenant } = useTenant();
   const [auditRows, setAuditRows] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -863,6 +865,20 @@ export function InstitutionAuditPage() {
     }
   };
 
+  const exportCsv = () => {
+    const cols = ['recordedAt', 'actor', 'event', 'subjectType', 'subjectId', 'detail'];
+    const csv = [cols, ...auditRows.map((e) => cols.map((c) => e[c]))]
+      .map((r) => r.map(csvCell).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `institution-audit-${tenant?.code || 'inst'}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   useEffect(() => { load(); }, []);
 
   return (
@@ -870,7 +886,12 @@ export function InstitutionAuditPage() {
       title="Institutional Audit & Activity"
       desc="Institution-scoped examination audit records from the authenticated institution context."
       breadcrumb={<div className="crumbs-inline"><Link to="/institution/dashboard">Institution</Link><Icon name="arrow" size={12} /><span>Audit</span></div>}
-      actions={<button className="btn" onClick={load} disabled={loading}><Icon name="refresh" size={14} /> {loading ? 'Loading…' : 'Refresh'}</button>}
+      actions={
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button className="btn" onClick={exportCsv} disabled={loading || !auditRows.length}><Icon name="download" size={14} /> Export CSV</button>
+          <button className="btn" onClick={load} disabled={loading}><Icon name="refresh" size={14} /> {loading ? 'Loading…' : 'Refresh'}</button>
+        </div>
+      }
     >
       {loadError && <Flash msg={{ tone: 'danger', text: loadError }} onClose={() => setLoadError('')} />}
       <StatGrid cols={2}>

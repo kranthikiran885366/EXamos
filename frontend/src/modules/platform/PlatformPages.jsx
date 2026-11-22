@@ -22,7 +22,9 @@ import {
   fetchInstitutionOnboarding, updateOnboardingStep, fetchInstitutionPilotReadiness
 } from '../institutions/service';
 function InstitutionSwitcher({ inst, institutions, onSelect }) {
-  if (!institutions || institutions.length <= 1) return null;
+  if (!Array.isArray(institutions) || institutions.length <= 1) return null;
+  const validInstitutions = institutions.filter((i) => i && typeof i === 'object');
+  if (validInstitutions.length === 0) return null;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', background: '#FFFFFF', padding: '10px 16px', borderRadius: '10px', border: '1px solid var(--line, #DCD5D2)', boxShadow: 'var(--shadow)' }}>
       <span style={{ color: 'var(--copper, #B54F34)', display: 'flex', alignItems: 'center' }}>
@@ -35,8 +37,9 @@ function InstitutionSwitcher({ inst, institutions, onSelect }) {
         className="select sm"
         style={{ minWidth: '240px', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--line, #DCD5D2)', background: 'var(--bg, #F6F2ED)', color: 'var(--ink, #302337)', fontWeight: 600 }}
       >
-        {institutions.map((i) => (
-          <option key={i.id} value={i.id}>{i.name} ({i.code || i.id})</option>
+        <option value="" disabled>Select an institution…</option>
+        {validInstitutions.map((i) => (
+          <option key={i.id || i.code} value={i.id || ''}>{i.name || i.code || i.id || 'Unnamed'} ({i.code || i.id || '—'})</option>
         ))}
       </select>
       <span className="badge sm" style={{ marginLeft: 'auto' }}>
@@ -1954,8 +1957,11 @@ export function PlatformOperationsPage() {
         desc="Administrative lifecycle controls, security incidents, operational audit trail, suspension, and offboarding."
         actions={<button className="btn" onClick={() => setOperationsReload((value) => value + 1)} disabled={loadingOperations}><Icon name="refresh" size={14} /> {loadingOperations ? 'Loading…' : 'Retry'}</button>}
       >
+        <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />
         {loadingOperations ? <Loading label="Loading institution operations from backend..." /> : (
-          <Alert tone="danger" title="Institution operations unavailable">{operationsError || 'The institution record was not returned. No operational action is available.'}</Alert>
+          <Alert tone={operationsError ? "danger" : "info"} title={operationsError ? "Institution operations unavailable" : "Select an institution"}>
+            {operationsError || 'Select an institution from the enclave selector above to inspect administrative controls.'}
+          </Alert>
         )}
       </Page>
     );
@@ -1963,9 +1969,9 @@ export function PlatformOperationsPage() {
 
   return (
     <Page
-      title={`Operations & Audit · ${inst.name}`}
+      title={`Operations & Audit · ${inst?.name || 'Institution'}`}
       desc="Administrative lifecycle controls, security incidents, operational audit trail, suspension, and offboarding."
-      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst.name}</Link><Icon name="arrow" size={12} /><span>Operations</span></div>}
+      breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to={`/platform/institutions/${id}`}>{inst?.name || 'Institution'}</Link><Icon name="arrow" size={12} /><span>Operations</span></div>}
     >
       <Flash msg={msg} onClose={() => setMsg(null)} />
       <InstitutionSwitcher inst={inst} institutions={institutions} onSelect={handleSwitch} />

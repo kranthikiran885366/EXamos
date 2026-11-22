@@ -78,6 +78,8 @@ test('audit normalizer accepts wrapped responses and rejects incomplete event re
 test('domain display normalizes legacy URLs without accepting a path as a domain', () => {
   assert.equal(domainHostname('vignan.ac.in'), 'vignan.ac.in');
   assert.equal(domainHostname('https://www.vignan.ac.in/'), 'www.vignan.ac.in');
+  assert.equal(domainHostname('@https://www.vignan.ac.in/'), 'www.vignan.ac.in');
+  assert.equal(domainHostname('@vignan.ac.in'), 'vignan.ac.in');
   assert.equal(domainHostname('https://www.vignan.ac.in/profile'), null);
 });
 

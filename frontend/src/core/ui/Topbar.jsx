@@ -56,22 +56,22 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
   const results = useMemo(() => {
     const s = q.trim().toLowerCase(); if (s.length < 2) return [];
     const out = [];
-    if (can(user.role, 'exam.view') || can(user.role, 'student.view')) exams.filter((e) => `${e.code} ${e.title}`.toLowerCase().includes(s)).slice(0, 4).forEach((e) => out.push({ to: can(user.role, 'student.view') ? `/student/exams/${e.id}` : `/college/exams/${e.id}`, label: `${e.code} · ${e.title}`, kind: 'Exam' }));
-    if (can(user.role, 'device.view')) devices.filter((d) => `${d.hostname} ${d.serial}`.toLowerCase().includes(s)).slice(0, 3).forEach((d) => out.push({ to: `/devices/${d.id}`, label: d.hostname, kind: 'Device' }));
-    if (can(user.role, 'candidate.view')) candidates.filter((c) => `${c.rollNo} ${c.name}`.toLowerCase().includes(s)).slice(0, 3).forEach((c) => out.push({ to: `/college/candidates?q=${encodeURIComponent(c.rollNo)}`, label: `${c.rollNo} · ${c.name}`, kind: 'Candidate' }));
-    if (can(user.role, 'support.view')) tickets.filter((t) => `${t.no} ${t.subject}`.toLowerCase().includes(s)).slice(0, 3).forEach((t) => out.push({ to: `/support/requests/${t.id}`, label: `${t.no} · ${t.subject}`, kind: 'Request' }));
-    if (can(user.role, 'inst.view')) institutions.filter((i) => i.name.toLowerCase().includes(s)).slice(0, 3).forEach((i) => out.push({ to: `/admin/institutions/${i.id}`, label: i.name, kind: 'Institution' }));
-    if (can(user.role, 'usb.view')) usbs.filter((u) => `${u.assetId} ${u.serial}`.toLowerCase().includes(s)).slice(0, 2).forEach((u) => out.push({ to: `/usb-inventory/${u.id}`, label: u.assetId, kind: 'USB' }));
     const routeExam = (examId) => {
       if (user.role === 'student') return `/student/exams/${examId}`;
       if (['invigilator', 'ops_admin'].includes(user.role)) return `/operator/exams/${examId}/live`;
       return `/college/exams/${examId}`;
     };
-    return out.slice(0, 10).map((result) => {
-      if (result.kind !== 'Exam') return result;
-      const examId = String(result.to).split('/').filter(Boolean).pop();
-      return { ...result, to: routeExam(examId) };
-    });
+    if (can(user.role, 'exam.view') || can(user.role, 'student.view')) {
+      exams.filter((e) => `${e.code} ${e.title}`.toLowerCase().includes(s)).slice(0, 4).forEach((e) => {
+        out.push({ to: routeExam(e.id), label: `${e.code} · ${e.title}`, kind: 'Exam' });
+      });
+    }
+    if (can(user.role, 'device.view')) devices.filter((d) => `${d.hostname} ${d.serial}`.toLowerCase().includes(s)).slice(0, 3).forEach((d) => out.push({ to: `/devices/${d.id}`, label: d.hostname, kind: 'Device' }));
+    if (can(user.role, 'candidate.view')) candidates.filter((c) => `${c.rollNo} ${c.name}`.toLowerCase().includes(s)).slice(0, 3).forEach((c) => out.push({ to: `/college/candidates?q=${encodeURIComponent(c.rollNo)}`, label: `${c.rollNo} · ${c.name}`, kind: 'Candidate' }));
+    if (can(user.role, 'support.view')) tickets.filter((t) => `${t.no} ${t.subject}`.toLowerCase().includes(s)).slice(0, 3).forEach((t) => out.push({ to: `/support/requests/${t.id}`, label: `${t.no} · ${t.subject}`, kind: 'Request' }));
+    if (can(user.role, 'inst.view')) institutions.filter((i) => i.name.toLowerCase().includes(s)).slice(0, 3).forEach((i) => out.push({ to: `/admin/institutions/${i.id}`, label: i.name, kind: 'Institution' }));
+    if (can(user.role, 'usb.view')) usbs.filter((u) => `${u.assetId} ${u.serial}`.toLowerCase().includes(s)).slice(0, 2).forEach((u) => out.push({ to: `/usb-inventory/${u.id}`, label: u.assetId, kind: 'USB' }));
+    return out.slice(0, 10);
   }, [q, exams, devices, candidates, tickets, institutions, usbs, user.role]);
 
   const markAll = async () => {

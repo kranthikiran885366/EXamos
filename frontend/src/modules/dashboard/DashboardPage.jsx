@@ -124,12 +124,19 @@ export default function DashboardPage() {
   const outstanding = invoices.filter((i) => ['open', 'overdue'].includes(i.status)).reduce((s, i) => s + (i.total || 0), 0);
   const global = isGlobal(user.role);
 
-  // Keep the subtitle and KPI on the same live telemetry count source.
-  const platformInstitutionCount = Number.isFinite(telemetry?.institutions_count)
-    ? telemetry.institutions_count
-    : null;
+  // Clarify active versus total institutions to disambiguate platform telemetry from total directory records.
+  const totalInstitutionsCount = backendInsts?.length || null;
+  const activeInstitutionsCount = backendInsts?.length
+    ? backendInsts.filter((i) => (i.status || '').toLowerCase() === 'active').length
+    : (Number.isFinite(telemetry?.institutions_count) ? telemetry.institutions_count : null);
+  const platformInstitutionCount = activeInstitutionsCount ?? (Number.isFinite(telemetry?.institutions_count) ? telemetry.institutions_count : null);
+
   const scopeLabel = global
-    ? (platformInstitutionCount === null ? 'Platform institution count unavailable' : `${platformInstitutionCount} institutions (telemetry scope)`)
+    ? (activeInstitutionsCount !== null && totalInstitutionsCount !== null
+      ? `${activeInstitutionsCount} active / ${totalInstitutionsCount} total institutions (platform scope)`
+      : platformInstitutionCount === null
+        ? 'Platform institution count unavailable'
+        : `${platformInstitutionCount} active institutions (telemetry scope)`)
     : inst?.name || 'Institution scope unavailable';
   const fleetState = totalDevicesCount === null ? 'unknown'
     : totalDevicesCount === 0 ? 'not enrolled'
@@ -576,8 +583,8 @@ export default function DashboardPage() {
                 <small>Devices Enrolled</small>
               </span>
               <span>
-                <b>{global ? platformInstitutionCount ?? '—' : tenantId ? 1 : '—'}</b>
-                <small>{global ? 'Institutions in platform telemetry' : 'Institutions in user scope'}</small>
+                <b>{global ? (activeInstitutionsCount !== null && totalInstitutionsCount !== null ? `${activeInstitutionsCount} / ${totalInstitutionsCount}` : platformInstitutionCount ?? '—') : tenantId ? 1 : '—'}</b>
+                <small>{global ? 'Active / Total Institutions' : 'Institutions in user scope'}</small>
               </span>
               <span>
                 <b>{typeof telemetry?.uptime_seconds === 'number' ? `${Math.floor(telemetry.uptime_seconds / 60)}m` : '—'}</b>

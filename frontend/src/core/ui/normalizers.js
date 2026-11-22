@@ -91,7 +91,7 @@ export function formatStatus(value, empty = 'Unknown') {
 
 /** Return a display-safe hostname from a legacy domain or full HTTPS URL. */
 export function domainHostname(value) {
-  const input = String(value || '').trim();
+  const input = String(value || '').trim().replace(/^@+/, '');
   if (!input) return null;
   const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`;
   try {

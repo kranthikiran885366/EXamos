@@ -1184,10 +1184,11 @@ export function CollegeOverviewPage() {
       else errors.push(`Institution statistics: ${statsResult.reason?.message || 'request failed'}`);
 
       if (examsResult.status === 'fulfilled') {
-        const rows = examsResult.value.examinations;
+        const raw = examsResult.value;
+        const rows = Array.isArray(raw) ? raw : (raw?.examinations ?? raw?.exams);
         if (Array.isArray(rows)) {
           setExams(rows
-            .filter(e => (e.tenantId || e.tenant_id || e.institution_id) === tenantId)
+            .filter(e => e && (e.tenantId || e.tenant_id || e.institution_id) === tenantId)
             .map(e => ({
               ...e,
               id: e.id || e.exam_id,

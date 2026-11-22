@@ -1388,8 +1388,24 @@
   color: #FFFFFF;
 }
 
-/* Keep the full navigation from crowding the header actions. */
-@media (max-width: 1120px) {
+/* Keep the full navigation and actions from crowding or clipping at intermediate desktop widths. */
+@media (max-width: 1280px) {
+  .sppio-header-inner {
+    gap: 16px;
+    min-width: 0;
+  }
+  .sppio-nav {
+    gap: 14px;
+  }
+  .sppio-header-actions .sppio-nav-item--quiet {
+    display: none;
+  }
+  .sppio-header-actions {
+    gap: 8px;
+  }
+}
+
+@media (max-width: 1140px) {
   .sppio-nav,
   .sppio-header-actions .sppio-nav-item,
   .sppio-header-actions .sppio-btn-ghost {
