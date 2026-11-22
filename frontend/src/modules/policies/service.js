@@ -13,6 +13,10 @@ export function validateConfig(c, rules) {
   if (!ACTIONS.includes(c.onViolation)) e.push('Pick a violation action.');
   if (!c.origins?.length) e.push('Add at least one allowed origin.');
   for (const o of c.origins || []) {
+    if (String(o).trim().toLowerCase().startsWith('http://')) {
+      e.push(`Insecure HTTP origin rejected: '${o}'. All policy origins must use HTTPS.`);
+      continue;
+    }
     const origin = normalizeHttpsOrigin(o);
     if (!origin) { e.push(`${o}: must be an HTTPS origin without credentials, paths, query strings, or fragments.`); continue; }
     const x = new URL(origin), d = evaluate(rules, x.hostname, Number(x.port || 443));
@@ -27,6 +31,9 @@ export async function createPolicy(a, { tenantId, name, requireTpm, kioskLockdow
   const rawOrigins = Array.isArray(origins) ? origins : String(origins || '').split(/[\s,]+/).filter(Boolean);
   const list = [...new Set(rawOrigins.filter((origin) => String(origin || '').trim()).map((value) => {
     const input = String(value).trim();
+    if (input.toLowerCase().startsWith('http://')) {
+      fail(`Insecure HTTP origin rejected: '${input}'. SPPIO policy requires HTTPS origins.`);
+    }
     const normalized = normalizeHttpsOrigin(input);
     if (!normalized) fail(`${input}: must be an HTTPS origin without credentials, paths, query strings, or fragments.`);
     return normalized;

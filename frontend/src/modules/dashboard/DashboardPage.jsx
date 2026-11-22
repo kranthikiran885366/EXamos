@@ -150,7 +150,7 @@ export default function DashboardPage() {
   return (
     <Page
       title={`${greeting()}, ${user.name.split(' ')[0]}`}
-      desc={`${roleLabel(user.role)} · ${scopeLabel} · Production Operations Center`}
+      desc={`${roleLabel(user.role)} | ${scopeLabel} | Production Operations Center`}
       actions={
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button
@@ -631,7 +631,10 @@ export default function DashboardPage() {
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
                 <span style={{ fontSize: '11.5px', color: 'var(--mut)' }}>Kiosk Compositor: <b>Cage Wayland</b></span>
-                <Badge value="ENFORCED" />
+                <Badge
+                  value={totalDevicesCount === 0 || totalDevicesCount === null ? 'NOT ENROLLED' : (kioskActive && kioskActive > 0 ? (kioskActive === totalDevicesCount ? 'ENFORCED' : 'PARTIAL') : 'UNVERIFIED')}
+                  tone={totalDevicesCount > 0 && kioskActive === totalDevicesCount ? 'green' : 'amber'}
+                />
               </div>
             </div>
           </Card>

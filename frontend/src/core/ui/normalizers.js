@@ -1,17 +1,23 @@
 /** Shared contract and presentation normalizers for server response data. */
 export function toEpochMs(value) {
   if (value === null || value === undefined || value === '') return null;
-  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  const MIN_EPOCH_MS = 946684800000; // 2000-01-01T00:00:00.000Z
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isFinite(t) && t > MIN_EPOCH_MS ? t : null;
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value <= 0) return null;
-    return value < 100000000000 ? value * 1000 : value;
+    const ms = value < 100000000000 ? value * 1000 : value;
+    return ms > MIN_EPOCH_MS ? ms : null;
   }
   const numeric = Number(value);
   if (String(value).trim() !== '' && Number.isFinite(numeric) && numeric > 0) {
-    return numeric < 100000000000 ? numeric * 1000 : numeric;
+    const ms = numeric < 100000000000 ? numeric * 1000 : numeric;
+    return ms > MIN_EPOCH_MS ? ms : null;
   }
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) && parsed > MIN_EPOCH_MS ? parsed : null;
 }
 
 export function formatTimestamp(value, { empty = 'Unknown', timeZone } = {}) {

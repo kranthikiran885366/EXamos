@@ -1157,8 +1157,31 @@ export function CollegeOverviewPage() {
   const [exams, setExams] = useState([]);
   const [liveStats, setLiveStats] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [examError, setExamError] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
+
+  const retryExams = async () => {
+    if (!tenantId) return;
+    try {
+      setExamError('');
+      const raw = await Api.listExaminations();
+      const rows = Array.isArray(raw) ? raw : (raw?.examinations ?? raw?.exams ?? []);
+      setExams(rows
+        .filter(e => e && (e.tenantId || e.tenant_id || e.institution_id) === tenantId)
+        .map(e => ({
+          ...e,
+          id: e.id || e.exam_id,
+          code: e.code || e.exam_code,
+          status: String(e.status || '').toLowerCase(),
+          startAt: e.startAt,
+          startTimeState: e.startTimeState,
+          timeZone: e.timeZone,
+        })));
+    } catch (err) {
+      setExamError(err.message || 'Exams unavailable');
+    }
+  };
 
   useEffect(() => {
     if (!tenantId) {
@@ -1172,6 +1195,7 @@ export function CollegeOverviewPage() {
     let active = true;
     setLoading(true);
     setLoadError('');
+    setExamError('');
     setExams([]);
     setLiveStats(null);
     Promise.allSettled([
@@ -1179,9 +1203,8 @@ export function CollegeOverviewPage() {
       Api.listExaminations(),
     ]).then(([statsResult, examsResult]) => {
       if (!active) return;
-      const errors = [];
       if (statsResult.status === 'fulfilled') setLiveStats(statsResult.value);
-      else errors.push(`Institution statistics: ${statsResult.reason?.message || 'request failed'}`);
+      else setLoadError(`Institution statistics: ${statsResult.reason?.message || 'request failed'}`);
 
       if (examsResult.status === 'fulfilled') {
         const raw = examsResult.value;
@@ -1198,10 +1221,12 @@ export function CollegeOverviewPage() {
               startTimeState: e.startTimeState,
               timeZone: e.timeZone,
             })));
-        } else errors.push('Exams: backend returned an unexpected response.');
-      } else errors.push(`Exams: ${examsResult.reason?.message || 'request failed'}`);
-
-      setLoadError(errors.join('; '));
+        } else {
+          setExamError('Exams: backend returned an unexpected response.');
+        }
+      } else {
+        setExamError(`Exams: ${examsResult.reason?.message || 'request failed'}`);
+      }
     }).catch(error => {
       if (active) setLoadError(error?.message || 'Unable to load institution overview.');
     }).finally(() => {
@@ -1236,7 +1261,12 @@ export function CollegeOverviewPage() {
         <Stat label="Open incidents" value={liveStats?.openIncidents ?? '—'} icon="alert" tone="amber" to="/operator/incidents" />
       </StatGrid>
       <div className="two">
-        <Card title="Exam readiness" desc="Live and published windows">
+        <Card
+          title="Exam readiness"
+          desc="Live and published windows"
+          actions={examError ? <button className="btn small" onClick={retryExams}><Icon name="refresh" size={13} /> Retry exams</button> : null}
+        >
+          {examError && <Alert tone="warn" title="Examinations notice">{examError}</Alert>}
           <DataTable
             rows={examRows}
             dense
@@ -1246,7 +1276,7 @@ export function CollegeOverviewPage() {
               { key: 'status', label: 'Status', badge: true },
               { key: 'startAt', label: 'Window', render: (e) => formatExamSchedule(e) },
             ]}
-            empty={<Empty icon="exam" title={loading ? 'Loading exams…' : loadError ? 'Exam data unavailable' : 'No live or published exams'} />}
+            empty={<Empty icon="exam" title={loading ? 'Loading exams…' : examError ? 'Exam data unavailable' : 'No live or published exams'} />}
           />
         </Card>
         <Card title="Staff & access" desc="Accounts linked to this institution">

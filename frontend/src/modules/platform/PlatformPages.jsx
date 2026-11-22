@@ -1180,7 +1180,7 @@ export function PlatformInstitutionDetailPage() {
   return (
     <Page
       title={inst.name}
-      desc={`${inst.code} · ${inst.region || 'National Enclave'} · Plan: ${inst.plan?.toUpperCase() || 'ENTERPRISE'}`}
+      desc={`${inst.code} · ${inst.region || 'National Enclave'} · Plan: ${(canonicalPlan(inst) || 'pilot').toUpperCase()}`}
       breadcrumb={<div className="crumbs-inline"><Link to="/platform/institutions">Platform</Link><Icon name="arrow" size={12} /><Link to="/platform/institutions/directory">Directory</Link><Icon name="arrow" size={12} /><span>{inst.code}</span></div>}
       actions={
         <div style={{ display: 'flex', gap: '8px' }}>

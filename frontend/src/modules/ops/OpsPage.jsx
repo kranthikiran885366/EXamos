@@ -22,7 +22,7 @@ export default function OpsPage() {
   const exams = useCol('exams'), sess = useCol('sessions'), devs = useCol('devices'), incs = useCol('incidents'), ctrs = useCol('centers'), cands = useCol('candidates'), pols = useCol('policies'), rels = useCol('releases', false), audit = useCol('audit', false), atts = useCol('attestations');
   const [tab, setTab] = useState(0); const [exId, setExId] = useState(''); const [ceId, setCeId] = useState('');
   const now = Date.now(); const live = exams.filter((e) => e.status === 'live'); const ex = live.find((e) => e.id === exId) || live[0];
-  const exCenters = ctrs.filter((c) => ex?.centerIds.includes(c.id)); const ce = exCenters.find((c) => c.id === ceId) || exCenters[0];
+  const exCenters = ex?.centerIds ? ctrs.filter((c) => ex.centerIds.includes(c.id)) : []; const ce = exCenters.find((c) => c.id === ceId) || exCenters[0];
   const active = sess.filter((s) => s.status === 'in_progress'); const enrolled = devs.filter((d) => d.status === 'enrolled'); const okDevs = enrolled.filter((d) => compliant(d, pols, rels, now));
   const open = incs.filter((i) => OPEN.includes(i.status)); const crit = open.filter((i) => i.severity === 'critical').length;
   const lat = p95(); const pct = enrolled.length ? (okDevs.length / enrolled.length) * 100 : 100;
@@ -32,7 +32,7 @@ export default function OpsPage() {
     { label: 'API latency · p95', value: lat.toFixed(0), unit: 'ms', sub: lat < 200 ? 'Measured · within SLO < 200 ms' : 'Measured · above SLO', spark: hist.latency, color: lat < 200 ? '#2f5bea' : '#d64545' },
     { label: 'Open incidents', value: String(open.length).padStart(2, '0'), sub: `${crit} critical · ${open.filter((i) => i.status === 'investigating').length} investigating`, warn: open.length > 0 },
   ];
-  const seats = ce ? Array.from({ length: ce.capacity }, (_, i) => {
+  const seats = ce && ex ? Array.from({ length: ce.capacity || 0 }, (_, i) => {
     const label = seatLabel(i); const c = cands.find((x) => x.examId === ex.id && x.centerId === ce.id && x.seat === label); const dv = devs.find((x) => x.centerId === ce.id && x.seat === label);
     const s = c && sess.find((x) => x.candidateId === c.id);
     let st = 'empty';
@@ -40,7 +40,7 @@ export default function OpsPage() {
     return { label, st, who: c?.rollNo };
   }) : [];
   const n = (k) => seats.filter((s) => s.st === k).length; const rows = Math.ceil((ce?.capacity || 0) / 16);
-  const end = ex ? (ex.liveAt || ex.startAt) + ex.durationMin * 60000 : 0;
+  const end = ex ? (ex.liveAt || ex.startAt || 0) + (ex.durationMin || 60) * 60000 : 0;
   const registry = [...devs].sort((a, b) => Number(compliant(a, pols, rels, now)) - Number(compliant(b, pols, rels, now)) || a.hostname.localeCompare(b.hostname)).slice(0, 8);
   const stream = [...audit].sort((a, b) => b.seq - a.seq).slice(0, 8);
   const exportReport = () => { const rowsOut = [['metric', 'value'], ...kpis.map((k) => [k.label, k.value + (k.unit || '')])]; const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rowsOut.map((r) => r.map(csvCell).join(',')).join('\n')], { type: 'text/csv' })); a.download = 'ops-overview.csv'; a.click(); record(user.id, 'EXPORT_REPORT', 'ops-overview'); };

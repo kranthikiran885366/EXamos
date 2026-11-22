@@ -280,14 +280,20 @@ void exam_handle(int client_fd, const char *method, const char *path,
         if (is_owner) {
             res = PQexec(conn,
                 "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
-                "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-                "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
+                "COALESCE(duration_minutes, 60), COALESCE(total_marks, 100), COALESCE(passing_marks, 40), "
+                "status, instructions, exam_url, allowed_origins, policy_id, created_by, "
+                "COALESCE(created_at, 0), COALESCE(updated_at, 0), COALESCE(exam_config::text, '{}'), "
+                "COALESCE(cancel_reason, (SELECT reason FROM exam_status_history WHERE exam_id = examinations.id AND to_status = 'cancelled' ORDER BY created_at DESC LIMIT 1), ''), "
+                "COALESCE(cancelled_at, (SELECT created_at FROM exam_status_history WHERE exam_id = examinations.id AND to_status = 'cancelled' ORDER BY created_at DESC LIMIT 1), 0) "
                 "FROM examinations ORDER BY created_at DESC");
         } else {
             res = db_simple(conn,
                 "SELECT id, institution_id, code, name, subject, academic_year, exam_type, "
-                "duration_minutes, total_marks, passing_marks, status, instructions, exam_url, "
-                "allowed_origins, policy_id, created_by, created_at, updated_at, exam_config::text "
+                "COALESCE(duration_minutes, 60), COALESCE(total_marks, 100), COALESCE(passing_marks, 40), "
+                "status, instructions, exam_url, allowed_origins, policy_id, created_by, "
+                "COALESCE(created_at, 0), COALESCE(updated_at, 0), COALESCE(exam_config::text, '{}'), "
+                "COALESCE(cancel_reason, (SELECT reason FROM exam_status_history WHERE exam_id = examinations.id AND to_status = 'cancelled' ORDER BY created_at DESC LIMIT 1), ''), "
+                "COALESCE(cancelled_at, (SELECT created_at FROM exam_status_history WHERE exam_id = examinations.id AND to_status = 'cancelled' ORDER BY created_at DESC LIMIT 1), 0) "
                 "FROM examinations WHERE institution_id = $1 ORDER BY created_at DESC",
                 1, pvals, lens);
         }
@@ -306,10 +312,26 @@ void exam_handle(int client_fd, const char *method, const char *path,
             int n = PQntuples(res);
             for (int i = 0; i < n; i++) {
                 if (i > 0) pos += snprintf(json + pos, 262144 - pos, ",");
-                char esc_name[256], esc_subj[256], esc_url[512];
+                char esc_name[256], esc_subj[256], esc_url[512], esc_cancel_reason[512];
                 json_escape(PQgetvalue(res, i, 3), esc_name, sizeof(esc_name));
                 json_escape(PQgetvalue(res, i, 4), esc_subj, sizeof(esc_subj));
                 json_escape(PQgetvalue(res, i, 12), esc_url, sizeof(esc_url));
+                json_escape(PQgetvalue(res, i, 19), esc_cancel_reason, sizeof(esc_cancel_reason));
+
+                const char *dur = PQgetvalue(res, i, 7);
+                if (!dur || !dur[0]) dur = "60";
+                const char *tot = PQgetvalue(res, i, 8);
+                if (!tot || !tot[0]) tot = "100";
+                const char *pas = PQgetvalue(res, i, 9);
+                if (!pas || !pas[0]) pas = "40";
+                const char *cat = PQgetvalue(res, i, 16);
+                if (!cat || !cat[0]) cat = "0";
+                const char *uat = PQgetvalue(res, i, 17);
+                if (!uat || !uat[0]) uat = "0";
+                const char *cfg = PQgetvalue(res, i, 18);
+                if (!cfg || !cfg[0] || cfg[0] != '{') cfg = "{}";
+                const char *can_at = PQgetvalue(res, i, 20);
+                if (!can_at || !can_at[0]) can_at = "0";
 
                 pos += snprintf(json + pos, 262144 - pos,
                     "{\"id\":\"%s\",\"institution_id\":\"%s\",\"code\":\"%s\","
@@ -317,13 +339,15 @@ void exam_handle(int client_fd, const char *method, const char *path,
                     "\"exam_type\":\"%s\",\"duration_minutes\":%s,\"total_marks\":%s,"
                     "\"passing_marks\":%s,\"status\":\"%s\",\"exam_url\":\"%s\","
                     "\"allowed_origins\":\"%s\",\"policy_id\":\"%s\",\"created_by\":\"%s\","
-                    "\"created_at\":%s,\"updated_at\":%s,\"exam_config\":%s}",
+                    "\"created_at\":%s,\"updated_at\":%s,\"exam_config\":%s,"
+                    "\"cancel_reason\":\"%s\",\"cancelled_at\":%s}",
                     PQgetvalue(res, i, 0), PQgetvalue(res, i, 1), PQgetvalue(res, i, 2),
                     esc_name, esc_subj, PQgetvalue(res, i, 5),
-                    PQgetvalue(res, i, 6), PQgetvalue(res, i, 7), PQgetvalue(res, i, 8),
-                    PQgetvalue(res, i, 9), PQgetvalue(res, i, 10), esc_url,
+                    PQgetvalue(res, i, 6), dur, tot,
+                    pas, PQgetvalue(res, i, 10), esc_url,
                     PQgetvalue(res, i, 13), PQgetvalue(res, i, 14), PQgetvalue(res, i, 15),
-                    PQgetvalue(res, i, 16), PQgetvalue(res, i, 17), PQgetvalue(res, i, 18));
+                    cat, uat, cfg,
+                    esc_cancel_reason, can_at);
             }
         }
         int total = res ? PQntuples(res) : 0;
@@ -386,6 +410,13 @@ void exam_handle(int client_fd, const char *method, const char *path,
         if (strlen(exam_url) <= 8 || strncmp(exam_url, "https://", 8) != 0) {
             ex_send_error(client_fd, 400, "exam_url must use HTTPS", origin, extra_headers, extra_len);
             return;
+        }
+        if (allowed_origins[0]) {
+            char origin_err[192] = {0};
+            if (platform_validate_allowed_origins(allowed_origins, origin_err, sizeof(origin_err)) != 0) {
+                ex_send_error(client_fd, 400, origin_err[0] ? origin_err : "Allowed origins must use HTTPS", origin, extra_headers, extra_len);
+                return;
+            }
         }
 
         if (duration_minutes < 15 || duration_minutes > 300) {
@@ -811,6 +842,22 @@ void exam_handle(int client_fd, const char *method, const char *path,
             const char *target_status = ex_status;
             if (status_req[0] && (strcmp(status_req, "draft") == 0 || strcmp(status_req, "configured") == 0)) {
                 target_status = status_req;
+            }
+
+            if (exam_url[0] && (strlen(exam_url) <= 8 || strncmp(exam_url, "https://", 8) != 0)) {
+                PQclear(exam_res);
+                db_release(conn, 0);
+                ex_send_error(client_fd, 400, "exam_url must use HTTPS", origin, extra_headers, extra_len);
+                return;
+            }
+            if (allowed_origins[0]) {
+                char origin_err[192] = {0};
+                if (platform_validate_allowed_origins(allowed_origins, origin_err, sizeof(origin_err)) != 0) {
+                    PQclear(exam_res);
+                    db_release(conn, 0);
+                    ex_send_error(client_fd, 400, origin_err[0] ? origin_err : "Allowed origins must use HTTPS", origin, extra_headers, extra_len);
+                    return;
+                }
             }
 
             if (exam_config[0]) {

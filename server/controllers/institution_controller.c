@@ -1470,20 +1470,24 @@ void institution_handle(int client_fd, const char *method, const char *path,
         PGresult *res = NULL;
         if (is_owner) {
             res = PQexec(conn,
-                "SELECT id, name, code, status, plan, region, timezone, "
-                "       max_centers, max_candidates, deployment_model, created_at, "
-                "       contact_email, contact_phone, domains, exam_defaults, "
-                "       security, notification_prefs "
-                "FROM tenants ORDER BY created_at DESC");
+                "SELECT t.id, t.name, t.code, t.status, "
+                "       COALESCE(NULLIF(l.plan, ''), NULLIF(t.plan, ''), 'pilot') AS plan, "
+                "       t.region, t.timezone, t.max_centers, t.max_candidates, t.deployment_model, t.created_at, "
+                "       t.contact_email, t.contact_phone, t.domains, t.exam_defaults, "
+                "       t.security, t.notification_prefs "
+                "FROM tenants t LEFT JOIN institution_licenses l ON l.institution_id = t.id "
+                "ORDER BY t.created_at DESC");
         } else {
             const char *pvals[1] = { sess.institution_id };
             int lens[1] = { (int)strlen(sess.institution_id) };
             res = db_simple(conn,
-                "SELECT id, name, code, status, plan, region, timezone, "
-                "       max_centers, max_candidates, deployment_model, created_at, "
-                "       contact_email, contact_phone, domains, exam_defaults, "
-                "       security, notification_prefs "
-                "FROM tenants WHERE id = $1", 1, pvals, lens);
+                "SELECT t.id, t.name, t.code, t.status, "
+                "       COALESCE(NULLIF(l.plan, ''), NULLIF(t.plan, ''), 'pilot') AS plan, "
+                "       t.region, t.timezone, t.max_centers, t.max_candidates, t.deployment_model, t.created_at, "
+                "       t.contact_email, t.contact_phone, t.domains, t.exam_defaults, "
+                "       t.security, t.notification_prefs "
+                "FROM tenants t LEFT JOIN institution_licenses l ON l.institution_id = t.id "
+                "WHERE t.id = $1", 1, pvals, lens);
         }
 
         char json[65536] = {0};

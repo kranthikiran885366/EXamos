@@ -51,7 +51,8 @@ export function AccountPage() {
       <div className="two">
         <Card title="Profile">
           <KeyValue cols={2} items={[
-            ['Username', <code key="u">{user.username || user.id}</code>],
+            ['Username', user.username ? <code key="u">{user.username}</code> : '—'],
+            ['User ID', <code key="uid">{user.id}</code>],
             ['Name', user.name],
             ['Email', user.email || '—'],
             ['Role', roleLabel(user.role)],

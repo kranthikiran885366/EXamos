@@ -51,7 +51,7 @@ class ErrorBoundary extends Component {
             <p className="muted">
               {isChunkError ? 'A new update was deployed to ExamOS. Please reload the console to load the latest version.' : 'The rest of the console is unaffected. No security state was changed.'}
             </p>
-            <pre className="code">{String(this.state.error?.message || this.state.error)}{this.state.stack ? '\n' + this.state.stack : ''}</pre>
+            <pre className="code">{String(this.state.error?.message || this.state.error)}{import.meta.env.DEV && this.state.stack ? '\n' + this.state.stack : ''}</pre>
             <button
               className="btn primary"
               onClick={() => {

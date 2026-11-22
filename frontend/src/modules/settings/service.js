@@ -30,10 +30,19 @@ export async function getPlatform() {
     get('configs', 'platform'),
     get('meta', 'platform'),
   ]);
-  const unavailable = [configResult, metaResult].find((result) => result.status === 'rejected' && result.reason?.status !== 404);
+  const isNotFound = (err) => {
+    if (!err) return false;
+    const s = Number(err.status);
+    if (s === 404) return true;
+    const msg = String(err.message || err.error || '').toLowerCase();
+    return msg.includes('not found') || msg.includes('404');
+  };
+  const unavailable = [configResult, metaResult].find((result) => result.status === 'rejected' && !isNotFound(result.reason));
   if (unavailable) throw unavailable.reason;
-  const config = configResult.status === 'fulfilled' ? configResult.value : null;
-  const meta = metaResult.status === 'fulfilled' ? metaResult.value : null;
+  const rawConfig = configResult.status === 'fulfilled' ? configResult.value : null;
+  const rawMeta = metaResult.status === 'fulfilled' ? metaResult.value : null;
+  const config = rawConfig && !rawConfig.error ? rawConfig : null;
+  const meta = rawMeta && !rawMeta.error ? rawMeta : null;
   return {
     ...CONFIG_DEFAULTS,
     ...(meta?.value || {}),

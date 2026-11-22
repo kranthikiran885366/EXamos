@@ -64,10 +64,10 @@ export function Icon({ name = 'grid', size = 18, className = '' }) {
 
 /* ------------------------------------------------------------------ primitives */
 export const tone = (v) => {
-  const s = String(v ?? '').toLowerCase().replace(/[_-]/g, ' ');
-  if (['pass', 'passed', 'attested', 'active', 'verified', 'compliant', 'published', 'live', 'signed', 'healthy', 'ready', 'enforced', 'closed', 'complete', 'completed', 'resolved', 'stable', 'allow', 'approved', 'accepted', 'delivered', 'paid', 'valid', 'ok', 'success', 'sent', 'strong', 'on', 'enabled', 'low', 'secure', 'intact', 'current', 'acknowledged', 'returned'].includes(s)) return 'g';
-  if (['review', 'pending', 'draft', 'investigating', 'canary', 'warning', 'stale', 'scheduled', 'partial', 'blocked', 'medium', 'not run', 'not_run', 'unknown', 'queued', 'assigned', 'waiting', 'pilot', 'trial', 'issued', 'prepared', 'quarantined', 'expiring', 'degraded', 'in progress', 'in_progress', 'open', 'new', 'needs review'].includes(s)) return 'a';
-  if (['fail', 'failed', 'unreachable', 'isolated', 'critical', 'revoked', 'suspended', 'offline', 'deny', 'high', 'rejected', 'expired', 'lost', 'damaged', 'retired', 'terminated', 'error', 'invalid', 'tampered', 'overdue', 'retired', 'deactivated', 'locked', 'failed payment'].includes(s)) return 'r';
+  const s = String(v ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+  if (['pass', 'passed', 'attested', 'active', 'verified', 'compliant', 'published', 'live', 'signed', 'healthy', 'ready', 'enforced', 'closed', 'complete', 'completed', 'resolved', 'stable', 'allow', 'approved', 'accepted', 'delivered', 'paid', 'valid', 'ok', 'success', 'sent', 'strong', 'on', 'enabled', 'low', 'secure', 'intact', 'current', 'acknowledged', 'returned', 'observed'].includes(s)) return 'g';
+  if (['review', 'pending', 'pending approval', 'draft', 'investigating', 'canary', 'warning', 'stale', 'scheduled', 'partial', 'medium', 'not run', 'unknown', 'queued', 'assigned', 'waiting', 'pilot', 'trial', 'issued', 'prepared', 'quarantined', 'expiring', 'degraded', 'in progress', 'open', 'new', 'needs review', 'unverified', 'configured'].includes(s)) return 'a';
+  if (['fail', 'failed', 'unreachable', 'isolated', 'critical', 'revoked', 'suspended', 'offline', 'deny', 'high', 'rejected', 'expired', 'lost', 'damaged', 'retired', 'terminated', 'error', 'invalid', 'tampered', 'overdue', 'deactivated', 'locked', 'failed payment', 'cancelled', 'not enrolled', 'blocked'].includes(s)) return 'r';
   return 'n';
 };
 export function Badge({ children, value, className = '', dot = true }) {

@@ -2040,6 +2040,18 @@ table.dense td { padding: 7px 11px; font-size: 12px; }
   .hero { gap: 30px; }
   .modgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 1440px) {
+  .crumbs { max-width: 200px; }
+  .gsearch { max-width: 300px; }
+  .topbar-right .backend-conn { display: none; }
+  .topbar > .tenant-select { max-width: 160px; }
+}
+@media (max-width: 1200px) {
+  .crumbs { max-width: 140px; }
+  .gsearch { max-width: 220px; }
+  .topbar-right .conn { display: none; }
+  .user-meta small { display: none; }
+}
 @media (max-width: 1024px) {
   .app, .app.rail { grid-template-columns: minmax(0, 1fr); }
   .side-wrap {

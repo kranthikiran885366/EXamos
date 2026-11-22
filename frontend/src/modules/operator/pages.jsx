@@ -160,9 +160,10 @@ export function LiveExamPage() {
   const exams = useCol('exams', false);
   const cachedExam = exams.find((x) => x.id === id);
   const detail = useLoad(async () => {
-    if (!id || cachedExam) return null;
-    return (await Api.getExamination(id)).examination;
-  }, [id, Boolean(cachedExam)]);
+    if (!id) return null;
+    const res = await Api.getExamination(id);
+    return res?.examination || res;
+  }, [id]);
   const sessions = useCol('sessions', false);
   const candidates = useCol('candidates', false);
   const devices = useCol('devices', false);
@@ -174,37 +175,44 @@ export function LiveExamPage() {
   const flash = useFlash();
   const perms = usePerm();
 
-  const exam = cachedExam || detail.data;
+  const exam = detail.data || cachedExam;
   const board = useLoad(
-    () => (exam && exam.status !== 'cancelled' ? liveBoard(exam, { candidates, sessions, devices, centers, incidents, attestations }) : Promise.resolve({ rows: [], byCenter: [], incidents: [] })),
+    () => (exam ? liveBoard(exam, { candidates, sessions, devices, centers, incidents, attestations }) : Promise.resolve({ rows: [], byCenter: [], incidents: [] })),
     [id, exam, sessions, candidates, devices, incidents, attestations, centers, exams],
   );
 
   if (!exam && detail.loading) return <Page title="Loading exam"><Loading /></Page>;
   if (!exam && detail.error) return <Page title="Exam unavailable"><Alert tone="danger" title="Could not load examination">{detail.error.message}</Alert><Link className="btn" to="/operator/exams">Back to exams</Link></Page>;
   if (!exam) return <Page title="Exam not found"><Empty icon="exam" title="No such exam" action={<Link className="btn" to="/operator/exams">Back to exams</Link>} /></Page>;
-  if (exam.status === 'cancelled') {
-    const reason = exam.cancelReason || exam.cancel_reason;
-    return <Page title={`Cancelled: ${exam.code}`} desc={exam.title}>
-      <Alert tone="warn" title="This examination was cancelled">
-        {reason ? `Reason: ${reason}` : 'Cancellation reason is not available in this record.'} The live operations board is unavailable.
-      </Alert>
-      <Link className="btn" to="/operator/exams">Back to exams</Link>
-    </Page>;
-  }
-  if (board.loading) return <Page title={`Live: ${exam.code}`}><Loading /></Page>;
+
+  const reason = exam.cancelReason || exam.cancel_reason || (exam.history || []).slice().reverse().find((h) => h?.to === 'cancelled' || h?.to_status === 'cancelled' || h?.action === 'EXAM_CANCELLED')?.reason;
+  const isCancelled = exam.status === 'cancelled';
+  const isClosed = exam.status === 'closed';
+  const pageTitle = isCancelled ? `Cancelled (Historical): ${exam.code}` : isClosed ? `Closed: ${exam.code}` : `Live: ${exam.code}`;
+
+  if (board.loading) return <Page title={pageTitle}><Loading /></Page>;
   const b = board.data || { rows: [], byCenter: [] };
   const stats = boardStats(b);
   const rows = b.rows || [];
 
   return (
-    <Page title={`Live: ${exam.code}`} desc={exam.title}
+    <Page title={pageTitle} desc={exam.title}
       breadcrumb={<div className="crumbs-inline"><Link to="/operator/exams">Assigned exams</Link><Icon name="arrow" size={12} /><span>{exam.code}</span></div>}
       actions={<>
         <Link className="btn" to={`/operator/exams/${exam.id}/incidents`}>Incidents <Badge value={String(b.incidents?.length || 0)} /></Link>
         <Link className="btn" to={`/operator/exams/${exam.id}/submissions`}>Submissions</Link>
       </>}>
       <Flash msg={flash.msg} onClose={() => flash.setMsg(null)} />
+      {isCancelled && (
+        <Alert tone="warn" title="This examination was cancelled — Read-only historical board">
+          {reason ? `Cancellation reason: ${reason}. ` : ''}Live interventions, candidate check-ins, and session actions are disabled for cancelled examinations.
+        </Alert>
+      )}
+      {isClosed && (
+        <Alert tone="info" title="This examination is closed — Read-only historical board">
+          Examination has concluded. Live interventions are disabled.
+        </Alert>
+      )}
       <StatGrid cols={5}>
         <Stat label="Assigned" value={stats.assigned} icon="users" />
         <Stat label="Verified" value={stats.verified} icon="check" tone="green" />
@@ -238,6 +246,7 @@ export function LiveExamPage() {
             { key: 'remaining', label: 'Remaining', render: (r) => (r.session?.status === 'in_progress' ? `${Math.ceil(r.remaining / 60000)} min` : '—') },
           ]}
           actions={(r) => {
+            if (isCancelled || isClosed) return [];
             const out = [];
             if (perms('exam.operate') && r.identity !== 'verified') out.push({ label: 'Check in', onClick: () => flash.run(async () => { await checkIn(user, r); return `${r.rollNo} checked in.`; }) });
             if (perms('exam.operate') && r.identity === 'verified' && !r.session) out.push({ label: 'Start', onClick: () => flash.run(async () => { await startCandidate(user, r); return `Session started for ${r.rollNo}.`; }) });

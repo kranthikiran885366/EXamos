@@ -1390,19 +1390,23 @@
 }
 
 /* Keep the full navigation and actions from crowding or clipping across desktop viewports. */
-@media (max-width: 1366px) {
+@media (max-width: 1440px) {
   .sppio-header-inner {
-    gap: 16px;
+    gap: 12px;
     min-width: 0;
   }
   .sppio-nav {
-    gap: 14px;
+    gap: clamp(10px, 1.2vw, 16px);
   }
   .sppio-header-actions .sppio-nav-item--quiet {
     display: none;
   }
   .sppio-header-actions {
     gap: 8px;
+  }
+  .sppio-btn-primary {
+    padding: 10px 16px;
+    font-size: 13.5px;
   }
 }
 

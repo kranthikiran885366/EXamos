@@ -105,6 +105,8 @@ export default function ExamsPage() {
             updatedAt: e.updated_at || e.updatedAt || 0,
             version: e.version || 1,
             history: e.history || [],
+            cancelReason: e.cancel_reason || e.cancelReason || config.cancelReason || null,
+            cancelledAt: e.cancelled_at || e.cancelledAt || null,
             });
           });
           setBackendExams(mapped);

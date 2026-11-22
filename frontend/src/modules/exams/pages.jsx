@@ -241,6 +241,11 @@ export function ExamNewPage() {
                 required
               />
             </Field>
+            {v.examUrl && v.examUrl.trim().toLowerCase().startsWith('http://') && (
+              <div className="span2"><Alert tone="danger" title="Insecure HTTP origin not allowed">
+                Assessment portal URL must use HTTPS. Insecure HTTP is blocked for security and integrity.
+              </Alert></div>
+            )}
             <Field label="Candidate instructions" required className="span2" help="Candidates see these before starting. Required to create and publish the exam.">
               <Textarea rows={4} value={v.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={3000} required placeholder="Read all instructions before starting. Do not attempt to disconnect hardware or exit the kiosk window." />
             </Field>
@@ -306,6 +311,11 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
           <Field label="Time zone"><Input value={v.timeZone} onChange={(e) => set('timeZone', e.target.value)} maxLength={40} /></Field>
           <Field label="Department"><Input value={v.departmentId} onChange={(e) => set('departmentId', e.target.value)} maxLength={64} /></Field>
           <Field label="Exam URL" required className="span2" help="Secure assessment portal URL. Its HTTPS origin is automatically included in the exam allowlist."><Input type="url" value={v.examUrl} onChange={(e) => set('examUrl', e.target.value)} placeholder="https://..." required /></Field>
+          {v.examUrl && v.examUrl.trim().toLowerCase().startsWith('http://') && (
+            <div className="span2"><Alert tone="danger" title="Insecure HTTP origin not allowed">
+              Assessment portal URL must use HTTPS. Insecure HTTP is blocked for security and integrity.
+            </Alert></div>
+          )}
           <Field label="Allowed origins" className="span2" help="Additional comma-separated HTTPS origins"><Input value={v.origins} onChange={(e) => set('origins', e.target.value)} /></Field>
           <Field label="Candidate authentication" help={
             v.authMode === 'exam-token'
@@ -338,7 +348,8 @@ function EditExamModal({ exam, centers, policies, onClose, onSaved }) {
 
 /* ------------------------------------------------------------------ detail */
 const cancellationReasonFor = (exam) => exam?.cancelReason || exam?.cancellationReason || exam?.cancel_reason || exam?.cancellation_reason
-  || (exam?.history || []).slice().reverse().find((entry) => entry.to === 'cancelled')?.reason || null;
+  || (exam?.history || []).slice().reverse().find((entry) => entry?.to === 'cancelled' || entry?.to_status === 'cancelled' || entry?.action === 'EXAM_CANCELLED')?.reason
+  || (exam?.history || []).slice().reverse().find((entry) => entry?.to === 'cancelled' || entry?.to_status === 'cancelled')?.note || null;
 
 export function ExamDetailPage() {
   const { id } = useParams();
@@ -506,7 +517,33 @@ export function ExamDetailPage() {
       </StatGrid>
 
       <Card pad>
-        <Steps steps={['Draft', 'Review', 'Approved', 'Published', 'Live', 'Closed']} current={Math.max(0, Math.min(5, currentStep))} />
+        {e.status === 'cancelled' ? (() => {
+          const reached = new Set((e.history || []).map((h) => h?.to || h?.to_status || h?.status).filter(Boolean));
+          reached.add('draft');
+          const stages = [
+            { key: 'draft', label: 'Draft', reached: true },
+            { key: 'review', label: 'Review', reached: reached.has('review') || reached.has('pending_approval') },
+            { key: 'approved', label: 'Approved', reached: reached.has('approved') },
+            { key: 'published', label: 'Published', reached: reached.has('published') || reached.has('scheduled') },
+            { key: 'live', label: 'Live', reached: reached.has('live') || reached.has('in_progress') },
+          ];
+          return (
+            <ol className="steps exam-cancelled-stepper">
+              {stages.map((s, idx) => (
+                <li key={s.key} className={s.reached ? 'done' : ''}>
+                  <span>{s.reached ? '✓' : idx + 1}</span>
+                  <b>{s.label}</b>
+                </li>
+              ))}
+              <li className="now terminal-branch">
+                <span style={{ background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}>✕</span>
+                <b style={{ color: '#ef4444' }}>Cancelled</b>
+              </li>
+            </ol>
+          );
+        })() : (
+          <Steps steps={['Draft', 'Review', 'Approved', 'Published', 'Live', 'Closed']} current={Math.max(0, Math.min(5, currentStep))} />
+        )}
       </Card>
 
       <Tabs value={tab} onChange={setTab} tabs={[
@@ -528,6 +565,10 @@ export function ExamDetailPage() {
             ['Authentication', e.authMode], ['Submission', e.submissionMode], ['Navigation', e.navigation],
             ['Session timeout', `${e.sessionTimeoutMin} min`], ['Reconnect', e.reconnectPolicy], ['Identity check', e.identityRequired ? 'Required' : 'Optional'],
             ['Created by', e.createdBy || '—'], ['Created', fmt(e.createdAt)], ['Updated', fmt(e.updatedAt)],
+            ...(e.status === 'cancelled' ? [
+              ['Cancellation reason', cancellationReason || 'Not recorded'],
+              ['Cancelled at', e.cancelledAt ? fmt(e.cancelledAt) : '—'],
+            ] : []),
           ]} />
         </Card>
         {e.instructions && <Card title="Candidate instructions"><p className="prewrap">{e.instructions}</p></Card>}
