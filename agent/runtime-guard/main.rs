@@ -97,8 +97,21 @@ fn main() {
     if args.len() != 2 || !matches!(args[1].as_str(), "--check" | "--watch") {
         eprintln!("usage: examos-runtime-guard --check|--watch"); process::exit(2);
     }
+    let mut startup_retries = 0;
     loop {
         if let Err(reason) = check() {
+            // The existing P2 image masks NetworkManager-wait-online. Allow
+            // the first authenticated verifier decision to arrive, without
+            // ever treating that wait as a successful trust check. The three
+            // 8-second client deadlines fit TimeoutStartSec=30. Runtime
+            // failures have no grace period and stop the kiosk immediately.
+            if args[1] == "--check" && startup_retries < 2 &&
+                local_posture(Path::new("/")).is_ok() {
+                startup_retries += 1;
+                eprintln!("Waiting for initial Keylime decision ({startup_retries}/2): {reason}");
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            }
             eprintln!("EXAMOS_RUNTIME_REJECTED: {reason}"); process::exit(1);
         }
         if args[1] == "--check" { break; }
