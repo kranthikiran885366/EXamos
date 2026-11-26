@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: security-stack-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   software:
     runs-on: ubuntu-latest
