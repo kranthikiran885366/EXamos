@@ -53,11 +53,20 @@ class MutualTLSTests(unittest.TestCase):
             def openssl(*args):
                 subprocess.run(["openssl",*map(str,args)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             openssl("req","-x509","-newkey","rsa:2048","-nodes","-keyout",root/"ca.key",
-                "-out",root/"ca.pem","-days","1","-subj","/CN=ExamOS Test CA")
+                "-out",root/"ca.pem","-days","1","-subj","/CN=ExamOS Test CA",
+                "-addext","keyUsage=critical,keyCertSign,cRLSign")
+            openssl("req","-x509","-newkey","rsa:2048","-nodes","-keyout",root/"other-ca.key",
+                "-out",root/"other-ca.pem","-days","1","-subj","/CN=Unrelated Test CA",
+                "-addext","keyUsage=critical,keyCertSign,cRLSign")
             for name,cn in [("server","localhost"),("client","test-client")]:
                 openssl("req","-newkey","rsa:2048","-nodes","-keyout",root/f"{name}.key",
                     "-out",root/f"{name}.csr","-subj",f"/CN={cn}")
-                (root/"extension").write_text("subjectAltName=DNS:localhost\n")
+                purpose = "serverAuth" if name == "server" else "clientAuth"
+                (root/"extension").write_text("subjectAltName=DNS:localhost\n"
+                    "basicConstraints=critical,CA:FALSE\n"
+                    "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                    f"extendedKeyUsage={purpose}\n"
+                    "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n")
                 openssl("x509","-req","-in",root/f"{name}.csr","-CA",root/"ca.pem","-CAkey",root/"ca.key",
                     "-CAcreateserial","-out",root/f"{name}.pem","-days","1","-extfile",root/"extension")
             class Handler(http.server.BaseHTTPRequestHandler):
@@ -79,7 +88,7 @@ class MutualTLSTests(unittest.TestCase):
                 "client_key":str(root/"client.key")}
             try:
                 gate.evaluate(gate.fetch_status(config),30,time.time())
-                bad=copy.copy(config); bad["ca_certificate"]=str(root/"server.pem")
+                bad=copy.copy(config); bad["ca_certificate"]=str(root/"other-ca.pem")
                 with self.assertRaises(OSError): gate.fetch_status(bad)
                 bad=copy.copy(config); bad["verifier_url"]=bad["verifier_url"].replace("https:","http:")
                 with self.assertRaises(gate.GateError): gate.fetch_status(bad)
