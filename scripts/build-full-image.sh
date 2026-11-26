@@ -5,6 +5,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SECURITY_PROFILE="${EXAMOS_SECURITY_PROFILE:-standard}"
+case "$SECURITY_PROFILE" in
+    standard|measured|measured-ab) ;;
+    *) echo 'EXAMOS_SECURITY_PROFILE must be standard, measured or measured-ab' >&2; exit 2 ;;
+esac
+if [[ "$SECURITY_PROFILE" == measured-ab ]]; then
+    : "${EXAMOS_IMAGE_VERSION:?A monotonically increasing integer release version is required}"
+    : "${EXAMOS_SECURE_BOOT_KEY:?Secure Boot signing key path is required}"
+    : "${EXAMOS_SECURE_BOOT_CERT:?Secure Boot certificate path is required}"
+    [[ "$EXAMOS_IMAGE_VERSION" =~ ^[1-9][0-9]{0,8}$ ]] || { echo 'Invalid release version' >&2; exit 2; }
+fi
 if [[ $# -ne 0 ]]; then
     echo "ERROR: credentials must not be supplied to an image build." >&2
     echo "Provision operator and candidate accounts after installation through the deployment authority." >&2
@@ -56,7 +67,7 @@ echo "  Binaries compiled."
 # ── Step 4: Stage overlay with correct permissions ───────────────────────────
 echo "[4/6] Staging rootfs overlay..."
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/examos-stage.XXXXXX")"
-trap 'rm -rf -- "$STAGE_DIR"' EXIT
+trap 'rm -rf -- "$STAGE_DIR" "${REPART_STAGE:-}"' EXIT
 cp -a "$ROOT/image/overlay/." "$STAGE_DIR/"
 mkdir -p "$STAGE_DIR/etc/examos"
 # The overlay contains a deliberately fail-closed placeholder so a direct
@@ -86,6 +97,38 @@ install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE_DIR/usr/local/s
 install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE_DIR/usr/local/sbin/examos-provision-remote-postgres"
 install -d "$STAGE_DIR/usr/share/examos/migrations"
 install -m 0644 "$ROOT"/server/migrations/*.sql "$STAGE_DIR/usr/share/examos/migrations/"
+
+# Reuse the existing image pipeline; measured-mode credentials are provisioned
+# after installation and missing enrollment deliberately blocks kiosk startup.
+EXTRA_MKOSI_ARGS=()
+if [[ "$SECURITY_PROFILE" != standard ]]; then
+    bash "$ROOT/scripts/stage-security-profile.sh" "$STAGE_DIR"
+    SECURITY_CMDLINE=$(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$ROOT/image/security/kernel-command-line.conf")
+    # KernelCommandLineExtra is only used by mkosi's VM launcher. These
+    # requirements must be embedded in the UKI and covered by its signature.
+    BASE_CMDLINE=$(sed -n 's/^KernelCommandLine=//p' "$ROOT/image/mkosi.conf")
+    EXTRA_MKOSI_ARGS+=("--kernel-command-line=$BASE_CMDLINE $SECURITY_CMDLINE")
+    EXTRA_MKOSI_ARGS+=("--package=libbpf1")
+fi
+if [[ "$SECURITY_PROFILE" == measured-ab ]]; then
+    REPART_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/examos-repart.XXXXXX")
+    for config in "$ROOT"/image/security/ab-repart.d/*.conf; do
+        sed "s/@VERSION@/$EXAMOS_IMAGE_VERSION/g" "$config" > "$REPART_STAGE/$(basename "$config")"
+    done
+    install -d "$STAGE_DIR/etc/kernel" "$STAGE_DIR/usr/lib/sysupdate.d"
+    printf '3\n' > "$STAGE_DIR/etc/kernel/tries"
+    install -m 0644 "$ROOT"/image/security/updates/*.transfer "$STAGE_DIR/usr/lib/sysupdate.d/"
+    install -D -m 0644 "$ROOT/image/security/boot-complete.conf" \
+        "$STAGE_DIR/etc/systemd/system/boot-complete.target.d/examos.conf"
+    install -d "$STAGE_DIR/etc/systemd/system/basic.target.wants"
+    ln -sfn /usr/lib/systemd/system/systemd-bless-boot.service \
+        "$STAGE_DIR/etc/systemd/system/basic.target.wants/systemd-bless-boot.service"
+    EXTRA_MKOSI_ARGS+=("--image-version=$EXAMOS_IMAGE_VERSION" "--repart-directory=$REPART_STAGE"
+        "--unified-kernel-images=yes" "--unified-kernel-image-format=examos_$EXAMOS_IMAGE_VERSION+&c"
+        "--secure-boot=yes" "--secure-boot-key=$EXAMOS_SECURE_BOOT_KEY"
+        "--secure-boot-certificate=$EXAMOS_SECURE_BOOT_CERT" "--split-artifacts=partitions,uki"
+        "--package=systemd-container")
+fi
 
 # ── Detector inventory ───────────────────────────────────────────────────────
 # The proctoring worker needs a digest-verified detector inventory. It is
@@ -227,6 +270,7 @@ mkosi \
     --directory "$ROOT/image" \
     --output-directory "$OUTPUT_DIR" \
     --extra-tree "$STAGE_DIR:/" \
+    "${EXTRA_MKOSI_ARGS[@]}" \
     --force \
     build 2>&1 | tee "$ROOT/artifacts/p1/build.log"
 
@@ -293,3 +337,4 @@ echo ""
 echo "  To provision more candidates:"
 echo "    bash scripts/provision-candidate.sh <CANDIDATE_ID>"
 echo "=================================================="
+
