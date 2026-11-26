@@ -16,7 +16,9 @@ static void fail(const char *message) {
 }
 
 static EVP_PKEY *generate_key(int type, int bits, const char *curve_name) {
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(type, NULL);
+    EVP_PKEY_CTX *ctx = type == 0
+        ? EVP_PKEY_CTX_new_from_name(NULL, curve_name, NULL)
+        : EVP_PKEY_CTX_new_id(type, NULL);
     EVP_PKEY *key = NULL;
     int setup_ok = ctx && EVP_PKEY_keygen_init(ctx) > 0;
     if (setup_ok && type == EVP_PKEY_RSA)
@@ -225,6 +227,11 @@ int main(void) {
     check_algorithm(EVP_PKEY_RSA, 3072, NULL, "rsa-pss-sha384");
     check_algorithm(EVP_PKEY_EC, 256, "prime256v1", "ecdsa-p256-sha256");
     check_algorithm(EVP_PKEY_EC, 384, "secp384r1", "ecdsa-p384-sha384");
-    puts("Release signature verification tests passed (Ed25519, RSA-2048/3072 PSS, ECDSA P-256/P-384).");
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+    check_algorithm(0, 0, "ML-DSA-65", "ml-dsa-65");
+    puts("Release signature verification tests passed, including ML-DSA-65.");
+#else
+    puts("Classical release signature tests passed; ML-DSA requires OpenSSL 3.5+.");
+#endif
     return 0;
 }
