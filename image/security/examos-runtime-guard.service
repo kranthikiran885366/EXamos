@@ -1,0 +1,29 @@
+[Unit]
+Description=ExamOS measured boot and runtime trust watchdog
+Requires=examos-ima-policy.service examos-bpf-lsm.service
+BindsTo=examos-bpf-lsm.service
+Wants=network-online.target
+After=examos-ima-policy.service examos-bpf-lsm.service network-online.target examos-unseal.service
+Before=examos-preflight.service examos-kiosk.service
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=exec
+ExecStartPre=/usr/local/bin/examos-runtime-guard --check
+ExecStart=/usr/local/bin/examos-runtime-guard --watch
+Restart=no
+TimeoutStartSec=30
+TimeoutStopSec=5
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
