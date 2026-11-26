@@ -1,0 +1,24 @@
+name: ExamOS security stack software regressions
+on:
+  pull_request:
+  push:
+    branches: [main, 'work/security-stack-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-stack-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  software:
+    runs-on: ubuntu-latest
+    container: debian:trixie-slim
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler and crypto dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential clang rustc python3 binutils libbpf-dev libelf-dev libssl-dev libpq-dev
+      - name: Verify real cryptography, memory lifetime and trust decisions
+        run: bash tests/security/run.sh

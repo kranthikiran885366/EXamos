@@ -1,0 +1,14 @@
+# Load before candidate services. Measurement is verified remotely by Keylime;
+# this is measurement, not IMA appraisal or an executable signature allowlist.
+dont_measure fsmagic=0x9fa0
+dont_measure fsmagic=0x62656572
+dont_measure fsmagic=0x64626720
+dont_measure fsmagic=0x73636673
+dont_measure fsmagic=0xf97cff8c
+dont_measure fsmagic=0x27e0eb
+measure func=BPRM_CHECK
+measure func=MMAP_CHECK mask=MAY_EXEC
+measure func=MODULE_CHECK
+measure func=FIRMWARE_CHECK
+measure func=KEXEC_KERNEL_CHECK
+measure func=POLICY_CHECK

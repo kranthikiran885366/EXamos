@@ -46,3 +46,9 @@ clean:
 	done
 
 .PHONY: all native install clean $(SUBDIRS)
+
+test-security-stack:
+	bash tests/security/run.sh
+
+.PHONY: test-security-stack
+

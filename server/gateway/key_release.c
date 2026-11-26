@@ -13,6 +13,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static int transport_identifier(const char *value) {
+    if (!value || !value[0] || strlen(value) > 63) return 0;
+    return strspn(value, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == strlen(value);
+}
+
 int key_release_get_session_key(const char *session_id,
                                 char *out_exam_key, size_t max_len,
                                 const char *device_id,
@@ -42,8 +47,9 @@ int key_release_wrap_session_key(const char *candidate_id,
                                  char *out_envelope,
                                  size_t envelope_len,
                                  char *out_error_code) {
-    if (!candidate_id || !candidate_id[0] || !session_id || !session_id[0] ||
-        !device_id || !device_id[0] || !out_envelope || envelope_len < 512) {
+    if (out_envelope && envelope_len) out_envelope[0] = '\0';
+    if (!transport_identifier(candidate_id) || !transport_identifier(session_id) ||
+        !transport_identifier(device_id) || !out_envelope || envelope_len < 512) {
         if (out_error_code) snprintf(out_error_code, 64, "P3_INVALID_REQUEST");
         return -1;
     }
@@ -82,22 +88,32 @@ int key_release_wrap_session_key(const char *candidate_id,
         return -1;
     }
     const char *ek_pem = PQgetvalue(res, 0, 0);
-    const char *ek_fingerprint = PQgetvalue(res, 0, 1);
-    const char *attestation_id = PQgetvalue(res, 0, 5);
+    /* PQgetvalue storage belongs to res. Copy every value used after PQclear.
+     * Column 5 is verified_at; the attestation identifier is column 6. */
+    char ek_fingerprint[65] = {0};
+    char attestation_id[64] = {0};
+    const char *fingerprint_value = PQgetvalue(res, 0, 1);
+    const char *attestation_value = PQgetvalue(res, 0, 6);
     char ek_pem_copy[4096];
-    if (strlen(ek_pem) >= sizeof(ek_pem_copy)) {
+    if (strlen(ek_pem) >= sizeof(ek_pem_copy) ||
+        strlen(fingerprint_value) != 64 ||
+        strspn(fingerprint_value, "0123456789abcdefABCDEF") != 64 ||
+        !attestation_value[0] || strlen(attestation_value) >= sizeof(attestation_id)) {
         PQclear(res); db_release(conn, 0);
         if (out_error_code) snprintf(out_error_code, 64, "P3_EK_INVALID");
         return -1;
     }
     snprintf(ek_pem_copy, sizeof(ek_pem_copy), "%s", ek_pem);
+    snprintf(ek_fingerprint, sizeof(ek_fingerprint), "%s", fingerprint_value);
+    snprintf(attestation_id, sizeof(attestation_id), "%s", attestation_value);
     PQclear(res);
     db_release(conn, 0);
 
     char exam_key_hex[65] = {0};
     if (attestation_get_exam_key(session_id, device_id,
                                  exam_key_hex, sizeof(exam_key_hex)) != 0 ||
-        strlen(exam_key_hex) != 64) {
+        strlen(exam_key_hex) != 64 ||
+        strspn(exam_key_hex, "0123456789abcdefABCDEF") != 64) {
         OPENSSL_cleanse(exam_key_hex, sizeof(exam_key_hex));
         if (out_error_code) snprintf(out_error_code, 64, "P3_KEY_UNAVAILABLE");
         return -1;
@@ -178,6 +194,7 @@ int key_release_wrap_session_key(const char *candidate_id,
         "\"device_id\":\"%s\",\"session_id\":\"%s\","
         "\"recipient_fingerprint\":\"%s\",\"wrapped_key\":\"%.*s\"}",
         device_id, session_id, ek_fingerprint, base64_len, base64);
+    int persisted = 0;
     if (written > 0 && (size_t)written < envelope_len) {
         unsigned char envelope_digest[SHA256_DIGEST_LENGTH];
         unsigned int envelope_digest_len = 0;
@@ -236,9 +253,13 @@ int key_release_wrap_session_key(const char *candidate_id,
                     }
                     PQclear(insert);
                     db_release(conn, 0);
+                    persisted = 1;
                 } else {
                     free(base64);
                     out_envelope[0] = '\0';
+                    OPENSSL_cleanse(ek_pem_copy, sizeof(ek_pem_copy));
+                    OPENSSL_cleanse(exam_key_hex, sizeof(exam_key_hex));
+                    OPENSSL_cleanse(plain, sizeof(plain));
                     if (out_error_code) snprintf(out_error_code, 64,
                                                  "P3_DATABASE_UNAVAILABLE");
                     return -1;
@@ -253,6 +274,12 @@ int key_release_wrap_session_key(const char *candidate_id,
     if (written < 0 || (size_t)written >= envelope_len) {
         out_envelope[0] = '\0';
         if (out_error_code) snprintf(out_error_code, 64, "P3_ENVELOPE_TOO_LARGE");
+        return -1;
+    }
+    if (!persisted) {
+        out_envelope[0] = '\0';
+        if (out_error_code) snprintf(out_error_code, 64,
+                                     "P3_TRANSPORT_PERSISTENCE_FAILED");
         return -1;
     }
     return 0;
