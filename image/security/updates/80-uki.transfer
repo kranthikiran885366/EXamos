@@ -1,0 +1,18 @@
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=regular-file
+Path=/
+PathRelativeTo=explicit
+MatchPattern=examos_@v.efi
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=boot
+MatchPattern=examos_@v+@l-@d.efi examos_@v+@l.efi examos_@v.efi
+Mode=0644
+TriesLeft=3
+TriesDone=0
+InstancesMax=2
