@@ -1,0 +1,16 @@
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=regular-file
+Path=/
+PathRelativeTo=explicit
+MatchPattern=examos_@v_@u.verity
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=examos_@v_verity
+MatchPartitionType=root-x86-64-verity
+ReadOnly=yes
+InstancesMax=2
