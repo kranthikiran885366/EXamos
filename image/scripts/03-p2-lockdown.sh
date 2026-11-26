@@ -92,6 +92,15 @@ BUILD_ID=p2
 OSEOF
 echo "[P2] A: os-release updated"
 
+# systemd-sysupdate protects the running version through the IMAGE_VERSION
+# field, rather than trusting a console record or a filename alone.
+if [[ -f "${BR}/etc/kernel/tries" ]]; then
+    [[ "${IMAGE_VERSION:-}" =~ ^[1-9][0-9]{0,8}$ ]] || {
+        echo '[P2] FAIL: A/B image requires a numeric IMAGE_VERSION' >&2; exit 1;
+    }
+    printf 'IMAGE_VERSION=%s\n' "$IMAGE_VERSION" >> "${BR}/etc/os-release"
+fi
+
 # ---------------------------------------------------------------------------
 # B. Login path removal — mask every getty / autovt / serial / emergency path
 # ---------------------------------------------------------------------------
@@ -396,3 +405,4 @@ sort -u -o "$MASK_LIST" "$MASK_LIST"
 echo "[P2] R: $(wc -l < "$MASK_LIST") unit masks deferred to the post-preset finalize step"
 
 echo "=== [ExamOS P2] All lockdown controls applied ==="
+
