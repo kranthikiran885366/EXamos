@@ -1,0 +1,14 @@
+[Unit]
+Description=ExamOS mandatory IMA executable measurement policy
+DefaultDependencies=no
+After=local-fs.target systemd-remount-fs.service
+Before=examos-runtime-guard.service examos-agent.service examos-kiosk.service
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -ec 'test -r /sys/kernel/security/ima/policy; grep -q "func=BPRM_CHECK" /sys/kernel/security/ima/policy || cat /etc/ima/ima-policy > /sys/kernel/security/ima/policy'
+
+[Install]
+WantedBy=multi-user.target
