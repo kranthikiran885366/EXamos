@@ -77,6 +77,9 @@ users. A missing enrollment or stale verifier decision blocks the measured
 profile. The local decision client is not a replacement for Keylime's TPM
 quote checking, event-log replay or IMA allowlist verification. The configured
 UUID must be bound to this appliance by the provisioning authority.
+Initial startup permits two bounded retries while waiting for an authenticated
+decision; it never admits the kiosk during that wait. Runtime trust failures
+have no retry grace period. Synchronize the appliance and verifier clocks.
 
 The BPF policy applies to the entire dedicated appliance and deliberately
 rejects ptrace even by ordinary root processes. Test Chromium, crash handling
