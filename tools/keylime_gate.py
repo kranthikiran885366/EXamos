@@ -90,6 +90,8 @@ def fetch_status(config: dict) -> dict:
     agent_id = str(uuid.UUID(config["agent_uuid"]))
     context = ssl.create_default_context(cafile=config["ca_certificate"])
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.verify_flags |= ssl.VERIFY_X509_STRICT
+    context.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
     context.load_cert_chain(config["client_certificate"], config["client_key"])
     # Do not forward this client's certificate through environment proxies.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
