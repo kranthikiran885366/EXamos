@@ -1,0 +1,25 @@
+[Unit]
+Description=ExamOS kernel ptrace and writable-executable memory protection
+Before=examos-runtime-guard.service examos-kiosk.service
+After=local-fs.target
+OnFailure=examos-lockdown-failed.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/examos-bpf-lsm /usr/lib/examos/runtime.bpf.o
+TimeoutStartSec=15
+Restart=no
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+LimitMEMLOCK=infinity
+LimitCORE=0
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
