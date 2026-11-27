@@ -1,0 +1,29 @@
+{
+  "schema": "examos-p4-dataset-governance-v1",
+  "generated_utc": "2026-11-27T09:45:00Z",
+  "operator": "SPPIO / ExamOS Security Operations",
+  "dataset_id": "examos-proctoring-eval-coco-2026",
+  "version": "1.0.0",
+  "consent_basis": "COCO val2017 is published under Creative Commons Attribution 4.0 (CC BY 4.0). No biometric data nor personal data is processed — clips are derived from still photographic frames annotated with COCO bounding-box and keypoint labels; individuals cannot be re-identified from 3-second 640x480 synthetic clips with no audio. The dataset is used exclusively for model accuracy evaluation on an air-gapped developer machine and is never stored on production infrastructure.",
+  "permitted_uses": [
+    "offline model accuracy evaluation",
+    "threshold calibration for proctoring detectors",
+    "regression testing of face/object detection pipelines",
+    "CI quality gate on ExamOS developer workstations"
+  ],
+  "retention_policy": "Evaluation clips and labels are retained only on the developer workstation that generated them (gitignored path tests/p4/dataset/). They are deleted after the CI run completes or within 30 days, whichever is sooner. No copies are uploaded to cloud storage or included in release artefacts.",
+  "deletion_process": "Automated: the CI workflow removes the tests/p4/dataset/ tree via 'rm -rf' at the end of the P4 job. Manual deletion instructions are in SECURITY.md §Dataset Lifecycle.",
+  "annotation_protocol": "Ground-truth labels are derived mechanically from COCO 2017 instance and person-keypoint annotations (no human re-labelling). Label rules: single_face = exactly one person with nose and both eyes visible (keypoint visibility 2); multiple_faces = two or more such persons; no_face = image with no person instance annotation; phone_present = COCO cell-phone category 77, non-crowd; book_present = COCO book category 84, non-crowd.",
+  "label_schema": {
+    "single_face": "boolean — exactly one person keypoint annotation with nose and both eyes visible (visibility 2)",
+    "multiple_faces": "boolean — two or more such persons in the same crop",
+    "no_face": "boolean — no COCO person instance annotation present",
+    "phone_present": "boolean — at least one non-crowd COCO category-77 (cell phone) bounding box",
+    "book_present": "boolean — at least one non-crowd COCO category-84 (book) bounding box"
+  },
+  "train_validation_test_separation": "This dataset is used exclusively as an evaluation (test) set. No model training or fine-tuning is performed on these clips. The COCO val2017 split is structurally disjoint from COCO train2017 which was used to train YOLOX.",
+  "privacy_owner": "SPPIO / ExamOS Security Operations <security@sppio.in>",
+  "human_review_required": true,
+  "human_review_scope": "Any change to the annotation protocol, label schema, or permitted-use list requires sign-off by the SPPIO Privacy Officer before the modified dataset is used in a CI run.",
+  "manifest": "/mnt/d/SEB BRO/tests/p4/dataset/DATASET-MANIFEST.json"
+}

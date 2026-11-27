@@ -76,12 +76,30 @@ export default function AuditPage() {
     flash.setMsg({ ok: true, text: `Exported ${sorted.length} returned audit records to CSV.` });
   };
 
+  const exportSignedJson = () => flash.run(async () => {
+    const res = await fetch('/api/v1/admin/audit/export', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('examos.token') || ''}` },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Signed export failed (${res.status})`);
+    }
+    const bundle = await res.json();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `examos-signed-audit-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return `Signed audit export downloaded (HMAC-SHA256: ${String(bundle.hmac_sha256 || '').slice(0, 16)}…).`;
+  }, 'Signed audit exported.');
+
   return <Page
     title="Audit trail"
     desc="Platform-wide administrative events and the global server ledger are separate evidence scopes; ledger verification does not certify the event list."
     wide
     actions={<>
       <button className="btn" onClick={exportCsv} disabled={!canReadPlatformAudit || !can(user.role, 'export') || !sorted.length} title={can(user.role, 'export') ? '' : 'Your role cannot export audit data'}><Icon name="download" size={14} /> Export CSV</button>
+      <button className="btn" onClick={exportSignedJson} disabled={!canReadPlatformAudit || !can(user.role, 'export') || flash.busy}><Icon name="shield" size={14} /> Signed Export (HMAC)</button>
       <button className="btn primary" onClick={verify} disabled={!canReadPlatformAudit || flash.busy || checking}><Icon name="shield" size={14} /> {flash.busy ? 'Verifying…' : 'Verify chain'}</button>
     </>}
   >

@@ -1,0 +1,56 @@
+{
+  "schema": "examos-p4-model-manifest-v1",
+  "generated_utc": "2026-11-27T09:45:00Z",
+  "operator": "SPPIO / ExamOS Security Operations",
+  "purpose": "Proctoring vision models for exam integrity enforcement on ExamOS appliances",
+  "models": [
+    {
+      "id": "face_detection_yunet_2023mar",
+      "version": "2023mar",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "license_spdx": "MIT",
+      "license_file": "/mnt/d/SEB BRO/tests/phase4/governance/licenses/MIT.txt",
+      "artifact": "/mnt/d/SEB BRO/tests/p4/models/face_detection_yunet_2023mar.onnx",
+      "source": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+      "description": "YuNet lightweight face detector — ONNX, OpenCV model zoo release Mar 2023",
+      "commercial_use_approved": true,
+      "redistribution_approved": true
+    },
+    {
+      "id": "object_detection_yolox_2022nov",
+      "version": "2022nov",
+      "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+      "license_spdx": "Apache-2.0",
+      "license_file": "/mnt/d/SEB BRO/tests/phase4/governance/licenses/Apache-2.0.txt",
+      "artifact": "/mnt/d/SEB BRO/tests/p4/models/object_detection_yolox_2022nov.onnx",
+      "source": "https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox",
+      "description": "YOLOX nano object detector — ONNX, OpenCV model zoo release Nov 2022; detects phones and books during proctoring",
+      "commercial_use_approved": true,
+      "redistribution_approved": true
+    },
+    {
+      "id": "face_landmark_lbfmodel",
+      "version": "2014-lbfmodel-aam",
+      "sha256": "70dd8b1657c42d1595d6bd13d97d932877b3bed54a95d3c4733a0f740d1fd66b",
+      "license_spdx": "MIT",
+      "license_file": "/mnt/d/SEB BRO/tests/phase4/governance/licenses/MIT.txt",
+      "artifact": "/mnt/d/SEB BRO/tests/p4/models/lbfmodel.yaml",
+      "source": "https://github.com/kurnianggoro/GSOC2017",
+      "description": "LBF face landmark model (68-point) — YAML serialized OpenCV FacemarkLBF; gaze and head-pose estimation",
+      "commercial_use_approved": true,
+      "redistribution_approved": true
+    },
+    {
+      "id": "haarcascade_frontalface_default",
+      "version": "opencv-4.x",
+      "sha256": "0f7d4527844eb514d4a4948e822da90fbb16a34a0bbbbc6adc6498747a5aafb0",
+      "license_spdx": "BSD-3-Clause",
+      "license_file": "/mnt/d/SEB BRO/tests/phase4/governance/licenses/BSD-3-Clause.txt",
+      "artifact": "/mnt/d/SEB BRO/tests/p4/models/haarcascade_frontalface_default.xml",
+      "source": "https://github.com/opencv/opencv/tree/master/data/haarcascades",
+      "description": "OpenCV Viola-Jones Haar Cascade frontal face detector — XML; fallback detector for YuNet failure modes",
+      "commercial_use_approved": true,
+      "redistribution_approved": true
+    }
+  ]
+}

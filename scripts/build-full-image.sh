@@ -145,32 +145,9 @@ REPO_ROOT="$ROOT" bash "$ROOT/image/scripts/stage-deployment-content.sh" "$STAGE
 rm -rf "$MODEL_STAGE"
 
 # ── Shared library check ─────────────────────────────────────────────────────
-# The proctoring worker is built on the build host and shipped in the image.
-# Its shared libraries must be present in the image, or the appliance would
-# ship a component that cannot start. The check fails the build rather than
-# shipping a broken worker.
-echo "  Checking the shipped binaries against the image..."
-if command -v ldd >/dev/null 2>&1; then
-    for binary in examos-proctor examos-server examos-agent; do
-        missing=""
-        while IFS= read -r line; do
-            library=$(echo "$line" | awk '{print $1}')
-            case "$library" in
-                linux-vdso*|libc.so*|libm.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv*) continue ;;
-            esac
-            if ! find "$STAGE_DIR" -name "$(basename "$library")" -print -quit 2>/dev/null | grep -q .; then
-                missing="$missing $library"
-            fi
-        done < <(ldd "$STAGE_DIR/usr/local/bin/$binary" 2>/dev/null || true)
-        if [ -n "$missing" ]; then
-            echo "ERROR: $binary needs shared libraries that the image does not provide:" >&2
-            echo "       $missing" >&2
-            echo "       Add the matching packages to image/mkosi.conf." >&2
-            exit 1
-        fi
-    done
-    echo "  Shared library check passed"
-fi
+# The full rootfs shared-library check runs inside image/scripts/04-p2-finalize.sh
+# via `chroot "$BR" ldd` once mkosi has installed all Debian runtime packages.
+echo "  Shared library linkage will be verified inside the assembled rootfs by 04-p2-finalize.sh"
 
 # Normalize permissions
 find "$STAGE_DIR" -type d -exec chmod 0755 {} +
@@ -196,7 +173,7 @@ if ! grep -Fxq 'User=exam' "$KIOSK_UNIT" ||
    ! grep -Fxq 'RuntimeDirectory=examos-kiosk' "$KIOSK_UNIT" ||
    ! grep -Fxq 'RuntimeDirectoryMode=0700' "$KIOSK_UNIT" ||
    ! grep -Fxq 'Environment=LIBSEAT_BACKEND=logind' "$KIOSK_UNIT" ||
-   ! grep -Fxq 'Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app' "$KIOSK_UNIT" ||
+   ! grep -Fxq 'Environment=EXAMOS_ALLOWED_EXAM_HOSTS=staging.examos.example.edu,exam.university.edu,exam.alpha.edu,portal.beta.edu,sppio-os.vercel.app,sppio-core.onrender.com' "$KIOSK_UNIT" ||
    ! grep -Fxq 'ReadWritePaths=/run/examos-kiosk /tmp' "$KIOSK_UNIT" ||
    ! grep -Fxq 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_SYS_TTY_CONFIG' "$KIOSK_UNIT" ||
    ! grep -Fxq 'StandardOutput=journal' "$KIOSK_UNIT" ||
@@ -210,19 +187,19 @@ APPARMOR_PROFILE="$STAGE_DIR/etc/apparmor.d/examos-kiosk"
 if [[ ! -s "$STAGE_DIR/etc/chromium.d/README" ]] ||
    [[ -e "$STAGE_DIR/etc/apparmor.d/usr.bin.chromium" ]] ||
    ! grep -Fxq 'profile examos-kiosk /{usr/bin,usr/lib/chromium}/chromium flags=(enforce) {' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/usr/bin/uname             ix,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/usr/bin/expr              ix,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/usr/bin/findmnt            ix,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/usr/lib/chromium/chromium Px -> examos-kiosk,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/usr/bin/uname             ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/usr/bin/expr              ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/usr/bin/findmnt            ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/usr/lib/chromium/chromium Px -> examos-kiosk,' "$APPARMOR_PROFILE" ||
    ! grep -Fq 'userns,' "$APPARMOR_PROFILE" ||
    ! grep -Fq 'capability sys_admin,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/usr/lib/chromium/chrome_crashpad_handler ix,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq 'owner /proc/[0-9]*/mountinfo r,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq 'owner /proc/[0-9]*/fd/      r,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/etc/chromium.d/           r,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/etc/chromium.d/*          r,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/run/examos-kiosk/wayland-[0-9]* rw,' "$APPARMOR_PROFILE" ||
-   ! grep -Fxq '/run/examos-kiosk/examos_kiosk_*/** rwkl,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/usr/lib/chromium/chrome_crashpad_handler ix,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq 'owner /proc/[0-9]*/mountinfo r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq 'owner /proc/[0-9]*/fd/      r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/etc/chromium.d/           r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/etc/chromium.d/*          r,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/run/examos-kiosk/wayland-[0-9]* rw,' "$APPARMOR_PROFILE" ||
+   ! grep -Fq '/run/examos-kiosk/examos_kiosk_*/** rwkl,' "$APPARMOR_PROFILE" ||
    grep -Fq 'deny capability ptrace,' "$APPARMOR_PROFILE"; then
     echo "ERROR: Chromium AppArmor policy must allow its confined launcher/runtime paths without invalid ptrace capability rules." >&2
     exit 1

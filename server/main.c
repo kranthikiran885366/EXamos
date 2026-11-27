@@ -1085,6 +1085,39 @@ static void risk_engine_assess_session(const char *session_id, const char *event
 }
 
 /*
+ * Non-blocking real-time proctor alert webhook dispatcher.
+ * When EXAMOS_PROCTOR_WEBHOOK_URL is configured (https:// or http://localhost),
+ * forks a child to POST the alert JSON with a 5s timeout.
+ */
+static void dispatch_proctor_webhook(const char *session_id, const char *event_type,
+                                     double risk_score, const char *risk_level) {
+    const char *url = getenv("EXAMOS_PROCTOR_WEBHOOK_URL");
+    if (!url || !url[0]) return;
+    if (strncmp(url, "https://", 8) != 0 &&
+        strncmp(url, "http://localhost", 16) != 0 &&
+        strncmp(url, "http://127.0.0.1", 16) != 0) {
+        return;
+    }
+    char payload[512];
+    snprintf(payload, sizeof(payload),
+             "{\"alert\":\"PROCTOR_TERMINATE_RECOMMENDED\",\"session_id\":\"%.64s\","
+             "\"event_type\":\"%.64s\",\"risk_score\":%.2f,\"risk_level\":\"%.32s\","
+             "\"timestamp\":%ld}",
+             session_id ? session_id : "",
+             event_type ? event_type : "",
+             risk_score,
+             risk_level ? risk_level : "HIGH",
+             (long)time(NULL));
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/usr/bin/curl", "curl", "-s", "-m", "5",
+              "-H", "Content-Type: application/json",
+              "-X", "POST", "-d", payload, url, (char *)NULL);
+        _exit(127);
+    }
+}
+
+/*
  * Extracts the resource identifier from "/api/v1/platform/exams/<id>/<action>".
  * The identifier is the single path segment between the collection and the
  * action. Matching the action exactly (rather than searching for a substring
@@ -2609,6 +2642,11 @@ static void* handle_client(void *arg) {
                                model_name, model_version, &ev) == 0) {
             risk_assessment_t assessment;
             risk_engine_assess_session(sess_id, event_type, &assessment);
+            if (assessment.should_terminate_exam) {
+                dispatch_proctor_webhook(sess_id, event_type,
+                                         assessment.composite_risk_score,
+                                         assessment.risk_level);
+            }
             char resp[320];
             snprintf(resp, sizeof(resp),
                 "{\"status\":\"RECORDED\",\"sequence\":%lu,\"event_hash\":\"%s\","
@@ -3277,6 +3315,63 @@ static void* handle_client(void *arg) {
             OPENSSL_cleanse(&sess, sizeof(sess));
         }
     }
+    /* POST /api/v1/admin/sessions/:id/freeze -> 1-click remote session freeze */
+    else if (strncmp(route_path, "/api/v1/admin/sessions/", 23) == 0 &&
+             strstr(route_path + 23, "/freeze") != NULL && strcmp(method, "POST") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_EXAM_MUTATION, &sess) != 0) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Exam mutation permission required\"}");
+        } else {
+            char session_id[64] = {0};
+            const char *id_start = route_path + 23;
+            const char *id_end = strstr(id_start, "/freeze");
+            size_t id_len = id_end ? (size_t)(id_end - id_start) : 0;
+            if (id_len == 0 || id_len >= sizeof(session_id)) {
+                send_http_response(client_fd, 400, "application/json",
+                                   "{\"error\":\"session_id required in path\"}");
+            } else {
+                memcpy(session_id, id_start, id_len);
+                session_id[id_len] = '\0';
+                char reason[256] = "Remote freeze triggered by proctor/admin";
+                parse_json_string(req_body, "reason", reason, sizeof(reason));
+                exam_session_t es; memset(&es, 0, sizeof(es));
+                int found = (exam_manager_get_session(session_id, &es) == 0);
+                if (found) {
+                    exam_manager_update_state(session_id, EXAM_STATE_FLAGGED_TERMINATED);
+                }
+                PGconn *fconn = db_acquire();
+                if (fconn) {
+                    const char *fp[2] = { reason, session_id };
+                    int fl[2] = { (int)strlen(reason), (int)strlen(session_id) };
+                    PGresult *fr = db_simple(fconn,
+                        "UPDATE exam_sessions SET status='terminated', termination_reason=$1, "
+                        "ended_at=EXTRACT(EPOCH FROM NOW())::BIGINT*1000 WHERE id=$2",
+                        2, fp, fl);
+                    if (fr) {
+                        if (PQcmdTuples(fr)[0] != '0') found = 1;
+                        PQclear(fr);
+                    }
+                    db_release(fconn, 0);
+                }
+                if (!found) {
+                    send_http_response(client_fd, 404, "application/json",
+                                       "{\"error\":\"Exam session not found\"}");
+                } else {
+                    char detail[384];
+                    snprintf(detail, sizeof(detail), "session=%s reason=%s", session_id, reason);
+                    audit_append(sess.username, "SESSION_FROZEN_BY_ADMIN", detail);
+                    char resp[512];
+                    snprintf(resp, sizeof(resp),
+                             "{\"status\":\"FROZEN\",\"session_id\":\"%s\",\"state\":%d,\"reason\":\"%s\"}",
+                             session_id, EXAM_STATE_FLAGGED_TERMINATED, reason);
+                    send_http_response(client_fd, 200, "application/json", resp);
+                }
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
     else if (strncmp(route_path, "/api/v1/platform/exams/", 23) == 0 &&
              strstr(route_path + 23, "/url") != NULL && strcmp(method, "POST") == 0) {
         static const char prefix[] = "Bearer ";
@@ -3897,6 +3992,54 @@ static void* handle_client(void *arg) {
             } else {
                 send_http_response(client_fd, 503, "application/json",
                                    "{\"error\":\"Audit trail is unavailable\"}");
+            }
+        }
+        OPENSSL_cleanse(&sess, sizeof(sess));
+    }
+    /* GET /api/v1/admin/audit/export -> 1-click HMAC-SHA256 signed audit export */
+    else if (strcmp(route_path, "/api/v1/admin/audit/export") == 0 && strcmp(method, "GET") == 0) {
+        const char *tok = bearer_token(auth_header);
+        auth_session_t sess; memset(&sess, 0, sizeof(sess));
+        if (!tok || admin_auth_store_authorize(tok, AUTH_PERM_READ, &sess) != 0 ||
+            (sess.role != ROLE_PLATFORM_OWNER &&
+             sess.role != ROLE_INCIDENT_INVESTIGATOR &&
+             sess.role != ROLE_READONLY_AUDITOR)) {
+            send_http_response(client_fd, 403, "application/json",
+                               "{\"error\":\"Platform audit export permission required\"}");
+        } else {
+            const char *sign_key = getenv("EXAMOS_AUDIT_SIGNING_KEY");
+            if (!sign_key || !sign_key[0]) sign_key = getenv("EXAMOS_LEDGER_HMAC_KEY");
+            if (!sign_key || !sign_key[0]) {
+                send_http_response(client_fd, 503, "application/json",
+                                   "{\"error\":\"Audit signing key not configured\"}");
+            } else {
+                static char raw_audit[65536];
+                if (platform_get_audit_json(NULL, 1000, raw_audit, sizeof(raw_audit)) != 0) {
+                    send_http_response(client_fd, 503, "application/json",
+                                       "{\"error\":\"Audit trail is unavailable\"}");
+                } else {
+                    unsigned char mac[EVP_MAX_MD_SIZE];
+                    unsigned int mac_len = 0;
+                    HMAC(EVP_sha256(), sign_key, (int)strlen(sign_key),
+                         (const unsigned char *)raw_audit, strlen(raw_audit),
+                         mac, &mac_len);
+                    char hex_mac[129] = {0};
+                    for (unsigned int i = 0; i < mac_len && i < 64; i++) {
+                        snprintf(hex_mac + i * 2, sizeof(hex_mac) - i * 2, "%02x", mac[i]);
+                    }
+                    char *signed_resp = malloc(sizeof(raw_audit) + 512);
+                    if (!signed_resp) {
+                        send_http_response(client_fd, 500, "application/json", "{\"error\":\"Out of memory\"}");
+                    } else {
+                        snprintf(signed_resp, sizeof(raw_audit) + 512,
+                                 "{\"format\":\"examos-signed-audit-v1\",\"exported_at\":%ld,"
+                                 "\"hmac_sha256\":\"%s\",\"audit\":%s}",
+                                 (long)time(NULL), hex_mac, raw_audit);
+                        audit_append(sess.username, "AUDIT_SIGNED_EXPORT", hex_mac);
+                        send_http_response(client_fd, 200, "application/json", signed_resp);
+                        free(signed_resp);
+                    }
+                }
             }
         }
         OPENSSL_cleanse(&sess, sizeof(sess));

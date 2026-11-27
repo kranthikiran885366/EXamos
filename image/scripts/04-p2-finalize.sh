@@ -58,3 +58,19 @@ done
 rm -f "$MASK_LIST"
 
 echo "[P2-FINALIZE] ${masked} unit masks applied; all console login paths verified masked"
+
+# Verify that every shipped native binary resolves all shared libraries inside the image
+echo "=== [ExamOS P2] Verifying shipped binary shared-library linkage ==="
+for bin in /usr/local/bin/examos-proctor /usr/local/bin/examos-server /usr/local/bin/examos-agent /usr/local/bin/examos-kiosk-launcher; do
+    if [ ! -x "${BR}${bin}" ]; then
+        echo "[P2-FINALIZE] FAIL: missing shipped binary ${bin}" >&2
+        exit 1
+    fi
+    missing_libs="$(chroot "${BR}" /usr/bin/ldd "${bin}" 2>&1 | grep 'not found' || true)"
+    if [ -n "$missing_libs" ]; then
+        echo "[P2-FINALIZE] FAIL: ${bin} has unresolved shared libraries in image:" >&2
+        echo "$missing_libs" >&2
+        exit 1
+    fi
+done
+echo "[P2-FINALIZE] All shipped binaries have complete shared-library linkage in image"

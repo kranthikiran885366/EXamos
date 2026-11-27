@@ -1,1 +1,1 @@
--rwxrwxrwx 1 root root 2.2G Oct  8 16:23 /mnt/d/SEB BRO/image/examos.raw.raw
+4.5G	output/examos.raw
