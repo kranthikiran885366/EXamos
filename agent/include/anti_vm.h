@@ -18,7 +18,7 @@ typedef struct {
 /*
  * Performs multi-signal hypervisor / VM detection:
  *   1. CPUID leaf 0x1 ECX bit 31 + leaf 0x40000000 vendor signature
- *   2. DMI / ACPI sysfs vendor strings (/sys/class/dmi/id/*)
+ *   2. DMI / ACPI sysfs vendor strings (/sys/class/dmi/id/)
  *   3. Serialized RDTSC instruction timing variance across CPUID exits
  *
  * Returns 0 on bare-metal physical hardware, 1 if a hypervisor/VM is detected,
