@@ -6,9 +6,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int hex_to_bytes32(const char *hex, unsigned char out[32]) {
-    if (!hex || strlen(hex) < 64) return -1;
-    for (int i = 0; i < 32; i++) {
+static int parse_ima_digest(const char *raw, unsigned char out[32]) {
+    if (!raw) return -1;
+    const char *hex = raw;
+    if (strncmp(raw, "sha256:", 7) == 0) {
+        hex = raw + 7;
+    } else if (strncmp(raw, "sha1:", 5) == 0) {
+        hex = raw + 5;
+    }
+    size_t len = strlen(hex);
+    if (len != 64 && len != 40) return -1;
+
+    memset(out, 0, 32);
+    size_t nbytes = len / 2;
+    for (size_t i = 0; i < nbytes; i++) {
         unsigned int byte = 0;
         if (!isxdigit((unsigned char)hex[i * 2]) ||
             !isxdigit((unsigned char)hex[i * 2 + 1])) {
@@ -43,7 +54,7 @@ int examos_ima_replay_pcr10(const char *ascii_path, examos_ima_summary_t *out) {
             return -1;
         }
         unsigned char template_hash[32];
-        if (hex_to_bytes32(template_hex, template_hash) != 0) {
+        if (parse_ima_digest(template_hex, template_hash) != 0) {
             fclose(fp);
             return -1;
         }

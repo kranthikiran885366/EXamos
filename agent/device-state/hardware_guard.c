@@ -19,8 +19,21 @@ static const char *g_blacklisted_processes[] = {
     "anydesk", "teamviewer", "rustdesk", "vncserver", NULL
 };
 
+static int g_baseline_displays = 1;
+static int g_guard_initialized = 0;
+
+static int scan_and_terminate_prohibited_processes(void);
+static int count_active_displays(int *out_external);
+
 int hardware_guard_init(void) {
-    return 0;
+    if (access("/proc", R_OK | X_OK) != 0) {
+        return -1;
+    }
+    int ext = 0;
+    g_baseline_displays = count_active_displays(&ext);
+    scan_and_terminate_prohibited_processes();
+    g_guard_initialized = 1;
+    return ext ? -1 : 0;
 }
 
 static int scan_and_terminate_prohibited_processes(void) {

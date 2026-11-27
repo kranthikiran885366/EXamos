@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.16)
+project(examos_sel4_domains C)
+
+include(CAmkES OPTIONAL)
+
+DeclareCAmkESComponent(TrustedAttestationDomain SOURCES components/TrustedAttestationDomain.c)
+DeclareCAmkESComponent(SecurityMonitorDomain SOURCES components/SecurityMonitorDomain.c)
+DeclareCAmkESComponent(KioskDisplayDomain SOURCES components/KioskDisplayDomain.c)
+DeclareCAmkESComponent(UntrustedBrowserVM SOURCES components/UntrustedBrowserVM.c)
+DeclareCAmkESComponent(NetworkDriverDomain SOURCES components/NetworkDriverDomain.c)
+
+DeclareCAmkESRootserver(examos_domains.camkes)

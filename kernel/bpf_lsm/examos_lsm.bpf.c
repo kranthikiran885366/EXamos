@@ -11,8 +11,10 @@
 #include <linux/bpf.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/binfmts.h>
 #include <linux/socket.h>
 #include <linux/in.h>
+#include <linux/in6.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -37,12 +39,35 @@ struct {
     __type(value, __u32);
 } lockdown_mode_map SEC(".maps");
 
+struct ipv6_key {
+    __u32 addr[4];
+};
+
+struct inode_key {
+    __u64 dev;
+    __u64 ino;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 256);
     __type(key, __u32);   /* allowed IPv4 address (network byte order) */
     __type(value, __u8);
 } allowed_ipv4_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct ipv6_key); /* allowed IPv6 address */
+    __type(value, __u8);
+} allowed_ipv6_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct inode_key); /* protected (dev, ino) pairs */
+    __type(value, __u8);
+} protected_inode_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -89,14 +114,23 @@ int BPF_PROG(examos_bprm_check, struct linux_binprm *bprm)
     if (!is_lockdown_active())
         return 0;
 
-    char comm[16] = {};
-    bpf_get_current_comm(comm, sizeof(comm));
     __u32 uid = (__u32)bpf_get_current_uid_gid();
+    if (uid == 0)
+        return 0;
 
-    /* Non-root unprivileged processes cannot spawn shells or debuggers in lockdown */
-    if (uid != 0 && is_blocked_shell_comm(comm)) {
-        emit_event(1, -EPERM);
-        return -EPERM;
+    /* Inspect the target executable (bprm->file), NOT the parent's comm */
+    char target_name[32] = {};
+    struct file *exec_file = BPF_CORE_READ(bprm, file);
+    if (exec_file) {
+        struct dentry *dentry = BPF_CORE_READ(exec_file, f_path.dentry);
+        const unsigned char *dname = BPF_CORE_READ(dentry, d_name.name);
+        if (dname) {
+            bpf_probe_read_kernel_str(target_name, sizeof(target_name), dname);
+            if (is_blocked_shell_comm(target_name)) {
+                emit_event(1, -EPERM);
+                return -EPERM;
+            }
+        }
     }
     return 0;
 }
@@ -118,11 +152,13 @@ int BPF_PROG(examos_socket_connect, struct socket *sock, struct sockaddr *addres
 {
     if (!is_lockdown_active())
         return 0;
-    if (!address || addrlen < (int)sizeof(struct sockaddr_in))
+    if (!address || addrlen < (int)sizeof(sa_family_t))
         return 0;
 
     sa_family_t family = BPF_CORE_READ(address, sa_family);
     if (family == AF_INET) {
+        if (addrlen < (int)sizeof(struct sockaddr_in))
+            return -EINVAL;
         struct sockaddr_in *in_addr = (struct sockaddr_in *)address;
         __u32 dst_ip = BPF_CORE_READ(in_addr, sin_addr.s_addr);
         /* Always permit loopback 127.0.0.1 */
@@ -130,6 +166,21 @@ int BPF_PROG(examos_socket_connect, struct socket *sock, struct sockaddr *addres
             return 0;
         __u8 *allowed = bpf_map_lookup_elem(&allowed_ipv4_map, &dst_ip);
         if (!allowed || *allowed != 1) {
+            emit_event(3, -EACCES);
+            return -EACCES;
+        }
+    } else if (family == AF_INET6) {
+        if (addrlen < (int)sizeof(struct sockaddr_in6))
+            return -EINVAL;
+        struct sockaddr_in6 *in6_addr = (struct sockaddr_in6 *)address;
+        struct ipv6_key key = {};
+        BPF_CORE_READ_INTO(&key.addr, in6_addr, sin6_addr.in6_u.u6_addr32);
+        /* Permit IPv6 loopback ::1 */
+        if (key.addr[0] == 0 && key.addr[1] == 0 && key.addr[2] == 0 &&
+            key.addr[3] == __bpf_htonl(1))
+            return 0;
+        __u8 *allowed6 = bpf_map_lookup_elem(&allowed_ipv6_map, &key);
+        if (!allowed6 || *allowed6 != 1) {
             emit_event(3, -EACCES);
             return -EACCES;
         }
@@ -147,17 +198,16 @@ int BPF_PROG(examos_file_open, struct file *file)
     if (uid == 0)
         return 0;
 
-    /* Deny unprivileged write access to sensitive security/exam config paths */
+    /* Deny unprivileged write access by exact (dev, inode) identity */
     unsigned int flags = BPF_CORE_READ(file, f_flags);
     if ((flags & 03) != 0) { /* O_WRONLY or O_RDWR */
-        char fname[64] = {};
-        struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-        const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
-        if (name) {
-            bpf_probe_read_kernel_str(fname, sizeof(fname), name);
-            if ((fname[0] == 'a' && fname[1] == 'b' && fname[2] == '-' && fname[3] == 's') ||
-                (fname[0] == 'p' && fname[1] == 'f' && fname[2] == 'r' && fname[3] == '-') ||
-                (fname[0] == 'i' && fname[1] == 'm' && fname[2] == 'a' && fname[3] == '-')) {
+        struct inode *inode = BPF_CORE_READ(file, f_inode);
+        if (inode) {
+            struct inode_key ik = {};
+            ik.ino = BPF_CORE_READ(inode, i_ino);
+            ik.dev = (__u64)BPF_CORE_READ(inode, i_sb, s_dev);
+            __u8 *prot = bpf_map_lookup_elem(&protected_inode_map, &ik);
+            if (prot && *prot == 1) {
                 emit_event(2, -EACCES);
                 return -EACCES;
             }
