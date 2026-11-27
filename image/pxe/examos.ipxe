@@ -1,0 +1,29 @@
+#!ipxe
+# ExamOS / SPPIO — Mass Lab PXE/iPXE Network Boot Script
+# Boots 50+ lab workstations over local Ethernet simultaneously from an
+# HTTP provisioning mirror without flashing individual USB sticks.
+
+set examos-base-url http://${next-server}/examos/current
+set examos-server-url https://sppio-core.onrender.com
+
+echo SPPIO / ExamOS Network Boot (PXE/iPXE)
+echo Fetching signed kernel and initrd from ${examos-base-url}...
+
+kernel ${examos-base-url}/examos.vmlinuz \
+    initrd=examos.initrd \
+    lockdown=confidentiality \
+    lsm=lockdown,yama,integrity,bpf \
+    iommu=force \
+    intel_iommu=on \
+    amd_iommu=on \
+    efi=disable_early_pci_dma \
+    examos.server=${examos-server-url} \
+    rd.live.ram=1 \
+    quiet
+
+initrd ${examos-base-url}/examos.initrd
+boot || goto failed
+
+:failed
+echo ExamOS PXE boot failed. Verify DHCP next-server and HTTP mirror availability.
+shell

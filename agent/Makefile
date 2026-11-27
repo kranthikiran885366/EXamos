@@ -13,6 +13,7 @@ SRCS = main.c \
        device-state/hardware_guard.c \
        device-state/anti_vm.c \
        heartbeat/heartbeat.c \
+       heartbeat/offline_buffer.c \
        environment/rf_scanner.c
 
 BUILD_DIR ?= .

@@ -1,0 +1,33 @@
+SPPIO / ExamOS — Third-Party Open-Source Software NOTICE
+=========================================================
+
+This product includes software developed by third parties. Below is the
+summary license inventory for the core runtime components:
+
+1. Linux Kernel & eBPF Subsystem
+   - License: GPL-2.0-only (user-space UAPI headers under Linux-syscall-note)
+   - eBPF LSM / XDP programs (`kernel/bpf_lsm`, `kernel/bpf_xdp`): Dual BSD-2-Clause / GPL-2.0
+
+2. OpenSSL (libssl, libcrypto)
+   - License: Apache-2.0
+
+3. libcurl
+   - License: curl License (MIT-style permissive)
+
+4. PostgreSQL Client Library (libpq)
+   - License: PostgreSQL License (permissive)
+
+5. OpenCV (proctoring vision pipeline)
+   - License: Apache-2.0
+
+6. libbpf
+   - License: LGPL-2.1 OR BSD-2-Clause
+
+7. Rust Services (`rust-services/sppio-securityd`, `rust-services/sppio-behavioral-ai`)
+   - License: Apache-2.0 / MIT (per-crate metadata verified via `cargo metadata` / SBOM)
+
+8. Frontend Console (`frontend/`)
+   - React, React Router, Vite: MIT License
+
+For full per-package SPDX SBOMs, see the SLSA/SBOM build artifacts generated
+by `image/scripts/slsa-sbom.sh`.
