@@ -151,7 +151,7 @@ impl DsaKeypair {
         let mut seed = [0u8; 32];
         OsCsprng.fill_bytes(&mut seed);
         let xi = B32::from(seed);
-        let kp = MlDsa65::from_seed(&xi);
+        let kp = <MlDsa65 as DsaKeyGen>::key_gen_internal(&xi);
         let vk_bytes = kp.verifying_key().encode().as_slice().to_vec();
         Self { seed, vk_bytes }
     }
@@ -159,7 +159,7 @@ impl DsaKeypair {
     /// Sign a message with ML-DSA-65 (FIPS 204).
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         let xi = B32::from(self.seed);
-        let kp = MlDsa65::from_seed(&xi);
+        let kp = <MlDsa65 as DsaKeyGen>::key_gen_internal(&xi);
         let sig = kp.signing_key().sign(message);
         sig.encode().as_slice().to_vec()
     }

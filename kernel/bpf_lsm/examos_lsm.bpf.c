@@ -10,14 +10,85 @@
  */
 #include <linux/bpf.h>
 #include <linux/errno.h>
-#include <linux/fs.h>
-#include <linux/binfmts.h>
-#include <linux/socket.h>
-#include <linux/in.h>
-#include <linux/in6.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_endian.h>
+
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
+
+typedef __u16 sa_family_t;
+
+struct qstr {
+    const unsigned char *name;
+} __attribute__((preserve_access_index));
+
+struct dentry {
+    struct qstr d_name;
+} __attribute__((preserve_access_index));
+
+struct path {
+    struct dentry *dentry;
+} __attribute__((preserve_access_index));
+
+struct super_block {
+    __u32 s_dev;
+} __attribute__((preserve_access_index));
+
+struct inode {
+    unsigned long i_ino;
+    struct super_block *i_sb;
+} __attribute__((preserve_access_index));
+
+struct file {
+    struct path f_path;
+    struct inode *f_inode;
+    unsigned int f_flags;
+} __attribute__((preserve_access_index));
+
+struct linux_binprm {
+    struct file *file;
+} __attribute__((preserve_access_index));
+
+struct task_struct {
+    int tgid;
+} __attribute__((preserve_access_index));
+
+struct socket {
+    short type;
+} __attribute__((preserve_access_index));
+
+struct sockaddr {
+    sa_family_t sa_family;
+} __attribute__((preserve_access_index));
+
+struct in_addr {
+    __u32 s_addr;
+} __attribute__((preserve_access_index));
+
+struct sockaddr_in {
+    sa_family_t sin_family;
+    __be16 sin_port;
+    struct in_addr sin_addr;
+} __attribute__((preserve_access_index));
+
+struct in6_addr {
+    union {
+        __u32 u6_addr32[4];
+    } in6_u;
+} __attribute__((preserve_access_index));
+
+struct sockaddr_in6 {
+    sa_family_t sin6_family;
+    __be16 sin6_port;
+    __u32 sin6_flowinfo;
+    struct in6_addr sin6_addr;
+} __attribute__((preserve_access_index));
 
 char LICENSE[] SEC("license") = "GPL";
 

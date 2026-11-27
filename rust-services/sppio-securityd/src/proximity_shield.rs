@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShieldSubsystem {
@@ -118,6 +119,11 @@ impl RfShieldMonitor {
             });
         }
         None
+    }
+
+    /// Number of unknown BLE devices currently inside the close-range window.
+    pub fn tracked_ble_count(&self) -> usize {
+        self.ble_devices.len()
     }
 
     /// Evaluates Wi-Fi scan records for nearby mobile tethering hotspots or Wi-Fi Direct.
@@ -326,11 +332,10 @@ impl AcousticUltrasonicShield {
         let k = (0.5 + (samples.len() as f64 * target_hz) / self.sample_rate_hz).floor();
         let omega = (2.0 * PI * k) / samples.len() as f64;
         let coeff = 2.0 * omega.cos();
-        let mut q0 = 0.0;
         let mut q1 = 0.0;
         let mut q2 = 0.0;
         for &s in samples {
-            q0 = coeff * q1 - q2 + (s as f64);
+            let q0 = coeff * q1 - q2 + (s as f64);
             q2 = q1;
             q1 = q0;
         }
@@ -395,6 +400,31 @@ impl BusDisplayGuard {
         }
     }
 
+    /// Loads a previously persisted USB baseline, or captures and persists a new
+    /// one. A one-shot CLI invocation therefore still detects devices that were
+    /// plugged in after the baseline was recorded during provisioning.
+    pub fn load_or_capture_baseline(path: &str) -> Self {
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(devices) = serde_json::from_str::<Vec<String>>(&raw) {
+                return Self {
+                    baseline_usb_devices: devices.into_iter().collect(),
+                };
+            }
+        }
+
+        let guard = Self::capture_baseline();
+        let devices: Vec<String> = guard.baseline_usb_devices.iter().cloned().collect();
+        if let Ok(json) = serde_json::to_string(&devices) {
+            if let Some(parent) = Path::new(path).parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(error) = fs::write(path, json) {
+                eprintln!("[proximity] cannot persist USB bus baseline {path}: {error}");
+            }
+        }
+        guard
+    }
+
     fn list_usb_devices() -> HashSet<String> {
         let mut set = HashSet::new();
         if let Ok(entries) = Path::new("/sys/bus/usb/devices").read_dir() {
@@ -452,6 +482,223 @@ impl BusDisplayGuard {
     }
 }
 
+/* ============================================================================
+ * Live capture helpers
+ * ============================================================================ */
+
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const PCM_SAMPLE_RATE: usize = 48_000;
+
+/// Captures one frame from the first usable V4L2 device and returns packed
+/// 8-bit luma plus its dimensions. Returns `None` when no capture device or
+/// no `v4l2-ctl` binary is available; callers report the subsystem as
+/// unavailable rather than fabricating a score.
+pub fn capture_webcam_luma() -> Option<(Vec<u8>, usize, usize)> {
+    for index in 0..8 {
+        let device = format!("/dev/video{index}");
+        if !Path::new(&device).exists() {
+            continue;
+        }
+        if let Some(frame) = capture_v4l2_frame(&device) {
+            return Some(frame);
+        }
+    }
+    None
+}
+
+fn capture_v4l2_frame(device: &str) -> Option<(Vec<u8>, usize, usize)> {
+    let format = Command::new("v4l2-ctl")
+        .args(["--device", device, "--get-fmt-video"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !format.status.success() {
+        return None;
+    }
+    let format_text = String::from_utf8_lossy(&format.stdout);
+    let (width, height) = parse_v4l2_dimensions(&format_text)?;
+    let pixel_format = parse_v4l2_pixel_format(&format_text).unwrap_or_default();
+
+    let mut child = Command::new("v4l2-ctl")
+        .args([
+            "--device",
+            device,
+            "--stream-mmap",
+            "--stream-count=1",
+            "--stream-to=-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    while raw.len() < MAX_FRAME_BYTES {
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    unpack_luma(&raw, width, height, &pixel_format)
+}
+
+fn parse_v4l2_dimensions(text: &str) -> Option<(usize, usize)> {
+    for line in text.lines() {
+        if !line.contains("Width/Height") {
+            continue;
+        }
+        let value = line.split_once(':')?.1.trim();
+        let (width, height) = value.split_once('/')?;
+        return Some((width.trim().parse().ok()?, height.trim().parse().ok()?));
+    }
+    None
+}
+
+fn parse_v4l2_pixel_format(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if !line.contains("Pixel Format") {
+            continue;
+        }
+        let value = line.split_once(':')?.1;
+        let start = value.find('\'')? + 1;
+        let end = value[start..].find('\'')? + start;
+        return Some(value[start..end].trim().to_uppercase());
+    }
+    None
+}
+
+fn unpack_luma(
+    raw: &[u8],
+    width: usize,
+    height: usize,
+    pixel_format: &str,
+) -> Option<(Vec<u8>, usize, usize)> {
+    let pixels = width.checked_mul(height)?;
+    if width == 0 || height == 0 || raw.len() < pixels {
+        return None;
+    }
+
+    let luma = match pixel_format {
+        "YUYV" | "YUY2" => {
+            if raw.len() < pixels * 2 {
+                return None;
+            }
+            raw.iter().step_by(2).take(pixels).copied().collect()
+        }
+        "UYVY" => {
+            if raw.len() < pixels * 2 {
+                return None;
+            }
+            raw.iter().skip(1).step_by(2).take(pixels).copied().collect()
+        }
+        "NV12" | "NV21" => raw[..pixels].to_vec(),
+        "RGB24" | "BGR24" => {
+            if raw.len() < pixels * 3 {
+                return None;
+            }
+            let rgb_order_is_rgb = pixel_format == "RGB24";
+            raw.chunks_exact(3)
+                .take(pixels)
+                .map(|p| {
+                    let (r, g, b) = if rgb_order_is_rgb {
+                        (p[0], p[1], p[2])
+                    } else {
+                        (p[2], p[1], p[0])
+                    };
+                    ((r as u32 * 77 + g as u32 * 150 + b as u32 * 29) >> 8) as u8
+                })
+                .collect()
+        }
+        _ => raw[..pixels].to_vec(),
+    };
+    Some((luma, width, height))
+}
+
+/// Captures a short 48 kHz mono microphone window. `arecord` is preferred
+/// because it terminates on its own; `parec` (PipeWire) is used as a fallback
+/// and the child is explicitly killed after a bounded read.
+pub fn capture_mic_pcm() -> Option<Vec<i16>> {
+    if !Path::new("/dev/snd").exists() {
+        return None;
+    }
+    if let Some(pcm) = capture_arecord_pcm() {
+        return Some(pcm);
+    }
+    capture_parec_pcm()
+}
+
+fn capture_arecord_pcm() -> Option<Vec<i16>> {
+    let output = Command::new("arecord")
+        .args([
+            "-q",
+            "-d",
+            "1",
+            "-f",
+            "S16_LE",
+            "-r",
+            "48000",
+            "-c",
+            "1",
+            "-t",
+            "raw",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    pcm_from_le_bytes(&output.stdout)
+}
+
+fn capture_parec_pcm() -> Option<Vec<i16>> {
+    let mut child = Command::new("parec")
+        .args([
+            "--format=s16le",
+            "--rate=48000",
+            "--channels=1",
+            "--latency-msec=100",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    // Read at most one second of mono S16_LE audio.
+    while bytes.len() < PCM_SAMPLE_RATE * 2 {
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    pcm_from_le_bytes(&bytes)
+}
+
+fn pcm_from_le_bytes(bytes: &[u8]) -> Option<Vec<i16>> {
+    let samples: Vec<i16> = bytes
+        .chunks_exact(2)
+        .take(PCM_SAMPLE_RATE)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    if samples.len() < 256 {
+        return None;
+    }
+    Some(samples)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +746,29 @@ mod tests {
         let (ratio, alerts_doppler) = shield.analyze_mic_pcm(&pure, 2);
         assert!(ratio > 0.35);
         assert!(alerts_doppler.iter().any(|a| a.code == "ULTRASONIC_DOPPLER_MOTION"));
+    }
+
+    #[test]
+    fn bus_baseline_persists_between_invocations() {
+        let path = std::env::temp_dir().join(format!(
+            "sppio-bus-baseline-test-{}.json",
+            std::process::id()
+        ));
+        let path_text = path.to_string_lossy().to_string();
+        let first = BusDisplayGuard::load_or_capture_baseline(&path_text);
+        assert!(Path::new(&path_text).exists());
+        let second = BusDisplayGuard::load_or_capture_baseline(&path_text);
+        assert_eq!(
+            first.baseline_usb_devices.len(),
+            second.baseline_usb_devices.len()
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v4l2_format_parsing_extracts_dimensions_and_fourcc() {
+        let text = "Format Video Capture:\n\tWidth/Height      : 640/480\n\tPixel Format      : 'YUYV'\n";
+        assert_eq!(parse_v4l2_dimensions(text), Some((640, 480)));
+        assert_eq!(parse_v4l2_pixel_format(text).as_deref(), Some("YUYV"));
     }
 }

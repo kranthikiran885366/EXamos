@@ -2,7 +2,7 @@ CLANG ?= clang
 BPFTOOL ?= bpftool
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 
-CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -Wall -Werror
+CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -idirafter /usr/include/$(shell uname -m)-linux-gnu -Wall -Werror
 
 all: examos_lsm.bpf.o
 
