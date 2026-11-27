@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS device_defence_posture (
 );
 
 INSERT INTO examos_schema_migrations(component, version)
-VALUES ('defence_tier_os_assurance', 52)
+VALUES ('defence_tier_assurance', 52)
 ON CONFLICT (component, version) DO NOTHING;
 
 COMMIT;
