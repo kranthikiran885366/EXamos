@@ -83,14 +83,20 @@ int key_release_wrap_session_key(const char *candidate_id,
     }
     const char *ek_pem = PQgetvalue(res, 0, 0);
     const char *ek_fingerprint = PQgetvalue(res, 0, 1);
-    const char *attestation_id = PQgetvalue(res, 0, 5);
+    const char *attestation_id = PQgetvalue(res, 0, 6);
     char ek_pem_copy[4096];
-    if (strlen(ek_pem) >= sizeof(ek_pem_copy)) {
+    char ek_fingerprint_copy[256];
+    char attestation_id_copy[128];
+    if (!ek_pem || !ek_pem[0] || strlen(ek_pem) >= sizeof(ek_pem_copy) ||
+        !ek_fingerprint || !ek_fingerprint[0] || strlen(ek_fingerprint) >= sizeof(ek_fingerprint_copy) ||
+        !attestation_id || !attestation_id[0] || strlen(attestation_id) >= sizeof(attestation_id_copy)) {
         PQclear(res); db_release(conn, 0);
         if (out_error_code) snprintf(out_error_code, 64, "P3_EK_INVALID");
         return -1;
     }
     snprintf(ek_pem_copy, sizeof(ek_pem_copy), "%s", ek_pem);
+    snprintf(ek_fingerprint_copy, sizeof(ek_fingerprint_copy), "%s", ek_fingerprint);
+    snprintf(attestation_id_copy, sizeof(attestation_id_copy), "%s", attestation_id);
     PQclear(res);
     db_release(conn, 0);
 
@@ -177,7 +183,7 @@ int key_release_wrap_session_key(const char *candidate_id,
         "{\"status\":\"WRAPPED\",\"algorithm\":\"rsa-oaep-sha256\","
         "\"device_id\":\"%s\",\"session_id\":\"%s\","
         "\"recipient_fingerprint\":\"%s\",\"wrapped_key\":\"%.*s\"}",
-        device_id, session_id, ek_fingerprint, base64_len, base64);
+        device_id, session_id, ek_fingerprint_copy, base64_len, base64);
     if (written > 0 && (size_t)written < envelope_len) {
         unsigned char envelope_digest[SHA256_DIGEST_LENGTH];
         unsigned int envelope_digest_len = 0;
@@ -208,8 +214,8 @@ int key_release_wrap_session_key(const char *candidate_id,
                     snprintf(base64_wrapped, sizeof(base64_wrapped),
                              "%.*s", base64_len, base64);
                     const char *tp[9] = {
-                        transport_id, attestation_id, session_id, candidate_id,
-                        device_id, ek_fingerprint,
+                        transport_id, attestation_id_copy, session_id, candidate_id,
+                        device_id, ek_fingerprint_copy,
                         envelope_digest_text, base64_wrapped, "wrapped"
                     };
                     int tl[9];

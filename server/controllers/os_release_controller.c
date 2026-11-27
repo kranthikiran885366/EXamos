@@ -859,9 +859,9 @@ void os_release_handle(int client_fd, const char *method, const char *path,
                               origin, extra_headers, extra_len);
                 return;
             }
-            if (strcmp(r_stat, "approved") != 0 || !trust_valid) {
+            if ((strcmp(r_stat, "approved") != 0 && strcmp(r_stat, "suspended") != 0) || !trust_valid) {
                 db_release(conn, 0);
-                os_send_error(client_fd, 409, "Only a trusted, approved release can be activated",
+                os_send_error(client_fd, 409, "Only a trusted, approved or suspended release can be activated",
                               origin, extra_headers, extra_len);
                 return;
             }

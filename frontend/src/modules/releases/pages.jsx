@@ -10,7 +10,7 @@ import { fmt, ago } from '../../core/ui/format';
 import {
   STEPS, EVIDENCE_KINDS, createRelease, verifyRelease, approveRelease,
   revokeRelease, recoverDevices, addReleaseEvidence, verifyReleaseEvidence,
-  rollbackRelease, rollout, rolloutStats, releaseReadiness, releaseStats, listReleases, listReleaseEvidence, listReleaseDevices,
+  rollbackRelease, rollout, pauseRollout, resumeRollout, rolloutStats, releaseReadiness, releaseStats, listReleases, listReleaseEvidence, listReleaseDevices,
   listReleaseDeployments,
 } from './service';
 
@@ -57,6 +57,8 @@ export function ReleasesPage() {
         { label: 'Verify signature', onClick: () => run(async () => (await verifyRelease(r)) ? `${r.version} has a backend-verified signature.` : Promise.reject(new Error('The backend has not verified a trusted signature for this release.'))) },
         ...(r.status === 'candidate' && can('release.approve') ? [{ label: 'Approve', onClick: () => setAction({ kind: 'approve', r }) }] : []),
         ...(['approved', 'rolling', 'stable', 'paused'].includes(r.status) && can('release.rollout') ? [{ label: 'Roll out', onClick: () => setAction({ kind: 'rollout', r }) }] : []),
+        ...(['rolling', 'stable'].includes(r.status) && can('release.rollout') ? [{ label: 'Pause', onClick: () => setAction({ kind: 'pause', r }) }] : []),
+        ...(r.status === 'paused' && can('release.rollout') ? [{ label: 'Resume', onClick: () => run(async () => { const m = await resumeRollout(user, r); await refresh(); return m; }) }] : []),
         ...(r.status !== 'revoked' && can('release.manage') ? [{ label: 'Revoke', danger: true, onClick: () => setAction({ kind: 'revoke', r }) }] : []),
       ]} />
     {create && <Modal title="Create release draft" desc="The backend stores an unsigned manifest draft. Canonical digest calculation, signing, verification, vulnerability scanning, and rollout dispatch are currently blocked." wide onClose={() => setCreate(false)} footer={<><button className="btn" onClick={() => setCreate(false)}>Cancel</button><button className="btn primary" form="release-form" disabled={busy}>Create draft</button></>}>
@@ -68,6 +70,7 @@ export function ReleasesPage() {
     {action?.kind === 'approve' && <ActionDialog title={`Request approval for ${action.r.version}`} desc="This submits a review request only. It does not approve or publish the release." confirmLabel="Submit request" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await approveRelease(user, action.r, reason); await refresh(); setAction(null); })} />}
     {action?.kind === 'revoke' && <ActionDialog title={`Revoke ${action.r.version}`} desc="Devices on this release will fail attestation until they are recovered or moved." danger confirmLabel="Revoke release" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await revokeRelease(user, action.r, reason); await refresh(); setAction(null); })} />}
     {action?.kind === 'rollout' && <ActionDialog title={`Create deployment plan for ${action.r.version}`} desc="This records a deployment group only; it does not assign devices, dispatch an update, or report progress." field={{ label: 'Configured target stage', options: STEPS.map((n) => ({ v: n, l: `${n}% target` })) }} requireReason={false} confirmLabel="Create plan" onClose={() => setAction(null)} onConfirm={(why, step) => run(async () => { await rollout(user, action.r, Number(step)); await refresh(); setAction(null); })} />}
+    {action?.kind === 'pause' && <ActionDialog title={`Pause rollout for ${action.r.version}`} desc="Suspends active rollout of this release to devices." confirmLabel="Pause rollout" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { const m = await pauseRollout(user, action.r, reason); await refresh(); setAction(null); return m; })} />}
   </Page>;
 }
 
@@ -114,6 +117,8 @@ export function ReleaseDetailPage() {
         <div className="row wrap mt">
           <button className="btn" onClick={() => run(async () => (await verifyRelease(r)) ? 'Backend signature verification confirmed.' : Promise.reject(new Error('No trusted backend signature verification is available for this release.')))}>Verify signature</button>
           {r.status === 'candidate' && can('release.approve') && <button className="btn primary" onClick={() => setAction({ kind: 'approve' })}>Approve</button>}
+          {['rolling', 'stable'].includes(r.status) && can('release.rollout') && <button className="btn" onClick={() => setAction({ kind: 'pause' })}>Pause</button>}
+          {r.status === 'paused' && can('release.rollout') && <button className="btn primary" onClick={() => run(async () => { const m = await resumeRollout(user, r); setReleases(await listReleases()); return m; })}>Resume</button>}
           {['rolling', 'paused', 'stable', 'approved'].includes(r.status) && can('release.rollout') && <button className="btn danger" onClick={() => setAction({ kind: 'rollback' })}>Roll back</button>}
           {r.status !== 'revoked' && can('release.manage') && <button className="btn danger" onClick={() => setAction({ kind: 'revoke' })}>Revoke</button>}
         </div>
@@ -135,6 +140,7 @@ export function ReleaseDetailPage() {
     {action?.kind === 'approve' && <ActionDialog title={`Request approval for ${r.version}`} desc="This submits a review request only; it does not approve or publish the release." confirmLabel="Submit request" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await approveRelease(user, r, reason); setAction(null); })} />}
     {action?.kind === 'revoke' && <ActionDialog title={`Revoke ${r.version}`} danger confirmLabel="Revoke" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await revokeRelease(user, r, reason); setAction(null); })} />}
     {action?.kind === 'rollback' && <ActionDialog title={`Request recovery from ${r.version}`} desc="This submits device recovery requests; it does not confirm that devices have rolled back. Each device must acknowledge and re-attest." danger confirmLabel="Submit recovery requests" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { await rollbackRelease(user, r, reason); setAction(null); })} />}
+    {action?.kind === 'pause' && <ActionDialog title={`Pause rollout for ${r.version}`} desc="Suspends active rollout of this release to devices." confirmLabel="Pause rollout" onClose={() => setAction(null)} onConfirm={(reason) => run(async () => { const m = await pauseRollout(user, r, reason); setReleases(await listReleases()); setAction(null); return m; })} />}
     {addEv && <Modal title={`Submit evidence · ${r.version}`} wide onClose={() => setAddEv(false)} footer={<><button className="btn" onClick={() => setAddEv(false)}>Cancel</button><button className="btn primary" form="rev-evidence">Submit evidence</button></>}>
       <form id="rev-evidence" className="formgrid" onSubmit={(e) => { e.preventDefault(); run(async () => { await addReleaseEvidence(user, { releaseId: r.id, ...f }); setEvidence(await listReleaseEvidence(r.id)); setAddEv(false); }); }}>
         <Field label="Title" required><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={120} /></Field>

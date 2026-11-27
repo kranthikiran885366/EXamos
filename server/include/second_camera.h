@@ -28,6 +28,10 @@ typedef struct {
     time_t             connected_at;
     time_t             expires_at;
     int                token_used;
+    char              *latest_frame_b64;
+    size_t             latest_frame_len;
+    time_t             last_frame_at;
+    unsigned long      frame_count;
 } second_camera_session_t;
 
 /* --- Lifecycle & Operations --- */
@@ -38,6 +42,14 @@ int  second_camera_create_pairing_token(const char *session_id, char *out_token,
 
 /* Validate and claim a pairing token when mobile browser connects */
 int  second_camera_validate_pairing(const char *session_id, const char *pairing_token);
+
+/* Store an uploaded JPEG frame (base64/data-URL) from a paired second camera */
+int  second_camera_store_frame(const char *session_id, const char *pairing_token, const char *frame_b64);
+
+/* Retrieve the latest uploaded frame and streaming metadata for a session */
+int  second_camera_get_latest_frame(const char *session_id, char *out_b64, size_t max_out,
+                                    time_t *out_ts, unsigned long *out_count,
+                                    second_cam_state_t *out_state);
 
 /* Update status when second camera stream disconnects */
 void second_camera_disconnect(const char *session_id);

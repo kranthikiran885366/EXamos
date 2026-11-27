@@ -5,6 +5,7 @@
 
 #include "session_controller.h"
 #include "../include/attestation_service.h"
+#include "../include/second_camera.h"
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -1007,9 +1008,20 @@ void session_handle(int client_fd, const char *method, const char *path,
                 origin, extra_headers, extra_len);
             return;
         }
-        ses_send_json(client_fd, 503,
-            "{\"status\":\"UNAVAILABLE\",\"error\":\"Second-camera pairing is not connected to durable pairing state.\"}",
-            origin, extra_headers, extra_len);
+        char pairing_token[QR_TOKEN_LEN + 1] = {0};
+        if (second_camera_create_pairing_token(cid, pairing_token, sizeof(pairing_token)) != 0) {
+            ses_send_json(client_fd, 503,
+                "{\"status\":\"UNAVAILABLE\",\"error\":\"Second-camera pairing could not be created\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        char resp[256];
+        snprintf(resp, sizeof(resp),
+                 "{\"status\":\"PAIRING_REQUESTED\",\"session_id\":\"%s\","
+                 "\"pairing_token\":\"%s\",\"expires_in_seconds\":300}",
+                 cid, pairing_token);
+        OPENSSL_cleanse(pairing_token, sizeof(pairing_token));
+        ses_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
         return;
     }
 
@@ -1024,10 +1036,113 @@ void session_handle(int client_fd, const char *method, const char *path,
                 origin, extra_headers, extra_len);
             return;
         }
-        ses_send_json(client_fd, 503,
-            "{\"status\":\"UNAVAILABLE\",\"error\":\"Second-camera pairing is not connected to durable pairing state.\"}",
-            origin, extra_headers, extra_len);
+        if (second_camera_validate_pairing(sess_id, tok) != 0) {
+            OPENSSL_cleanse(tok, sizeof(tok));
+            ses_send_json(client_fd, 403,
+                "{\"status\":\"REJECTED\",\"error\":\"Pairing token is invalid, expired, or already used\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
         OPENSSL_cleanse(tok, sizeof(tok));
+        char resp[192];
+        snprintf(resp, sizeof(resp), "{\"status\":\"PAIRED\",\"session_id\":\"%s\"}", sess_id);
+        ses_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* ---- Second camera frame upload (paired mobile) ---- */
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/second-camera/frame") == 0) {
+        char sess_id[64] = {0}, tok[128] = {0};
+        ctrl_json_string(body, "session_id", sess_id, sizeof(sess_id));
+        ctrl_json_string(body, "token", tok, sizeof(tok));
+        if (!sess_id[0] || !tok[0]) {
+            ses_send_json(client_fd, 400,
+                "{\"error\":\"session_id and token required\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        char *frame_b64 = malloc(262145);
+        if (!frame_b64) {
+            OPENSSL_cleanse(tok, sizeof(tok));
+            ses_send_json(client_fd, 503, "{\"error\":\"Out of memory\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        frame_b64[0] = '\0';
+        ctrl_json_string(body, "frame_base64", frame_b64, 262145);
+        int rc = second_camera_store_frame(sess_id, tok, frame_b64);
+        OPENSSL_cleanse(tok, sizeof(tok));
+        free(frame_b64);
+        if (rc != 0) {
+            ses_send_json(client_fd, 403,
+                "{\"error\":\"Invalid session, pairing token, or frame payload\"}",
+                origin, extra_headers, extra_len);
+            return;
+        }
+        char resp[192];
+        snprintf(resp, sizeof(resp), "{\"status\":\"STREAMING\",\"session_id\":\"%s\"}", sess_id);
+        ses_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* ---- Second camera latest frame (admin/proctor) ---- */
+    if (strcmp(method, "GET") == 0 && strncmp(path, "/api/v1/second-camera/latest-frame", 34) == 0) {
+        auth_session_t sess;
+        if (ctrl_authorize(auth_header, AUTH_PERM_READ, &sess) != 0) {
+            ses_send_json(client_fd, 401, "{\"error\":\"Admin credentials required\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        char sess_id[64] = {0};
+        const char *q = strchr(path, '?');
+        if (q) {
+            const char *p_s = strstr(q, "session_id=");
+            if (p_s) {
+                p_s += 11;
+                size_t i = 0;
+                while (*p_s && *p_s != '&' && i < sizeof(sess_id) - 1) sess_id[i++] = *p_s++;
+                sess_id[i] = '\0';
+            }
+        }
+        if (!sess_id[0]) {
+            ses_send_json(client_fd, 400, "{\"error\":\"session_id query parameter required\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        char *frame_b64 = malloc(262145);
+        char *resp = malloc(262656);
+        if (!frame_b64 || !resp) {
+            free(frame_b64);
+            free(resp);
+            ses_send_json(client_fd, 503, "{\"error\":\"Out of memory\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        time_t updated_at = 0;
+        unsigned long frame_count = 0;
+        second_cam_state_t st = SECOND_CAM_STATE_UNPAIRED;
+        int rc = second_camera_get_latest_frame(sess_id, frame_b64, 262145,
+                                                &updated_at, &frame_count, &st);
+        if (rc < 0) {
+            free(frame_b64);
+            free(resp);
+            ses_send_json(client_fd, 404, "{\"error\":\"No second-camera session found\"}",
+                          origin, extra_headers, extra_len);
+            return;
+        }
+        if (rc == 1) {
+            snprintf(resp, 262656,
+                     "{\"status\":\"WAITING\",\"session_id\":\"%s\",\"frame_count\":0,\"updated_at\":0}",
+                     sess_id);
+        } else {
+            snprintf(resp, 262656,
+                     "{\"status\":\"CONNECTED\",\"session_id\":\"%s\",\"frame_count\":%lu,"
+                     "\"updated_at\":%ld,\"frame_base64\":\"%s\"}",
+                     sess_id, frame_count, (long)updated_at, frame_b64);
+        }
+        free(frame_b64);
+        ses_send_json(client_fd, 200, resp, origin, extra_headers, extra_len);
+        free(resp);
         return;
     }
 

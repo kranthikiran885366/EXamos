@@ -241,6 +241,8 @@ export const ENDPOINTS = {
   // Second camera
   secondCameraRequest: '/api/v1/second-camera/request',
   secondCameraPair: '/api/v1/second-camera/pair',
+  secondCameraFrame: '/api/v1/second-camera/frame',
+  secondCameraLatestFrame: (sessionId) => `/api/v1/second-camera/latest-frame?session_id=${encodeURIComponent(sessionId)}`,
 
   // Consent
   consent: '/api/v1/consent',

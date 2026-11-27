@@ -77,9 +77,16 @@ export async function requestPolicyPublication(a, pid, reason) {
   return request;
 }
 
-export async function publishPolicy(a) {
-  need(a, 'policy.publish');
-  fail('Direct policy publication is disabled. Submit a policy-publish approval request instead.');
+export async function verifyPolicySignature(p) {
+  if (!p || p.status === 'draft') fail('Draft policies are not signed yet.');
+  if (p.signatureStatus !== 'verified' || !p.configDigest || !p.signature) {
+    return { ok: false, reason: 'Missing server cryptographic digest or signature.' };
+  }
+  return {
+    ok: true,
+    digest: p.configDigest,
+    algorithm: p.signatureAlgorithm || 'hmac-sha256',
+  };
 }
 export async function discardDraft(a, p) { need(a, 'policy.edit'); if (p.status !== 'draft') fail('Only drafts can be discarded.'); await put('policies', { ...p, status: 'discarded' }); await log(a, 'POLICY_DISCARDED', `${p.name} v${p.version}`); }
 

@@ -37,6 +37,9 @@ static int random_hex(char *out, size_t num_bytes) {
 
 void second_camera_init(void) {
     pthread_mutex_lock(&g_second_cam_lock);
+    for (int i = 0; i < g_second_cam_count; i++) {
+        free(g_second_cams[i].latest_frame_b64);
+    }
     memset(g_second_cams, 0, sizeof(g_second_cams));
     g_second_cam_count = 0;
     pthread_mutex_unlock(&g_second_cam_lock);
@@ -55,7 +58,13 @@ int second_camera_create_pairing_token(const char *session_id, char *out_token, 
         }
     }
 
-    if (!sc) {
+    if (sc) {
+        free(sc->latest_frame_b64);
+        sc->latest_frame_b64 = NULL;
+        sc->latest_frame_len = 0;
+        sc->last_frame_at = 0;
+        sc->frame_count = 0;
+    } else {
         if (g_second_cam_count >= MAX_SECOND_CAMERA_SESSIONS) {
             pthread_mutex_unlock(&g_second_cam_lock);
             return -1;
@@ -136,9 +145,78 @@ int second_camera_validate_pairing(const char *session_id, const char *pairing_t
     sc->connected_at = now;
 
     event_chain_append(session_id, "SECONDARY_ROOM_CAMERA", "SECOND_CAMERA_PAIRED",
-                       "{\"role\":\"room_desk_view\",\"status\":\"PAIRED_NO_MEDIA_TRANSPORT\"}",
+                       "{\"role\":\"room_desk_view\",\"status\":\"PAIRED_READY_FOR_STREAM\"}",
                        "second-camera-manager", "1.0.0", NULL);
 
+    pthread_mutex_unlock(&g_second_cam_lock);
+    return 0;
+}
+
+int second_camera_store_frame(const char *session_id, const char *pairing_token, const char *frame_b64) {
+    if (!session_id || !pairing_token || !frame_b64 || !frame_b64[0]) return -1;
+    size_t len = strlen(frame_b64);
+    if (len > 262144) return -1; /* 256 KB max per frame */
+
+    pthread_mutex_lock(&g_second_cam_lock);
+    second_camera_session_t *sc = NULL;
+    for (int i = 0; i < g_second_cam_count; i++) {
+        if (strcmp(g_second_cams[i].session_id, session_id) == 0) {
+            sc = &g_second_cams[i];
+            break;
+        }
+    }
+    if (!sc || (sc->state != SECOND_CAM_STATE_PAIRED && sc->state != SECOND_CAM_STATE_CONNECTED) ||
+        strcmp(sc->qr_pairing_token, pairing_token) != 0) {
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return -1;
+    }
+
+    char *copy = malloc(len + 1);
+    if (!copy) {
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return -1;
+    }
+    memcpy(copy, frame_b64, len + 1);
+    free(sc->latest_frame_b64);
+    sc->latest_frame_b64 = copy;
+    sc->latest_frame_len = len;
+    sc->last_frame_at = time(NULL);
+    sc->frame_count++;
+    sc->state = SECOND_CAM_STATE_CONNECTED;
+
+    pthread_mutex_unlock(&g_second_cam_lock);
+    return 0;
+}
+
+int second_camera_get_latest_frame(const char *session_id, char *out_b64, size_t max_out,
+                                   time_t *out_ts, unsigned long *out_count,
+                                   second_cam_state_t *out_state) {
+    if (!session_id) return -1;
+
+    pthread_mutex_lock(&g_second_cam_lock);
+    second_camera_session_t *sc = NULL;
+    for (int i = 0; i < g_second_cam_count; i++) {
+        if (strcmp(g_second_cams[i].session_id, session_id) == 0) {
+            sc = &g_second_cams[i];
+            break;
+        }
+    }
+    if (!sc) {
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return -1;
+    }
+    if (out_state) *out_state = sc->state;
+    if (out_ts) *out_ts = sc->last_frame_at;
+    if (out_count) *out_count = sc->frame_count;
+    if (!sc->latest_frame_b64 || !sc->latest_frame_b64[0]) {
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return 1; /* Session exists, waiting for first frame */
+    }
+    if (!out_b64 || sc->latest_frame_len + 1 > max_out) {
+        pthread_mutex_unlock(&g_second_cam_lock);
+        return -1;
+    }
+    memcpy(out_b64, sc->latest_frame_b64, sc->latest_frame_len + 1);
     pthread_mutex_unlock(&g_second_cam_lock);
     return 0;
 }
@@ -215,18 +293,54 @@ const char *second_camera_portal_html(const char *session_id, const char *token)
         "  <script>\n"
         "    const sessionId = '%s';\n"
         "    const token = '%s';\n"
+        "    let streamTimer = null;\n"
+        "    let frameCount = 0;\n"
         "    async function initStream() {\n"
+        "      const statusEl = document.getElementById('cameraStatus');\n"
+        "      const btnEl = document.getElementById('startBtn');\n"
         "      try {\n"
         "        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });\n"
-        "        document.getElementById('secondVideo').srcObject = stream;\n"
-        "        document.getElementById('cameraStatus').textContent = 'LOCAL PREVIEW ONLY — STREAMING UNAVAILABLE';\n"
-        "        await fetch('/api/v1/second-camera/pair', {\n"
+        "        const video = document.getElementById('secondVideo');\n"
+        "        video.srcObject = stream;\n"
+        "        statusEl.textContent = 'PAIRING CAMERA...';\n"
+        "        const pairRes = await fetch('/api/v1/second-camera/pair', {\n"
         "          method: 'POST',\n"
         "          headers: { 'Content-Type': 'application/json' },\n"
         "          body: JSON.stringify({ session_id: sessionId, token: token, status: 'CONNECTED' })\n"
         "        });\n"
+        "        if (!pairRes.ok) {\n"
+        "          const errData = await pairRes.json().catch(() => ({}));\n"
+        "          throw new Error(errData.error || 'Pairing rejected by server');\n"
+        "        }\n"
+        "        btnEl.disabled = true;\n"
+        "        btnEl.textContent = 'Streaming Active';\n"
+        "        statusEl.style.color = '#4ade80';\n"
+        "        statusEl.style.borderColor = '#4ade80';\n"
+        "        statusEl.textContent = 'LIVE STREAMING ACTIVE';\n"
+        "        const canvas = document.createElement('canvas');\n"
+        "        canvas.width = 480;\n"
+        "        canvas.height = 360;\n"
+        "        const ctx = canvas.getContext('2d');\n"
+        "        if (streamTimer) clearInterval(streamTimer);\n"
+        "        streamTimer = setInterval(async () => {\n"
+        "          if (video.readyState < 2) return;\n"
+        "          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);\n"
+        "          const frameB64 = canvas.toDataURL('image/jpeg', 0.65);\n"
+        "          try {\n"
+        "            const up = await fetch('/api/v1/second-camera/frame', {\n"
+        "              method: 'POST',\n"
+        "              headers: { 'Content-Type': 'application/json' },\n"
+        "              body: JSON.stringify({ session_id: sessionId, token: token, frame_base64: frameB64 })\n"
+        "            });\n"
+        "            if (up.ok) {\n"
+        "              frameCount++;\n"
+        "              statusEl.textContent = 'LIVE STREAMING · Frame #' + frameCount;\n"
+        "            }\n"
+        "          } catch (_) {}\n"
+        "        }, 1500);\n"
         "      } catch (err) {\n"
-        "        alert('Camera access denied: ' + err.message);\n"
+        "        statusEl.textContent = 'ERROR: ' + err.message;\n"
+        "        alert('Camera error: ' + err.message);\n"
         "      }\n"
         "    }\n"
         "  </script>\n"

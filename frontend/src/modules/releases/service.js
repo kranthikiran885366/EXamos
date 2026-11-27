@@ -209,14 +209,19 @@ export async function verifyReleaseEvidence(e) {
 /* ---------------- Rollout control ---------------- */
 export async function pauseRollout(a, r, reason) {
   need(a, 'release.rollout');
-  void r; void reason;
-  fail('Rollout groups do not yet support pause controls; release state was not changed.');
+  if (!['rolling', 'stable'].includes(r.status)) fail('Only an active or rolling release can be paused.');
+  const why = requireReason(reason, 8);
+  const res = await Api.suspendOsRelease(r.id);
+  if (res?.status !== 'suspended') fail('Backend did not confirm release suspension.');
+  return `Rollout paused for ${r.version} (${why}).`;
 }
 
 export async function resumeRollout(a, r) {
   need(a, 'release.rollout');
-  void r;
-  fail('Rollout groups do not yet support resume controls; release state was not changed.');
+  if (r.status !== 'paused') fail('Only a paused release can be resumed.');
+  const res = await Api.activateOsRelease(r.id, { rollback_permitted: r.rollback_permitted !== false });
+  if (res?.status !== 'active') fail('Backend did not confirm release reactivation.');
+  return `Rollout resumed for ${r.version}.`;
 }
 
 export async function rollbackRelease(a, r, reason) {

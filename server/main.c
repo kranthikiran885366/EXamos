@@ -2692,49 +2692,6 @@ static void* handle_client(void *arg) {
             send_http_response(client_fd, 400, "application/json", resp);
         }
     }
-    /* Route: POST /api/v1/second-camera/request -> Generate QR token */
-    else if (strcmp(route_path, "/api/v1/second-camera/request") == 0 && strcmp(method, "POST") == 0) {
-        char authenticated_candidate[64] = {0};
-        if (!candidate_authorized(auth_header, authenticated_candidate, sizeof(authenticated_candidate))) {
-            send_http_response(client_fd, 401, "application/json", "{\"error\":\"Valid candidate bearer token required\"}");
-            goto client_done;
-        }
-        /* The pairing token is bound to the authenticated candidate session
-           and is single-use with a short expiry. */
-        char pairing_token[QR_TOKEN_LEN + 1] = {0};
-        if (second_camera_create_pairing_token(authenticated_candidate, pairing_token,
-                                               sizeof(pairing_token)) != 0) {
-            send_http_response(client_fd, 503, "application/json",
-                "{\"status\":\"UNAVAILABLE\",\"error\":\"Second-camera pairing could not be created\"}");
-        } else {
-            char resp[256];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"PAIRING_REQUESTED\",\"session_id\":\"%s\","
-                     "\"pairing_token\":\"%s\",\"expires_in_seconds\":300}",
-                     authenticated_candidate, pairing_token);
-            OPENSSL_cleanse(pairing_token, sizeof(pairing_token));
-            send_http_response(client_fd, 201, "application/json", resp);
-        }
-    }
-    /* Route: POST /api/v1/second-camera/pair -> Validate QR pairing */
-    else if (strcmp(route_path, "/api/v1/second-camera/pair") == 0 && strcmp(method, "POST") == 0) {
-        char sess_id[64] = {0}, token[128] = {0};
-        parse_json_string(req_body, "session_id", sess_id, sizeof(sess_id));
-        parse_json_string(req_body, "token",     token,  sizeof(token));
-        if (!sess_id[0] || !token[0]) {
-            send_http_response(client_fd, 400, "application/json",
-                "{\"error\":\"session_id and token are required\"}");
-        } else if (second_camera_validate_pairing(sess_id, token) != 0) {
-            send_http_response(client_fd, 403, "application/json",
-                "{\"status\":\"REJECTED\",\"error\":\"Pairing token is invalid, expired, or already used\"}");
-        } else {
-            char resp[192];
-            snprintf(resp, sizeof(resp),
-                     "{\"status\":\"PAIRED\",\"session_id\":\"%s\"}", sess_id);
-            OPENSSL_cleanse(token, sizeof(token));
-            send_http_response(client_fd, 200, "application/json", resp);
-        }
-    }
     /* Route: GET /second-camera -> Mobile phone camera capture web page */
     else if (strncmp(route_path, "/second-camera", 14) == 0 && strcmp(method, "GET") == 0) {
         char sess_id[64] = {0}, token[128] = {0};
@@ -4877,8 +4834,9 @@ p5_score_done:
                 strcmp(route_path, "/api/v1/consent") == 0 ||
                 strncmp(route_path, "/api/v1/proctoring", 18) == 0 ||
                 strncmp(route_path, "/api/v1/second-camera", 21) == 0) {
-                session_handle(client_fd, method, route_path, req_body,
-                               auth_header, origin, extra, sizeof(extra));
+                session_handle(client_fd, method,
+                               strncmp(route_path, "/api/v1/second-camera", 21) == 0 ? path : route_path,
+                               req_body, auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 

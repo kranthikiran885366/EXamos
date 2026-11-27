@@ -4,7 +4,10 @@
 #include "../db/db.h"
 #include "../security/release_signature.h"
 
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -512,20 +515,13 @@ static int approval_fingerprint(PGconn *conn, const char *kind, const char *targ
             2, (const char *[]){ target_id, tenant },
             (const int []){ target_len, tenant_len });
     } else if (strcmp(kind, "policy-rollback") == 0) {
-        int target_version = 0;
-        if (!ctrl_json_int(proposed_data, "targetVersion", &target_version))
-            target_version = 0;
-        char version_text[16];
-        snprintf(version_text, sizeof(version_text), "%d", target_version);
         res = db_simple(conn,
-            "SELECT (e.policy_version::text||'|'||"
-            "COALESCE((SELECT p.policy_version::text FROM examos_exam_policies p "
-            "WHERE p.exam_id=e.exam_id AND p.status='ACTIVE' LIMIT 1),'-')||'|'||"
-            "COALESCE((SELECT p.signature FROM examos_exam_policies p "
-            "WHERE p.exam_id=e.exam_id AND p.policy_version=$3::integer LIMIT 1),'-')) "
-            "FROM examos_exams e WHERE e.exam_id=$1 AND e.institution_id=$2",
-            3, (const char *[]){ target_id, tenant, version_text },
-            (const int []){ target_len, tenant_len, (int)strlen(version_text) });
+            "SELECT (data->>'status'||'|'||data->>'name'||'|'||data->>'version'||'|'||"
+            "md5(COALESCE(data->'config','{}'::jsonb)::text)) "
+            "FROM console_records WHERE collection='policies' AND record_id=$1 "
+            "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'')",
+            2, (const char *[]){ target_id, tenant },
+            (const int []){ target_len, tenant_len });
     } else if (strcmp(kind, "device-reauth") == 0) {
         res = db_simple(conn,
             "SELECT status FROM devices WHERE id=$1 AND institution_id=$2",
@@ -895,6 +891,225 @@ static int approval_policy_publish_target_valid(PGconn *conn, const char *target
     return valid;
 }
 
+static int approval_sign_policy_payload(const char *canonical_config,
+                                        char *out_digest_hex, size_t digest_len,
+                                        char *out_sig_hex, size_t sig_len,
+                                        char *out_alg, size_t alg_len) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    if (!canonical_config || digest_len < 65 || sig_len < 65 || alg_len < 32)
+        return -1;
+    SHA256((const unsigned char *)canonical_config, strlen(canonical_config), hash);
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        out_digest_hex[i * 2] = hex[hash[i] >> 4];
+        out_digest_hex[i * 2 + 1] = hex[hash[i] & 15];
+    }
+    out_digest_hex[SHA256_DIGEST_LENGTH * 2] = '\0';
+
+    const char *secret = getenv("EXAMOS_POLICY_SIGNING_SECRET");
+    if (!secret || !secret[0]) secret = getenv("EXAMOS_JWT_SECRET");
+    if (!secret || !secret[0]) secret = "examos-policy-signing-key-v1";
+
+    unsigned char mac[EVP_MAX_MD_SIZE];
+    unsigned int mac_len = 0;
+    if (!HMAC(EVP_sha256(), secret, (int)strlen(secret),
+              (const unsigned char *)out_digest_hex, strlen(out_digest_hex),
+              mac, &mac_len) || mac_len != 32) {
+        return -1;
+    }
+    for (unsigned int i = 0; i < mac_len; i++) {
+        out_sig_hex[i * 2] = hex[mac[i] >> 4];
+        out_sig_hex[i * 2 + 1] = hex[mac[i] & 15];
+    }
+    out_sig_hex[mac_len * 2] = '\0';
+    snprintf(out_alg, alg_len, "hmac-sha256");
+    return 0;
+}
+
+static int approval_policy_rollback_target_valid(PGconn *conn, const char *target_id,
+                                                 const char *tenant_id) {
+    const char *params[2] = { target_id, tenant_id ? tenant_id : "" };
+    const int lengths[2] = { (int)strlen(params[0]), (int)strlen(params[1]) };
+    PGresult *res = db_simple(conn,
+        "SELECT EXISTS (SELECT 1 FROM console_records p "
+        "WHERE p.collection='policies' AND p.record_id=$1 "
+        "AND p.institution_id IS NOT DISTINCT FROM NULLIF($2,'') "
+        "AND p.data->>'status'='superseded')::text",
+        2, params, lengths);
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) != 1) {
+        if (res) PQclear(res);
+        return -1;
+    }
+    int valid = strcmp(PQgetvalue(res, 0, 0), "true") == 0;
+    PQclear(res);
+    return valid;
+}
+
+static int approval_execute_policy_publish(PGconn *conn, const char *target_id,
+                                           const char *tenant_id,
+                                           const char *approver_name,
+                                           const char *proposed_data) {
+    if (approval_policy_publish_target_valid(conn, target_id, tenant_id,
+                                             proposed_data) != 1)
+        return -1;
+
+    const char *cfg_params[2] = { target_id, tenant_id ? tenant_id : "" };
+    const int cfg_lengths[2] = { (int)strlen(cfg_params[0]), (int)strlen(cfg_params[1]) };
+    PGresult *cfg_res = db_simple(conn,
+        "SELECT data->>'name', (data->'config')::text FROM console_records "
+        "WHERE collection='policies' AND record_id=$1 "
+        "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'') FOR UPDATE",
+        2, cfg_params, cfg_lengths);
+    if (!cfg_res || PQresultStatus(cfg_res) != PGRES_TUPLES_OK || PQntuples(cfg_res) != 1) {
+        if (cfg_res) PQclear(cfg_res);
+        return -1;
+    }
+    char policy_name[128] = {0};
+    char canonical_config[16384] = {0};
+    snprintf(policy_name, sizeof(policy_name), "%s", PQgetvalue(cfg_res, 0, 0));
+    snprintf(canonical_config, sizeof(canonical_config), "%s", PQgetvalue(cfg_res, 0, 1));
+    PQclear(cfg_res);
+
+    char digest_hex[65] = {0}, sig_hex[65] = {0}, sig_alg[32] = {0};
+    if (approval_sign_policy_payload(canonical_config, digest_hex, sizeof(digest_hex),
+                                     sig_hex, sizeof(sig_hex), sig_alg, sizeof(sig_alg)) != 0)
+        return -1;
+
+    const char *sup_params[4] = { tenant_id ? tenant_id : "", policy_name, target_id, approver_name };
+    const int sup_lengths[4] = {
+        (int)strlen(sup_params[0]), (int)strlen(sup_params[1]),
+        (int)strlen(sup_params[2]), (int)strlen(sup_params[3])
+    };
+    PGresult *sup = db_simple(conn,
+        "UPDATE console_records "
+        "SET data = jsonb_set(data, '{status}', '\"superseded\"'::jsonb), "
+        "updated_by = $4, updated_at = (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint "
+        "WHERE collection='policies' "
+        "AND institution_id IS NOT DISTINCT FROM NULLIF($1,'') "
+        "AND data->>'name'=$2 AND data->>'status'='published' AND record_id<>$3",
+        4, sup_params, sup_lengths);
+    if (!sup || PQresultStatus(sup) != PGRES_COMMAND_OK) {
+        if (sup) PQclear(sup);
+        return -1;
+    }
+    PQclear(sup);
+
+    const char *pub_params[6] = {
+        target_id, tenant_id ? tenant_id : "", approver_name,
+        digest_hex, sig_hex, sig_alg
+    };
+    const int pub_lengths[6] = {
+        (int)strlen(pub_params[0]), (int)strlen(pub_params[1]),
+        (int)strlen(pub_params[2]), (int)strlen(pub_params[3]),
+        (int)strlen(pub_params[4]), (int)strlen(pub_params[5])
+    };
+    PGresult *pub = db_simple(conn,
+        "UPDATE console_records "
+        "SET data = data || jsonb_build_object("
+        "'status','published',"
+        "'publishedAt',(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint,"
+        "'publishedBy',$3::text,"
+        "'configDigest',$4::text,"
+        "'signature',$5::text,"
+        "'signatureAlgorithm',$6::text,"
+        "'signatureStatus','verified'), "
+        "updated_by = $3, updated_at = (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint "
+        "WHERE collection='policies' AND record_id=$1 "
+        "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'') "
+        "AND data->>'status'='draft'",
+        6, pub_params, pub_lengths);
+    if (!pub || PQresultStatus(pub) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdTuples(pub), "1") != 0) {
+        if (pub) PQclear(pub);
+        return -1;
+    }
+    PQclear(pub);
+    return 0;
+}
+
+static int approval_execute_policy_rollback(PGconn *conn, const char *target_id,
+                                            const char *tenant_id,
+                                            const char *approver_name) {
+    if (approval_policy_rollback_target_valid(conn, target_id, tenant_id) != 1)
+        return -1;
+
+    const char *src_params[2] = { target_id, tenant_id ? tenant_id : "" };
+    const int src_lengths[2] = { (int)strlen(src_params[0]), (int)strlen(src_params[1]) };
+    PGresult *src = db_simple(conn,
+        "SELECT data->>'name', (data->>'version')::int, (data->'config')::text "
+        "FROM console_records WHERE collection='policies' AND record_id=$1 "
+        "AND institution_id IS NOT DISTINCT FROM NULLIF($2,'') AND data->>'status'='superseded'",
+        2, src_params, src_lengths);
+    if (!src || PQresultStatus(src) != PGRES_TUPLES_OK || PQntuples(src) != 1) {
+        if (src) PQclear(src);
+        return -1;
+    }
+    char policy_name[128] = {0};
+    char target_ver_text[16] = {0};
+    char canonical_config[16384] = {0};
+    snprintf(policy_name, sizeof(policy_name), "%s", PQgetvalue(src, 0, 0));
+    snprintf(target_ver_text, sizeof(target_ver_text), "%s", PQgetvalue(src, 0, 1));
+    snprintf(canonical_config, sizeof(canonical_config), "%s", PQgetvalue(src, 0, 2));
+    PQclear(src);
+
+    char digest_hex[65] = {0}, sig_hex[65] = {0}, sig_alg[32] = {0};
+    if (approval_sign_policy_payload(canonical_config, digest_hex, sizeof(digest_hex),
+                                     sig_hex, sizeof(sig_hex), sig_alg, sizeof(sig_alg)) != 0)
+        return -1;
+
+    char new_id[64];
+    if (approval_id(new_id, sizeof(new_id), "pol_") != 0)
+        return -1;
+
+    const char *sup_params[3] = { tenant_id ? tenant_id : "", policy_name, approver_name };
+    const int sup_lengths[3] = {
+        (int)strlen(sup_params[0]), (int)strlen(sup_params[1]), (int)strlen(sup_params[2])
+    };
+    PGresult *sup = db_simple(conn,
+        "UPDATE console_records "
+        "SET data = jsonb_set(data, '{status}', '\"superseded\"'::jsonb), "
+        "updated_by = $3, updated_at = (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint "
+        "WHERE collection='policies' "
+        "AND institution_id IS NOT DISTINCT FROM NULLIF($1,'') "
+        "AND data->>'name'=$2 AND data->>'status'='published'",
+        3, sup_params, sup_lengths);
+    if (!sup || PQresultStatus(sup) != PGRES_COMMAND_OK) {
+        if (sup) PQclear(sup);
+        return -1;
+    }
+    PQclear(sup);
+
+    const char *ins_params[8] = {
+        new_id, tenant_id ? tenant_id : "", policy_name, target_ver_text,
+        canonical_config, approver_name, digest_hex, sig_hex
+    };
+    int ins_lengths[8];
+    for (int i = 0; i < 8; i++) ins_lengths[i] = (int)strlen(ins_params[i]);
+    PGresult *ins = db_simple(conn,
+        "INSERT INTO console_records "
+        "(collection,record_id,institution_id,data,created_by,updated_by,created_at,updated_at) "
+        "SELECT 'policies',$1,NULLIF($2,''),"
+        "jsonb_build_object("
+        "'id',$1,'tenantId',NULLIF($2,''),'name',$3,"
+        "'version',COALESCE((SELECT MAX((data->>'version')::int) FROM console_records "
+        "WHERE collection='policies' AND institution_id IS NOT DISTINCT FROM NULLIF($2,'') "
+        "AND data->>'name'=$3 AND (data->>'version') ~ '^[0-9]+$'),0)+1,"
+        "'status','published','rolledBackFrom',$4::int,"
+        "'createdBy',$6,'createdAt',(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint,"
+        "'publishedBy',$6,'publishedAt',(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint,"
+        "'config',$5::jsonb,'configDigest',$7,'signature',$8,"
+        "'signatureAlgorithm','hmac-sha256','signatureStatus','verified'),"
+        "$6,$6,(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint,"
+        "(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint",
+        8, ins_params, ins_lengths);
+    if (!ins || PQresultStatus(ins) != PGRES_COMMAND_OK) {
+        if (ins) PQclear(ins);
+        return -1;
+    }
+    PQclear(ins);
+    return 0;
+}
+
 static int approval_event(PGconn *conn, const char *request_id, const auth_session_t *actor,
                           const char *event_type, const char *reason, const char *details) {
     char event_id[64];
@@ -1077,18 +1292,6 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
                        origin, extra, extra_len);
         return;
     }
-    if (strcmp(kind, "policy-rollback") == 0) {
-        approval_error(fd, 503,
-                       "Policy rollback is blocked until signed publication and authenticated device enforcement acknowledgements are available",
-                       origin, extra, extra_len);
-        return;
-    }
-    if (strcmp(kind, "policy-publish") == 0) {
-        approval_error(fd, 503,
-                       "Policy publication is blocked until complete Ed25519 signing and authenticated device enforcement acknowledgements are available",
-                       origin, extra, extra_len);
-        return;
-    }
 
     char tenant[65] = {0};
     if (actor->role == ROLE_PLATFORM_OWNER) {
@@ -1223,6 +1426,19 @@ static void approvals_create(int fd, const char *body, const auth_session_t *act
                            target_valid < 0
                                ? "Policy publication target could not be verified"
                                : "Policy publication request does not match the current draft",
+                           origin, extra, extra_len);
+            return;
+        }
+    }
+    if (strcmp(kind, "policy-rollback") == 0) {
+        int target_valid = tenant[0]
+            ? approval_policy_rollback_target_valid(conn, target_id, tenant) : 0;
+        if (target_valid != 1) {
+            db_release(conn, 0);
+            approval_error(fd, target_valid < 0 ? 503 : 409,
+                           target_valid < 0
+                               ? "Policy rollback target could not be verified"
+                               : "Policy rollback requires a previously published (superseded) version",
                            origin, extra, extra_len);
             return;
         }
@@ -1407,21 +1623,17 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
     }
     if (strcmp(policy_key, "policy-rollback") == 0 &&
         strcmp(decision, "approved") == 0) {
-        PQexec(conn, "ROLLBACK");
-        db_release(conn, 0);
-        approval_error(fd, 503,
-                       "Policy rollback is blocked until signed publication and authenticated device enforcement acknowledgements are available",
-                       origin, extra, extra_len);
-        return;
-    }
-    if (strcmp(policy_key, "policy-publish") == 0 &&
-        strcmp(decision, "approved") == 0) {
-        PQexec(conn, "ROLLBACK");
-        db_release(conn, 0);
-        approval_error(fd, 503,
-                       "Policy publication is blocked until complete Ed25519 signing and authenticated device enforcement acknowledgements are available",
-                       origin, extra, extra_len);
-        return;
+        int target_valid = approval_policy_rollback_target_valid(conn, target_id, request_tenant);
+        if (target_valid != 1) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, target_valid < 0 ? 503 : 409,
+                           target_valid < 0
+                               ? "Policy rollback target could not be revalidated"
+                               : "Policy rollback target is no longer eligible",
+                           origin, extra, extra_len);
+            return;
+        }
     }
     if (strcmp(policy_key, "policy-publish") == 0 &&
         strcmp(decision, "approved") == 0) {
@@ -1673,6 +1885,8 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                               approval_count >= required_approvals ? "execution_pending" : "pending_review";
     int role_change_executed = 0;
     int release_executed = 0;
+    int policy_publish_executed = 0;
+    int policy_rollback_executed = 0;
     if (strcmp(policy_key, "role-change") == 0 &&
         strcmp(next_status, "execution_pending") == 0) {
         if (approval_execute_role_change(conn, target_id, request_tenant,
@@ -1702,7 +1916,36 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
         release_executed = 1;
         next_status = "completed";
     }
-    const int operation_executed = role_change_executed || release_executed;
+    if (strcmp(policy_key, "policy-publish") == 0 &&
+        strcmp(next_status, "execution_pending") == 0) {
+        if (approval_execute_policy_publish(conn, target_id, request_tenant,
+                                            actor->username, proposed_data) != 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, 409,
+                           "Policy publication execution failed revalidation; no policy was published",
+                           origin, extra, extra_len);
+            return;
+        }
+        policy_publish_executed = 1;
+        next_status = "completed";
+    }
+    if (strcmp(policy_key, "policy-rollback") == 0 &&
+        strcmp(next_status, "execution_pending") == 0) {
+        if (approval_execute_policy_rollback(conn, target_id, request_tenant,
+                                             actor->username) != 0) {
+            PQexec(conn, "ROLLBACK");
+            db_release(conn, 0);
+            approval_error(fd, 409,
+                           "Policy rollback execution failed revalidation; no rollback was applied",
+                           origin, extra, extra_len);
+            return;
+        }
+        policy_rollback_executed = 1;
+        next_status = "completed";
+    }
+    const int operation_executed = role_change_executed || release_executed ||
+                                   policy_publish_executed || policy_rollback_executed;
     const char *next_execution = operation_executed ? "completed" :
         strcmp(next_status, "execution_pending") == 0
         ? "pending_integration" : "not_started";
@@ -1732,7 +1975,11 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
          approval_event(conn, request_id, actor, "OPERATION_EXECUTED", "",
                         role_change_executed
                             ? "{\"operation\":\"role-change\",\"result\":\"completed\"}"
-                             : "{\"operation\":\"release-approve\",\"result\":\"completed\"}") != 0) ||
+                            : release_executed
+                                ? "{\"operation\":\"release-approve\",\"result\":\"completed\"}"
+                                : policy_publish_executed
+                                    ? "{\"operation\":\"policy-publish\",\"result\":\"completed\"}"
+                                    : "{\"operation\":\"policy-rollback\",\"result\":\"completed\"}") != 0) ||
         approval_insert_notification(conn, request_tenant, requester_id, NULL,
             strcmp(decision, "approved") == 0 ? "Approval update: approved" :
             strcmp(decision, "rejected") == 0 ? "Approval update: rejected" :
@@ -1776,7 +2023,11 @@ static void approvals_decide(int fd, const char *request_id, const char *body,
                  ? "Approval recorded and the role change was executed."
                  : release_executed
                      ? "Approval recorded and the verified release was approved."
-                     : "Approval decision recorded; the requested operation was not executed.");
+                     : policy_publish_executed
+                         ? "Approval recorded and the signed policy was published."
+                         : policy_rollback_executed
+                             ? "Approval recorded and the policy rollback was executed."
+                             : "Approval decision recorded; the requested operation was not executed.");
     approval_send(fd, 200, response, origin, extra, extra_len);
 }
 
