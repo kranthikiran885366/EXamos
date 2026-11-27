@@ -11,6 +11,7 @@ SRCS = main.c \
        attestation/attestation_client.c \
        attestation/ima_keylime.c \
        device-state/hardware_guard.c \
+       device-state/anti_vm.c \
        heartbeat/heartbeat.c \
        environment/rf_scanner.c
 

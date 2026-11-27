@@ -18,6 +18,7 @@ typedef struct {
     int camera_available;   /* a V4L2 capture device was opened and queried */
     int camera_count;       /* number of usable capture devices found */
     int network_state;      /* see network_state_t */
+    int vm_detected;        /* CPUID / ACPI-DMI / RDTSC hypervisor check */
 } hardware_state_t;
 
 /* Network reachability as measured on the device itself. */

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "../include/hardware_guard.h"
+#include "../include/anti_vm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -305,9 +306,15 @@ int hardware_guard_scan(hardware_state_t *state) {
 
     state->network_state = (int)hardware_guard_detect_network();
 
+    examos_anti_vm_report_t vm_report;
+    if (examos_anti_vm_check(&vm_report) == 1) {
+        state->vm_detected = 1;
+    }
+
     state->unauthorized_device_flag = (state->external_display_detected ||
                                        state->usb_storage_detected ||
-                                       state->process_violation_detected);
+                                       state->process_violation_detected ||
+                                       state->vm_detected);
 
     return 0;
 }
@@ -326,6 +333,7 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              "\"camera_available\":%s,"
              "\"camera_count\":%d,"
              "\"network_state\":\"%s\","
+             "\"vm_detected\":%s,"
              "\"unauthorized_hardware\":%s"
              "}",
              state->display_count,
@@ -337,6 +345,7 @@ int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, siz
              state->camera_available ? "true" : "false",
              state->camera_count,
              hardware_guard_network_state_name((device_network_state_t)state->network_state),
+             state->vm_detected ? "true" : "false",
              state->unauthorized_device_flag ? "true" : "false");
 
     return 0;

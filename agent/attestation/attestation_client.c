@@ -333,6 +333,16 @@ static int post_json(const char *url, const char *body,
     if (rc == CURLE_OK) rc = curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     if (rc == CURLE_OK) rc = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     if (rc == CURLE_OK) rc = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    const char *mtls_cert = getenv("EXAMOS_MTLS_CLIENT_CERT");
+    const char *mtls_key  = getenv("EXAMOS_MTLS_CLIENT_KEY");
+    const char *mtls_ca   = getenv("EXAMOS_MTLS_CA_CERT");
+    if (rc == CURLE_OK && mtls_ca && mtls_ca[0]) {
+        rc = curl_easy_setopt(curl, CURLOPT_CAINFO, mtls_ca);
+    }
+    if (rc == CURLE_OK && mtls_cert && mtls_cert[0] && mtls_key && mtls_key[0]) {
+        rc = curl_easy_setopt(curl, CURLOPT_SSLCERT, mtls_cert);
+        if (rc == CURLE_OK) rc = curl_easy_setopt(curl, CURLOPT_SSLKEY, mtls_key);
+    }
     if (rc == CURLE_OK) rc = curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     if (rc == CURLE_OK) rc = curl_easy_perform(curl);
     long status = 0;

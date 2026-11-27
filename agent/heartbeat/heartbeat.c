@@ -130,6 +130,18 @@ int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    const char *mtls_cert = getenv("EXAMOS_MTLS_CLIENT_CERT");
+    const char *mtls_key  = getenv("EXAMOS_MTLS_CLIENT_KEY");
+    const char *mtls_ca   = getenv("EXAMOS_MTLS_CA_CERT");
+    if (options_status == CURLE_OK && mtls_ca && mtls_ca[0]) {
+        options_status = curl_easy_setopt(curl, CURLOPT_CAINFO, mtls_ca);
+    }
+    if (options_status == CURLE_OK && mtls_cert && mtls_cert[0] && mtls_key && mtls_key[0]) {
+        options_status = curl_easy_setopt(curl, CURLOPT_SSLCERT, mtls_cert);
+        if (options_status == CURLE_OK) {
+            options_status = curl_easy_setopt(curl, CURLOPT_SSLKEY, mtls_key);
+        }
+    }
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     if (options_status == CURLE_OK) options_status = curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 

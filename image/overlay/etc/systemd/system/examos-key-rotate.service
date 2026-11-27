@@ -1,0 +1,12 @@
+[Unit]
+Description=ExamOS Scheduled KEK & Ledger HMAC Key Rotation
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/examos-rotate-keys.sh
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes

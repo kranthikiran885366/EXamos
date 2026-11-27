@@ -13,6 +13,72 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <strings.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+static void inst_peer_ip(int client_fd, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    snprintf(out, out_len, "unknown");
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getpeername(client_fd, (struct sockaddr *)&addr, &len) != 0) return;
+    if (addr.ss_family == AF_INET) {
+        const struct sockaddr_in *s4 = (const struct sockaddr_in *)&addr;
+        inet_ntop(AF_INET, &s4->sin_addr, out, (socklen_t)out_len);
+    } else if (addr.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)&addr;
+        inet_ntop(AF_INET6, &s6->sin6_addr, out, (socklen_t)out_len);
+    }
+}
+
+static int inst_track_check_lockout(PGconn *conn, const char *ip, time_t now,
+                                    char *err_buf, size_t err_len) {
+    char key[128];
+    snprintf(key, sizeof(key), "apply_track:%s", ip && ip[0] ? ip : "unknown");
+    const char *pvals[1] = { key };
+    int plens[1] = { (int)strlen(key) };
+    PGresult *res = db_simple(conn,
+        "SELECT failed_attempts, locked_until FROM examos_admin_login_throttle WHERE throttle_key = $1",
+        1, pvals, plens);
+    if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+        if (res) PQclear(res);
+        return 0;
+    }
+    if (PQntuples(res) == 0) {
+        PQclear(res);
+        return 0;
+    }
+    long long locked_until = strtoll(PQgetvalue(res, 0, 1), NULL, 10);
+    PQclear(res);
+    if (locked_until > (long long)now) {
+        long long remaining = locked_until - (long long)now;
+        snprintf(err_buf, err_len,
+                 "Too many lookup attempts. Retry in %lld seconds.", remaining);
+        return 1;
+    }
+    return 0;
+}
+
+static void inst_track_record_miss(PGconn *conn, const char *ip, time_t now) {
+    char key[128];
+    snprintf(key, sizeof(key), "apply_track:%s", ip && ip[0] ? ip : "unknown");
+    char now_str[32];
+    snprintf(now_str, sizeof(now_str), "%lld", (long long)now);
+    const char *pvals[2] = { key, now_str };
+    int plens[2] = { (int)strlen(key), (int)strlen(now_str) };
+    PGresult *res = db_simple(conn,
+        "INSERT INTO examos_admin_login_throttle (throttle_key, failed_attempts, locked_until, updated_at) "
+        "VALUES ($1, 1, 0, $2::BIGINT) "
+        "ON CONFLICT (throttle_key) DO UPDATE SET "
+        "  failed_attempts = examos_admin_login_throttle.failed_attempts + 1, "
+        "  locked_until = CASE "
+        "    WHEN examos_admin_login_throttle.failed_attempts + 1 >= 5 "
+        "    THEN $2::BIGINT + LEAST(3600, 30 * (1 << LEAST(7, examos_admin_login_throttle.failed_attempts + 1 - 5))) "
+        "    ELSE 0 END, "
+        "  updated_at = $2::BIGINT",
+        2, pvals, plens);
+    if (res) PQclear(res);
+}
 
 static void inst_generate_id(const char *prefix, char *out, size_t out_len) {
     unsigned char rnd[6];
@@ -414,6 +480,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
      * 0. Public Architecture Briefing Requests: POST /api/v1/public/briefings
      * ------------------------------------------------------------------------- */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/public/briefings") == 0) {
+        char peer_ip[64] = {0};
+        inst_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        if (!security_rate_check(peer_ip)) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 429, "Rate limit exceeded. Please wait before submitting another briefing request.",
+                            origin, extra_headers, extra_len);
+            return;
+        }
         char full_name[160] = {0}, email[160] = {0}, organization[200] = {0};
         char fleet_size[64] = {0}, message[2048] = {0};
 
@@ -521,6 +595,14 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
     /* 0a. Public Application Submission: POST /api/v1/institutions/apply */
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/institutions/apply") == 0) {
+        char peer_ip[64] = {0};
+        inst_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        if (!security_rate_check(peer_ip)) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 429, "Rate limit exceeded. Please wait before submitting another application.",
+                            origin, extra_headers, extra_len);
+            return;
+        }
         char legal_name[160] = {0}, display_name[160] = {0}, entity_type[40] = {0};
         char reg_num[60] = {0}, country[60] = {0}, state[60] = {0}, address[512] = {0};
         char domain[120] = {0}, rep_name[120] = {0}, rep_role[60] = {0};
@@ -865,6 +947,18 @@ void institution_handle(int client_fd, const char *method, const char *path,
 
     /* 0b. Public Application Status Check: GET /api/v1/institutions/apply/:id */
     if (strncmp(path, "/api/v1/institutions/apply/", 27) == 0 && strcmp(method, "GET") == 0) {
+        char peer_ip[64] = {0};
+        inst_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        char lock_err[160] = {0};
+        time_t now = time(NULL);
+        if (!security_rate_check(peer_ip) ||
+            inst_track_check_lockout(conn, peer_ip, now, lock_err, sizeof(lock_err))) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 429,
+                            lock_err[0] ? lock_err : "Rate limit exceeded for application status lookups.",
+                            origin, extra_headers, extra_len);
+            return;
+        }
         char app_id[64] = {0}, act[32] = {0};
         extract_sub_id_and_action(path, "/api/v1/institutions/apply/", app_id, sizeof(app_id), act, sizeof(act));
         if (app_id[0]) {
@@ -919,6 +1013,7 @@ void institution_handle(int client_fd, const char *method, const char *path,
                 return;
             }
             if (res) PQclear(res);
+            inst_track_record_miss(conn, peer_ip, now);
             db_release(conn, 0);
             inst_send_error(client_fd, 404, "Application reference not found", origin, extra_headers, extra_len);
             return;
