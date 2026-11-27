@@ -5001,17 +5001,23 @@ int main(int argc, char *argv[]) {
      * verified, dm-verity sealed image.
      */
     {
+        const char *tls_term = getenv("EXAMOS_TLS_TERMINATED");
+        int cloud_control_plane = (tls_term && (strcmp(tls_term, "1") == 0 || strcmp(tls_term, "true") == 0));
         char appliance_reason[256] = {0};
         if (examos_appliance_verify(appliance_reason, sizeof(appliance_reason)) != 0) {
-            if (production_mode) {
+            if (production_mode && !cloud_control_plane) {
                 fprintf(stderr,
                         "[ExamOS-Server] FATAL: %s. This server only runs on an ExamOS appliance.\n",
                         appliance_reason);
                 return 2;
             }
             fprintf(stderr,
-                    "[ExamOS-Server] WARNING: %s. Development mode continues without the appliance posture.\n",
-                    appliance_reason);
+                    "[ExamOS-Server] %s: %s. %s.\n",
+                    cloud_control_plane ? "INFO" : "WARNING",
+                    appliance_reason,
+                    cloud_control_plane
+                        ? "Cloud control-plane posture (EXAMOS_TLS_TERMINATED=1) active"
+                        : "Development mode continues without the appliance posture");
         }
     }
 
