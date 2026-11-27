@@ -5,6 +5,7 @@ LDFLAGS ?= -lssl -lcrypto -lcurl -lpthread
 SRCS = main.c \
        attestation/tpm_attestation.c \
        attestation/attestation_client.c \
+       attestation/ima_keylime.c \
        device-state/hardware_guard.c \
        heartbeat/heartbeat.c \
        environment/rf_scanner.c

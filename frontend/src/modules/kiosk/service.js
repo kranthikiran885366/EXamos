@@ -10,25 +10,27 @@ import * as Api from '../../core/api/services';
  * Fetch real-time status of the ExamOS Kiosk Gateway.
  */
 export async function getLiveKioskStatus() {
-  const names = ['server status', 'server health', 'terminals', 'device fleet', 'kiosk registry'];
+  const names = ['server status', 'server health', 'terminals', 'device fleet', 'kiosk registry', 'security assurance'];
   const results = await Promise.allSettled([
     Api.status(),
     Api.health(),
     Api.getTerminals(),
     Api.listFleet(),
     Api.getKiosks(),
+    Api.getSecurityAssurancePosture(),
   ]);
   const values = results.map((result) => result.status === 'fulfilled' ? result.value : null);
   const errors = results.flatMap((result, index) => result.status === 'rejected'
     ? [`${names[index]}: ${result.reason?.message || 'request failed'}`]
     : []);
-  const [status, health, terminals, fleet, kiosks] = values;
+  const [status, health, terminals, fleet, kiosks, assurance] = values;
   return {
     status,
     health,
     terminals,
     fleet,
     kiosks: kiosks?.terminals || null,
+    assurance,
     timestamp: Date.now(),
     connected: health?.status === 'ok',
     errors,

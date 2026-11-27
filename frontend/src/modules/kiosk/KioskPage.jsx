@@ -549,16 +549,24 @@ export default function KioskPage() {
             desc="Layered kernel, firmware, post-quantum cryptography, and Common Criteria controls"
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {[
-                { name: 'Boot & Filesystem (dm-verity + A/B)', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'Immutable SquashFS + cryptographic block verification + atomic A/B rollback' },
-                { name: 'Remote Attestation (Keylime TPM 2.0 + IMA)', state: devices.length === 0 ? 'NOT ENROLLED' : attestedCount === devices.length ? 'VERIFIED' : 'UNVERIFIED', desc: 'Hardware TPM 2.0 quotes + Linux IMA SHA-256 PCR-10 runtime replay' },
-                { name: 'Kernel Runtime (eBPF / BPF-LSM)', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'In-kernel process, ptrace, and egress socket zero-trust enforcement' },
-                { name: 'Post-Quantum Crypto (ML-KEM & ML-DSA)', state: 'FIPS 203 / 204', desc: 'ML-KEM-768 key encapsulation + ML-DSA-65 signed updates & air-gap bundles' },
-                { name: 'Rust Services + Behavioral AI', state: devices.length === 0 ? 'NOT ENROLLED' : 'ACTIVE', desc: 'Memory-safe sppio-securityd + offline BadUSB & Wayland overlay ML' },
-                { name: 'Separation Kernel & PFR (seL4 / SP 800-193)', state: 'DEFINED', desc: 'CAmkES domain isolation + SPI/UEFI firmware protect, detect, recover' },
-                { name: 'MLS, DMA & RAM Zeroization', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'SELinux MLS + strict IOMMU/Thunderbolt lock + tamper RAM key scrub' },
-                { name: 'Common Criteria (STQC IC3S EAL4)', state: 'ST READY', desc: 'ISO/IEC 15408 EAL4 Security Target & Air-Gapped PKCS#11 operation' },
-              ].map((layer) => (
+              {(() => {
+                const a = liveData.assurance;
+                const countBadge = (okCount) => {
+                  if (devices.length === 0) return 'NOT ENROLLED';
+                  if (!a) return 'UNAVAILABLE';
+                  return okCount === devices.length ? 'VERIFIED' : `${okCount}/${devices.length} VERIFIED`;
+                };
+                return [
+                  { name: 'Boot & Filesystem (dm-verity + A/B)', state: countBadge(a?.dm_verity_ab_verified ?? 0), desc: 'Immutable SquashFS + cryptographic block verification + atomic A/B rollback' },
+                  { name: 'Remote Attestation (Keylime TPM 2.0 + IMA)', state: countBadge(a?.keylime_ima_verified ?? 0), desc: 'Hardware TPM 2.0 quotes + Linux IMA SHA-256 PCR-10 runtime replay' },
+                  { name: 'Kernel Runtime (eBPF / BPF-LSM)', state: countBadge(a?.bpf_lsm_enforced ?? 0), desc: 'In-kernel process, file, ptrace, and egress socket zero-trust enforcement' },
+                  { name: 'Post-Quantum Crypto (ML-KEM & ML-DSA)', state: !a ? 'UNAVAILABLE' : (a.active_pqc_keys > 0 ? `${a.active_pqc_keys} ACTIVE KEYS` : 'NO KEYS'), desc: 'ML-KEM-768 (FIPS 203) key encapsulation + ML-DSA-65 (FIPS 204) signatures' },
+                  { name: 'Rust Services + Behavioral AI', state: countBadge(a?.rust_behavioral_ai_active ?? 0), desc: 'Memory-safe sppio-securityd + offline BadUSB & Wayland overlay ML' },
+                  { name: 'Platform Firmware Resiliency (SP 800-193)', state: countBadge(a?.pfr_800_193_verified ?? 0), desc: 'SPI/UEFI protection, TPM PCR 0-3 detection, and signed recovery capsule' },
+                  { name: 'MLS, DMA & Tamper RAM Zeroization', state: countBadge(a?.mls_dma_enforced ?? 0), desc: `SELinux MLS + strict IOMMU/Thunderbolt lock (${a?.tamper_zeroization_events ?? 0} tamper events)` },
+                  { name: 'Separation Kernel & Common Criteria (seL4 / IC3S)', state: a?.common_criteria_target ? 'EAL4 ST' : 'UNAVAILABLE', desc: 'CAmkES domain isolation + ISO/IEC 15408 STQC IC3S EAL4 Security Target' },
+                ];
+              })().map((layer) => (
                 <div
                   key={layer.name}
                   style={{

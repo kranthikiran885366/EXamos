@@ -1,0 +1,15 @@
+[Unit]
+Description=SPPIO / ExamOS NIST SP 800-193 Platform Firmware Resiliency Verifier
+DefaultDependencies=no
+After=local-fs.target
+Before=examos-kiosk.service examos-ab-commit.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/pfr-800-193-verify.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

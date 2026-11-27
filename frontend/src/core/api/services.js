@@ -1525,5 +1525,10 @@ export const saveConfig = wrap(async ({ examUrl, examName, examId, allowedOrigin
   return res.data;
 });
 
+export const getSecurityAssurancePosture = wrap(async () => {
+  const res = await api.get('/api/v1/security/assurance-posture', { actor: ACTOR });
+  return res.data;
+});
+
 // Backend is now CORS-enabled for http://localhost:5173 by default.
 // Set EXAMOS_CORS_ALLOWED_ORIGINS env var on the server for production origins.

@@ -66,6 +66,7 @@
 #include "controllers/exam_session_controller.h"
 #include "controllers/device_trust_controller.h"
 #include "controllers/os_release_controller.h"
+#include "controllers/security_assurance_controller.h"
 #include "controllers/student_controller.h"
 #include "controllers/campus_controller.h"
 #include "controllers/reports_controller.h"
@@ -4845,6 +4846,13 @@ p5_score_done:
                 strncmp(route_path, "/api/v1/os/devices", 18) == 0) {
                 os_release_handle(client_fd, method, route_path, req_body,
                                   auth_header, origin, extra, sizeof(extra));
+                goto client_done;
+            }
+
+            /* Defence-tier OS Security Assurance, Keylime IMA, PQC & Tamper Zeroization */
+            if (strncmp(route_path, "/api/v1/security/", 17) == 0) {
+                security_assurance_handle(client_fd, method, route_path, req_body,
+                                          auth_header, origin, extra, sizeof(extra));
                 goto client_done;
             }
 

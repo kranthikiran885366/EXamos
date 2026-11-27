@@ -1,0 +1,21 @@
+[Unit]
+Description=SPPIO Privileged Rust Security Daemon (PQC, Behavioral AI, DMA Guard, Tamper RAM Zeroizer)
+After=local-fs.target examos-bpf-lsm.service examos-pfr-verify.service
+Before=examos-kiosk.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sppio-securityd --daemon
+ExecStopPost=/usr/local/bin/sppio-securityd tamper-zeroize --trigger UnexpectedShutdown
+Restart=on-failure
+RestartSec=2
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+ProtectSystem=strict
+ReadWritePaths=/run/examos /var/log/examos
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -58,6 +58,7 @@ SRCS = main.c \
        controllers/exam_session_controller.c \
        controllers/device_trust_controller.c \
        controllers/os_release_controller.c \
+       controllers/security_assurance_controller.c \
        controllers/student_controller.c
 
 BUILD_DIR ?= .

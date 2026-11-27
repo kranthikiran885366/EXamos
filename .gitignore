@@ -229,3 +229,7 @@ screendump.py
 test_db.sh
 test_prod_register.py
 SPPIO-ADVANCED-VALIDATION/
+
+# Rust Cargo target & eBPF object artifacts
+rust-services/target/
+kernel/bpf_lsm/*.bpf.o

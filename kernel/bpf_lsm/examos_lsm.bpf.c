@@ -136,3 +136,32 @@ int BPF_PROG(examos_socket_connect, struct socket *sock, struct sockaddr *addres
     }
     return 0;
 }
+
+SEC("lsm/file_open")
+int BPF_PROG(examos_file_open, struct file *file)
+{
+    if (!is_lockdown_active())
+        return 0;
+
+    __u32 uid = (__u32)bpf_get_current_uid_gid();
+    if (uid == 0)
+        return 0;
+
+    /* Deny unprivileged write access to sensitive security/exam config paths */
+    unsigned int flags = BPF_CORE_READ(file, f_flags);
+    if ((flags & 03) != 0) { /* O_WRONLY or O_RDWR */
+        char fname[64] = {};
+        struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+        const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+        if (name) {
+            bpf_probe_read_kernel_str(fname, sizeof(fname), name);
+            if ((fname[0] == 'a' && fname[1] == 'b' && fname[2] == '-' && fname[3] == 's') ||
+                (fname[0] == 'p' && fname[1] == 'f' && fname[2] == 'r' && fname[3] == '-') ||
+                (fname[0] == 'i' && fname[1] == 'm' && fname[2] == 'a' && fname[3] == '-')) {
+                emit_event(2, -EACCES);
+                return -EACCES;
+            }
+        }
+    }
+    return 0;
+}
