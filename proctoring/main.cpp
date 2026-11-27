@@ -7,6 +7,7 @@
 #include <csignal>
 #include <vector>
 #include <cstring>
+#include <cstdio>
 #include <cstdlib>
 #include <curl/curl.h>
 
@@ -15,6 +16,36 @@ static volatile std::sig_atomic_t g_proctor_running = 1;
 static void sig_handler(int sig) {
     (void)sig;
     g_proctor_running = 0;
+}
+
+/*
+ * Escapes a string value for embedding inside a JSON quoted string.
+ * Handles the JSON control characters (RFC 8259 §7) and any byte below 0x20.
+ */
+static std::string json_escape(const std::string &raw) {
+    std::string out;
+    out.reserve(raw.size() + 8);
+    for (unsigned char c : raw) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
 }
 
 /*
@@ -43,11 +74,11 @@ static bool send_proctoring_event(const std::string &server_url, const std::stri
         return false;
     }
 
-    std::string json_body = "{\"session_id\":\"" + session_id + "\","
-                            "\"source_type\":\"" + source_type + "\","
-                            "\"event_type\":\"" + event_type + "\","
-                            "\"model_name\":\"" + std::string(model_name) + "\","
-                            "\"model_version\":\"" + std::string(model_version) + "\","
+    std::string json_body = "{\"session_id\":\"" + json_escape(session_id) + "\","
+                            "\"source_type\":\"" + json_escape(source_type) + "\","
+                            "\"event_type\":\"" + json_escape(event_type) + "\","
+                            "\"model_name\":\"" + json_escape(model_name) + "\","
+                            "\"model_version\":\"" + json_escape(model_version) + "\","
                             "\"payload\":" + payload_json + "}";
 
     struct curl_slist *headers = nullptr;
@@ -98,19 +129,9 @@ int main(int argc, char *argv[]) {
     {
         char appliance_reason[256] = {0};
         if (examos_appliance_verify(appliance_reason, sizeof(appliance_reason)) != 0) {
-            const char *tpm_mode = std::getenv("EXAMOS_TPM_MODE");
-            const bool production_mode = tpm_mode && strcmp(tpm_mode, "production") == 0;
-            const char *allow_dev = std::getenv("EXAMOS_ALLOW_UNPROVISIONED_DEV");
-            const bool development_bypass = !production_mode && allow_dev &&
-                                            strcmp(allow_dev, "1") == 0;
-            if (!development_bypass) {
-                std::cerr << "[ExamOS-Proctor] FATAL: " << appliance_reason
-                          << ". The proctoring worker only runs on an ExamOS appliance." << std::endl;
-                return 2;
-            }
-            std::cerr << "[ExamOS-Proctor] WARNING: " << appliance_reason
-                      << ". Development mode continues without the appliance posture; "
-                         "this run cannot produce production evidence." << std::endl;
+            std::cerr << "[ExamOS-Proctor] FATAL: " << appliance_reason
+                      << ". The proctoring worker only runs on an ExamOS appliance." << std::endl;
+            return 2;
         }
     }
 
@@ -138,9 +159,14 @@ int main(int argc, char *argv[]) {
                      "must be provisioned (or passed via --session / --server)." << std::endl;
         return 2;
     }
+    auto is_loopback_http = [](const std::string &u, const char *prefix) -> bool {
+        size_t plen = strlen(prefix);
+        if (u.size() < plen || u.compare(0, plen, prefix) != 0) return false;
+        return u.size() == plen || u[plen] == ':' || u[plen] == '/';
+    };
     if (server_url.substr(0, 8) != "https://" &&
-        server_url.substr(0, 16) != "http://127.0.0.1" &&
-        server_url.substr(0, 16) != "http://localhost") {
+        !is_loopback_http(server_url, "http://127.0.0.1") &&
+        !is_loopback_http(server_url, "http://localhost")) {
         std::cerr << "[ExamOS-Proctor] FATAL: EXAMOS_SERVER_URL must be HTTPS "
                      "(loopback HTTP permitted for development only)." << std::endl;
         return 2;

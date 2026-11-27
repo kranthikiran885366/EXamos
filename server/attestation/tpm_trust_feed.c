@@ -371,6 +371,142 @@ static int object_member(const json_parser_t *parser, int object,
     return -1;
 }
 
+/* ---------------------------------------------------------------------------
+ * Bounded JSON document API (shared with the dynamic config loader)
+ * ------------------------------------------------------------------------- */
+
+struct tpm_json_document {
+    json_parser_t parser;
+    int root;
+};
+
+static int node_valid(const tpm_json_document_t *document, int node) {
+    return document && node >= 0 && (size_t)node < document->parser.node_count;
+}
+
+tpm_json_document_t *tpm_json_document_parse(const char *json, size_t json_len) {
+    if (!json || json_len == 0) return NULL;
+
+    tpm_json_document_t *document = calloc(1, sizeof(*document));
+    if (!document) return NULL;
+    if (json_parse((const unsigned char *)json, json_len, &document->parser,
+                   &document->root) != 0) {
+        json_free(&document->parser);
+        free(document);
+        return NULL;
+    }
+    return document;
+}
+
+void tpm_json_document_free(tpm_json_document_t *document) {
+    if (!document) return;
+    json_free(&document->parser);
+    free(document);
+}
+
+int tpm_json_root(const tpm_json_document_t *document) {
+    return document ? document->root : -1;
+}
+
+tpm_json_type_t tpm_json_node_type(const tpm_json_document_t *document, int node) {
+    if (!node_valid(document, node)) return TPM_JSON_NULL;
+    return (tpm_json_type_t)document->parser.nodes[node].type;
+}
+
+int tpm_json_object_member(const tpm_json_document_t *document, int object,
+                           const char *key) {
+    if (!document || !key) return -1;
+    if (!node_valid(document, object) ||
+        document->parser.nodes[object].type != JSON_OBJECT) return -1;
+    return object_member(&document->parser, object, key);
+}
+
+int tpm_json_object_member_at(const tpm_json_document_t *document, int object,
+                              size_t index, const char **key, size_t *key_len) {
+    if (!document || !node_valid(document, object) ||
+        document->parser.nodes[object].type != JSON_OBJECT) return -1;
+
+    size_t current = 0;
+    for (int child = document->parser.nodes[object].first_child;
+         child >= 0; child = document->parser.nodes[child].next_sibling) {
+        int value = document->parser.nodes[child].next_sibling;
+        if (value < 0 || document->parser.nodes[child].type != JSON_STRING)
+            return -1;
+        if (current == index) {
+            if (key) *key = document->parser.nodes[child].text;
+            if (key_len) *key_len = document->parser.nodes[child].text_len;
+            return value;
+        }
+        current++;
+        child = value;
+    }
+    return -1;
+}
+
+int tpm_json_array_length(const tpm_json_document_t *document, int array) {
+    if (!document || !node_valid(document, array) ||
+        document->parser.nodes[array].type != JSON_ARRAY) return -1;
+    int count = 0;
+    for (int child = document->parser.nodes[array].first_child;
+         child >= 0; child = document->parser.nodes[child].next_sibling) {
+        if (++count == INT_MAX) return -1;
+    }
+    return count;
+}
+
+int tpm_json_array_at(const tpm_json_document_t *document, int array,
+                      size_t index) {
+    if (!document || !node_valid(document, array) ||
+        document->parser.nodes[array].type != JSON_ARRAY) return -1;
+    size_t current = 0;
+    for (int child = document->parser.nodes[array].first_child;
+         child >= 0; child = document->parser.nodes[child].next_sibling) {
+        if (current++ == index) return child;
+    }
+    return -1;
+}
+
+int tpm_json_node_string(const tpm_json_document_t *document, int node,
+                         const char **text, size_t *length) {
+    if (!node_valid(document, node) ||
+        document->parser.nodes[node].type != JSON_STRING) return -1;
+    if (text) *text = document->parser.nodes[node].text;
+    if (length) *length = document->parser.nodes[node].text_len;
+    return 0;
+}
+
+int tpm_json_node_bool(const tpm_json_document_t *document, int node, int *value) {
+    if (!node_valid(document, node) || !value) return -1;
+    if (document->parser.nodes[node].type == JSON_TRUE) {
+        *value = 1;
+        return 0;
+    }
+    if (document->parser.nodes[node].type == JSON_FALSE) {
+        *value = 0;
+        return 0;
+    }
+    return -1;
+}
+
+int tpm_json_node_uint64(const tpm_json_document_t *document, int node,
+                         uint64_t *value) {
+    if (!node_valid(document, node) || !value ||
+        document->parser.nodes[node].type != JSON_NUMBER ||
+        document->parser.nodes[node].text_len == 0) return -1;
+
+    uint64_t parsed = 0;
+    const char *text = document->parser.nodes[node].text;
+    for (size_t i = 0; i < document->parser.nodes[node].text_len; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < '0' || c > '9') return -1;
+        unsigned int digit = (unsigned int)(c - '0');
+        if (parsed > (UINT64_MAX - digit) / 10) return -1;
+        parsed = parsed * 10 + digit;
+    }
+    *value = parsed;
+    return 0;
+}
+
 static int object_has_only_keys(const json_parser_t *parser, int object,
                                 const char *const *allowed, size_t count) {
     if (object < 0 || parser->nodes[object].type != JSON_OBJECT) return 0;

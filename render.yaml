@@ -20,10 +20,6 @@ services:
       - key: EXAMOS_TPM_MODE
         value: production
 
-      # ── Appliance emulation for containerized cloud deployment ────────────
-      - key: EXAMOS_APPLIANCE_EMULATE
-        value: "1"
-
       # ── Edge-terminated TLS reverse proxy ─────────────────────────────────
       - key: EXAMOS_TLS_TERMINATED
         value: "1"

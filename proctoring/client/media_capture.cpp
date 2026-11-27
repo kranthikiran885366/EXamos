@@ -51,8 +51,28 @@ bool MediaCapture::initialize(const std::string &video_dev) {
         m_file_mode = true;
         m_rgb_frame.resize(static_cast<size_t>(m_width) * m_height * 3);
         /* VideoCapture returns BGR, which is the layout the vision engine
-           expects; no colour conversion is needed. */
-        std::memcpy(m_rgb_frame.data(), first.data, m_rgb_frame.size());
+           expects.  Convert to 3-channel BGR if necessary and use copyTo
+           for continuous-memory safety (isContinuous() may be false for
+           sub-matrices or padded rows). */
+        {
+            cv::Mat bgr3;
+            if (first.channels() == 4) {
+                cv::cvtColor(first, bgr3, cv::COLOR_BGRA2BGR);
+            } else if (first.channels() == 1) {
+                cv::cvtColor(first, bgr3, cv::COLOR_GRAY2BGR);
+            } else if (first.channels() == 3) {
+                bgr3 = first;
+            } else {
+                capture->release();
+                delete capture;
+                m_initialized = false;
+                return false;
+            }
+            if (!bgr3.isContinuous()) {
+                bgr3 = bgr3.clone();
+            }
+            std::memcpy(m_rgb_frame.data(), bgr3.data, m_rgb_frame.size());
+        }
         m_initialized = true;
         return true;
     }
@@ -151,7 +171,23 @@ bool MediaCapture::capture_frame(FrameStats &stats) {
         m_height = static_cast<uint32_t>(frame.rows);
         const size_t needed = static_cast<size_t>(m_width) * m_height * 3;
         if (m_rgb_frame.size() != needed) m_rgb_frame.resize(needed);
-        std::memcpy(m_rgb_frame.data(), frame.data, needed);
+        /* Ensure the frame is 3-channel BGR and contiguous before copying. */
+        {
+            cv::Mat bgr3;
+            if (frame.channels() == 4) {
+                cv::cvtColor(frame, bgr3, cv::COLOR_BGRA2BGR);
+            } else if (frame.channels() == 1) {
+                cv::cvtColor(frame, bgr3, cv::COLOR_GRAY2BGR);
+            } else if (frame.channels() == 3) {
+                bgr3 = frame;
+            } else {
+                return false;
+            }
+            if (!bgr3.isContinuous()) {
+                bgr3 = bgr3.clone();
+            }
+            std::memcpy(m_rgb_frame.data(), bgr3.data, needed);
+        }
         stats.width = m_width;
         stats.height = m_height;
         return true;

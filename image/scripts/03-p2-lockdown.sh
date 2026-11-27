@@ -227,12 +227,12 @@ Before=network-pre.target NetworkManager.service systemd-networkd.service
 [Service]
 ExecStartPre=/usr/sbin/nft --check --file /etc/nftables.conf
 ExecStopPost=/bin/sh -c '\
-  /usr/sbin/nft flush ruleset 2>/dev/null; \
-  /usr/sbin/nft add table inet examos_failsafe; \
-  /usr/sbin/nft add chain inet examos_failsafe input  "{ type filter hook input  priority -200; policy drop; }"; \
-  /usr/sbin/nft add chain inet examos_failsafe output "{ type filter hook output priority -200; policy drop; }"; \
-  /usr/sbin/nft add chain inet examos_failsafe forward "{ type filter hook forward priority -200; policy drop; }"; \
-  echo "[ExamOS-FW] Emergency fail-closed table active"'
+  /usr/sbin/nft flush ruleset || logger -t examos-nftables "nft flush failed"; \
+  /usr/sbin/nft add table inet examos_failsafe || logger -t examos-nftables "failsafe table failed"; \
+  /usr/sbin/nft add chain inet examos_failsafe input  "{ type filter hook input  priority -200; policy drop; }" || logger -t examos-nftables "failsafe input failed"; \
+  /usr/sbin/nft add chain inet examos_failsafe output "{ type filter hook output priority -200; policy drop; }" || logger -t examos-nftables "failsafe output failed"; \
+  /usr/sbin/nft add chain inet examos_failsafe forward "{ type filter hook forward priority -200; policy drop; }" || logger -t examos-nftables "failsafe forward failed"; \
+  logger -t examos-nftables "Emergency fail-closed table active"'
 NFTEOF
 
 enable_required_unit nftables.service

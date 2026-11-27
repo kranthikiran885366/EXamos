@@ -30,6 +30,8 @@ typedef enum {
 int hardware_guard_init(void);
 int hardware_guard_scan(hardware_state_t *state);
 int hardware_guard_format_json(const hardware_state_t *state, char *out_buf, size_t max_len);
+int hardware_guard_uevent_pending(void);
+void hardware_guard_shutdown(void);
 
 /*
  * Measures the device's own network reachability by inspecting the kernel's

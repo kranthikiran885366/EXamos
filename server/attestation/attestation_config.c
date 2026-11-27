@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #include "../include/attestation_config.h"
 #include "../include/attestation_service.h"
+#include "../include/tpm_trust_feed.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,59 +23,24 @@
 #include <sys/stat.h>
 
 /* -----------------------------------------------------------------------
- * Minimal JSON helpers — extract string field from a JSON object fragment
+ * Bounded JSON accessors.
+ *
+ * Manifests are parsed once with the strict parser from tpm_trust_feed.c
+ * (size, depth and duplicate-key limits) instead of searching for substrings,
+ * so a crafted string value can never be mistaken for a key.
  * ----------------------------------------------------------------------- */
-static void cfg_json_str(const char *buf, const char *key,
-                          char *out, size_t max_out) {
+static void cfg_json_str(const tpm_json_document_t *doc, int object,
+                         const char *key, char *out, size_t max_out) {
     out[0] = '\0';
-    if (!buf || !key) return;
+    if (!doc || object < 0) return;
 
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *pos = strstr(buf, pattern);
-    if (!pos) return;
-
-    pos += strlen(pattern);
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
-    if (*pos++ != ':') return;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') pos++;
-    if (*pos != '"') return;
-    pos++;
-
-    size_t i = 0;
-    while (*pos && *pos != '"') {
-        unsigned char value = (unsigned char)*pos++;
-        if (value == '\\') {
-            switch (*pos++) {
-                case '"': value = '"'; break;
-                case '\\': value = '\\'; break;
-                case '/': value = '/'; break;
-                case 'b': value = '\b'; break;
-                case 'f': value = '\f'; break;
-                case 'n': value = '\n'; break;
-                case 'r': value = '\r'; break;
-                case 't': value = '\t'; break;
-                case 'u': {
-                    unsigned int codepoint = 0;
-                    for (int digit = 0; digit < 4; ++digit) {
-                        unsigned char c = (unsigned char)*pos++;
-                        if (!isxdigit(c)) { out[0] = '\0'; return; }
-                        codepoint = (codepoint << 4) |
-                            (unsigned int)(isdigit(c) ? c - '0' :
-                            (tolower(c) - 'a' + 10));
-                    }
-                    if (codepoint > 0x7f) { out[0] = '\0'; return; }
-                    value = (unsigned char)codepoint;
-                    break;
-                }
-                default: out[0] = '\0'; return;
-            }
-        }
-        if (i + 1 >= max_out || value == '\0') { out[0] = '\0'; return; }
-        out[i++] = (char)value;
-    }
-    if (*pos != '"') { out[0] = '\0'; return; }
-    out[i] = '\0';
+    int node = tpm_json_object_member(doc, object, key);
+    const char *text = NULL;
+    size_t length = 0;
+    if (tpm_json_node_string(doc, node, &text, &length) != 0 ||
+        length + 1 > max_out) return;
+    memcpy(out, text, length);
+    out[length] = '\0';
 }
 
 static int cfg_valid_identifier(const char *value) {
@@ -87,23 +53,14 @@ static int cfg_valid_identifier(const char *value) {
     return 1;
 }
 
-static int cfg_json_bool_strict(const char *buf, const char *key) {
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *pos = strstr(buf, pattern);
-    if (!pos) return -1;
-    pos += strlen(pattern);
-    while (*pos == ' ' || *pos == ':' || *pos == '\t' ||
-           *pos == '\r' || *pos == '\n') pos++;
-    const char *end = pos + (strncmp(pos, "true", 4) == 0 ? 4 :
-                             strncmp(pos, "false", 5) == 0 ? 5 : 0);
-    if (end == pos) return -1;
-    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
-        end++;
-    if (*end != ',' && *end != '}') return -1;
-    if (strncmp(pos, "true", 4) == 0) return 1;
-    if (strncmp(pos, "false", 5) == 0) return 0;
-    return -1;
+/* Returns 1/0 for a JSON boolean, -1 when absent or not a boolean. */
+static int cfg_json_bool_strict(const tpm_json_document_t *doc, int object,
+                                const char *key) {
+    if (!doc || object < 0) return -1;
+    int node = tpm_json_object_member(doc, object, key);
+    int value = 0;
+    if (tpm_json_node_bool(doc, node, &value) != 0) return -1;
+    return value;
 }
 
 static int is_sha256_hex(const char *value, int require_nonzero) {
@@ -292,18 +249,28 @@ int attestation_config_load_devices(const char *json_path) {
         return -1;
     }
 
+    tpm_json_document_t *doc = tpm_json_document_parse(buf, len);
+    if (!doc) {
+        fprintf(stderr, "[AttestConfig] Devices config is not valid bounded JSON: %s\n",
+                json_path);
+        free(buf);
+        return -1;
+    }
+
     const char *mode = getenv("EXAMOS_TPM_MODE");
     const int production = mode && strcmp(mode, "production") == 0;
     const int emulate = getenv("EXAMOS_APPLIANCE_EMULATE") && strcmp(getenv("EXAMOS_APPLIANCE_EMULATE"), "1") == 0;
+    const int root = tpm_json_root(doc);
     if (production && !emulate) {
         char schema[64] = {0};
         char environment[32] = {0};
-        cfg_json_str(buf, "_schema", schema, sizeof(schema));
-        cfg_json_str(buf, "environment", environment, sizeof(environment));
+        cfg_json_str(doc, root, "_schema", schema, sizeof(schema));
+        cfg_json_str(doc, root, "environment", environment, sizeof(environment));
         if (strcmp(schema, "examos-device-registry-v1") != 0 ||
             strcmp(environment, "production") != 0 ||
             verify_device_registry_signature((const unsigned char *)buf, len) != 0) {
             fprintf(stderr, "[AttestConfig] Refusing unsigned, non-production, or unsupported device registry.\n");
+            tpm_json_document_free(doc);
             free(buf);
             return -1;
         }
@@ -311,43 +278,37 @@ int attestation_config_load_devices(const char *json_path) {
 
     fprintf(stdout, "[AttestConfig] Loading devices from: %s\n", json_path);
 
-    /* Find the "devices" array */
-    const char *arr = strstr(buf, "\"devices\"");
-    if (!arr) {
+    int devices = tpm_json_object_member(doc, root, "devices");
+    if (devices < 0) {
+        tpm_json_document_free(doc);
         free(buf);
         return production ? -1 : 0;
     }
-    arr = strchr(arr, '[');
-    if (!arr) {
+    if (tpm_json_node_type(doc, devices) != TPM_JSON_ARRAY) {
+        fprintf(stderr, "[AttestConfig] Device registry \"devices\" member is not an array.\n");
+        tpm_json_document_free(doc);
         free(buf);
-        return production ? -1 : 0;
+        return -1;
+    }
+
+    const int device_count = tpm_json_array_length(doc, devices);
+    if (device_count < 0) {
+        tpm_json_document_free(doc);
+        free(buf);
+        return -1;
     }
 
     int count = 0;
     int invalid_production_entry = 0;
-    const char *p = arr + 1;
 
-    while (*p) {
-        /* Find next object opening */
-        const char *obj_start = strchr(p, '{');
-        if (!obj_start) break;
-
-        /* Find matching closing brace */
-        int depth = 1;
-        const char *obj_end = obj_start + 1;
-        while (*obj_end && depth > 0) {
-            if (*obj_end == '{') depth++;
-            else if (*obj_end == '}') depth--;
-            obj_end++;
+    for (int index = 0; index < device_count; index++) {
+        const int obj = tpm_json_array_at(doc, devices, (size_t)index);
+        if (obj < 0 || tpm_json_node_type(doc, obj) != TPM_JSON_OBJECT) {
+            fprintf(stderr, "[AttestConfig] Device registry entry %d is not an object.\n",
+                    index);
+            invalid_production_entry = 1;
+            continue;
         }
-        if (depth != 0) break;
-
-        /* Extract a temporary copy of this object */
-        size_t obj_len = (size_t)(obj_end - obj_start);
-        char *obj = malloc(obj_len + 1);
-        if (!obj) break;
-        memcpy(obj, obj_start, obj_len);
-        obj[obj_len] = '\0';
 
         /* Extract fields */
         char device_id[64]    = {0};
@@ -359,16 +320,16 @@ int attestation_config_load_devices(const char *json_path) {
         char allowed_rel[64]  = {0};
         char status_str[32]   = {0};
 
-        cfg_json_str(obj, "device_id",       device_id,   sizeof(device_id));
-        cfg_json_str(obj, "institution_id",  institution_id,
+        cfg_json_str(doc, obj, "device_id",       device_id,   sizeof(device_id));
+        cfg_json_str(doc, obj, "institution_id",  institution_id,
                      sizeof(institution_id));
-        cfg_json_str(obj, "ek_fingerprint",  ek_fp,       sizeof(ek_fp));
-        cfg_json_str(obj, "ak_qualified_name", ak_qualified_name,
+        cfg_json_str(doc, obj, "ek_fingerprint",  ek_fp,       sizeof(ek_fp));
+        cfg_json_str(doc, obj, "ak_qualified_name", ak_qualified_name,
                      sizeof(ak_qualified_name));
-        cfg_json_str(obj, "ak_pub_sha256",    ak_pub_sha256, sizeof(ak_pub_sha256));
-        cfg_json_str(obj, "ak_public_pem",    ak_public_pem, sizeof(ak_public_pem));
-        cfg_json_str(obj, "allowed_release", allowed_rel, sizeof(allowed_rel));
-        cfg_json_str(obj, "status",          status_str,  sizeof(status_str));
+        cfg_json_str(doc, obj, "ak_pub_sha256",    ak_pub_sha256, sizeof(ak_pub_sha256));
+        cfg_json_str(doc, obj, "ak_public_pem",    ak_public_pem, sizeof(ak_public_pem));
+        cfg_json_str(doc, obj, "allowed_release", allowed_rel, sizeof(allowed_rel));
+        cfg_json_str(doc, obj, "status",          status_str,  sizeof(status_str));
 
         if (production && !emulate &&
             (!cfg_valid_identifier(device_id) ||
@@ -387,8 +348,6 @@ int attestation_config_load_devices(const char *json_path) {
               strcmp(status_str, "RETIRED") != 0))) {
             fprintf(stderr, "[AttestConfig] Production device entry is incomplete or invalid.\n");
             invalid_production_entry = 1;
-            free(obj);
-            p = obj_end;
             continue;
         }
 
@@ -417,11 +376,9 @@ int attestation_config_load_devices(const char *json_path) {
                 invalid_production_entry = 1;
             }
         }
-
-        free(obj);
-        p = obj_end;
     }
 
+    tpm_json_document_free(doc);
     free(buf);
     fprintf(stdout, "[AttestConfig] Loaded %d device(s).\n", count);
     if (production && !emulate && (invalid_production_entry || count == 0))
@@ -442,18 +399,28 @@ int attestation_config_load_releases(const char *json_path) {
         return -1;
     }
 
+    tpm_json_document_t *doc = tpm_json_document_parse(buf, len);
+    if (!doc) {
+        fprintf(stderr, "[AttestConfig] Releases config is not valid bounded JSON: %s\n",
+                json_path);
+        free(buf);
+        return -1;
+    }
+
     const char *mode = getenv("EXAMOS_TPM_MODE");
     const int production = mode && strcmp(mode, "production") == 0;
     const int emulate = getenv("EXAMOS_APPLIANCE_EMULATE") && strcmp(getenv("EXAMOS_APPLIANCE_EMULATE"), "1") == 0;
+    const int root = tpm_json_root(doc);
     if (production && !emulate) {
         char schema[64] = {0};
         char environment[32] = {0};
-        cfg_json_str(buf, "_schema", schema, sizeof(schema));
-        cfg_json_str(buf, "environment", environment, sizeof(environment));
+        cfg_json_str(doc, root, "_schema", schema, sizeof(schema));
+        cfg_json_str(doc, root, "environment", environment, sizeof(environment));
         if (strcmp(schema, "examos-release-registry-v1") != 0 ||
             strcmp(environment, "production") != 0 ||
             verify_release_registry_signature((const unsigned char *)buf, len) != 0) {
             fprintf(stderr, "[AttestConfig] Refusing unsigned, non-production, or unsupported release registry.\n");
+            tpm_json_document_free(doc);
             free(buf);
             return -1;
         }
@@ -461,34 +428,37 @@ int attestation_config_load_releases(const char *json_path) {
 
     fprintf(stdout, "[AttestConfig] Loading releases from: %s\n", json_path);
 
-    /* Find the "releases" array */
-    const char *arr = strstr(buf, "\"releases\"");
-    if (!arr) { free(buf); return 0; }
-    arr = strchr(arr, '[');
-    if (!arr) { free(buf); return 0; }
+    int releases = tpm_json_object_member(doc, root, "releases");
+    if (releases < 0) {
+        tpm_json_document_free(doc);
+        free(buf);
+        return production ? -1 : 0;
+    }
+    if (tpm_json_node_type(doc, releases) != TPM_JSON_ARRAY) {
+        fprintf(stderr, "[AttestConfig] Release registry \"releases\" member is not an array.\n");
+        tpm_json_document_free(doc);
+        free(buf);
+        return -1;
+    }
+
+    const int release_count = tpm_json_array_length(doc, releases);
+    if (release_count < 0) {
+        tpm_json_document_free(doc);
+        free(buf);
+        return -1;
+    }
 
     int count = 0;
     int invalid_production_entry = 0;
-    const char *p = arr + 1;
 
-    while (*p) {
-        const char *obj_start = strchr(p, '{');
-        if (!obj_start) break;
-
-        int depth = 1;
-        const char *obj_end = obj_start + 1;
-        while (*obj_end && depth > 0) {
-            if (*obj_end == '{') depth++;
-            else if (*obj_end == '}') depth--;
-            obj_end++;
+    for (int index = 0; index < release_count; index++) {
+        const int obj = tpm_json_array_at(doc, releases, (size_t)index);
+        if (obj < 0 || tpm_json_node_type(doc, obj) != TPM_JSON_OBJECT) {
+            fprintf(stderr, "[AttestConfig] Release registry entry %d is not an object.\n",
+                    index);
+            invalid_production_entry = 1;
+            continue;
         }
-        if (depth != 0) break;
-
-        size_t obj_len = (size_t)(obj_end - obj_start);
-        char *obj = malloc(obj_len + 1);
-        if (!obj) break;
-        memcpy(obj, obj_start, obj_len);
-        obj[obj_len] = '\0';
 
         char release_id[64] = {0};
         char uki_hash[65]   = {0};
@@ -498,18 +468,18 @@ int attestation_config_load_releases(const char *json_path) {
         char pcr11[65]      = {0};
         char approval_status[32] = {0};
         char pcr_bank[16]        = {0};
-        int  revoked_field  = cfg_json_bool_strict(obj, "revoked");
+        int  revoked_field  = cfg_json_bool_strict(doc, obj, "revoked");
         int  revoked        = revoked_field == 1;
 
-        cfg_json_str(obj, "release_id", release_id, sizeof(release_id));
-        cfg_json_str(obj, "uki_hash",   uki_hash,   sizeof(uki_hash));
-        cfg_json_str(obj, "pcr0",       pcr0,       sizeof(pcr0));
-        cfg_json_str(obj, "pcr4",       pcr4,       sizeof(pcr4));
-        cfg_json_str(obj, "pcr7",       pcr7,       sizeof(pcr7));
-        cfg_json_str(obj, "pcr11",      pcr11,      sizeof(pcr11));
-        cfg_json_str(obj, "approval_status", approval_status,
+        cfg_json_str(doc, obj, "release_id", release_id, sizeof(release_id));
+        cfg_json_str(doc, obj, "uki_hash",   uki_hash,   sizeof(uki_hash));
+        cfg_json_str(doc, obj, "pcr0",       pcr0,       sizeof(pcr0));
+        cfg_json_str(doc, obj, "pcr4",       pcr4,       sizeof(pcr4));
+        cfg_json_str(doc, obj, "pcr7",       pcr7,       sizeof(pcr7));
+        cfg_json_str(doc, obj, "pcr11",      pcr11,      sizeof(pcr11));
+        cfg_json_str(doc, obj, "approval_status", approval_status,
                      sizeof(approval_status));
-        cfg_json_str(obj, "pcr_bank", pcr_bank, sizeof(pcr_bank));
+        cfg_json_str(doc, obj, "pcr_bank", pcr_bank, sizeof(pcr_bank));
 
         if (production && !emulate &&
             (strcmp(approval_status, "APPROVED_PRODUCTION") != 0 ||
@@ -524,8 +494,6 @@ int attestation_config_load_releases(const char *json_path) {
                     "non-placeholder UKI hash, or complete SHA-256 PCR measurements.\n",
                     release_id[0] ? release_id : "<unnamed>");
             invalid_production_entry = 1;
-            free(obj);
-            p = obj_end;
             continue;
         }
 
@@ -549,11 +517,9 @@ int attestation_config_load_releases(const char *json_path) {
             fprintf(stderr, "[AttestConfig] Production registry has a malformed release entry.\n");
             invalid_production_entry = 1;
         }
-
-        free(obj);
-        p = obj_end;
     }
 
+    tpm_json_document_free(doc);
     free(buf);
     fprintf(stdout, "[AttestConfig] Loaded %d release(s).\n", count);
     if (production && !emulate && (invalid_production_entry || count == 0))

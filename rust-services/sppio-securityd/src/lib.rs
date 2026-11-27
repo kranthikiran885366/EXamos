@@ -18,7 +18,12 @@ use sppio_behavioral_ai::{
     assess_keystroke_window, assess_overlay_telemetry,
 };
 use sppio_pqc::{AirGappedBundle, PqcError};
+use std::io::Read;
+use std::path::Path;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Default location for the daemon's ephemeral key material.
+pub const DEFAULT_KEY_DIR: &str = "/run/examos/keys";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TamperTrigger {
@@ -39,6 +44,11 @@ pub struct ZeroizationReceipt {
     pub session_key_scrubbed: bool,
     pub pqc_secret_scrubbed: bool,
     pub lockdown_engaged: bool,
+    /// I/O or process failures encountered while scrubbing on-disk key material.
+    /// A non-empty list means the in-memory keys were zeroized but the
+    /// on-disk copy could not be fully erased; the daemon must stay locked down.
+    #[serde(default)]
+    pub wipe_errors: Vec<String>,
 }
 
 /// Memory-safe key vault that guarantees cryptographic zeroization on drop or tamper.
@@ -47,6 +57,8 @@ pub struct VolatileKeyVault {
     fde_master_key: [u8; 32],
     exam_session_key: [u8; 32],
     pqc_ephemeral_secret: [u8; 32],
+    #[zeroize(skip)]
+    key_dir: String,
     #[zeroize(skip)]
     zeroized: bool,
     #[zeroize(skip)]
@@ -59,9 +71,16 @@ impl VolatileKeyVault {
             fde_master_key: fde,
             exam_session_key: session,
             pqc_ephemeral_secret: pqc,
+            key_dir: DEFAULT_KEY_DIR.to_string(),
             zeroized: false,
             lockdown_engaged: false,
         }
+    }
+
+    /// Overrides the runtime directory used when wiping on-disk key material.
+    pub fn with_key_dir(mut self, dir: &str) -> Self {
+        self.key_dir = dir.to_string();
+        self
     }
 
     pub fn is_zeroized(&self) -> bool {
@@ -72,24 +91,57 @@ impl VolatileKeyVault {
         self.lockdown_engaged
     }
 
-    /// Loads live exam/PQC/FDE key material from a runtime directory (if present).
-    pub fn load_from_runtime_dir(dir: &str) -> Self {
-        let read_32 = |name: &str| -> [u8; 32] {
-            let mut buf = [0u8; 32];
-            if let Ok(bytes) = std::fs::read(std::path::Path::new(dir).join(name)) {
-                let n = bytes.len().min(32);
-                buf[..n].copy_from_slice(&bytes[..n]);
+    /// Loads the three key files, requiring each to contain exactly 32 bytes.
+    /// Missing or truncated key material is an error rather than a silent
+    /// all-zero fallback, which would make DMA posture checks meaningless.
+    pub fn try_load_from_runtime_dir(dir: &str) -> Result<Self, String> {
+        let read_key = |name: &str| -> Result<[u8; 32], String> {
+            let path = Path::new(dir).join(name);
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("cannot read key material {}: {e}", path.display()))?;
+            if bytes.len() != 32 {
+                return Err(format!(
+                    "key material {} must be exactly 32 bytes, found {}",
+                    path.display(),
+                    bytes.len()
+                ));
             }
-            buf
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            Ok(key)
         };
-        Self::initialize(
-            read_32("fde.key"),
-            read_32("session.key"),
-            read_32("pqc.key"),
+        let vault = Self::initialize(
+            read_key("fde.key")?,
+            read_key("session.key")?,
+            read_key("pqc.key")?,
         )
+        .with_key_dir(dir);
+        Ok(vault)
     }
 
-    /// Immediately scrubs all sensitive key material in RAM and engages hardware lockdown.
+    /// Generates an ephemeral vault from the operating system CSPRNG. Used only
+    /// when the caller explicitly opts into ephemeral keys (self-test / dry run).
+    pub fn from_os_random() -> Result<Self, String> {
+        let mut random = [0u8; 96];
+        let mut source = std::fs::File::open("/dev/urandom")
+            .map_err(|e| format!("cannot open /dev/urandom: {e}"))?;
+        source
+            .read_exact(&mut random)
+            .map_err(|e| format!("cannot read /dev/urandom: {e}"))?;
+
+        let mut fde = [0u8; 32];
+        let mut session = [0u8; 32];
+        let mut pqc = [0u8; 32];
+        fde.copy_from_slice(&random[0..32]);
+        session.copy_from_slice(&random[32..64]);
+        pqc.copy_from_slice(&random[64..96]);
+        random.zeroize();
+        Ok(Self::initialize(fde, session, pqc))
+    }
+
+    /// Immediately scrubs all sensitive key material in RAM, then best-effort
+    /// erases the on-disk copies in the configured runtime directory. I/O
+    /// failures are recorded in the receipt and do not silently pass.
     pub fn tamper_zeroize(&mut self, trigger: TamperTrigger) -> ZeroizationReceipt {
         self.fde_master_key.zeroize();
         self.exam_session_key.zeroize();
@@ -97,26 +149,53 @@ impl VolatileKeyVault {
         self.zeroized = true;
         self.lockdown_engaged = true;
 
-        // Unlink ephemeral runtime keys, drop kernel page cache, and suspend LUKS root if active.
-        for name in ["fde.key", "session.key", "pqc.key"] {
-            let p = std::path::Path::new("/run/examos/keys").join(name);
-            if p.exists() {
-                let _ = std::fs::write(&p, [0u8; 32]);
-                let _ = std::fs::remove_file(&p);
+        let mut wipe_errors = Vec::new();
+        let key_dir = Path::new(&self.key_dir);
+        if key_dir.exists() {
+            for name in ["fde.key", "session.key", "pqc.key"] {
+                let path = key_dir.join(name);
+                if !path.exists() {
+                    continue;
+                }
+                if let Err(error) = std::fs::write(&path, [0u8; 32]) {
+                    wipe_errors.push(format!("failed to overwrite {}: {error}", path.display()));
+                    continue;
+                }
+                if let Err(error) = std::fs::remove_file(&path) {
+                    wipe_errors.push(format!("failed to unlink {}: {error}", path.display()));
+                }
+            }
+        } else {
+            wipe_errors.push(format!(
+                "runtime key directory {} is unavailable",
+                key_dir.display()
+            ));
+        }
+
+        if let Err(error) = std::fs::write("/proc/sys/vm/drop_caches", "3\n") {
+            wipe_errors.push(format!("failed to drop kernel page cache: {error}"));
+        }
+        if Path::new("/dev/mapper/examos-root").exists() {
+            match std::process::Command::new("cryptsetup")
+                .args(["luksSuspend", "examos-root"])
+                .output()
+            {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => wipe_errors.push(format!(
+                    "cryptsetup luksSuspend failed with status {}",
+                    output.status
+                )),
+                Err(error) => wipe_errors.push(format!("cannot execute cryptsetup: {error}")),
             }
         }
-        let _ = std::fs::write("/proc/sys/vm/drop_caches", "3\n");
-        if std::path::Path::new("/dev/mapper/examos-root").exists() {
-            let _ = std::process::Command::new("cryptsetup")
-                .args(["luksSuspend", "examos-root"])
-                .output();
-        }
+
         ZeroizationReceipt {
             triggered_by: trigger,
             fde_key_scrubbed: self.fde_master_key == [0u8; 32],
             session_key_scrubbed: self.exam_session_key == [0u8; 32],
             pqc_secret_scrubbed: self.pqc_ephemeral_secret == [0u8; 32],
             lockdown_engaged: self.lockdown_engaged,
+            wipe_errors,
         }
     }
 }
@@ -131,12 +210,57 @@ pub struct ImaMeasurementEntry {
     pub file_path: String,
 }
 
-/// Replays Linux IMA PCR-10 extension chain and verifies every measured file against an allowlist.
-pub fn verify_ima_measurements(
+/// Recomputes the `ima-ng` template hash from the measured file digest and path.
+///
+/// Linux hashes each template field as `LE32(field_len) || field_bytes` in the
+/// canonical format. Non-canonical kernels use the host byte order, so both
+/// endiannesses are accepted. `ima-sig` adds a signature field that is not
+/// present in the ASCII log, so its template hash cannot be reconstructed here.
+fn verify_ima_ng_template_hash(
+    template_name: &str,
+    file_digest_hex: &str,
+    file_path: &str,
+    template_hash_hex: &str,
+) -> Result<(), String> {
+    if template_name != "ima-ng" {
+        return Ok(());
+    }
+    let digest = hex::decode(file_digest_hex)
+        .map_err(|_| format!("invalid file digest on {file_path}"))?;
+    let path = file_path.as_bytes();
+
+    for little_endian in [true, false] {
+        let mut hasher = Sha256::new();
+        if little_endian {
+            hasher.update((digest.len() as u32).to_le_bytes());
+            hasher.update(&digest);
+            hasher.update((path.len() as u32).to_le_bytes());
+            hasher.update(path);
+        } else {
+            hasher.update((digest.len() as u32).to_be_bytes());
+            hasher.update(&digest);
+            hasher.update((path.len() as u32).to_be_bytes());
+            hasher.update(path);
+        }
+        if hex::encode(hasher.finalize()).eq_ignore_ascii_case(template_hash_hex) {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "IMA template hash mismatch for {file_path} ({template_name})"
+    ))
+}
+
+/// Replays the IMA PCR-10 extension chain.
+///
+/// When `allowlist_sha256` is `Some`, every measured path must be present and
+/// its digest must match, so an unlisted binary fails closed. `None` is used by
+/// the replay-only CLI path where the caller supplies the expected PCR value.
+pub fn replay_ima_pcr10(
     ascii_log: &str,
-    expected_pcr10_hex: &str,
-    allowlist_sha256: &[(&str, &str)],
-) -> Result<Vec<ImaMeasurementEntry>, String> {
+    allowlist_sha256: Option<&[(&str, &str)]>,
+) -> Result<(Vec<ImaMeasurementEntry>, String), String> {
     let mut pcr10 = [0u8; 32];
     let mut entries = Vec::new();
 
@@ -160,19 +284,37 @@ pub fn verify_ima_measurements(
         let template_name = parts[2].to_string();
         let file_digest_part = parts[3]
             .strip_prefix("sha256:")
+            .or_else(|| parts[3].strip_prefix("sha1:"))
             .unwrap_or(parts[3])
             .to_string();
         let file_path = parts[4].to_string();
 
-        // Keylime / IMA allowlist check for critical paths
-        if let Some((_, expected_digest)) = allowlist_sha256.iter().find(|(p, _)| *p == file_path) {
-            if !file_digest_part.eq_ignore_ascii_case(expected_digest) {
-                return Err(format!(
-                    "IMA allowlist mismatch for {}: expected {}, got {}",
-                    file_path, expected_digest, file_digest_part
-                ));
+        if let Some(allowlist) = allowlist_sha256 {
+            match allowlist.iter().find(|(path, _)| *path == file_path) {
+                Some((_, expected_digest)) => {
+                    if !file_digest_part.eq_ignore_ascii_case(expected_digest) {
+                        return Err(format!(
+                            "IMA allowlist mismatch for {}: expected {}, got {}",
+                            file_path, expected_digest, file_digest_part
+                        ));
+                    }
+                }
+                None => {
+                    return Err(format!(
+                        "IMA measured unlisted path {} on line {}",
+                        file_path,
+                        line_no + 1
+                    ));
+                }
             }
         }
+
+        verify_ima_ng_template_hash(
+            &template_name,
+            &file_digest_part,
+            &file_path,
+            parts[1],
+        )?;
 
         if pcr_index == 10 {
             let mut hasher = Sha256::new();
@@ -190,7 +332,16 @@ pub fn verify_ima_measurements(
         });
     }
 
-    let replayed_hex = hex::encode(pcr10);
+    Ok((entries, hex::encode(pcr10)))
+}
+
+/// Replays Linux IMA PCR-10 extension chain and verifies every measured file against an allowlist.
+pub fn verify_ima_measurements(
+    ascii_log: &str,
+    expected_pcr10_hex: &str,
+    allowlist_sha256: &[(&str, &str)],
+) -> Result<Vec<ImaMeasurementEntry>, String> {
+    let (entries, replayed_hex) = replay_ima_pcr10(ascii_log, Some(allowlist_sha256))?;
     if !replayed_hex.eq_ignore_ascii_case(expected_pcr10_hex) {
         return Err(format!(
             "IMA PCR-10 mismatch: replayed {}, expected {}",
@@ -271,9 +422,16 @@ mod tests {
 
     #[test]
     fn keylime_ima_pcr10_replay_verifies_and_rejects_tamper() {
-        let t1 = hex::encode(Sha256::digest(b"template-1"));
-        let f1 = hex::encode(Sha256::digest(b"examos-kiosk-bin"));
-        let line = format!("10 {t1} ima-ng sha256:{f1} /usr/local/bin/examos-kiosk\n");
+        let file_digest = Sha256::digest(b"examos-kiosk-bin");
+        let path = "/usr/local/bin/examos-kiosk";
+        let mut template = Sha256::new();
+        template.update((file_digest.len() as u32).to_le_bytes());
+        template.update(file_digest);
+        template.update((path.len() as u32).to_le_bytes());
+        template.update(path.as_bytes());
+        let t1 = hex::encode(template.finalize());
+        let f1 = hex::encode(file_digest);
+        let line = format!("10 {t1} ima-ng sha256:{f1} {path}\n");
 
         let mut pcr10 = [0u8; 32];
         let mut h = Sha256::new();
@@ -282,12 +440,40 @@ mod tests {
         pcr10.copy_from_slice(&h.finalize());
         let expected_pcr = hex::encode(pcr10);
 
-        let allowlist = [("/usr/local/bin/examos-kiosk", f1.as_str())];
+        let allowlist = [(path, f1.as_str())];
         let parsed = verify_ima_measurements(&line, &expected_pcr, &allowlist).expect("valid IMA");
         assert_eq!(parsed.len(), 1);
 
-        let bad_allowlist = [("/usr/local/bin/examos-kiosk", "0000000000000000000000000000000000000000000000000000000000000000")];
+        let bad_allowlist = [(path, "0000000000000000000000000000000000000000000000000000000000000000")];
         assert!(verify_ima_measurements(&line, &expected_pcr, &bad_allowlist).is_err());
+    }
+
+    #[test]
+    fn ima_replay_rejects_unlisted_paths_and_bad_template_hashes() {
+        let digest = Sha256::digest(b"unlisted-binary");
+        let digest_hex = hex::encode(digest);
+        let path = "/usr/local/bin/unlisted";
+        let mut template = Sha256::new();
+        template.update((digest.len() as u32).to_le_bytes());
+        template.update(digest);
+        template.update((path.len() as u32).to_le_bytes());
+        template.update(path.as_bytes());
+        let template_hash = hex::encode(template.finalize());
+        let line = format!("10 {template_hash} ima-ng sha256:{digest_hex} {path}\n");
+        let expected_pcr = "00".repeat(32);
+
+        // The path is not in the allowlist: fail closed.
+        let allowlist = [("/usr/local/bin/examos-kiosk", "00")];
+        assert!(verify_ima_measurements(&line, &expected_pcr, &allowlist).is_err());
+
+        // The path and digest are trusted, but the template hash is wrong.
+        let wrong_template = format!("10 {} ima-ng sha256:{digest_hex} {path}\n", "11".repeat(32));
+        assert!(verify_ima_measurements(
+            &wrong_template,
+            &expected_pcr,
+            &[(path, digest_hex.as_str())]
+        )
+        .is_err());
     }
 
     #[test]

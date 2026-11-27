@@ -11,6 +11,8 @@
 #include <limits.h>
 #include <ctype.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
 #include <linux/videodev2.h>
 
 static const char *g_blacklisted_processes[] = {
@@ -21,12 +23,71 @@ static const char *g_blacklisted_processes[] = {
 
 static int g_baseline_displays = 1;
 static int g_guard_initialized = 0;
+static int g_uevent_fd = -1;
+static int g_uevent_pending = 0;
 
 static int scan_and_terminate_prohibited_processes(void);
 static int count_active_displays(int *out_external);
 
+/*
+ * Opens the kernel udev/kobject netlink socket so hotplug events are observed
+ * as they happen instead of only on the next polling pass. The socket is
+ * non-blocking; scan drains whatever is queued.
+ */
+static int init_uevent_monitor(void) {
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                    NETLINK_KOBJECT_UEVENT);
+    if (fd < 0) return -1;
+
+    struct sockaddr_nl address;
+    memset(&address, 0, sizeof(address));
+    address.nl_family = AF_NETLINK;
+    address.nl_groups = 1; /* kernel events */
+
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(fd);
+        return -1;
+    }
+    g_uevent_fd = fd;
+    return 0;
+}
+
+static void drain_uevents(void) {
+    if (g_uevent_fd < 0) return;
+
+    char buffer[4096];
+    for (;;) {
+        ssize_t length = recv(g_uevent_fd, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
+        if (length <= 0) break;
+        buffer[length] = '\0';
+        if (strncmp(buffer, "add@", 4) == 0 ||
+            strncmp(buffer, "remove@", 7) == 0 ||
+            strncmp(buffer, "change@", 7) == 0) {
+            g_uevent_pending = 1;
+        }
+    }
+}
+
+int hardware_guard_uevent_pending(void) {
+    drain_uevents();
+    int pending = g_uevent_pending;
+    g_uevent_pending = 0;
+    return pending;
+}
+
+void hardware_guard_shutdown(void) {
+    if (g_uevent_fd >= 0) {
+        close(g_uevent_fd);
+        g_uevent_fd = -1;
+    }
+    g_guard_initialized = 0;
+}
+
 int hardware_guard_init(void) {
     if (access("/proc", R_OK | X_OK) != 0) {
+        return -1;
+    }
+    if (g_uevent_fd < 0 && init_uevent_monitor() != 0) {
         return -1;
     }
     int ext = 0;
@@ -228,6 +289,7 @@ const char *hardware_guard_network_state_name(device_network_state_t state) {
 int hardware_guard_scan(hardware_state_t *state) {
     if (!state) return -1;
     memset(state, 0, sizeof(hardware_state_t));
+    drain_uevents();
 
     int external_flag = 0;
     state->display_count = count_active_displays(&external_flag);

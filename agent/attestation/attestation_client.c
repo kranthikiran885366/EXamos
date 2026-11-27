@@ -50,28 +50,259 @@ static int make_endpoint(const char *heartbeat_url, const char *suffix,
     return written > 0 && (size_t)written < out_size ? 0 : -1;
 }
 
-static int json_string(const char *json, const char *key, char *out, size_t size)
+#define JSON_DEPTH_LIMIT 32
+#define JSON_DOCUMENT_LIMIT (1024 * 1024)
+
+typedef struct {
+    const char *p;
+    const char *end;
+    unsigned int depth;
+} json_cursor_t;
+
+static void json_skip_ws(json_cursor_t *cursor)
 {
-    if (!json || !key || !out || size == 0) return -1;
-    out[0] = '\0';
-    char pattern[96];
-    int n = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (n < 0 || (size_t)n >= sizeof(pattern)) return -1;
-    const char *p = strstr(json, pattern);
-    if (!p) return -1;
-    p += (size_t)n;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-    if (*p++ != ':') return -1;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-    if (*p++ != '"') return -1;
-    size_t used = 0;
-    while (*p && *p != '"') {
-        if (*p == '\\' || used + 1 >= size) return -1;
-        out[used++] = *p++;
+    while (cursor->p < cursor->end &&
+           (*cursor->p == ' ' || *cursor->p == '\t' ||
+            *cursor->p == '\r' || *cursor->p == '\n'))
+        cursor->p++;
+}
+
+static int json_skip_string(json_cursor_t *cursor)
+{
+    if (cursor->p >= cursor->end || *cursor->p++ != '"') return -1;
+    while (cursor->p < cursor->end) {
+        unsigned char c = (unsigned char)*cursor->p++;
+        if (c == '"') return 0;
+        if (c < 0x20) return -1;
+        if (c != '\\') continue;
+        if (cursor->p >= cursor->end) return -1;
+        unsigned char escaped = (unsigned char)*cursor->p++;
+        switch (escaped) {
+            case '"': case '\\': case '/': case 'b':
+            case 'f': case 'n': case 'r': case 't':
+                break;
+            case 'u':
+                if (cursor->end - cursor->p < 4) return -1;
+                for (int i = 0; i < 4; i++) {
+                    if (!isxdigit((unsigned char)cursor->p[i])) return -1;
+                }
+                cursor->p += 4;
+                break;
+            default:
+                return -1;
+        }
     }
-    if (*p != '"') return -1;
+    return -1;
+}
+
+static int json_skip_number(json_cursor_t *cursor)
+{
+    if (cursor->p < cursor->end && *cursor->p == '-') cursor->p++;
+    if (cursor->p >= cursor->end) return -1;
+    if (*cursor->p == '0') {
+        cursor->p++;
+    } else if (*cursor->p >= '1' && *cursor->p <= '9') {
+        while (cursor->p < cursor->end && isdigit((unsigned char)*cursor->p)) cursor->p++;
+    } else {
+        return -1;
+    }
+    if (cursor->p < cursor->end && *cursor->p == '.') {
+        cursor->p++;
+        if (cursor->p >= cursor->end || !isdigit((unsigned char)*cursor->p)) return -1;
+        while (cursor->p < cursor->end && isdigit((unsigned char)*cursor->p)) cursor->p++;
+    }
+    if (cursor->p < cursor->end && (*cursor->p == 'e' || *cursor->p == 'E')) {
+        cursor->p++;
+        if (cursor->p < cursor->end && (*cursor->p == '+' || *cursor->p == '-')) cursor->p++;
+        if (cursor->p >= cursor->end || !isdigit((unsigned char)*cursor->p)) return -1;
+        while (cursor->p < cursor->end && isdigit((unsigned char)*cursor->p)) cursor->p++;
+    }
+    return 0;
+}
+
+static int json_skip_value(json_cursor_t *cursor);
+
+static int json_skip_container(json_cursor_t *cursor, char open, char close)
+{
+    if (cursor->p >= cursor->end || *cursor->p++ != open) return -1;
+    json_skip_ws(cursor);
+    if (cursor->p < cursor->end && *cursor->p == close) {
+        cursor->p++;
+        return 0;
+    }
+    for (;;) {
+        json_skip_ws(cursor);
+        if (open == '{') {
+            if (json_skip_string(cursor) != 0) return -1;
+            json_skip_ws(cursor);
+            if (cursor->p >= cursor->end || *cursor->p++ != ':') return -1;
+            json_skip_ws(cursor);
+        }
+        if (json_skip_value(cursor) != 0) return -1;
+        json_skip_ws(cursor);
+        if (cursor->p >= cursor->end) return -1;
+        char separator = *cursor->p++;
+        if (separator == close) return 0;
+        if (separator != ',') return -1;
+    }
+}
+
+static int json_skip_value(json_cursor_t *cursor)
+{
+    if (++cursor->depth > JSON_DEPTH_LIMIT) return -1;
+    json_skip_ws(cursor);
+    if (cursor->p >= cursor->end) return -1;
+
+    int result;
+    char c = *cursor->p;
+    if (c == '"') {
+        result = json_skip_string(cursor);
+    } else if (c == '{') {
+        result = json_skip_container(cursor, '{', '}');
+    } else if (c == '[') {
+        result = json_skip_container(cursor, '[', ']');
+    } else if (c == '-' || isdigit((unsigned char)c)) {
+        result = json_skip_number(cursor);
+    } else if ((size_t)(cursor->end - cursor->p) >= 4 &&
+               memcmp(cursor->p, "true", 4) == 0) {
+        cursor->p += 4;
+        result = 0;
+    } else if ((size_t)(cursor->end - cursor->p) >= 5 &&
+               memcmp(cursor->p, "false", 5) == 0) {
+        cursor->p += 5;
+        result = 0;
+    } else if ((size_t)(cursor->end - cursor->p) >= 4 &&
+               memcmp(cursor->p, "null", 4) == 0) {
+        cursor->p += 4;
+        result = 0;
+    } else {
+        result = -1;
+    }
+    cursor->depth--;
+    return result;
+}
+
+static int json_decode_string(const char *start, const char *end,
+                              char *out, size_t size)
+{
+    if (!start || !end || !out || size == 0 || end <= start || *start != '"')
+        return -1;
+    const char *p = start + 1;
+    const char *closing = end - 1;
+    size_t used = 0;
+    while (p < closing) {
+        unsigned char c = (unsigned char)*p++;
+        if (c == '\\') {
+            if (p >= closing) return -1;
+            unsigned char escaped = (unsigned char)*p++;
+            switch (escaped) {
+                case '"': c = '"'; break;
+                case '\\': c = '\\'; break;
+                case '/': c = '/'; break;
+                case 'b': c = '\b'; break;
+                case 'f': c = '\f'; break;
+                case 'n': c = '\n'; break;
+                case 'r': c = '\r'; break;
+                case 't': c = '\t'; break;
+                case 'u': {
+                    if (closing - p < 4) return -1;
+                    unsigned int codepoint = 0;
+                    for (int digit = 0; digit < 4; digit++) {
+                        unsigned char hex = (unsigned char)*p++;
+                        if (!isxdigit(hex)) return -1;
+                        codepoint = (codepoint << 4) |
+                            (unsigned int)(isdigit(hex) ? hex - '0' :
+                                           (tolower(hex) - 'a' + 10));
+                    }
+                    if (codepoint == 0 || codepoint >= 0x80) return -1;
+                    c = (unsigned char)codepoint;
+                    break;
+                }
+                default:
+                    return -1;
+            }
+        }
+        if (c == '\0' || used + 1 >= size) return -1;
+        out[used++] = (char)c;
+    }
     out[used] = '\0';
     return 0;
+}
+
+/* Validates the whole document and returns the value position for a top-level key. */
+static int json_find_member(const char *json, const char *key, json_cursor_t *value)
+{
+    size_t length = strlen(json);
+    if (length == 0 || length > JSON_DOCUMENT_LIMIT) return -1;
+
+    json_cursor_t document = { json, json + length, 0 };
+    json_cursor_t validated = document;
+    if (json_skip_value(&validated) != 0) return -1;
+    json_skip_ws(&validated);
+    if (validated.p != validated.end) return -1;
+
+    json_cursor_t cursor = document;
+    json_skip_ws(&cursor);
+    if (cursor.p >= cursor.end || *cursor.p++ != '{') return -1;
+    json_skip_ws(&cursor);
+    if (cursor.p < cursor.end && *cursor.p == '}') return -1;
+
+    for (;;) {
+        json_skip_ws(&cursor);
+        const char *key_start = cursor.p;
+        if (json_skip_string(&cursor) != 0) return -1;
+        char decoded_key[128];
+        if (json_decode_string(key_start, cursor.p, decoded_key,
+                               sizeof(decoded_key)) != 0)
+            return -1;
+        json_skip_ws(&cursor);
+        if (cursor.p >= cursor.end || *cursor.p++ != ':') return -1;
+        json_skip_ws(&cursor);
+
+        if (strcmp(decoded_key, key) == 0) {
+            *value = cursor;
+            return 0;
+        }
+        if (json_skip_value(&cursor) != 0) return -1;
+        json_skip_ws(&cursor);
+        if (cursor.p >= cursor.end) return -1;
+        char separator = *cursor.p++;
+        if (separator == '}') return -1;
+        if (separator != ',') return -1;
+    }
+}
+
+static int json_string(const char *json, const char *key, char *out, size_t size)
+{
+    if (!json || !key || !out || size == 0 || strlen(key) >= 128) return -1;
+    out[0] = '\0';
+
+    json_cursor_t value;
+    if (json_find_member(json, key, &value) != 0) return -1;
+    if (value.p >= value.end || *value.p != '"') return -1;
+
+    json_cursor_t end = value;
+    if (json_skip_string(&end) != 0) return -1;
+    return json_decode_string(value.p, end.p, out, size);
+}
+
+/* Returns 1 for true, 0 for false, -1 when the key is absent or not a boolean. */
+static int json_bool(const char *json, const char *key, int *out)
+{
+    if (!json || !key || !out || strlen(key) >= 128) return -1;
+
+    json_cursor_t value;
+    if (json_find_member(json, key, &value) != 0) return -1;
+    size_t remaining = (size_t)(value.end - value.p);
+    if (remaining >= 4 && memcmp(value.p, "true", 4) == 0) {
+        *out = 1;
+        return 0;
+    }
+    if (remaining >= 5 && memcmp(value.p, "false", 5) == 0) {
+        *out = 0;
+        return 0;
+    }
+    return -1;
 }
 
 static int post_json(const char *url, const char *body,
@@ -191,11 +422,13 @@ int attestation_client_activate(const char *heartbeat_url, const char *device_id
             "\"activation_response\":\"%s\"}",
             activation_id, device_id, activation_response_hex) >= (int)sizeof(body))
         goto cleanup;
+    int verified = 0;
     if (post_json(endpoint, body, response, sizeof(response), &http_status) != 0 ||
         http_status != 200 ||
         json_string(response, "status", status_text, sizeof(status_text)) != 0 ||
         strcmp(status_text, "ACTIVATION_SUCCESS") != 0 ||
-        !strstr(response, "\"verified\":true")) goto cleanup;
+        json_bool(response, "verified", &verified) != 0 ||
+        verified != 1) goto cleanup;
     result = 0;
 
 cleanup:

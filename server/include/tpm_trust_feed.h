@@ -64,4 +64,51 @@ tpm_trust_feed_result_t tpm_trust_feed_verify(
 
 const char *tpm_trust_feed_result_name(tpm_trust_feed_result_t result);
 
+/*
+ * Bounded JSON document API.
+ *
+ * The trust-feed verifier and the dynamic config loader share one parser so
+ * that every on-disk manifest is validated against the same depth, size and
+ * duplicate-key limits. Documents are opaque; nodes are integer handles that
+ * are only valid while their document is alive. All accessors return -1 on a
+ * missing member, a type mismatch, or an invalid handle.
+ */
+typedef struct tpm_json_document tpm_json_document_t;
+
+typedef enum {
+    TPM_JSON_OBJECT = 0,
+    TPM_JSON_ARRAY,
+    TPM_JSON_STRING,
+    TPM_JSON_NUMBER,
+    TPM_JSON_TRUE,
+    TPM_JSON_FALSE,
+    TPM_JSON_NULL
+} tpm_json_type_t;
+
+/* Parses and fully validates one JSON document. Returns NULL on any error. */
+tpm_json_document_t *tpm_json_document_parse(const char *json, size_t json_len);
+void tpm_json_document_free(tpm_json_document_t *document);
+
+int tpm_json_root(const tpm_json_document_t *document);
+tpm_json_type_t tpm_json_node_type(const tpm_json_document_t *document, int node);
+
+/* Object access. `key` must be NUL terminated. */
+int tpm_json_object_member(const tpm_json_document_t *document, int object,
+                           const char *key);
+/* Iterates members in document order; returns the value node and its key. */
+int tpm_json_object_member_at(const tpm_json_document_t *document, int object,
+                              size_t index, const char **key, size_t *key_len);
+
+/* Array access. */
+int tpm_json_array_length(const tpm_json_document_t *document, int array);
+int tpm_json_array_at(const tpm_json_document_t *document, int array,
+                      size_t index);
+
+/* Scalar access. */
+int tpm_json_node_string(const tpm_json_document_t *document, int node,
+                         const char **text, size_t *length);
+int tpm_json_node_bool(const tpm_json_document_t *document, int node, int *value);
+int tpm_json_node_uint64(const tpm_json_document_t *document, int node,
+                         uint64_t *value);
+
 #endif

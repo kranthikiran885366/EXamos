@@ -3,10 +3,13 @@
 //!
 //! Runs completely offline inside the privileged Rust security boundary:
 //! 1. BadUSB / HID Keystroke-Injection Classifier: extracts inter-keystroke interval (IKI),
-//!    hold duration variance, sub-10ms burst ratio, and timing entropy to detect programmable
-//!    HID injectors (e.g., Rubber Ducky, Bash Bunny, O.MG cables).
+//!    hold duration variance, sub-10ms burst ratio, timing entropy and USB HID identity to
+//!    detect programmable HID injectors (e.g., Rubber Ducky, Bash Bunny, O.MG cables).
 //! 2. Wayland Screen-Overlay & Compositor Tamper Classifier: evaluates unauthorized surface
 //!    layer-shell injections, focus-steal bursts, and frame-capture timing anomalies.
+//!
+//! The scoring models are small, interpretable logistic scorers with documented
+//! feature weights; they are not advertised as trained neural networks.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +48,7 @@ pub fn assess_keystroke_window(samples: &[KeystrokeSample]) -> BehavioralAssessm
         return BehavioralAssessment {
             verdict: ThreatVerdict::Benign,
             probability: 0.0,
-            detector: "badusb_hid_ml",
+            detector: "badusb_hid_heuristic",
             features: vec![("sample_count", samples.len() as f64)],
             reason: "Insufficient keystroke window for inference".to_string(),
         };
@@ -85,13 +88,34 @@ pub fn assess_keystroke_window(samples: &[KeystrokeSample]) -> BehavioralAssessm
     let robotic_ratio = sub_3ms_count as f64 / n;
     let hold_uniformity = uniform_hold_count as f64 / n;
 
-    // Logistic inference weights trained on human typing vs programmable HID injectors:
-    // Human typing: mean IKI ~80-250ms, std >25ms, burst_ratio ~0, hold_uniformity <0.25.
-    // BadUSB injection: mean IKI <15ms, std <5ms, burst_ratio >0.6, hold_uniformity >0.6.
+    // The HID identity is part of the feature vector: programmable boards and
+    // devices that report no vendor/product identity are weighted upward. A
+    // homogeneous unknown identity across the whole window is a stronger
+    // signal than a single odd event, because a real keyboard does not change
+    // its USB identity mid-session.
+    let first_vendor = samples[0].hid_vendor_id;
+    let first_product = samples[0].hid_product_id;
+    let homogeneous_identity = samples
+        .iter()
+        .all(|s| s.hid_vendor_id == first_vendor && s.hid_product_id == first_product);
+    let programmable_hid_identity = matches!(first_vendor, 0x16c0 | 0x1d50 | 0x1209 | 0x2341);
+    let hid_identity_risk = if first_vendor == 0 && first_product == 0 {
+        1.0
+    } else if homogeneous_identity && programmable_hid_identity {
+        1.0
+    } else {
+        0.0
+    };
+
+    // Calibrated logistic scorer over timing features (not a trained neural
+    // network). Human typing: mean IKI ~80-250ms, std >25ms, burst_ratio ~0,
+    // hold_uniformity <0.25. BadUSB injection: mean IKI <15ms, std <5ms,
+    // burst_ratio >0.6, hold_uniformity >0.6.
     let z = -3.2
         + 4.8 * burst_ratio
         + 5.5 * robotic_ratio
         + 2.4 * hold_uniformity
+        + 1.8 * hid_identity_risk
         + if mean_iki_ms < 20.0 { 2.2 } else { -0.8 }
         + if std_iki_ms < 4.0 { 2.0 } else { -0.6 };
 
@@ -117,13 +141,14 @@ pub fn assess_keystroke_window(samples: &[KeystrokeSample]) -> BehavioralAssessm
     BehavioralAssessment {
         verdict,
         probability: prob,
-        detector: "badusb_hid_ml",
+        detector: "badusb_hid_heuristic",
         features: vec![
             ("mean_iki_ms", mean_iki_ms),
             ("std_iki_ms", std_iki_ms),
             ("sub_10ms_burst_ratio", burst_ratio),
             ("sub_3ms_robotic_ratio", robotic_ratio),
             ("hold_uniformity", hold_uniformity),
+            ("hid_identity_risk", hid_identity_risk),
         ],
         reason,
     }
@@ -160,7 +185,7 @@ pub fn assess_overlay_telemetry(t: &WaylandSurfaceTelemetry) -> BehavioralAssess
     BehavioralAssessment {
         verdict: verdict.clone(),
         probability: prob,
-        detector: "wayland_overlay_ml",
+        detector: "wayland_overlay_heuristic",
         features: vec![
             ("total_surfaces", t.total_surfaces as f64),
             ("unauthorized_layer_shells", t.unauthorized_layer_shells as f64),

@@ -69,8 +69,11 @@ CURRENT_LINK_TMP=""
 cleanup() {
     tpm2_flushcontext "$POLICY_CTX" 2>/dev/null || true
     tpm2_flushcontext "$PRIMARY_CTX" 2>/dev/null || true
-    rm -rf -- "$WORK_DIR"
-    [ -z "$ACTIVE_BUNDLE_TMP" ] || rm -f -- "$ACTIVE_BUNDLE_TMP"
+    if [ -d "$WORK_DIR" ]; then
+        find "$WORK_DIR" -type f -exec shred -u -n 1 -z {} + 2>/dev/null || true
+        rm -rf -- "$WORK_DIR"
+    fi
+    [ -z "$ACTIVE_BUNDLE_TMP" ] || shred -u -n 1 -z "$ACTIVE_BUNDLE_TMP" 2>/dev/null || rm -f -- "$ACTIVE_BUNDLE_TMP"
     [ -z "$CURRENT_LINK_TMP" ] || rm -f -- "$CURRENT_LINK_TMP"
     if [ -n "$GENERATION_STAGE" ] && [ -d "$GENERATION_STAGE" ]; then
         rm -rf -- "$GENERATION_STAGE"
@@ -86,6 +89,10 @@ trap 'exit 143' TERM
 
 log()  { echo "[TPM-SEAL] $*"; }
 fail() { echo "[TPM-SEAL] FATAL: $*" >&2; exit 1; }
+
+if [ -x /usr/local/bin/pfr-800-193-verify.sh ]; then
+    /usr/local/bin/pfr-800-193-verify.sh || fail "NIST SP 800-193 PFR verification failed; refusing to seal secrets on unverified boot."
+fi
 
 # -----------------------------------------------------------------------
 # Prerequisites
