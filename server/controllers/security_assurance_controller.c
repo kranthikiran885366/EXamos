@@ -244,8 +244,8 @@ void security_assurance_handle(int client_fd, const char *method, const char *pa
         PQclear(ins);
         db_release(conn, 0);
 
-        audit_log(AUDIT_INFO, sess.username, "KEYLIME_IMA_VERIFY",
-                  match ? "PCR10_MATCH" : reason);
+        audit_append(sess.username, "KEYLIME_IMA_VERIFY",
+                     match ? "PCR10_MATCH" : reason);
 
         if (!match) {
             send_err_with_cors(client_fd, 403, reason, origin, extra_headers, extra_len);
@@ -388,7 +388,7 @@ void security_assurance_handle(int client_fd, const char *method, const char *pa
         PQclear(cmt);
         db_release(conn, 0);
 
-        audit_log(AUDIT_CRITICAL, sess.username, "TAMPER_ZEROIZATION_DISPATCHED", trigger_type);
+        audit_append(sess.username, "TAMPER_ZEROIZATION_DISPATCHED", trigger_type);
 
         char ok_resp[256];
         snprintf(ok_resp, sizeof(ok_resp),
@@ -453,7 +453,7 @@ void security_assurance_handle(int client_fd, const char *method, const char *pa
             return;
         }
 
-        audit_log(AUDIT_CRITICAL, sess.username, "TAMPER_ZEROIZATION_VERIFIED", event_id);
+        audit_append(sess.username, "TAMPER_ZEROIZATION_VERIFIED", event_id);
         char ok_resp[256];
         snprintf(ok_resp, sizeof(ok_resp),
                  "{\"verified\":true,\"id\":\"%s\",\"lockdown_engaged\":true}", event_id);

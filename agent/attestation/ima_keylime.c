@@ -1,7 +1,7 @@
 #include "../include/ima_keylime.h"
 
 #include <ctype.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +38,7 @@ int examos_ima_replay_pcr10(const char *ascii_path, examos_ima_summary_t *out) {
     FILE *fp = fopen(ascii_path, "r");
     if (!fp) return -1;
 
-    unsigned char pcr10[SHA256_DIGEST_LENGTH];
+    unsigned char pcr10[32];
     memset(pcr10, 0, sizeof(pcr10));
 
     char line[4096];
@@ -59,11 +59,18 @@ int examos_ima_replay_pcr10(const char *ascii_path, examos_ima_summary_t *out) {
             return -1;
         }
         if (pcr_idx == 10) {
-            SHA256_CTX ctx;
-            SHA256_Init(&ctx);
-            SHA256_Update(&ctx, pcr10, sizeof(pcr10));
-            SHA256_Update(&ctx, template_hash, sizeof(template_hash));
-            SHA256_Final(pcr10, &ctx);
+            EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+            unsigned int out_len = 0;
+            if (!ctx ||
+                EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
+                EVP_DigestUpdate(ctx, pcr10, sizeof(pcr10)) != 1 ||
+                EVP_DigestUpdate(ctx, template_hash, sizeof(template_hash)) != 1 ||
+                EVP_DigestFinal_ex(ctx, pcr10, &out_len) != 1) {
+                if (ctx) EVP_MD_CTX_free(ctx);
+                fclose(fp);
+                return -1;
+            }
+            EVP_MD_CTX_free(ctx);
         }
         out->entry_count++;
     }
