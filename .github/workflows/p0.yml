@@ -39,7 +39,9 @@ jobs:
             sbsigntool efitools cryptsetup-bin squashfs-tools mkosi \
             systemd-container debian-archive-keyring xorriso fdisk mtools \
             dosfstools grub-efi-amd64-bin grub-common \
-            binutils file jq cpio zstd systemd-ukify
+            binutils file jq cpio zstd systemd-ukify \
+            build-essential gcc g++ make pkg-config \
+            libssl-dev libcurl4-openssl-dev libpq-dev libopencv-dev
 
       - name: Run Host & Environment Check
         run: bash tests/p0/host-check.sh
