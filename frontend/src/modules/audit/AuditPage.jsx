@@ -77,14 +77,7 @@ export default function AuditPage() {
   };
 
   const exportSignedJson = () => flash.run(async () => {
-    const res = await fetch('/api/v1/admin/audit/export', {
-      headers: { Authorization: `Bearer ${localStorage.getItem('examos.token') || ''}` },
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `Signed export failed (${res.status})`);
-    }
-    const bundle = await res.json();
+    const bundle = await Api.exportSignedAudit();
     const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url; a.download = `examos-signed-audit-${new Date().toISOString().slice(0, 10)}.json`;

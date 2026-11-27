@@ -26,7 +26,7 @@ import {
   listExaminationRegistrations, evaluateRegistration, approveRegistration,
   rejectRegistration, grantRegistrationException, importExaminationRegistrations,
   publishExaminationRoster, launchExamSession, heartbeatExamSession,
-  interruptExamSession, resumeExamSession,
+  interruptExamSession, resumeExamSession, freezeExamSession,
 } from '../../core/api/services';
 import ExamsPage from './ExamsPage';
 
@@ -1200,6 +1200,7 @@ export function ExamCandidatesPage() {
                 { label: 'Send heartbeat', onClick: () => run(async () => { await heartbeatExamSession(s.id); reloadSessions(); return 'Heartbeat acknowledged.'; }) },
                 { label: 'Simulate interrupt', danger: true, disabled: s.status !== 'active', onClick: () => run(async () => { await interruptExamSession(s.id, 'Network packet loss simulated'); reloadSessions(); return 'Session interrupted.'; }) },
                 { label: 'Resume', disabled: s.status !== 'interrupted', onClick: () => run(async () => { await resumeExamSession(s.id); reloadSessions(); return 'Session resumed.'; }) },
+                { label: 'Freeze session', danger: true, disabled: s.status === 'closed' || s.status === 'terminated', onClick: () => run(async () => { await freezeExamSession(s.id, 'Remote freeze triggered by proctor/admin'); reloadSessions(); return 'Session frozen and terminated.'; }) },
                 { label: 'Close session', danger: true, disabled: s.status === 'closed', onClick: () => run(async () => { await closeAuthorizedExamSession(s.id); reloadSessions(); return 'Session closed.'; }) },
               ]}
               empty={<Empty title="No sessions recorded yet" desc="Candidates launch sessions from the secure ExamOS bootable kiosk terminal." />}

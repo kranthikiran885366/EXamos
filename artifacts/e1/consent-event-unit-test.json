@@ -3,10 +3,10 @@
   "check": "session_bound_consent_event_chain",
   "status": "PASS",
   "test_kind": "integration_unit",
-  "timestamp": "2026-10-12T17:06:18Z",
-  "source_commit": "c8d8c6149458e9c1611966d5f2db66ed2f42e2d1",
+  "timestamp": "2026-11-27T11:23:57Z",
+  "source_commit": "a309621440b641fa45f39e1dc9bdc5a8df161f4a",
   "source_tree_state": "DIRTY",
-  "dirty_path_count": 307,
+  "dirty_path_count": 2,
   "command": "bash tests/e1/e1-consent-test.sh",
   "event_chain": "real repository event_chain.c with temporary test storage",
   "sensor_hardware_test": "NOT_RUN",
@@ -20,11 +20,11 @@
     "collection remains disabled by policy"
   ],
   "source_sha256": {
-    "server/environment/e1_consent.c": "8d19f15d9bbb38e33467f24731fdf79da0040d959205f9c2394a76e951972fa3",
-    "server/include/e1_consent.h": "366835272c563320f865cce5a2ffbf534a043a27cab76d4e88989fc96203461e",
-    "server/events/event_chain.c": "9a4ee2ba8aca41acea985485a3da963c2b936048d3622a1cab0b67c43646bb48",
-    "server/main.c": "7ec4f9abacebb26edd488b0e1fbad13fd92aed3a89f20da8325abe41e0f404af",
-    "tests/e1/e1_consent_test.c": "e8bbaacf5690542dc85ad80e670649423661d85f22997c7928ed4227082a133f",
+    "server/environment/e1_consent.c": "64571f8b928a1189bc71d4bce37f502dc271d9475fbe9e966793d1f5a1604188",
+    "server/include/e1_consent.h": "243a2c04e40d62f457e6e473e6c8563ae38b0e754ec1f848558df42cad827c62",
+    "server/events/event_chain.c": "7a1730adc117090ddff68438e85b0f54723f042e51bc85849cb140be8bd6dc90",
+    "server/main.c": "7736f7e9691997d70f5b4ea444f695712453262b414522ed35608383bf68059d",
+    "tests/e1/e1_consent_test.c": "b21447b6d328f6a6f1a75fbcc592f3100ffcd9e24134d5624fb0a3ec1fced97e",
     "tests/e1/e1-consent-test.sh": "9d4cab6e657b85c969ac3b8c50c25b65b38dbbf50696c8b7e7a71901ed318e56"
   }
 }

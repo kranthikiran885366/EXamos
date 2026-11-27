@@ -1,4 +1,4 @@
-=== [P2-STATIC] ExamOS P2 Static Audit: 2026-11-10T12:45:33Z ===
+=== [P2-STATIC] ExamOS P2 Static Audit: 2026-11-27T11:23:35Z ===
 [STATIC-PASS]    S-01: 'bash' absent from release mkosi.conf [Content]
 [STATIC-PASS]    S-01: 'openssh-server' absent from release mkosi.conf [Content]
 [STATIC-PASS]    S-01: 'gcc' absent from release mkosi.conf [Content]
@@ -46,8 +46,8 @@
 [STATIC-PASS]    S-10: kiosk.service has 'PrivateTmp=true'
 [STATIC-PASS]    S-10: kiosk.service has 'LockPersonality=true'
 [STATIC-PASS]    S-11: USBGuard rules include storage block and implicit deny
-[STATIC-PASS]    S-12: USBGuard is enabled and required before preflight
+[STATIC-FAIL]    S-12: USBGuard boot enablement/preflight dependency is missing
 [STATIC-PASS]    S-14: kiosk startup requires successful mandatory preflight
 [STATIC-PASS]    S-13: complete validator is staged and P2 lockdown runs during image assembly
 
-=== [P2-STATIC] Summary: PASS=50 FAIL=0 BLOCKED=0 ===
+=== [P2-STATIC] Summary: PASS=49 FAIL=1 BLOCKED=0 ===

@@ -9,6 +9,7 @@ import { put } from '../db/db';
 import { visibleTo } from '../../modules/notifications/service';
 import { ago } from './format';
 import { Icon, Badge } from './kit';
+import { SUPPORTED_LOCALES, getLocale, setLocale } from '../i18n';
 
 function useClickOutside(ref, fn) {
   useEffect(() => {
@@ -25,6 +26,7 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
   const notifications = useCol('notifications');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(null); // 'search' | 'notifications' | 'user'
+  const [locale, setLocaleState] = useState(getLocale);
   const wrap = useRef(null); useClickOutside(wrap, () => setOpen(null));
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
@@ -105,6 +107,15 @@ export default function Topbar({ onMenu, onCollapse, collapsed, backend }) {
     </div>
 
     <div className="topbar-right">
+      <select
+        className="tenant-select"
+        aria-label="Language"
+        value={locale}
+        onChange={(e) => setLocaleState(setLocale(e.target.value))}
+        style={{ width: 'auto', minWidth: 82 }}
+      >
+        {SUPPORTED_LOCALES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+      </select>
       <span className={'conn ' + (online ? 'ok' : 'bad')} title={online ? 'Network reachable' : 'Offline'}><i />{online ? 'Online' : 'Offline'}</span>
       <span className={'conn backend-conn ' + (backendReady ? 'ok' : 'bad')} title={backendReady ? 'Backend C server reachable' : 'Backend unreachable'}><i />{backendReady ? 'Backend' : 'Local only'}</span>
       <Link to={can(user.role, 'security.view') ? '/security/incident-response' : '/operator/incidents'} className={'topstatus ' + (crit ? 'bad' : openInc ? 'warn' : 'ok')}>

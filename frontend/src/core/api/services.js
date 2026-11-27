@@ -1535,5 +1535,15 @@ export const getSecurityAssurancePosture = wrap(async () => {
   return res.data;
 });
 
+export const exportSignedAudit = wrap(async () => {
+  const res = await api.get('/api/v1/admin/audit/export', { actor: ACTOR });
+  return res.data;
+});
+
+export const freezeExamSession = wrap(async (sessionId, reason = 'Remote freeze triggered by proctor/admin') => {
+  const res = await api.post(`/api/v1/admin/sessions/${encodeURIComponent(sessionId)}/freeze`, { reason }, { actor: ACTOR, sign: true });
+  return res.data;
+});
+
 // Backend is now CORS-enabled for http://localhost:5173 by default.
 // Set EXAMOS_CORS_ALLOWED_ORIGINS env var on the server for production origins.
