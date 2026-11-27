@@ -78,11 +78,9 @@ int heartbeat_collect_metrics(heartbeat_payload_t *payload) {
     return 0;
 }
 
-int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json, const char *rf_json) {
-    if (!payload) return -1;
-
-    char post_data[4096];
-    snprintf(post_data, sizeof(post_data),
+int heartbeat_format_json(const heartbeat_payload_t *payload, const char *hardware_json, const char *rf_json, char *out, size_t out_len) {
+    if (!payload || !out || out_len == 0) return -1;
+    int written = snprintf(out, out_len,
              "{"
              "\"device_id\":\"%s\","
              "\"timestamp\":%ld,"
@@ -103,6 +101,11 @@ int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json
              payload->process_count,
              hardware_json ? hardware_json : "{}",
              rf_json ? rf_json : "{}");
+    return (written > 0 && (size_t)written < out_len) ? 0 : -1;
+}
+
+int heartbeat_send_json(const char *post_data) {
+    if (!post_data || !post_data[0]) return -1;
 
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
@@ -155,4 +158,12 @@ int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json
     curl_easy_cleanup(curl);
 
     return (res == CURLE_OK && response_status >= 200 && response_status < 300) ? 0 : -1;
+}
+
+int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json, const char *rf_json) {
+    char post_data[4096];
+    if (heartbeat_format_json(payload, hardware_json, rf_json, post_data, sizeof(post_data)) != 0) {
+        return -1;
+    }
+    return heartbeat_send_json(post_data);
 }

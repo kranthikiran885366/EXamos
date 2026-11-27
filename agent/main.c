@@ -3,6 +3,7 @@
 #include "include/attestation_client.h"
 #include "include/hardware_guard.h"
 #include "include/heartbeat.h"
+#include "include/offline_buffer.h"
 #include "include/rf_scanner.h"
 #include "../common/include/examos_appliance.h"
 #include <stdio.h>
@@ -23,6 +24,15 @@ static void log_info(const char *msg) {
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", &tm_buf);
     fprintf(stdout, "%s [INFO] [ExamOS-Agent] %s\n", tbuf, msg);
     fflush(stdout);
+}
+
+static int flush_offline_heartbeat_cb(const char *event_type, const char *payload_json, void *user_ctx) {
+    (void)user_ctx;
+    if (!event_type || !payload_json) return -1;
+    if (strcmp(event_type, "heartbeat") == 0) {
+        return heartbeat_send_json(payload_json);
+    }
+    return 0;
 }
 
 static void sig_handler(int sig) {
@@ -113,6 +123,14 @@ int main(int argc, char *argv[]) {
     if (heartbeat_init(server_url, device_id) != 0) {
         log_info("Heartbeat client initialization failed.");
         return 1;
+    }
+
+    unsigned char wal_key[32];
+    if (RAND_bytes(wal_key, sizeof(wal_key)) == 1) {
+        if (offline_buffer_init("/var/lib/examos/offline-events.wal", wal_key) == 0) {
+            log_info("Encrypted offline event WAL buffer initialized.");
+        }
+        OPENSSL_cleanse(wal_key, sizeof(wal_key));
     }
 
     unsigned char session_random[16];
@@ -253,7 +271,21 @@ int main(int argc, char *argv[]) {
         heartbeat_payload_t hb;
         heartbeat_collect_metrics(&hb);
 
-        int heartbeat_status = heartbeat_send(&hb, hw_json, rf_json);
+        char hb_json[4096];
+        int heartbeat_status = -1;
+        if (heartbeat_format_json(&hb, hw_json, rf_json, hb_json, sizeof(hb_json)) == 0) {
+            heartbeat_status = heartbeat_send_json(hb_json);
+            if (heartbeat_status != 0) {
+                (void)offline_buffer_enqueue("heartbeat", hb_json);
+            } else if (offline_buffer_pending_count() > 0) {
+                int flushed = offline_buffer_flush(flush_offline_heartbeat_cb, NULL);
+                if (flushed > 0) {
+                    char flush_msg[128];
+                    snprintf(flush_msg, sizeof(flush_msg), "Flushed %d buffered offline heartbeat(s).", flushed);
+                    log_info(flush_msg);
+                }
+            }
+        }
 
         if (iteration % 12 == 0 || iteration == 0) {
             char status_msg[256];
@@ -268,6 +300,7 @@ int main(int argc, char *argv[]) {
         sleep((unsigned int)heartbeat_interval);
     }
 
+    offline_buffer_shutdown();
     log_info("ExamOS Agent shutting down cleanly.");
     return 0;
 }

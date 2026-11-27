@@ -107,6 +107,18 @@ for unit in sppio-securityd.service examos-bpf-lsm.service examos-xdp-filter.ser
 done
 bash "$ROOT/scripts/generate-slsa-sbom.sh" "$ROOT" "$STAGE_DIR/usr/share/examos/supply-chain"
 install -D -m 0755 "$ROOT/image/scripts/tpm-seal-secrets.sh" "$STAGE_DIR/usr/local/sbin/tpm-seal-secrets.sh"
+install -D -m 0755 "$ROOT/image/scripts/tpm-luks2-enroll.sh" "$STAGE_DIR/usr/local/sbin/tpm-luks2-enroll.sh"
+install -D -m 0755 "$ROOT/image/scripts/examos-rotate-keys.sh" "$STAGE_DIR/usr/local/sbin/examos-rotate-keys.sh"
+install -D -m 0755 "$ROOT/image/scripts/examos-db-backup.sh" "$STAGE_DIR/usr/local/sbin/examos-db-backup.sh"
+install -D -m 0755 "$ROOT/image/scripts/examos-nts-sync.sh" "$STAGE_DIR/usr/local/sbin/examos-nts-sync.sh"
+install -D -m 0755 "$ROOT/image/scripts/examos-diag-bundle.sh" "$STAGE_DIR/usr/local/sbin/examos-diag-bundle.sh"
+install -D -m 0755 "$ROOT/image/scripts/examos-preflight-check.sh" "$STAGE_DIR/usr/local/bin/examos-preflight-check.sh"
+install -d "$STAGE_DIR/etc/systemd/system/timers.target.wants"
+for timer in examos-key-rotate.timer examos-db-backup.timer; do
+    if [ -f "$STAGE_DIR/etc/systemd/system/$timer" ]; then
+        ln -sf "../$timer" "$STAGE_DIR/etc/systemd/system/timers.target.wants/$timer"
+    fi
+done
 install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE_DIR/usr/local/sbin/examos-setup-postgres-tls"
 install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE_DIR/usr/local/sbin/examos-provision-remote-postgres"
 install -d "$STAGE_DIR/usr/share/examos/migrations"

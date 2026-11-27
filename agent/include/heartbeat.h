@@ -1,6 +1,8 @@
 #ifndef EXAMOS_HEARTBEAT_H
 #define EXAMOS_HEARTBEAT_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,6 +19,8 @@ typedef struct {
 
 int heartbeat_init(const char *server_url, const char *device_id);
 int heartbeat_collect_metrics(heartbeat_payload_t *payload);
+int heartbeat_format_json(const heartbeat_payload_t *payload, const char *hardware_json, const char *rf_json, char *out, size_t out_len);
+int heartbeat_send_json(const char *post_data);
 int heartbeat_send(const heartbeat_payload_t *payload, const char *hardware_json, const char *rf_json);
 
 #ifdef __cplusplus
