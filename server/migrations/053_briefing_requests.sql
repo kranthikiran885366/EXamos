@@ -2,6 +2,8 @@
 -- Persists public architecture briefing requests submitted from the SPPIO landing page
 -- so leads are stored durably in PostgreSQL instead of relying on mailto: drafts.
 
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS briefing_requests (
     id              VARCHAR(64) PRIMARY KEY,
     full_name       VARCHAR(160) NOT NULL,
@@ -15,3 +17,9 @@ CREATE TABLE IF NOT EXISTS briefing_requests (
 
 CREATE INDEX IF NOT EXISTS idx_briefing_requests_created_at
     ON briefing_requests (created_at DESC);
+
+INSERT INTO examos_schema_migrations(component, version)
+VALUES ('briefing_requests', 53)
+ON CONFLICT (component, version) DO NOTHING;
+
+COMMIT;

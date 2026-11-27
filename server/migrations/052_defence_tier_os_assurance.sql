@@ -70,4 +70,8 @@ CREATE TABLE IF NOT EXISTS device_defence_posture (
     updated_at      BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
 );
 
+INSERT INTO examos_schema_migrations(component, version)
+VALUES ('defence_tier_os_assurance', 52)
+ON CONFLICT (component, version) DO NOTHING;
+
 COMMIT;
