@@ -71,6 +71,7 @@ static const migration_t migrations[] = {
     {"049_policy_publication_acknowledgement.sql",           "policy_trust",              49},
     {"050_release_canonical_revocation_trust.sql",           "os_release_trust",          50},
     {"051_tpm_recipient_key_transport.sql",                  "exam_key_transport",        51},
+    {"052_defence_tier_os_assurance.sql",                    "defence_tier_assurance",    52},
 };
 
 /*

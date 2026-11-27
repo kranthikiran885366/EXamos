@@ -126,6 +126,10 @@ static int verify_signature(EVP_PKEY *key, const char *algorithm,
     int rsa_padding = 0;
     if (strcmp(algorithm, "ed25519") == 0) {
         if (key_type != EVP_PKEY_ED25519 || signature_len != 64) return 0;
+    } else if (strcmp(algorithm, "ml-dsa-65") == 0) {
+        /* Pure ML-DSA signs the exact manifest, without an external digest.
+         * EVP provider discovery fails closed on OpenSSL without ML-DSA. */
+        if (!EVP_PKEY_is_a(key, "ML-DSA-65") || signature_len != 3309) return 0;
     } else if (strcmp(algorithm, "rsa-sha256") == 0) {
         if ((key_type != EVP_PKEY_RSA && key_type != EVP_PKEY_RSA_PSS) ||
             (EVP_PKEY_get_bits(key) != 2048 && EVP_PKEY_get_bits(key) != 3072))

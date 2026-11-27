@@ -50,12 +50,15 @@ CREATE TABLE IF NOT EXISTS tamper_zeroization_events (
     fde_scrubbed    BOOLEAN NOT NULL DEFAULT FALSE,
     session_scrubbed BOOLEAN NOT NULL DEFAULT FALSE,
     pqc_scrubbed    BOOLEAN NOT NULL DEFAULT FALSE,
-    lockdown_engaged BOOLEAN NOT NULL DEFAULT TRUE,
+    lockdown_engaged BOOLEAN NOT NULL DEFAULT FALSE,
+    receipt_digest  VARCHAR(64) DEFAULT '',
+    acknowledged_at BIGINT DEFAULT 0,
     recorded_at     BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS device_defence_posture (
     device_id       VARCHAR(64) PRIMARY KEY,
+    expected_pcr10  VARCHAR(64) DEFAULT '',
     ab_active_slot  VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN',
     dm_verity_ok    BOOLEAN NOT NULL DEFAULT FALSE,
     bpf_lsm_active  BOOLEAN NOT NULL DEFAULT FALSE,

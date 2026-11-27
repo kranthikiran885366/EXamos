@@ -8,8 +8,11 @@ ConditionPathExists=/sys/kernel/security/lsm
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/bpftool prog loadall /usr/lib/examos/bpf/examos_lsm.bpf.o /sys/fs/bpf/examos type lsm
+ExecStartPre=/bin/mkdir -p /sys/fs/bpf/examos
+ExecStart=/usr/sbin/bpftool prog loadall /usr/lib/examos/bpf/examos_lsm.bpf.o /sys/fs/bpf/examos type lsm autoattach
+ExecStartPost=/usr/sbin/bpftool prog show pinned /sys/fs/bpf/examos
 ExecStartPost=/usr/sbin/bpftool map update pinned /sys/fs/bpf/examos/lockdown_mode_map key 0 0 0 0 value 1 0 0 0
+ExecStartPost=/usr/sbin/bpftool map update pinned /sys/fs/bpf/examos/protected_pids_map key 1 0 0 0 value 1 0 0 0
 StandardOutput=journal
 StandardError=journal
 

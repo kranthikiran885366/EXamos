@@ -2,6 +2,10 @@
 use std::fs;
 use std::path::Path;
 use sppio_pqc::{AirGappedBundle, DsaKeypair, KemKeypair};
+use sppio_securityd::proximity_shield::{
+    AcousticUltrasonicShield, AlertSeverity, BusDisplayGuard, ProximityReport, RfShieldMonitor,
+    VisionGlareDetector,
+};
 use sppio_securityd::{
     DmaPosture, TamperTrigger, VolatileKeyVault, enforce_dma_policy,
     verify_airgapped_update, verify_ima_measurements,
@@ -119,18 +123,73 @@ fn main() {
                 .find(|w| w[0] == "--trigger")
                 .map(|w| w[1].as_str())
                 .unwrap_or("UnexpectedShutdown");
-            let mut vault = VolatileKeyVault::initialize([0xFF; 32], [0xEE; 32], [0xDD; 32]);
+            let key_dir = args
+                .windows(2)
+                .find(|w| w[0] == "--key-dir")
+                .map(|w| w[1].as_str())
+                .unwrap_or("/run/examos/keys");
+            let mut vault = VolatileKeyVault::load_from_runtime_dir(key_dir);
             let receipt = vault.tamper_zeroize(parse_trigger(trigger_name));
             println!("{}", serde_json::to_string(&receipt).unwrap());
         }
+        "proximity-scan" => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut rf = RfShieldMonitor::new(vec![]);
+            let bus = BusDisplayGuard::capture_baseline();
+            let mut alerts = rf.scan_linux_hardware(now);
+            let (ext_disp, new_usb, bus_alerts) = bus.scan(now);
+            alerts.extend(bus_alerts);
+            let report = ProximityReport {
+                rf_ble_tracked: 0,
+                rf_wifi_suspicious: alerts.len(),
+                vision_glare_score: 0.0,
+                ultrasonic_doppler_ratio: 0.0,
+                external_displays_connected: ext_disp,
+                unauthorized_usb_devices: new_usb,
+                alerts,
+            };
+            println!("{}", serde_json::to_string(&report).unwrap());
+        }
         "--daemon" => {
-            let posture = read_linux_dma_posture();
+            let mut vault = VolatileKeyVault::load_from_runtime_dir("/run/examos/keys");
+            let mut rf = RfShieldMonitor::new(vec![]);
+            let mut vision = VisionGlareDetector::new();
+            let acoustic = AcousticUltrasonicShield::new();
+            let bus = BusDisplayGuard::capture_baseline();
+            let _pulse = acoustic.generate_ultrasonic_pulse_pcm(40);
+            let _ = &mut vision;
+
             println!(
-                "{{\"daemon\":\"sppio-securityd\",\"mode\":\"daemon\",\"iommu_enabled\":{},\"iommu_strict\":{}}}",
-                posture.iommu_enabled, posture.iommu_strict
+                "{{\"daemon\":\"sppio-securityd\",\"mode\":\"daemon\",\"proximity_shield\":\"ACTIVE\"}}"
             );
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(30));
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let posture = read_linux_dma_posture();
+                if let Err(receipt) = enforce_dma_policy(&posture, &mut vault) {
+                    eprintln!("{}", serde_json::to_string(&receipt).unwrap());
+                    break;
+                }
+
+                let mut alerts = rf.scan_linux_hardware(now);
+                let (_ext_disp, _new_usb, bus_alerts) = bus.scan(now);
+                alerts.extend(bus_alerts);
+
+                if alerts.iter().any(|a| a.severity == AlertSeverity::CriticalTamper) {
+                    let receipt = vault.tamper_zeroize(TamperTrigger::BadUsbInjection);
+                    eprintln!("{}", serde_json::to_string(&receipt).unwrap());
+                    break;
+                }
+                if !alerts.is_empty() {
+                    println!("{}", serde_json::to_string(&alerts).unwrap());
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
         _ => {

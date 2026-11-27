@@ -7,6 +7,8 @@
 //! - IOMMU / Thunderbolt / PCIe DMA attack surface validation
 //! - Air-gapped operation with ML-DSA-65 signed offline bundles & hardware token presence
 
+pub mod proximity_shield;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sppio_behavioral_ai::{
@@ -67,6 +69,23 @@ impl VolatileKeyVault {
         self.lockdown_engaged
     }
 
+    /// Loads live exam/PQC/FDE key material from a runtime directory (if present).
+    pub fn load_from_runtime_dir(dir: &str) -> Self {
+        let read_32 = |name: &str| -> [u8; 32] {
+            let mut buf = [0u8; 32];
+            if let Ok(bytes) = std::fs::read(std::path::Path::new(dir).join(name)) {
+                let n = bytes.len().min(32);
+                buf[..n].copy_from_slice(&bytes[..n]);
+            }
+            buf
+        };
+        Self::initialize(
+            read_32("fde.key"),
+            read_32("session.key"),
+            read_32("pqc.key"),
+        )
+    }
+
     /// Immediately scrubs all sensitive key material in RAM and engages hardware lockdown.
     pub fn tamper_zeroize(&mut self, trigger: TamperTrigger) -> ZeroizationReceipt {
         self.fde_master_key.zeroize();
@@ -75,8 +94,20 @@ impl VolatileKeyVault {
         self.zeroized = true;
         self.lockdown_engaged = true;
 
-        // On Linux targets, also invoke /proc/sys/vm/drop_caches & cryptsetup luksSuspend
-        // via the privileged supervisor unit when running as PID/service.
+        // Unlink ephemeral runtime keys, drop kernel page cache, and suspend LUKS root if active.
+        for name in ["fde.key", "session.key", "pqc.key"] {
+            let p = std::path::Path::new("/run/examos/keys").join(name);
+            if p.exists() {
+                let _ = std::fs::write(&p, [0u8; 32]);
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        let _ = std::fs::write("/proc/sys/vm/drop_caches", "3\n");
+        if std::path::Path::new("/dev/mapper/examos-root").exists() {
+            let _ = std::process::Command::new("cryptsetup")
+                .args(["luksSuspend", "examos-root"])
+                .output();
+        }
         ZeroizationReceipt {
             triggered_by: trigger,
             fde_key_scrubbed: self.fde_master_key == [0u8; 32],

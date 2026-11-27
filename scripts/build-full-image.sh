@@ -48,9 +48,18 @@ fi
 echo "[1/6] Credentials are not part of the image build."
 echo "  Admin and candidate credentials must be provisioned after installation."
 
-# ── Step 3: Compile all native C/C++ binaries ────────────────────────────────
-echo "[3/6] Compiling native C/C++ subsystems..."
+# ── Step 3: Compile all native C/C++, Rust, and eBPF subsystems ──────────────
+echo "[3/6] Compiling native C/C++, Rust, and eBPF subsystems..."
 make -C "$ROOT" EXAMOS_USE_OPENCV=1 all
+if command -v cargo >/dev/null 2>&1; then
+    cargo build --release --manifest-path "$ROOT/rust-services/Cargo.toml"
+else
+    echo "ERROR: cargo (Rust toolchain) is required to build sppio-securityd." >&2
+    exit 1
+fi
+if [ -f "$ROOT/kernel/bpf_lsm/Makefile" ]; then
+    make -C "$ROOT/kernel/bpf_lsm" all
+fi
 echo "  Binaries compiled."
 
 # ── Step 4: Stage overlay with correct permissions ───────────────────────────
@@ -81,6 +90,16 @@ install -m 0755 "$ROOT/agent/examos-agent"                   "$STAGE_DIR/usr/loc
 install -m 0755 "$ROOT/proctoring/examos-proctor"            "$STAGE_DIR/usr/local/bin/"
 install -m 0755 "$ROOT/server/examos-server"                 "$STAGE_DIR/usr/local/bin/"
 install -m 0755 "$ROOT/server/examos-db-migrate"              "$STAGE_DIR/usr/local/bin/"
+install -m 0755 "$ROOT/rust-services/target/release/sppio-securityd" "$STAGE_DIR/usr/local/bin/sppio-securityd"
+install -D -m 0644 "$ROOT/kernel/bpf_lsm/examos_lsm.bpf.o" "$STAGE_DIR/usr/lib/examos/bpf/examos_lsm.bpf.o"
+install -D -m 0755 "$ROOT/image/scripts/pfr-800-193-verify.sh" "$STAGE_DIR/usr/local/bin/pfr-800-193-verify.sh"
+install -D -m 0755 "$ROOT/image/scripts/ab-partition-setup.sh" "$STAGE_DIR/usr/local/sbin/ab-partition-setup.sh"
+install -d "$STAGE_DIR/etc/systemd/system/multi-user.target.wants"
+for unit in sppio-securityd.service examos-bpf-lsm.service examos-pfr-verify.service examos-ab-commit.service; do
+    if [ -f "$STAGE_DIR/etc/systemd/system/$unit" ]; then
+        ln -sf "../$unit" "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/$unit"
+    fi
+done
 install -D -m 0755 "$ROOT/image/scripts/tpm-seal-secrets.sh" "$STAGE_DIR/usr/local/sbin/tpm-seal-secrets.sh"
 install -D -m 0755 "$ROOT/scripts/setup-postgres-tls.sh" "$STAGE_DIR/usr/local/sbin/examos-setup-postgres-tls"
 install -D -m 0755 "$ROOT/scripts/provision-remote-postgres.sh" "$STAGE_DIR/usr/local/sbin/examos-provision-remote-postgres"

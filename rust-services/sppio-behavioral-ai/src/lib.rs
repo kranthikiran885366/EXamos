@@ -237,4 +237,52 @@ mod tests {
         let res = assess_overlay_telemetry(&attack);
         assert_eq!(res.verdict, ThreatVerdict::CriticalAttack);
     }
+
+    #[test]
+    fn labeled_dataset_meets_false_positive_and_recall_targets() {
+        let mut fp = 0usize;
+        let mut tn = 0usize;
+        for seed in 0..20usize {
+            let mut human = Vec::new();
+            let mut ts = 1_000_000u64;
+            for i in 0..20usize {
+                ts += 95_000 + ((i * 17 + seed * 31) % 90) as u64 * 1_000;
+                human.push(KeystrokeSample {
+                    timestamp_us: ts,
+                    hold_duration_us: 65_000 + ((i * 23 + seed * 11) % 35) as u64 * 1_000,
+                    keycode: (30 + (i % 26)) as u16,
+                    hid_vendor_id: 0x046d,
+                    hid_product_id: 0xc31c,
+                });
+            }
+            if assess_keystroke_window(&human).verdict == ThreatVerdict::CriticalAttack {
+                fp += 1;
+            } else {
+                tn += 1;
+            }
+        }
+        let fpr = fp as f64 / (fp + tn) as f64;
+        assert!(fpr <= 0.01, "False-positive rate {fpr:.3} exceeded 1%");
+
+        let mut tp = 0usize;
+        for i_set in 0..20usize {
+            let mut badusb = Vec::new();
+            let mut ts = 1_000_000u64;
+            for i in 0..20usize {
+                ts += 1_500 + (i_set % 3) as u64 * 500;
+                badusb.push(KeystrokeSample {
+                    timestamp_us: ts,
+                    hold_duration_us: 2_000,
+                    keycode: (30 + (i % 26)) as u16,
+                    hid_vendor_id: 0x16c0,
+                    hid_product_id: 0x27db,
+                });
+            }
+            if assess_keystroke_window(&badusb).verdict == ThreatVerdict::CriticalAttack {
+                tp += 1;
+            }
+        }
+        let recall = tp as f64 / 20.0;
+        assert!(recall >= 0.95, "Recall {recall:.3} below 95%");
+    }
 }
