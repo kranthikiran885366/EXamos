@@ -1,0 +1,9 @@
+[package]
+name = "sppio-behavioral-ai"
+version.workspace = true
+edition.workspace = true
+description = "Offline on-device behavioral ML engine for BadUSB keystroke injection and Wayland screen-overlay attack detection"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

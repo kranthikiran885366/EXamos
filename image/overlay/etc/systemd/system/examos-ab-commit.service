@@ -1,0 +1,14 @@
+[Unit]
+Description=SPPIO / ExamOS A/B Slot Health Commit & Rollback Gate
+After=examos-bpf-lsm.service examos-pfr-verify.service examos-agent.service
+ConditionPathExists=/etc/examos/ab-slots.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/examos-ab-commit.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

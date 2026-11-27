@@ -1,0 +1,14 @@
+[package]
+name = "sppio-securityd"
+version.workspace = true
+edition.workspace = true
+description = "Privileged memory-safe Rust security daemon for SPPIO OS (RAM zeroization, DMA guard, IMA verifier, Behavioral AI, PQC)"
+
+[dependencies]
+sppio-pqc = { path = "../sppio-pqc" }
+sppio-behavioral-ai = { path = "../sppio-behavioral-ai" }
+zeroize = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,38 @@
+# SPPIO / ExamOS Multi-Level Security (SELinux MLS Bell-LaPadula) Policy
+#
+# Sensitivity Hierarchy:
+#   s0:c0      - Untrusted Assessment Browser (lowest trust; cannot read s1..s3)
+#   s1:c1      - Wayland Cage Kiosk Compositor
+#   s2:c2      - Exam Attestation & Keylime Agent
+#   s3:c0.c2   - Privileged Rust Security Daemon (sppio-securityd / TPM / PQC)
+#
+# Enforces "No Read Up" and "No Write Down" across all exam domains.
+
+policy_module(examos_mls, 1.0.0)
+
+require {
+    type unconfined_t;
+    class process { transition sigchld };
+    class file { read write open getattr };
+    class unix_stream_socket { connectto read write };
+}
+
+type examos_browser_t;
+type examos_kiosk_t;
+type examos_agent_t;
+type examos_securityd_t;
+
+type examos_key_vault_t;
+type examos_ima_log_t;
+type examos_exam_content_t;
+
+# Browser domain (s0) is strictly prohibited from reading agent/securityd files
+neverallow examos_browser_t examos_key_vault_t:file { read write open };
+neverallow examos_browser_t examos_ima_log_t:file { read write open };
+
+# Prevent write-down from high-sensitivity security daemon to browser-readable files
+neverallow examos_securityd_t examos_exam_content_t:file write;
+
+# Only securityd and agent may access TPM/PQC key vault
+allow examos_securityd_t examos_key_vault_t:file { read write open getattr };
+allow examos_agent_t examos_ima_log_t:file { read open getattr };

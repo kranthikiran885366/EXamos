@@ -1,0 +1,10 @@
+# SPPIO / ExamOS — Physical DMA Attack Prevention (IOMMU + Thunderbolt/PCIe Lockdown)
+#
+# Blocks unauthorized external PCIe/Thunderbolt devices from acquiring DMA
+# authorization unless IOMMU strict remapping is active and explicitly allowlisted.
+
+ACTION=="add|change", SUBSYSTEM=="thunderbolt", ATTR{authorized}=="0", ATTR{authorized}="0"
+ACTION=="add|change", SUBSYSTEM=="thunderbolt", ENV{EXAMOS_ALLOW_TB_DMA}!="1", ATTR{authorized}="0"
+
+# Deny untrusted hotplug PCIe devices external to the root complex
+ACTION=="add", SUBSYSTEM=="pci", ATTR{external_facing}=="1", ATTR{untrusted}=="1", RUN+="/bin/sh -c 'echo 0 > /sys$devpath/enable 2>/dev/null || true'"

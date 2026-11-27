@@ -1,0 +1,72 @@
+/*
+ * SPPIO / ExamOS Defence-Tier Separation Kernel Architecture (seL4 / CAmkES)
+ *
+ * Enforces mathematically proven spatial and temporal isolation between:
+ *  - Domain 0 (Trusted_Attestation_Domain): TPM 2.0, ML-KEM/ML-DSA keys, RAM zeroizer
+ *  - Domain 1 (Security_Monitor_Domain): eBPF/Behavioral AI telemetry & policy gate
+ *  - Domain 2 (Kiosk_Display_Domain): Wayland Cage compositor & secure input
+ *  - Domain 3 (Untrusted_Browser_VM): Isolated assessment VM (no direct HW/key access)
+ *  - Domain 4 (Network_Driver_Domain): NIC driver isolated from keys & display
+ */
+
+import <std_connector.camkes>;
+
+component TrustedAttestationDomain {
+    control;
+    dataport Buf(4096) attestation_out;
+    consumes Notification tamper_irq;
+    attribute int domain = 0;
+}
+
+component SecurityMonitorDomain {
+    control;
+    dataport Buf(4096) telemetry_in;
+    emits Notification tamper_irq;
+    attribute int domain = 1;
+}
+
+component KioskDisplayDomain {
+    control;
+    dataport Buf(65536) framebuffer_port;
+    dataport Buf(4096) telemetry_out;
+    attribute int domain = 2;
+}
+
+component UntrustedBrowserVM {
+    control;
+    dataport Buf(65536) framebuffer_port;
+    dataport Buf(4096) net_port;
+    attribute int domain = 3;
+}
+
+component NetworkDriverDomain {
+    control;
+    dataport Buf(4096) net_port;
+    dataport Buf(4096) attestation_in;
+    attribute int domain = 4;
+}
+
+assembly {
+    composition {
+        component TrustedAttestationDomain tpm_domain;
+        component SecurityMonitorDomain sec_monitor;
+        component KioskDisplayDomain kiosk_display;
+        component UntrustedBrowserVM browser_vm;
+        component NetworkDriverDomain net_driver;
+
+        /* Unidirectional / capability-restricted channels — Browser VM has zero access to TPM/Keys */
+        connection seL4SharedData browser_to_display(from browser_vm.framebuffer_port, to kiosk_display.framebuffer_port);
+        connection seL4SharedData browser_to_net(from browser_vm.net_port, to net_driver.net_port);
+        connection seL4SharedData attest_to_net(from tpm_domain.attestation_out, to net_driver.attestation_in);
+        connection seL4SharedData display_to_monitor(from kiosk_display.telemetry_out, to sec_monitor.telemetry_in);
+        connection seL4Notification monitor_to_tpm_tamper(from sec_monitor.tamper_irq, to tpm_domain.tamper_irq);
+    }
+
+    configuration {
+        tpm_domain.domain = 0;
+        sec_monitor.domain = 1;
+        kiosk_display.domain = 2;
+        browser_vm.domain = 3;
+        net_driver.domain = 4;
+    }
+}

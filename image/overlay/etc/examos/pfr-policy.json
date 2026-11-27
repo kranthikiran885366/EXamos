@@ -1,0 +1,23 @@
+{
+  "schema": "sppio-pfr-800-193-v1",
+  "standard": "NIST SP 800-193",
+  "pillars": {
+    "protection": {
+      "require_spi_bioswe_lock": true,
+      "require_bios_lock_enable": true,
+      "require_smm_bwp": true,
+      "require_signed_capsule_updates": true,
+      "capsule_signature_algorithm": "ML-DSA-65"
+    },
+    "detection": {
+      "measured_pcrs": [0, 1, 2, 3, 7],
+      "require_secure_boot": true,
+      "require_tpm_eventlog_match": true
+    },
+    "recovery": {
+      "golden_recovery_partition": "ESP:/EFI/EXAMOS/RECOVERY.CAP",
+      "auto_recover_on_corruption": true,
+      "fail_closed_if_recovery_unverified": true
+    }
+  }
+}

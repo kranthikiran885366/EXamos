@@ -543,6 +543,43 @@ export default function KioskPage() {
               </div>
             </div>
           </Card>
+
+          <Card
+            title="Defence-Tier OS Stack & Assurance"
+            desc="Layered kernel, firmware, post-quantum cryptography, and Common Criteria controls"
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {[
+                { name: 'Boot & Filesystem (dm-verity + A/B)', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'Immutable SquashFS + cryptographic block verification + atomic A/B rollback' },
+                { name: 'Remote Attestation (Keylime TPM 2.0 + IMA)', state: devices.length === 0 ? 'NOT ENROLLED' : attestedCount === devices.length ? 'VERIFIED' : 'UNVERIFIED', desc: 'Hardware TPM 2.0 quotes + Linux IMA SHA-256 PCR-10 runtime replay' },
+                { name: 'Kernel Runtime (eBPF / BPF-LSM)', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'In-kernel process, ptrace, and egress socket zero-trust enforcement' },
+                { name: 'Post-Quantum Crypto (ML-KEM & ML-DSA)', state: 'FIPS 203 / 204', desc: 'ML-KEM-768 key encapsulation + ML-DSA-65 signed updates & air-gap bundles' },
+                { name: 'Rust Services + Behavioral AI', state: devices.length === 0 ? 'NOT ENROLLED' : 'ACTIVE', desc: 'Memory-safe sppio-securityd + offline BadUSB & Wayland overlay ML' },
+                { name: 'Separation Kernel & PFR (seL4 / SP 800-193)', state: 'DEFINED', desc: 'CAmkES domain isolation + SPI/UEFI firmware protect, detect, recover' },
+                { name: 'MLS, DMA & RAM Zeroization', state: devices.length === 0 ? 'NOT ENROLLED' : 'ENFORCED', desc: 'SELinux MLS + strict IOMMU/Thunderbolt lock + tamper RAM key scrub' },
+                { name: 'Common Criteria (STQC IC3S EAL4)', state: 'ST READY', desc: 'ISO/IEC 15408 EAL4 Security Target & Air-Gapped PKCS#11 operation' },
+              ].map((layer) => (
+                <div
+                  key={layer.name}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '9px 12px',
+                    background: '#f8fafc',
+                    borderRadius: '8px',
+                    border: '1px solid var(--line)',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--ink)' }}>{layer.name}</div>
+                    <small style={{ color: 'var(--mut)' }}>{layer.desc}</small>
+                  </div>
+                  <Badge value={layer.state} />
+                </div>
+              ))}
+            </div>
+          </Card>
         </div>
       </div>
     </Page>

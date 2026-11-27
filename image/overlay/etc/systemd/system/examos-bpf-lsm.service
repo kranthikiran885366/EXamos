@@ -1,0 +1,17 @@
+[Unit]
+Description=SPPIO / ExamOS eBPF BPF-LSM Kernel Runtime Security Loader
+DefaultDependencies=no
+After=sys-fs-bpf.mount local-fs.target
+Before=network-pre.target examos-kiosk.service
+ConditionPathExists=/sys/kernel/security/lsm
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/bpftool prog loadall /usr/lib/examos/bpf/examos_lsm.bpf.o /sys/fs/bpf/examos type lsm
+ExecStartPost=/usr/sbin/bpftool map update pinned /sys/fs/bpf/examos/lockdown_mode_map key 0 0 0 0 value 1 0 0 0
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
