@@ -2,9 +2,13 @@ CC ?= gcc
 PG_CONFIG ?= pg_config
 PG_INCLUDEDIR := $(shell $(PG_CONFIG) --includedir 2>/dev/null)
 PG_LIBDIR := $(shell $(PG_CONFIG) --libdir 2>/dev/null)
-CFLAGS ?= -Wall -Wextra -O2 -Iinclude -Idb -Isecurity -Iaudit -Icontrollers -D_FORTIFY_SOURCE=2 -fstack-protector-strong
+CFLAGS ?= -Wall -Wextra -O2 -Iinclude -Idb -Isecurity -Iaudit -Icontrollers -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -fPIE
 CPPFLAGS += -I$(PG_INCLUDEDIR) -DUSE_OPENSSL_TLS
-LDFLAGS ?= -lssl -lcrypto -lpthread -L$(PG_LIBDIR) -lpq -lm
+LDFLAGS ?= -pie -Wl,-z,relro,-z,now,-z,ibt,-z,shstk -lssl -lcrypto -lpthread -L$(PG_LIBDIR) -lpq -lm
+ifeq ($(CFI),1)
+CFLAGS += -fsanitize=cfi -flto -fvisibility=hidden
+LDFLAGS += -fsanitize=cfi -flto
+endif
 
 SRCS = main.c \
        events/ledger.c \

@@ -1,6 +1,10 @@
 CC ?= gcc
-CFLAGS ?= -Wall -Wextra -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong
-LDFLAGS ?= -lssl -lcrypto -lcurl -lpthread
+CFLAGS ?= -Wall -Wextra -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -fPIE
+LDFLAGS ?= -pie -Wl,-z,relro,-z,now,-z,ibt,-z,shstk -lssl -lcrypto -lcurl -lpthread
+ifeq ($(CFI),1)
+CFLAGS += -fsanitize=cfi -flto -fvisibility=hidden
+LDFLAGS += -fsanitize=cfi -flto
+endif
 
 SRCS = main.c \
        attestation/tpm_attestation.c \

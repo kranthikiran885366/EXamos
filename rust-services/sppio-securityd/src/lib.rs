@@ -7,7 +7,9 @@
 //! - IOMMU / Thunderbolt / PCIe DMA attack surface validation
 //! - Air-gapped operation with ML-DSA-65 signed offline bundles & hardware token presence
 
+pub mod canary_tripwire;
 pub mod proximity_shield;
+pub mod tpm_log_chain;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,6 +29,7 @@ pub enum TamperTrigger {
     BpfLsmViolation,
     BadUsbInjection,
     DmaUnauthorizedDevice,
+    CanaryTripwire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

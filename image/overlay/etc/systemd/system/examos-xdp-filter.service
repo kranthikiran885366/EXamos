@@ -1,0 +1,18 @@
+[Unit]
+Description=SPPIO / ExamOS Driver-Level eBPF XDP Packet & Encrypted DNS Filter
+DefaultDependencies=no
+After=sys-fs-bpf.mount network-pre.target systemd-resolved.service
+Before=network-online.target examos-kiosk.service
+ConditionPathExists=/usr/lib/examos/bpf/examos_xdp_filter.bpf.o
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /sys/fs/bpf/examos_xdp
+ExecStart=/usr/sbin/bpftool prog load /usr/lib/examos/bpf/examos_xdp_filter.bpf.o /sys/fs/bpf/examos_xdp/prog type xdp
+ExecStartPost=/bin/sh -c 'for iface in /sys/class/net/*; do dev=$(basename "$iface"); [ "$dev" = "lo" ] && continue; bpftool net attach xdp pinned /sys/fs/bpf/examos_xdp/prog dev "$dev" || bpftool net attach xdpgeneric pinned /sys/fs/bpf/examos_xdp/prog dev "$dev"; done'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

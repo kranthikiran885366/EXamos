@@ -2,10 +2,12 @@
 use std::fs;
 use std::path::Path;
 use sppio_pqc::{AirGappedBundle, DsaKeypair, KemKeypair};
+use sppio_securityd::canary_tripwire::CanaryMonitor;
 use sppio_securityd::proximity_shield::{
     AcousticUltrasonicShield, AlertSeverity, BusDisplayGuard, ProximityReport, RfShieldMonitor,
     VisionGlareDetector,
 };
+use sppio_securityd::tpm_log_chain::{KillSwitchPolicy, TpmLogChain, enforce_hardware_kill_switches};
 use sppio_securityd::{
     DmaPosture, TamperTrigger, VolatileKeyVault, enforce_dma_policy,
     verify_airgapped_update, verify_ima_measurements,
@@ -153,17 +155,46 @@ fn main() {
             };
             println!("{}", serde_json::to_string(&report).unwrap());
         }
+        "verify-log-chain" => {
+            let log_path = args.get(2).expect("usage: verify-log-chain <chain.jsonl> <vk_hex>");
+            let vk_hex = args.get(3).expect("verifying key hex required");
+            let vk_bytes = hex::decode(vk_hex).expect("invalid vk hex");
+            match TpmLogChain::verify_file(log_path, &vk_bytes) {
+                Ok(count) => println!("{{\"log_chain_verified\":true,\"entries\":{count}}}"),
+                Err(e) => {
+                    eprintln!("{{\"log_chain_verified\":false,\"error\":\"{e}\"}}");
+                    std::process::exit(1);
+                }
+            }
+        }
         "--daemon" => {
             let mut vault = VolatileKeyVault::load_from_runtime_dir("/run/examos/keys");
             let mut rf = RfShieldMonitor::new(vec![]);
             let mut vision = VisionGlareDetector::new();
             let acoustic = AcousticUltrasonicShield::new();
             let bus = BusDisplayGuard::capture_baseline();
+            let mut canary = CanaryMonitor::deploy(
+                &[
+                    "/var/lib/examos/.canary_exam_keys.json",
+                    "/etc/examos/.canary_admin_token",
+                    "/tmp/.examos_db_dump.sql",
+                ],
+                Some(64443),
+            );
+            let dsa_kp = DsaKeypair::generate();
+            let mut log_chain = TpmLogChain::open_or_init("/var/log/examos/tpm-chained.jsonl", dsa_kp);
             let _pulse = acoustic.generate_ultrasonic_pulse_pcm(40);
             let _ = &mut vision;
 
+            let _ = enforce_hardware_kill_switches(&KillSwitchPolicy {
+                allow_mic: std::env::var("EXAMOS_ALLOW_MIC").as_deref() == Ok("1"),
+                allow_camera: std::env::var("EXAMOS_ALLOW_CAMERA").as_deref() == Ok("1"),
+                allow_wifi: std::env::var("EXAMOS_ALLOW_WIFI").as_deref() == Ok("1"),
+                allow_bluetooth: std::env::var("EXAMOS_ALLOW_BT").as_deref() == Ok("1"),
+            });
+
             println!(
-                "{{\"daemon\":\"sppio-securityd\",\"mode\":\"daemon\",\"proximity_shield\":\"ACTIVE\"}}"
+                "{{\"daemon\":\"sppio-securityd\",\"mode\":\"daemon\",\"proximity_shield\":\"ACTIVE\",\"canary\":\"ACTIVE\"}}"
             );
             loop {
                 let now = std::time::SystemTime::now()
@@ -173,6 +204,16 @@ fn main() {
 
                 let posture = read_linux_dma_posture();
                 if let Err(receipt) = enforce_dma_policy(&posture, &mut vault) {
+                    let _ = log_chain.append("DMA_TAMPER_ZEROIZE", "unauthorized_dma", now);
+                    eprintln!("{}", serde_json::to_string(&receipt).unwrap());
+                    break;
+                }
+
+                let canary_hits = canary.check();
+                if !canary_hits.is_empty() {
+                    let detail = serde_json::to_string(&canary_hits).unwrap_or_default();
+                    let _ = log_chain.append("CANARY_TRIPWIRE_TRIGGERED", &detail, now);
+                    let receipt = vault.tamper_zeroize(TamperTrigger::CanaryTripwire);
                     eprintln!("{}", serde_json::to_string(&receipt).unwrap());
                     break;
                 }
@@ -182,12 +223,16 @@ fn main() {
                 alerts.extend(bus_alerts);
 
                 if alerts.iter().any(|a| a.severity == AlertSeverity::CriticalTamper) {
+                    let detail = serde_json::to_string(&alerts).unwrap_or_default();
+                    let _ = log_chain.append("CRITICAL_PROXIMITY_TAMPER", &detail, now);
                     let receipt = vault.tamper_zeroize(TamperTrigger::BadUsbInjection);
                     eprintln!("{}", serde_json::to_string(&receipt).unwrap());
                     break;
                 }
                 if !alerts.is_empty() {
-                    println!("{}", serde_json::to_string(&alerts).unwrap());
+                    let detail = serde_json::to_string(&alerts).unwrap_or_default();
+                    let _ = log_chain.append("PROXIMITY_ALERT", &detail, now);
+                    println!("{detail}");
                 }
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
