@@ -246,6 +246,11 @@ export const applyInstitution = wrap(async (data) => {
   return res.data;
 });
 
+export const submitBriefingRequest = wrap(async (data) => {
+  const res = await api.post(ENDPOINTS.publicBriefing, data, { actor: ACTOR, retries: 0, sign: false });
+  return res.data;
+});
+
 export const getInstitutionApplyStatus = wrap(async (id) => {
   const res = await api.get(ENDPOINTS.institutionApplyStatus(id), { actor: ACTOR });
   return res.data;

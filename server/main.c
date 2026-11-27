@@ -1693,6 +1693,8 @@ static void* handle_client(void *arg) {
     else if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
              strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||
              strncmp(route_path, "/api/v1/institutions/apply", 26) == 0 ||
+             strncmp(route_path, "/api/v1/public/briefings", 24) == 0 ||
+             strncmp(route_path, "/api/v1/admin/briefings", 23) == 0 ||
              strncmp(route_path, "/api/v1/admin/agreements", 24) == 0 ||
              strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
              strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||
@@ -4705,6 +4707,8 @@ p5_score_done:
             if (strncmp(route_path, "/api/v1/admin/institutions", 26) == 0 ||
                 strncmp(route_path, "/api/v1/admin/institution-applications", 38) == 0 ||
                 strncmp(route_path, "/api/v1/institutions/apply", 26) == 0 ||
+                strncmp(route_path, "/api/v1/public/briefings", 24) == 0 ||
+                strncmp(route_path, "/api/v1/admin/briefings", 23) == 0 ||
                 strncmp(route_path, "/api/v1/admin/agreements", 24) == 0 ||
                 strncmp(route_path, "/api/v1/admin/licenses", 22) == 0 ||
                 strncmp(route_path, "/api/v1/admin/deployments", 25) == 0 ||

@@ -49,6 +49,7 @@ export const ENDPOINTS = {
   institutionStats: (id) => `/api/v1/admin/institutions/${id}/stats`,
   institutionApply: '/api/v1/institutions/apply',
   institutionApplyStatus: (id) => `/api/v1/institutions/apply/${id}`,
+  publicBriefing: '/api/v1/public/briefings',
   institutionApplications: '/api/v1/admin/institution-applications',
   institutionApplicationById: (id) => `/api/v1/admin/institution-applications/${id}`,
   institutionApplicationReview: (id) => `/api/v1/admin/institution-applications/${id}/review`,

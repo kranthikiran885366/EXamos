@@ -52,7 +52,7 @@ export default function PublicFooter() {
               <li><Link to="/candidate-login">Candidate station login</Link></li>
               <li><Link to="/register-institution">Institution onboarding</Link></li>
               <li><Link to="/register-institution?tab=track">Track application</Link></li>
-              <li><a href="mailto:briefings@sppio.io">Briefings contact</a></li>
+              <li><Link to="/landing#contact">Request a briefing</Link></li>
             </ul>
           </div>
         </div>

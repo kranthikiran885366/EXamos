@@ -4,8 +4,15 @@ import { useAuth } from '../../core/auth/AuthContext';
 import { Page, Card, Alert, Field, Input, CopyField } from '../../core/ui/kit';
 import { acceptInvitation } from '../users/service';
 import QrCodeSvg from '../../core/ui/QrCodeSvg';
+import SppioLogo from '../../core/ui/SppioLogo';
+import usePageMeta from '../../core/ui/usePageMeta';
 
 export function MfaPage() {
+  usePageMeta({
+    title: 'Two-factor authentication | SPPIO',
+    description: 'Verify your SPPIO management console session.',
+    path: '/mfa',
+  });
   const { verifyMfa, pending, cancelPending, backendReady } = useAuth();
   const navigate = useNavigate();
   const [code, setCode] = useState('');
@@ -43,9 +50,9 @@ export function MfaPage() {
     <div className="loginwrap">
       <div className="login" style={{ maxWidth: '440px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-          <div className="brand" style={{ margin: 0, fontSize: '1.75rem' }}>
-            <span className="logo">E</span>ExamOS
-          </div>
+          <Link to="/" aria-label="SPPIO home" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            <SppioLogo width={132} accent="#B54F34" ink="#302337" />
+          </Link>
           <div
             style={{
               display: 'flex',
@@ -93,6 +100,7 @@ export function MfaPage() {
           <label>
             {isRecoveryCode ? 'Emergency Recovery Code' : 'Authentication Code'}
             <input
+              className="input"
               type="text"
               inputMode={isRecoveryCode ? 'text' : 'numeric'}
               autoComplete="one-time-code"
@@ -151,6 +159,11 @@ export function MfaPage() {
 }
 
 export function RecoveryPage() {
+  usePageMeta({
+    title: 'Account recovery | SPPIO',
+    description: 'Reset your SPPIO console password using a single-use recovery code.',
+    path: '/recovery',
+  });
   const { resetWithRecovery, backendReady } = useAuth();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
@@ -189,9 +202,9 @@ export function RecoveryPage() {
     <div className="loginwrap">
       <div className="login" style={{ maxWidth: '480px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-          <div className="brand" style={{ margin: 0, fontSize: '1.75rem' }}>
-            <span className="logo">E</span>ExamOS
-          </div>
+          <Link to="/" aria-label="SPPIO home" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            <SppioLogo width={132} accent="#B54F34" ink="#302337" />
+          </Link>
           <div
             style={{
               display: 'flex',
@@ -231,22 +244,24 @@ export function RecoveryPage() {
           </p>
         </div>
 
-        <form onSubmit={run}>
+        <form onSubmit={run} className="stack">
           <label>
             Username
             <input
+              className="input"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
               autoFocus
               maxLength={64}
-              placeholder="e.g. root, ananya"
+              placeholder="Enter username"
             />
           </label>
 
           <label>
             Recovery Code (Single-Use)
             <input
+              className="input"
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 20))}
               autoComplete="one-time-code"
@@ -256,29 +271,33 @@ export function RecoveryPage() {
             />
           </label>
 
-          <label>
-            New Password
-            <span className="pw">
-              <input
-                type={showPw ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                maxLength={128}
-                placeholder="At least 12 characters"
-              />
-              <button type="button" className="mini" onClick={() => setShowPw(!showPw)}>
-                {showPw ? 'Hide' : 'Show'}
-              </button>
-            </span>
-          </label>
-          <p className="muted" style={{ fontSize: '11px', margin: '-8px 0 12px', lineHeight: 1.5 }}>
-            Use at least 12 characters. Choose a password you have not used for this account before.
-          </p>
+          <div>
+            <label style={{ marginBottom: 0 }}>
+              New Password
+              <span className="pw">
+                <input
+                  className="input"
+                  type={showPw ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  maxLength={128}
+                  placeholder="At least 12 characters"
+                />
+                <button type="button" className="mini" onClick={() => setShowPw(!showPw)}>
+                  {showPw ? 'Hide' : 'Show'}
+                </button>
+              </span>
+            </label>
+            <p className="muted" style={{ fontSize: '11px', margin: '6px 0 0', lineHeight: 1.5 }}>
+              Use at least 12 characters. Choose a password you have not used for this account before.
+            </p>
+          </div>
 
           <label>
             Confirm New Password
             <input
+              className="input"
               type={showPw ? 'text' : 'password'}
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
@@ -309,7 +328,7 @@ export function RecoveryPage() {
               ← Return to Sign In
             </Link>
             <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-              Audit logged on PostgreSQL
+              Tamper-evident audit logging active
             </span>
           </div>
 

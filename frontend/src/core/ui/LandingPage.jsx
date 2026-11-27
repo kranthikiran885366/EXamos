@@ -5,6 +5,7 @@ import PublicHeader from './PublicHeader';
 import PublicFooter from './PublicFooter';
 import SppioShowcase from './SppioShowcase';
 import usePageMeta from './usePageMeta';
+import { submitBriefingRequest } from '../api/services';
 
 export default function LandingPage() {
   usePageMeta({
@@ -37,10 +38,12 @@ export default function LandingPage() {
   });
   const [formError, setFormError] = useState('');
   const [formNotice, setFormNotice] = useState('');
+  const [formBusy, setFormBusy] = useState(false);
   const [contactErrors, setContactErrors] = useState({});
 
-  const handleFormSubmit = (e) => {
+  const handleFormSubmit = async (e) => {
     e.preventDefault();
+    if (formBusy) return;
     const errors = {};
     if (!formData.name.trim()) errors.name = 'Enter your name.';
     if (!formData.organization.trim()) errors.organization = 'Enter your organization.';
@@ -54,17 +57,24 @@ export default function LandingPage() {
     }
     setContactErrors({});
     setFormError('');
-    const subject = `SPPIO technical briefing request — ${formData.organization.trim()}`;
-    const body = [
-      `Name: ${formData.name.trim()}`,
-      `Email: ${formData.email.trim()}`,
-      `Organization: ${formData.organization.trim()}`,
-      `Testing station scale: ${formData.fleetSize}`,
-      '',
-      formData.message.trim(),
-    ].join('\n');
-    window.location.href = `mailto:briefings@sppio.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    setFormNotice('An email draft was requested in your email app. It has not been sent; review and send it there.');
+    setFormNotice('');
+    setFormBusy(true);
+    try {
+      const res = await submitBriefingRequest({
+        name: formData.name.trim(),
+        email: formData.email.trim(),
+        organization: formData.organization.trim(),
+        fleetSize: formData.fleetSize,
+        message: formData.message.trim(),
+      });
+      const ref = res?.briefingId ? ` (Reference: ${res.briefingId})` : '';
+      setFormNotice(`Briefing request recorded${ref}. Our architecture team will follow up via your institutional email.`);
+      setFormData({ name: '', email: '', organization: '', fleetSize: '50-500', message: '' });
+    } catch (err) {
+      setFormError(err?.message || 'Unable to submit briefing request right now. Please try again shortly.');
+    } finally {
+      setFormBusy(false);
+    }
   };
 
   const productSuite = [
@@ -661,8 +671,8 @@ export default function LandingPage() {
 
               <div className="sppio-contact-details">
                 <div className="sppio-contact-method">
-                  <span className="sppio-method-label">Briefing contact</span>
-                  <a className="sppio-method-val" href="mailto:briefings@sppio.io">briefings@sppio.io</a>
+                  <span className="sppio-method-label">Intake channel</span>
+                  <span className="sppio-method-val">Direct Architecture Briefing Queue</span>
                 </div>
               </div>
 
@@ -672,7 +682,7 @@ export default function LandingPage() {
               </p>
             </div>
 
-            {/* Inquiry details are passed to the user's email app, not submitted to a backend. */}
+            {/* Inquiry details are persisted to the SPPIO backend briefing queue. */}
             <div className="sppio-form-card">
                 <form className="sppio-form" onSubmit={handleFormSubmit} noValidate>
                   <div className="sppio-form-row">
@@ -763,8 +773,9 @@ export default function LandingPage() {
                   <button
                     type="submit"
                     className="sppio-form-submit"
+                    disabled={formBusy}
                   >
-                    Open email draft
+                    {formBusy ? 'Submitting Request…' : 'Request Architecture Briefing'}
                   </button>
                 </form>
             </div>

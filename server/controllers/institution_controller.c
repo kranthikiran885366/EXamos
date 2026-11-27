@@ -308,8 +308,9 @@ static void inst_query_param(const char *path, const char *key, char *out, size_
 void institution_handle(int client_fd, const char *method, const char *path,
                         const char *body, const char *auth_header,
                         const char *origin, char *extra_headers, size_t extra_len) {
-    /* Route: Public Apply is open without prior admin authentication */
-    int is_public_apply = (strncmp(path, "/api/v1/institutions/apply", 26) == 0);
+    /* Route: Public Apply & Public Briefing Submission are open without prior admin authentication */
+    int is_public_apply = (strncmp(path, "/api/v1/institutions/apply", 26) == 0) ||
+                          (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/public/briefings") == 0);
     auth_session_t sess;
     memset(&sess, 0, sizeof(sess));
 
@@ -405,6 +406,111 @@ void institution_handle(int client_fd, const char *method, const char *path,
         }
         json[used++] = ']';
         json[used] = '\0';
+        inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
+        return;
+    }
+
+    /* -------------------------------------------------------------------------
+     * 0. Public Architecture Briefing Requests: POST /api/v1/public/briefings
+     * ------------------------------------------------------------------------- */
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/v1/public/briefings") == 0) {
+        char full_name[160] = {0}, email[160] = {0}, organization[200] = {0};
+        char fleet_size[64] = {0}, message[2048] = {0};
+
+        ctrl_json_string(body, "name", full_name, sizeof(full_name));
+        ctrl_json_string(body, "email", email, sizeof(email));
+        ctrl_json_string(body, "organization", organization, sizeof(organization));
+        ctrl_json_string(body, "fleetSize", fleet_size, sizeof(fleet_size));
+        ctrl_json_string(body, "message", message, sizeof(message));
+
+        if (!full_name[0] || !email[0] || !organization[0] || !strchr(email, '@')) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 400, "Name, valid email, and organization are required",
+                            origin, extra_headers, extra_len);
+            return;
+        }
+        if (!fleet_size[0]) snprintf(fleet_size, sizeof(fleet_size), "50-500");
+
+        char briefing_id[48] = {0};
+        snprintf(briefing_id, sizeof(briefing_id), "BRF-%lld", (long long)time(NULL));
+
+        const char *params[6] = {
+            briefing_id, full_name, email, organization, fleet_size, message
+        };
+        int plens[6] = {
+            (int)strlen(briefing_id), (int)strlen(full_name), (int)strlen(email),
+            (int)strlen(organization), (int)strlen(fleet_size), (int)strlen(message)
+        };
+        PGresult *res = db_simple(conn,
+            "INSERT INTO briefing_requests "
+            "(id, full_name, email, organization, fleet_size, message) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            6, params, plens);
+        if (!res || PQresultStatus(res) != PGRES_COMMAND_OK) {
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 503, "Briefing request storage unavailable",
+                            origin, extra_headers, extra_len);
+            return;
+        }
+        PQclear(res);
+        db_release(conn, 0);
+
+        char resp[256];
+        snprintf(resp, sizeof(resp),
+                 "{\"status\":\"RECORDED\",\"briefingId\":\"%s\"}", briefing_id);
+        inst_send_json(client_fd, 201, resp, origin, extra_headers, extra_len);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/v1/admin/briefings") == 0) {
+        if (!is_owner) {
+            db_release(conn, 0);
+            inst_send_error(client_fd, 403, "Platform owner authorization required",
+                            origin, extra_headers, extra_len);
+            return;
+        }
+        PGresult *res = db_simple(conn,
+            "SELECT id, full_name, email, organization, fleet_size, message, status, created_at "
+            "FROM briefing_requests ORDER BY created_at DESC LIMIT 200",
+            0, NULL, NULL);
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            db_release(conn, 0);
+            inst_send_error(client_fd, 503, "Briefing requests unavailable",
+                            origin, extra_headers, extra_len);
+            return;
+        }
+        char json[65536] = "{\"briefings\":[";
+        size_t used = strlen(json);
+        int overflow = 0;
+        for (int i = 0; i < PQntuples(res); i++) {
+            char id_e[128] = {0}, name_e[320] = {0}, email_e[320] = {0};
+            char org_e[400] = {0}, fleet_e[128] = {0}, msg_e[4096] = {0}, st_e[64] = {0};
+            ctrl_json_escape(PQgetvalue(res, i, 0), id_e, sizeof(id_e));
+            ctrl_json_escape(PQgetvalue(res, i, 1), name_e, sizeof(name_e));
+            ctrl_json_escape(PQgetvalue(res, i, 2), email_e, sizeof(email_e));
+            ctrl_json_escape(PQgetvalue(res, i, 3), org_e, sizeof(org_e));
+            ctrl_json_escape(PQgetvalue(res, i, 4), fleet_e, sizeof(fleet_e));
+            ctrl_json_escape(PQgetvalue(res, i, 5), msg_e, sizeof(msg_e));
+            ctrl_json_escape(PQgetvalue(res, i, 6), st_e, sizeof(st_e));
+            int w = snprintf(json + used, sizeof(json) - used,
+                "%s{\"id\":\"%s\",\"name\":\"%s\",\"email\":\"%s\","
+                "\"organization\":\"%s\",\"fleetSize\":\"%s\","
+                "\"message\":\"%s\",\"status\":\"%s\",\"createdAt\":%s}",
+                i ? "," : "", id_e, name_e, email_e, org_e, fleet_e, msg_e, st_e,
+                PQgetvalue(res, i, 7));
+            if (w < 0 || (size_t)w >= sizeof(json) - used) { overflow = 1; break; }
+            used += (size_t)w;
+        }
+        PQclear(res);
+        db_release(conn, 0);
+        if (overflow || used + 3 > sizeof(json)) {
+            inst_send_error(client_fd, 500, "Briefing list exceeds buffer size",
+                            origin, extra_headers, extra_len);
+            return;
+        }
+        snprintf(json + used, sizeof(json) - used, "]}");
         inst_send_json(client_fd, 200, json, origin, extra_headers, extra_len);
         return;
     }

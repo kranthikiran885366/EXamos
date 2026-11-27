@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import SppioLogo, { SppioSymbol } from '../../core/ui/SppioLogo';
+import SppioLogo from '../../core/ui/SppioLogo';
 import { submitInstitutionApplication, ENTITY_TYPES, getOrgTerms, isCorporateEntity } from './service';
 import { getInstitutionApplyStatus } from '../../core/api/services';
 import { Icon } from '../../core/ui/kit';
@@ -194,7 +194,7 @@ export default function PublicInstitutionRegisterPage() {
         repEmail: f.repEmail,
       });
     } catch (error) {
-      setErr(error?.message || 'Failed to submit registration. Please verify connection to ExamOS core.');
+      setErr(error?.message || 'Failed to submit registration. Please verify connection to SPPIO core.');
     } finally {
       setBusy(false);
     }
@@ -297,17 +297,12 @@ export default function PublicInstitutionRegisterPage() {
       >
         <div>
           {/* Brand Header */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '36px' }}>
-            <span style={{ background: 'linear-gradient(135deg, #B54F34, #973D25)', padding: '8px 10px', borderRadius: '10px', display: 'flex', alignItems: 'center', boxShadow: '0 4px 16px rgba(181, 79, 52, 0.35)' }}>
-              <SppioSymbol size={26} accent="#FFFFFF" />
-            </span>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: '20px', letterSpacing: '-0.02em', color: '#FFFFFF' }}>
-                ExamOS <span style={{ color: '#E57357' }}>SPPIO</span>
-              </div>
-              <div style={{ fontSize: '11px', color: '#CBC2BD', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                Institutional Accreditation Enclave
-              </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '36px' }}>
+            <Link to="/" aria-label="SPPIO home" style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <SppioLogo width={164} accent="#B54F34" ink="#FFFFFF" />
+            </Link>
+            <div style={{ fontSize: '11px', color: '#CBC2BD', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+              Institutional Accreditation Enclave
             </div>
           </div>
 
@@ -601,7 +596,7 @@ export default function PublicInstitutionRegisterPage() {
                       && trackResult.adminSetupComplete === true && (
                       <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--line, #DCD5D2)' }}>
                         <a href="/login" style={{ background: 'var(--copper, #B54F34)', color: '#FFFFFF', borderRadius: '8px', padding: '10px 24px', fontWeight: 700, fontSize: '14px', textDecoration: 'none', display: 'inline-block', boxShadow: '0 2px 8px rgba(181,79,52,0.25)' }}>
-                          Sign In to ExamOS Console →
+                          Sign In to SPPIO Console →
                         </a>
                       </div>
                     )}

@@ -12,7 +12,7 @@ function LoginShowcase({ candidateOnly = false }) {
       <div className="editorial-content">
         <div className="editorial-brand">
           <SppioLogo width={164} accent="#B54F34" ink="#FFFFFF" />
-          <span className="editorial-badge">{candidateOnly ? 'ExamOS Candidate Station' : 'SPPIO-Command™ Console'}</span>
+          <span className="editorial-badge">{candidateOnly ? 'SPPIO Candidate Station' : 'SPPIO-Command™ Console'}</span>
         </div>
 
         <div className="editorial-hero">
@@ -83,7 +83,7 @@ function LoginShowcase({ candidateOnly = false }) {
               <span>Deployment-specific controls</span>
             </div>
           )}
-          <div className="editorial-copy">{candidateOnly ? 'ExamOS Candidate Examination Portal' : '© 2026 SPPIO Systems Enclave. All rights reserved.'}</div>
+          <div className="editorial-copy">{candidateOnly ? 'SPPIO Candidate Examination Portal' : '© 2026 SPPIO Systems Enclave. All rights reserved.'}</div>
         </div>
       </div>
     </div>
@@ -429,7 +429,7 @@ export default function LoginPage({ candidateOnly = false }) {
                         onBlur={() => setU((value) => value.trim())}
                         autoComplete="username"
                         maxLength={64}
-                        placeholder="admin or root"
+                        placeholder="Enter username"
                         autoFocus
                       />
                     </div>
